@@ -1,0 +1,346 @@
+name: 06 - ReSukiSU 5.4 Preflight
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  preflight:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout VEUX source
+        uses: actions/checkout@v7
+        with:
+          repository: dereference23/kernel_xiaomi_sm6375
+          ref: 20240619
+          fetch-depth: 0
+          filter: blob:none
+          path: kernel
+
+      - name: Prepare Candidate 2 source
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd kernel
+
+          git config user.name "VEUX ReSukiSU Audit"
+          git config user.email "veux-audit@users.noreply.github.com"
+
+          git remote remove android 2>/dev/null || true
+
+          git remote add android \
+            https://android.googlesource.com/kernel/common
+
+          git fetch android \
+            refs/tags/android11-5.4.274_r00:refs/tags/android11-5.4.274_r00
+
+          git merge \
+            --no-edit \
+            --no-ff \
+            android11-5.4.274_r00
+
+          git revert \
+            --no-edit \
+            f74e5c1b7c3f3e42f694e5ab524f95f62a0dab80
+
+          VERSION=$(awk '$1=="VERSION" && $2=="=" {print $3; exit}' Makefile)
+          PATCHLEVEL=$(awk '$1=="PATCHLEVEL" && $2=="=" {print $3; exit}' Makefile)
+          SUBLEVEL=$(awk '$1=="SUBLEVEL" && $2=="=" {print $3; exit}' Makefile)
+
+          KVER="${VERSION}.${PATCHLEVEL}.${SUBLEVEL}"
+
+          echo "Kernel: $KVER"
+
+          test "$KVER" = "5.4.274"
+
+          echo "✅ Candidate 2 source prepared"
+
+      - name: Audit legacy KernelSU directory
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd kernel
+
+          REPORT="$GITHUB_WORKSPACE/KSU-DIRECTORY.txt"
+
+          {
+            echo "LEGACY KERNELSU DIRECTORY AUDIT"
+            echo "==============================="
+            echo
+            echo "Path:"
+            echo "drivers/kernelsu"
+            echo
+          } > "$REPORT"
+
+          if [ -d drivers/kernelsu ]; then
+            COUNT=$(find drivers/kernelsu -type f | wc -l)
+
+            {
+              echo "Status: PRESENT"
+              echo "Files: $COUNT"
+              echo
+              echo "Top-level files:"
+              find drivers/kernelsu \
+                -maxdepth 1 \
+                -type f \
+                -printf '%f\n' \
+                | sort
+            } >> "$REPORT"
+
+            echo "Legacy drivers/kernelsu exists."
+            echo "File count: $COUNT"
+          else
+            echo "Status: NOT PRESENT" >> "$REPORT"
+            echo "No legacy drivers/kernelsu directory."
+          fi
+
+          echo
+          cat "$REPORT"
+
+      - name: Audit KernelSU history
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd kernel
+
+          REPORT="$GITHUB_WORKSPACE/KSU-HISTORY.txt"
+
+          {
+            echo "KERNELSU HISTORY"
+            echo "================"
+            echo
+            echo "Commits containing KernelSU:"
+            echo
+
+            git log \
+              --all \
+              --regexp-ignore-case \
+              --grep='KernelSU' \
+              --date=short \
+              --pretty=format:'%H | %ad | %s' \
+              || true
+
+            echo
+            echo
+            echo "Commits containing hook:"
+            echo
+
+            git log \
+              --all \
+              --regexp-ignore-case \
+              --grep='hook' \
+              --date=short \
+              --pretty=format:'%H | %ad | %s' \
+              || true
+          } > "$REPORT"
+
+          cat "$REPORT"
+
+      - name: Audit legacy KernelSU source hooks
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd kernel
+
+          REPORT="$GITHUB_WORKSPACE/KSU-FOOTPRINT.txt"
+
+          {
+            echo "KERNELSU SOURCE FOOTPRINT"
+            echo "========================="
+            echo
+            echo "KernelSU references outside drivers/kernelsu:"
+            echo
+          } > "$REPORT"
+
+          git grep \
+            -n \
+            -E 'CONFIG_KSU|ksu_[A-Za-z0-9_]+' \
+            -- \
+            . \
+            ':(exclude)drivers/kernelsu/**' \
+            >> "$REPORT" || true
+
+          MATCHES=$(grep -c ':' "$REPORT" || true)
+
+          echo
+          echo "References found: $MATCHES"
+          echo
+
+          cat "$REPORT"
+
+      - name: Check required ReSukiSU manual hooks
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd kernel
+
+          REPORT="$GITHUB_WORKSPACE/HOOK-CHECK.txt"
+
+          : > "$REPORT"
+
+          check_hook() {
+            PATTERN="$1"
+            FILE="$2"
+
+            if grep -q "$PATTERN" "$FILE"; then
+              echo "FOUND   $PATTERN   $FILE" | tee -a "$REPORT"
+            else
+              echo "MISSING $PATTERN   $FILE" | tee -a "$REPORT"
+            fi
+          }
+
+          {
+            echo "RESUKISU MANUAL HOOK CHECK"
+            echo "=========================="
+            echo
+          } >> "$REPORT"
+
+          check_hook \
+            "ksu_handle_execveat" \
+            "fs/exec.c"
+
+          check_hook \
+            "ksu_handle_faccessat" \
+            "fs/open.c"
+
+          check_hook \
+            "ksu_handle_stat" \
+            "fs/stat.c"
+
+          check_hook \
+            "ksu_handle_newfstat_ret" \
+            "fs/stat.c"
+
+          check_hook \
+            "ksu_handle_fstat64_ret" \
+            "fs/stat.c"
+
+          check_hook \
+            "ksu_handle_sys_reboot" \
+            "kernel/reboot.c"
+
+          echo
+          cat "$REPORT"
+
+      - name: Check ReSukiSU source version
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd "$GITHUB_WORKSPACE"
+
+          RESUKISU_COMMIT="faccf4c5edc7be37776216e7d43dd3dca0239331"
+
+          git clone \
+            --filter=blob:none \
+            https://github.com/ReSukiSU/ReSukiSU.git \
+            ReSukiSU-audit
+
+          cd ReSukiSU-audit
+
+          git checkout "$RESUKISU_COMMIT"
+
+          ACTUAL=$(git rev-parse HEAD)
+
+          test "$ACTUAL" = "$RESUKISU_COMMIT"
+
+          {
+            echo "RESUKISU PIN"
+            echo "============"
+            echo
+            echo "Commit: $ACTUAL"
+            echo
+            git show \
+              -s \
+              --format='Date: %ci%nSubject: %s' \
+              HEAD
+            echo
+            echo "Required configuration symbols:"
+            echo
+
+            grep -n \
+              -E '^config KSU$|^config KSU_MANUAL_HOOK$|^config KSU_SUSFS$' \
+              kernel/Kconfig
+          } > "$GITHUB_WORKSPACE/RESUKISU-PIN.txt"
+
+          cat "$GITHUB_WORKSPACE/RESUKISU-PIN.txt"
+
+      - name: Verify Candidate 2 prerequisites
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd kernel
+
+          echo "Checking ARM64 and VEUX prerequisites..."
+
+          test -f arch/arm64/configs/veux_defconfig
+          test -f arch/arm64/boot/dts/vendor/xiaomi/veux.dts
+
+          grep -q '^CONFIG_ARCH_HOLI=y' \
+            arch/arm64/configs/veux_defconfig
+
+          grep -q '^CONFIG_ARCH_BLAIR=y' \
+            arch/arm64/configs/veux_defconfig
+
+          grep -q '^CONFIG_WT_QGKI=y' \
+            arch/arm64/configs/veux_defconfig
+
+          echo "✅ veux_defconfig"
+          echo "✅ veux.dts"
+          echo "✅ HOLI"
+          echo "✅ BLAIR"
+          echo "✅ QGKI"
+
+      - name: Create preflight summary
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          {
+            echo "VEUX 5.4.274 RESUKISU PREFLIGHT"
+            echo "==============================="
+            echo
+            echo "Base:"
+            echo "dereference23/kernel_xiaomi_sm6375"
+            echo "Tag: 20240619"
+            echo
+            echo "Kernel:"
+            echo "5.4.274"
+            echo
+            echo "Stability change:"
+            echo "forced Blair minimum frequencies removed"
+            echo
+            echo "ReSukiSU pin:"
+            echo "faccf4c5edc7be37776216e7d43dd3dca0239331"
+            echo
+            echo "No ReSukiSU code was integrated."
+            echo "No SUSFS code was modified."
+            echo "No kernel was compiled."
+            echo "Nothing was flashed."
+          } > "$GITHUB_WORKSPACE/PREFLIGHT-SUMMARY.txt"
+
+          cat "$GITHUB_WORKSPACE/PREFLIGHT-SUMMARY.txt"
+
+      - name: Upload ReSukiSU preflight
+        uses: actions/upload-artifact@v7
+        with:
+          name: veux-5.4.274-resukisu-preflight
+          path: |
+            KSU-DIRECTORY.txt
+            KSU-HISTORY.txt
+            KSU-FOOTPRINT.txt
+            HOOK-CHECK.txt
+            RESUKISU-PIN.txt
+            PREFLIGHT-SUMMARY.txt
+          retention-days: 14
+          if-no-files-found: error
