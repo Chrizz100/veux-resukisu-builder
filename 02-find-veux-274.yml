@@ -1,0 +1,91 @@
+name: 02 - Find exact VEUX 5.4.274 source
+
+on:
+  workflow_dispatch:
+
+jobs:
+  find-source:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout full VEUX history
+        uses: actions/checkout@v7
+        with:
+          repository: dereference23/kernel_xiaomi_sm6375
+          ref: 20240819
+          fetch-depth: 0
+          path: kernel
+
+      - name: Find device-specific 5.4.274 commit
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd kernel
+
+          START=f60d08db833bc56f054420abe0c16e8ca60fb1a0
+          END=20240819
+          BEST=""
+
+          echo "Searching from:"
+          echo "START=$START"
+          echo "END=$END"
+          echo
+
+          for c in "$START" $(git rev-list --reverse "$START..$END"); do
+
+            if ! git cat-file -e "$c:Makefile" 2>/dev/null; then
+              continue
+            fi
+
+            VERSION=$(git show "$c:Makefile" | awk '/^VERSION =/{print $3; exit}')
+            PATCHLEVEL=$(git show "$c:Makefile" | awk '/^PATCHLEVEL =/{print $3; exit}')
+            SUBLEVEL=$(git show "$c:Makefile" | awk '/^SUBLEVEL =/{print $3; exit}')
+
+            KVER="${VERSION}.${PATCHLEVEL}.${SUBLEVEL}"
+
+            if [ "$KVER" != "5.4.274" ]; then
+              continue
+            fi
+
+            if ! git cat-file -e \
+              "$c:arch/arm64/boot/dts/vendor/xiaomi/veux.dts" \
+              2>/dev/null; then
+              continue
+            fi
+
+            if ! git cat-file -e \
+              "$c:arch/arm64/configs/veux_defconfig" \
+              2>/dev/null; then
+              continue
+            fi
+
+            BEST="$c"
+
+            echo "MATCH: $c"
+            git show -s --format='Date: %ci%nSubject: %s' "$c"
+            echo
+          done
+
+          if [ -z "$BEST" ]; then
+            echo "ERROR: No complete VEUX 5.4.274 source commit found."
+            exit 1
+          fi
+
+          echo
+          echo "========================================"
+          echo "BEST VEUX 5.4.274 COMMIT:"
+          echo "$BEST"
+          echo "========================================"
+
+          git show -s --format='Date: %ci%nSubject: %s' "$BEST"
+
+          {
+            echo "## VEUX 5.4.274 source found"
+            echo
+            echo "**Commit:** \`$BEST\`"
+            echo
+            echo '```'
+            git show -s --format='Date: %ci%nSubject: %s' "$BEST"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
