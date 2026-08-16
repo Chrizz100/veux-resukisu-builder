@@ -1,0 +1,2064 @@
+name: 16 - VEUX ReSukiSU SUSFS 2.2 Full Build Reproducibility Audit
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  ARCH: arm64
+  COMMON_REF: "android11-5.4.274_r00"
+  STABILITY_REVERT: "f74e5c1b7c3f3e42f694e5ab524f95f62a0dab80"
+  CASS_COMMIT_DO_NOT_REVERT: "b9b5ddba28bf9f23ac1a2af27f574291451244fd"
+  EXPECTED_CANDIDATE_TREE: "5d25b7e0124d7fb695f3f07b45928fcb5780d0e8"
+
+  RESUKISU_COMMIT: "faccf4c5edc7be37776216e7d43dd3dca0239331"
+  EXPECTED_RESUKISU_VERSION: "v4.2.0-rc1-faccf4c5@ReSukiSU"
+
+  BACKPORT_REPO: "JackA1ltman/NonGKI_Kernel_Build_2nd"
+  BACKPORT_COMMIT: "90d9f91d43ecaaee044e79c75a01d6a512508eb3"
+  BACKPORT_PATCH_PATH: "Patches/Patch/susfs_patch_to_5.4.patch"
+  BACKPORT_PATCH_BLOB: "7533876188b65d78940b705d8e4462dbdc31c0a2"
+  BACKPORT_PATCH_SHA256: "21233ce9a0a02590d977cd193aa493b23df7008e73fed402901e033a303b9631"
+  EXPECTED_TASK_MMU_REJECT_SHA256: "f8daf0861fd9608e6ceb11557c34ec09368fff8e4123992d3453c740f61c4996"
+
+  EXPECTED_WARNING_CLEAN_DIFF_SHA256: "afdbab86f738aead94a12f896eeb5b74008dcf1c4fe5dfec4682651491a3de1e"
+  EXPECTED_CONFIG_SHA256: "c9831aeadf65064bf6632973b2bd6f4da905da9707718bc75ded0bd228150ca6"
+
+  WORKFLOW15_DTB_SHA256: "42728a6f3d48ae35ac6be4b14ea51bc8a323e77baec2ee544827487378f99d37"
+  WORKFLOW15_DTB_BYTES: "275689"
+  WORKFLOW15_IMAGE_BYTES: "29839872"
+
+  CLANG_PREBUILT_COMMIT: "aa2e4a514a6c85eebcc4a27149eaf9244e951a1e"
+
+jobs:
+  build:
+    name: Full Build ${{ matrix.build }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+
+    strategy:
+      fail-fast: false
+      matrix:
+        build:
+          - A
+          - B
+
+    env:
+      BUILD_LABEL: ${{ matrix.build }}
+      TOOLCHAIN_DIR: ${{ github.workspace }}/toolchains/clang-r416183b
+      OUT_DIR: out
+      ARTIFACT_DIR: ${{ github.workspace }}/artifacts
+      PATCH_DIR: ${{ github.workspace }}/reference-patches
+
+    steps:
+      - name: Prepare build audit
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p \
+            "$ARTIFACT_DIR" \
+            "$ARTIFACT_DIR/build-output" \
+            "$PATCH_DIR"
+
+          {
+            echo "VEUX ReSukiSU SUSFS 2.2 reproducibility build $BUILD_LABEL"
+            echo "Started: $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+            echo
+            echo "Runner: ${RUNNER_NAME:-unknown}"
+            echo "Candidate tree: $EXPECTED_CANDIDATE_TREE"
+            echo "ReSukiSU: $RESUKISU_COMMIT"
+            echo "SUSFS backport: $BACKPORT_COMMIT"
+            echo "Expected adaptation diff: $EXPECTED_WARNING_CLEAN_DIFF_SHA256"
+            echo "Expected config: $EXPECTED_CONFIG_SHA256"
+            echo
+            echo "No boot.img."
+            echo "No flashing."
+          } > "$ARTIFACT_DIR/BUILD-INFO.txt"
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          sudo apt-get update
+
+          sudo apt-get install -y --no-install-recommends \
+            bc \
+            bison \
+            build-essential \
+            ca-certificates \
+            curl \
+            flex \
+            git \
+            libelf-dev \
+            libncurses-dev \
+            libssl-dev \
+            patch \
+            python3 \
+            python-is-python3 \
+            xz-utils
+
+      - name: Install Android clang-r416183b
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p "$TOOLCHAIN_DIR"
+
+          curl \
+            --fail \
+            --location \
+            --retry 3 \
+            "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/${CLANG_PREBUILT_COMMIT}/clang-r416183b.tar.gz" \
+            -o "${RUNNER_TEMP}/clang-r416183b.tar.gz"
+
+          tar \
+            -xzf "${RUNNER_TEMP}/clang-r416183b.tar.gz" \
+            -C "$TOOLCHAIN_DIR"
+
+          echo "$TOOLCHAIN_DIR/bin" >> "$GITHUB_PATH"
+
+          "$TOOLCHAIN_DIR/bin/clang" --version \
+            | tee "$ARTIFACT_DIR/clang-version.txt"
+
+          "$TOOLCHAIN_DIR/bin/ld.lld" --version \
+            | tee -a "$ARTIFACT_DIR/clang-version.txt"
+
+          if ! "$TOOLCHAIN_DIR/bin/clang" --version | grep -q 'r416183b'; then
+            echo "ERROR: compiler is not clang-r416183b"
+            exit 1
+          fi
+
+      - name: Checkout VEUX source
+        uses: actions/checkout@v7
+        with:
+          repository: dereference23/kernel_xiaomi_sm6375
+          ref: "20240619"
+          fetch-depth: 0
+          path: kernel
+          persist-credentials: false
+
+      - name: Recreate exact Stability Candidate 2
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          BASE_SHA="$(git rev-parse HEAD)"
+
+          git remote remove android-common 2>/dev/null || true
+          git remote add android-common https://android.googlesource.com/kernel/common
+
+          git fetch --no-tags android-common "$COMMON_REF"
+          git merge --no-edit FETCH_HEAD
+
+          git cat-file -e "${STABILITY_REVERT}^{commit}"
+          git revert --no-edit "$STABILITY_REVERT"
+
+          KERNEL_VERSION="$(make -s kernelversion)"
+          CANDIDATE_SHA="$(git rev-parse HEAD)"
+          CANDIDATE_TREE="$(git rev-parse HEAD^{tree})"
+
+          if [ "$KERNEL_VERSION" != "5.4.274" ]; then
+            echo "ERROR: expected Linux 5.4.274, got $KERNEL_VERSION"
+            exit 1
+          fi
+
+          if [ "$CANDIDATE_TREE" != "$EXPECTED_CANDIDATE_TREE" ]; then
+            echo "ERROR: Candidate 2 tree mismatch"
+            echo "Expected: $EXPECTED_CANDIDATE_TREE"
+            echo "Actual:   $CANDIDATE_TREE"
+            exit 1
+          fi
+
+          printf '%s\n' "$BASE_SHA" > "$ARTIFACT_DIR/base-sha.txt"
+          printf '%s\n' "$CANDIDATE_SHA" > "$ARTIFACT_DIR/candidate-sha.txt"
+          printf '%s\n' "$CANDIDATE_TREE" > "$ARTIFACT_DIR/candidate-tree.txt"
+          printf '%s\n' "$KERNEL_VERSION" > "$ARTIFACT_DIR/kernel-version.txt"
+
+          {
+            echo "BASE_SHA=$BASE_SHA"
+            echo "CANDIDATE_SHA=$CANDIDATE_SHA"
+            echo "CANDIDATE_TREE=$CANDIDATE_TREE"
+            echo "KERNEL_VERSION=$KERNEL_VERSION"
+            echo "STABILITY_REVERT=$STABILITY_REVERT"
+            echo "CASS_COMMIT_DO_NOT_REVERT=$CASS_COMMIT_DO_NOT_REVERT"
+          } > "$ARTIFACT_DIR/candidate2.txt"
+
+      - name: Fetch exact SUSFS 2.2 backport
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          PATCH="$PATCH_DIR/susfs_patch_to_5.4-v2.2.00.patch"
+
+          curl \
+            --fail \
+            --location \
+            --retry 3 \
+            "https://raw.githubusercontent.com/${BACKPORT_REPO}/${BACKPORT_COMMIT}/${BACKPORT_PATCH_PATH}" \
+            -o "$PATCH"
+
+          ACTUAL_BLOB="$(git hash-object "$PATCH")"
+          ACTUAL_SHA="$(sha256sum "$PATCH" | awk '{print $1}')"
+
+          if [ "$ACTUAL_BLOB" != "$BACKPORT_PATCH_BLOB" ]; then
+            echo "ERROR: SUSFS backport Git blob mismatch"
+            exit 1
+          fi
+
+          if [ "$ACTUAL_SHA" != "$BACKPORT_PATCH_SHA256" ]; then
+            echo "ERROR: SUSFS backport SHA-256 mismatch"
+            exit 1
+          fi
+
+          cp "$PATCH" "$ARTIFACT_DIR/susfs_patch_to_5.4-v2.2.00.patch"
+
+          {
+            echo "BACKPORT_REPO=$BACKPORT_REPO"
+            echo "BACKPORT_COMMIT=$BACKPORT_COMMIT"
+            echo "BACKPORT_PATCH_GIT_BLOB=$ACTUAL_BLOB"
+            echo "BACKPORT_PATCH_SHA256=$ACTUAL_SHA"
+          } > "$ARTIFACT_DIR/PATCH-SOURCE.txt"
+
+      - name: Apply SUSFS base and verify known VEUX reject
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          PATCH="$PATCH_DIR/susfs_patch_to_5.4-v2.2.00.patch"
+
+          find . \
+            -type f \
+            \( -name '*.rej' -o -name '*.orig' \) \
+            -delete
+
+          set +e
+
+          patch \
+            --batch \
+            --forward \
+            --fuzz=0 \
+            -p1 \
+            < "$PATCH" \
+            > "$ARTIFACT_DIR/BASE-PATCH.log" \
+            2>&1
+
+          PATCH_RC=$?
+
+          set -e
+
+          printf '%s\n' "$PATCH_RC" > "$ARTIFACT_DIR/BASE-PATCH.exit-code"
+
+          find . \
+            -type f \
+            -name '*.rej' \
+            -print \
+            | sort \
+            > "$ARTIFACT_DIR/BASE-REJECT-FILES.txt"
+
+          REJECT_COUNT="$(
+            wc -l < "$ARTIFACT_DIR/BASE-REJECT-FILES.txt" \
+              | tr -d ' '
+          )"
+
+          if [ "$PATCH_RC" -ne 1 ]; then
+            echo "ERROR: expected base patch exit code 1"
+            cat "$ARTIFACT_DIR/BASE-PATCH.log"
+            exit 1
+          fi
+
+          if [ "$REJECT_COUNT" -ne 1 ]; then
+            echo "ERROR: expected exactly one reject"
+            cat "$ARTIFACT_DIR/BASE-REJECT-FILES.txt"
+            exit 1
+          fi
+
+          if ! grep -Fxq \
+            './fs/proc/task_mmu.c.rej' \
+            "$ARTIFACT_DIR/BASE-REJECT-FILES.txt"
+          then
+            echo "ERROR: unexpected reject target"
+            cat "$ARTIFACT_DIR/BASE-REJECT-FILES.txt"
+            exit 1
+          fi
+
+          REJECT_SHA="$(
+            sha256sum fs/proc/task_mmu.c.rej \
+              | awk '{print $1}'
+          )"
+
+          if [ "$REJECT_SHA" != "$EXPECTED_TASK_MMU_REJECT_SHA256" ]; then
+            echo "ERROR: task_mmu reject content changed"
+            echo "Expected: $EXPECTED_TASK_MMU_REJECT_SHA256"
+            echo "Actual:   $REJECT_SHA"
+            exit 1
+          fi
+
+          cp fs/proc/task_mmu.c.rej "$ARTIFACT_DIR/task_mmu.c.rej"
+
+      - name: Replace legacy KernelSU with pinned ReSukiSU
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ ! -d drivers/kernelsu ]; then
+            echo "ERROR: legacy drivers/kernelsu missing"
+            exit 1
+          fi
+
+          find drivers/kernelsu -type f \
+            | sort \
+            > "$ARTIFACT_DIR/legacy-kernelsu-files.txt"
+
+          rm -rf drivers/kernelsu KernelSU
+
+          git clone \
+            https://github.com/ReSukiSU/ReSukiSU.git \
+            KernelSU
+
+          git -C KernelSU checkout \
+            --detach \
+            "$RESUKISU_COMMIT"
+
+          ACTUAL_KSU="$(git -C KernelSU rev-parse HEAD)"
+
+          if [ "$ACTUAL_KSU" != "$RESUKISU_COMMIT" ]; then
+            echo "ERROR: ReSukiSU pin mismatch"
+            exit 1
+          fi
+
+          ln -s ../KernelSU/kernel drivers/kernelsu
+
+          if [ "$(readlink -f drivers/kernelsu)" != "$(readlink -f KernelSU/kernel)" ]; then
+            echo "ERROR: drivers/kernelsu symlink mismatch"
+            exit 1
+          fi
+
+          grep -qF 'config KSU_SUSFS' KernelSU/kernel/Kconfig
+          grep -qF 'config KSU_SUSFS_SUS_MAP' KernelSU/kernel/Kconfig
+          grep -qF 'include $(KSU_SRC)/tools/inline_hook_check.mk' KernelSU/kernel/Kbuild
+
+          printf '%s\n' "$ACTUAL_KSU" > "$ARTIFACT_DIR/resukisu-commit.txt"
+
+      - name: Apply exact warning-clean VEUX SUSFS and ReSukiSU adaptation
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          def read(path):
+              return Path(path).read_text()
+
+          def write(path, text):
+              Path(path).write_text(text)
+
+          def replace_once(path, old, new, label):
+              text = read(path)
+              count = text.count(old)
+
+              if count == 1:
+                  write(path, text.replace(old, new, 1))
+                  return
+
+              parts = re.split(r"(\s+)", old)
+              pattern = ""
+
+              for part in parts:
+                  if not part:
+                      continue
+                  if re.fullmatch(r"\s+", part):
+                      pattern += r"\s+"
+                  else:
+                      pattern += re.escape(part)
+
+              matches = list(re.finditer(pattern, text, flags=re.S))
+
+              if len(matches) != 1:
+                  raise SystemExit(
+                      f"{label}: literal matches={count}, "
+                      f"whitespace-tolerant matches={len(matches)} in {path}"
+                  )
+
+              match = matches[0]
+              write(path, text[:match.start()] + new + text[match.end():])
+
+          def regex_once(path, pattern, replacement, label, flags=re.S):
+              text = read(path)
+              new_text, count = re.subn(
+                  pattern,
+                  replacement,
+                  text,
+                  count=1,
+                  flags=flags,
+              )
+
+              if count != 1:
+                  raise SystemExit(
+                      f"{label}: expected exactly one regex match "
+                      f"in {path}, got {count}"
+                  )
+
+              write(path, new_text)
+
+          # Repair the one known SUSFS 2.2 reject on VEUX.
+          task = "fs/proc/task_mmu.c"
+
+          task_include = """#if defined(CONFIG_KSU_SUSFS_SUS_KSTAT) || defined(CONFIG_KSU_SUSFS_SUS_MAP) || defined(CONFIG_KSU_SUSFS_OPEN_REDIRECT)
+          #include <linux/susfs_def.h>
+          #endif // #if defined(CONFIG_KSU_SUSFS_SUS_KSTAT) || defined(CONFIG_KSU_SUSFS_SUS_MAP) || defined(CONFIG_KSU_SUSFS_OPEN_REDIRECT)
+          """
+
+          text = read(task)
+
+          if "#include <linux/susfs_def.h>" not in text:
+              anchor = "#include <linux/pkeys.h>\n"
+
+              if text.count(anchor) != 1:
+                  raise SystemExit("task_mmu include anchor mismatch")
+
+              text = text.replace(anchor, anchor + task_include, 1)
+
+          task_externs = """#ifdef CONFIG_KSU_SUSFS_SUS_KSTAT
+          extern void susfs_sus_kstat_spoof_show_map_vma(struct inode *inode, dev_t *out_dev, unsigned long *out_ino);
+          #endif // #ifdef CONFIG_KSU_SUSFS_SUS_KSTAT
+          #ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
+          extern struct srcu_struct susfs_srcu_open_redirect;
+          extern int susfs_open_redirect_spoof_show_map_vma_srcu(struct inode *inode, unsigned long *out_ino, dev_t *out_dev, char **out_spoofed_name);
+          #endif // #ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
+
+          """
+
+          if "extern struct srcu_struct susfs_srcu_open_redirect;" not in text:
+              anchor = (
+                  "static void\n"
+                  "show_map_vma(struct seq_file *m, struct vm_area_struct *vma)\n"
+              )
+
+              if text.count(anchor) != 1:
+                  raise SystemExit("task_mmu show_map_vma anchor mismatch")
+
+              text = text.replace(anchor, task_externs + anchor, 1)
+
+          write(task, text)
+
+          reject = Path("fs/proc/task_mmu.c.rej")
+
+          if not reject.exists():
+              raise SystemExit(
+                  "expected task_mmu reject file disappeared before repair"
+              )
+
+          reject.unlink()
+
+          # Remove the verified unused declaration that caused Workflow 13's warning.
+          stat_path = Path("fs/stat.c")
+          stat_text = stat_path.read_text()
+
+          obsolete_stat_decl = (
+              "#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\n"
+              "extern int susfs_get_non_sus_mnt_id_from_mnt(struct mount *orig_mnt);\n"
+              "#endif\n"
+          )
+
+          obsolete_count = stat_text.count(obsolete_stat_decl)
+
+          if obsolete_count != 1:
+              raise SystemExit(
+                  "warning cleanup expected exactly one "
+                  "susfs_get_non_sus_mnt_id_from_mnt declaration "
+                  f"in fs/stat.c, got {obsolete_count}"
+              )
+
+          stat_path.write_text(
+              stat_text.replace(obsolete_stat_decl, "", 1)
+          )
+
+          # Normalize known whitespace from the backport.
+          namei = "fs/namei.c"
+          text = read(namei)
+          old = "\t\treturn dentry;\t\n"
+
+          if text.count(old) != 1:
+              raise SystemExit(
+                  "namei trailing-whitespace normalization expected "
+                  f"1 match, got {text.count(old)}"
+              )
+
+          write(namei, text.replace(old, "\t\treturn dentry;\n", 1))
+
+          # fs/exec.c
+          regex_once(
+              "fs/exec.c",
+              r'#ifdef CONFIG_KSU\n'
+              r'extern bool ksu_execveat_hook __read_mostly;\n'
+              r'extern int ksu_handle_execveat\(int \*fd, struct filename \*\*filename_ptr,\n'
+              r'.*?'
+              r'#endif\n(?=static int do_execveat_common)',
+              """#ifdef CONFIG_KSU_SUSFS
+          #include <linux/jump_label.h>
+          #include <linux/susfs_def.h>
+          extern struct static_key_true ksu_su_compat_enabled;
+          extern struct static_key_true susfs_is_sdcard_android_data_not_decrypted;
+          extern int ksu_handle_execveat(
+                  int *fd,
+                  struct filename **filename_ptr,
+                  void *argv,
+                  void *envp,
+                  int *flags);
+          extern int ksu_handle_execveat_sucompat(
+                  int *fd,
+                  struct filename **filename_ptr,
+                  void *argv,
+                  void *envp,
+                  int *flags);
+          #endif
+          """,
+              "exec old declaration replacement",
+          )
+
+          regex_once(
+              "fs/exec.c",
+              r'#ifdef CONFIG_KSU\n'
+              r'\s*if \(unlikely\(ksu_execveat_hook\)\)\n'
+              r'.*?'
+              r'#endif\n',
+              """#ifdef CONFIG_KSU_SUSFS
+              if (!likely(susfs_is_current_proc_umounted())) {
+                  if (static_branch_likely(&ksu_su_compat_enabled)) {
+                      if (static_branch_unlikely(&susfs_is_sdcard_android_data_not_decrypted))
+                          ksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);
+                  } else {
+                      ksu_handle_execveat_sucompat(&fd, &filename, &argv, &envp, &flags);
+                  }
+              }
+          #endif
+          """,
+              "exec old call replacement",
+          )
+
+          # fs/open.c
+          regex_once(
+              "fs/open.c",
+              r'#ifdef CONFIG_KSU\n'
+              r'extern int ksu_handle_faccessat\(int \*dfd, const char __user \*\*filename_user,\n'
+              r'.*?'
+              r'#endif\n',
+              """#ifdef CONFIG_KSU_SUSFS
+          #include <linux/jump_label.h>
+          #include <linux/susfs_def.h>
+          extern struct static_key_true ksu_su_compat_enabled;
+          extern bool __ksu_is_allow_uid_for_current(uid_t uid);
+          extern int ksu_handle_faccessat(
+                  int *dfd,
+                  const char __user **filename_user,
+                  int *mode,
+                  int *flags);
+          #endif
+          """,
+              "open old declaration replacement",
+          )
+
+          regex_once(
+              "fs/open.c",
+              r'#ifdef CONFIG_KSU\n'
+              r'\s*ksu_handle_faccessat\(&dfd, &filename, &mode, NULL\);\n'
+              r'#endif\n',
+              """#ifdef CONFIG_KSU_SUSFS
+              if (!likely(susfs_is_current_proc_umounted()) &&
+                  static_branch_likely(&ksu_su_compat_enabled) &&
+                  unlikely(__ksu_is_allow_uid_for_current(current_uid().val)))
+                  ksu_handle_faccessat(&dfd, &filename, &mode, NULL);
+          #endif
+          """,
+              "open old call replacement",
+          )
+
+          # fs/read_write.c
+          regex_once(
+              "fs/read_write.c",
+              r'#ifdef CONFIG_KSU\n'
+              r'extern bool ksu_vfs_read_hook __read_mostly;\n'
+              r'extern int ksu_handle_vfs_read\(struct file \*\*file_ptr, char __user \*\*buf_ptr,\n'
+              r'.*?'
+              r'#endif\n',
+              "",
+              "read_write old declaration removal",
+          )
+
+          regex_once(
+              "fs/read_write.c",
+              r'#ifdef CONFIG_KSU\n'
+              r'\s*if \(unlikely\(ksu_vfs_read_hook\)\)\n'
+              r'\s*ksu_handle_vfs_read\(&file, &buf, &count, &pos\);\n'
+              r'#endif\n',
+              "",
+              "read_write old call removal",
+          )
+
+          replace_once(
+              "fs/read_write.c",
+              "SYSCALL_DEFINE3(read, unsigned int, fd, char __user *, buf, size_t, count)\n",
+              """#ifdef CONFIG_KSU_SUSFS
+          #include <linux/jump_label.h>
+          extern struct static_key_true ksu_is_init_rc_hook_enabled;
+          extern int ksu_handle_sys_read(
+                  unsigned int fd,
+                  char __user **buf_ptr,
+                  size_t *count_ptr);
+          #endif
+
+          SYSCALL_DEFINE3(read, unsigned int, fd, char __user *, buf, size_t, count)
+          """,
+              "read syscall declaration insertion",
+          )
+
+          replace_once(
+              "fs/read_write.c",
+              """SYSCALL_DEFINE3(read, unsigned int, fd, char __user *, buf, size_t, count)
+          {
+              return ksys_read(fd, buf, count);
+          }
+          """,
+              """SYSCALL_DEFINE3(read, unsigned int, fd, char __user *, buf, size_t, count)
+          {
+          #ifdef CONFIG_KSU_SUSFS
+              if (static_branch_unlikely(&ksu_is_init_rc_hook_enabled))
+                  ksu_handle_sys_read(fd, &buf, &count);
+          #endif
+              return ksys_read(fd, buf, count);
+          }
+          """,
+              "read syscall hook insertion",
+          )
+
+          # fs/stat.c
+          replace_once(
+              "fs/stat.c",
+              "#include <asm/unistd.h>\n",
+              """#include <asm/unistd.h>
+          #ifdef CONFIG_KSU_SUSFS
+          #include <linux/jump_label.h>
+          #include <linux/susfs_def.h>
+          #endif
+          """,
+              "stat SUSFS include insertion",
+          )
+
+          replace_once(
+              "fs/stat.c",
+              "int vfs_statx_fd(unsigned int fd, struct kstat *stat,\n",
+              """#ifdef CONFIG_KSU_SUSFS
+          extern struct static_key_true ksu_is_init_rc_hook_enabled;
+          extern void ksu_handle_vfs_fstat(int fd, loff_t *kstat_size_ptr);
+          #endif
+
+          int vfs_statx_fd(unsigned int fd, struct kstat *stat,
+          """,
+              "stat vfs-fstat declaration insertion",
+          )
+
+          replace_once(
+              "fs/stat.c",
+              """	f = fdget_raw(fd);
+          	if (f.file) {
+          		error = vfs_getattr(&f.file->f_path, stat,
+          				    request_mask, query_flags);
+          		fdput(f);
+          	}
+          """,
+              """	f = fdget_raw(fd);
+          	if (f.file) {
+          		error = vfs_getattr(&f.file->f_path, stat,
+          				    request_mask, query_flags);
+          #ifdef CONFIG_KSU_SUSFS
+          		if (!error && static_branch_unlikely(&ksu_is_init_rc_hook_enabled))
+          			ksu_handle_vfs_fstat(fd, &stat->size);
+          #endif
+          		fdput(f);
+          	}
+          """,
+              "stat vfs-fstat call insertion",
+          )
+
+          regex_once(
+              "fs/stat.c",
+              r'#ifdef CONFIG_KSU\n'
+              r'extern int ksu_handle_stat\(int \*dfd, const char __user \*\*filename_user,\n'
+              r'.*?'
+              r'#endif\n',
+              """#ifdef CONFIG_KSU_SUSFS
+          extern struct static_key_true ksu_su_compat_enabled;
+          extern bool __ksu_is_allow_uid_for_current(uid_t uid);
+          extern int ksu_handle_stat(
+                  int *dfd,
+                  const char __user **filename_user,
+                  int *flags);
+          #endif
+          """,
+              "stat old declaration replacement",
+          )
+
+          regex_once(
+              "fs/stat.c",
+              r'#ifdef CONFIG_KSU\n'
+              r'\s*ksu_handle_stat\(&dfd, &filename, &flags\);\n'
+              r'#endif\n',
+              """#ifdef CONFIG_KSU_SUSFS
+              if (!likely(susfs_is_current_proc_umounted()) &&
+                  static_branch_likely(&ksu_su_compat_enabled) &&
+                  unlikely(__ksu_is_allow_uid_for_current(current_uid().val)))
+                  ksu_handle_stat(&dfd, &filename, &flags);
+          #endif
+          """,
+              "stat old call replacement",
+          )
+
+          # kernel/reboot.c
+          replace_once(
+              "kernel/reboot.c",
+              """SYSCALL_DEFINE4(reboot, int, magic1, int, magic2, unsigned int, cmd,
+          		void __user *, arg)
+          """,
+              """#ifdef CONFIG_KSU_SUSFS
+          extern int ksu_handle_sys_reboot(
+                  int magic1,
+                  int magic2,
+                  unsigned int cmd,
+                  void __user **arg);
+          #endif
+
+          SYSCALL_DEFINE4(reboot, int, magic1, int, magic2, unsigned int, cmd,
+          		void __user *, arg)
+          """,
+              "reboot declaration insertion",
+          )
+
+          replace_once(
+              "kernel/reboot.c",
+              """	char buffer[256];
+          	int ret = 0;
+          """,
+              """	char buffer[256];
+          	int ret = 0;
+
+          #ifdef CONFIG_KSU_SUSFS
+          	if (system_state == SYSTEM_RUNNING)
+          		ksu_handle_sys_reboot(magic1, magic2, cmd, &arg);
+          #endif
+          """,
+              "reboot hook insertion",
+          )
+
+          # kernel/sys.c
+          replace_once(
+              "kernel/sys.c",
+              "SYSCALL_DEFINE3(setresuid, uid_t, ruid, uid_t, euid, uid_t, suid)\n",
+              """#ifdef CONFIG_KSU_SUSFS
+          extern int ksu_handle_setresuid(uid_t ruid, uid_t euid, uid_t suid);
+          #endif
+
+          SYSCALL_DEFINE3(setresuid, uid_t, ruid, uid_t, euid, uid_t, suid)
+          """,
+              "setresuid declaration insertion",
+          )
+
+          replace_once(
+              "kernel/sys.c",
+              """SYSCALL_DEFINE3(setresuid, uid_t, ruid, uid_t, euid, uid_t, suid)
+          {
+          	return __sys_setresuid(ruid, euid, suid);
+          }
+          """,
+              """SYSCALL_DEFINE3(setresuid, uid_t, ruid, uid_t, euid, uid_t, suid)
+          {
+          #ifdef CONFIG_KSU_SUSFS
+          	ksu_handle_setresuid(ruid, euid, suid);
+          #endif
+          	return __sys_setresuid(ruid, euid, suid);
+          }
+          """,
+              "setresuid hook insertion",
+          )
+
+          # drivers/input/input.c
+          replace_once(
+              "drivers/input/input.c",
+              """static void input_handle_event(struct input_dev *dev,
+          			       unsigned int type, unsigned int code, int value)
+          """,
+              """#ifdef CONFIG_KSU_SUSFS
+          #include <linux/jump_label.h>
+          extern struct static_key_true ksu_is_input_hook_enabled;
+          extern int ksu_handle_input_handle_event(
+                  unsigned int *type,
+                  unsigned int *code,
+                  int *value);
+          #endif
+
+          static void input_handle_event(struct input_dev *dev,
+          			       unsigned int type, unsigned int code, int value)
+          """,
+              "input declaration insertion",
+          )
+
+          replace_once(
+              "drivers/input/input.c",
+              """{
+          	int disposition = input_get_disposition(dev, type, code, &value);
+
+          	if (disposition != INPUT_IGNORE_EVENT && type != EV_SYN)
+          """,
+              """{
+          	int disposition = input_get_disposition(dev, type, code, &value);
+
+          #ifdef CONFIG_KSU_SUSFS
+          	if (static_branch_unlikely(&ksu_is_input_hook_enabled))
+          		ksu_handle_input_handle_event(&type, &code, &value);
+          #endif
+
+          	if (disposition != INPUT_IGNORE_EVENT && type != EV_SYN)
+          """,
+              "input hook insertion",
+          )
+
+          # Static-symbol compatibility proven in Workflow 08/09.
+          replace_once(
+              "security/selinux/selinuxfs.c",
+              "static const struct file_operations sel_handle_status_ops = {",
+              "const struct file_operations sel_handle_status_ops = {",
+              "SELinux sel_handle_status_ops export",
+          )
+
+          replace_once(
+              "security/selinux/selinuxfs.c",
+              "static ssize_t (*const write_op[])(struct file *, char *, size_t) = {",
+              "ssize_t (*const write_op[])(struct file *, char *, size_t) = {",
+              "SELinux write_op export",
+          )
+
+          # Select ReSukiSU SUSFS Inline Hook.
+          defconfig = Path("arch/arm64/configs/veux_defconfig")
+          config_text = defconfig.read_text()
+
+          forbidden_existing = re.findall(
+              r'^(?:CONFIG_KSU(?:_[A-Z0-9_]+)?=|'
+              r'# CONFIG_KSU(?:_[A-Z0-9_]+)? is not set$)',
+              config_text,
+              flags=re.M,
+          )
+
+          if forbidden_existing:
+              raise SystemExit(
+                  "unexpected pre-existing KSU configuration in VEUX defconfig"
+              )
+
+          config_text += """
+          # ReSukiSU + SUSFS 2.2 Inline Hook
+          CONFIG_THREAD_INFO_IN_TASK=y
+          # CONFIG_DEBUG_KERNEL is not set
+          CONFIG_KSU=y
+          # CONFIG_KSU_TRACEPOINT_HOOK is not set
+          # CONFIG_KSU_MANUAL_HOOK is not set
+          CONFIG_KSU_SUSFS=y
+          CONFIG_KSU_SUSFS_SUS_PATH=y
+          CONFIG_KSU_SUSFS_SUS_MOUNT=y
+          CONFIG_KSU_SUSFS_SUS_KSTAT=y
+          CONFIG_KSU_SUSFS_SPOOF_UNAME=y
+          CONFIG_KSU_SUSFS_ENABLE_LOG=y
+          CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y
+          CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y
+          CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
+          CONFIG_KSU_SUSFS_SUS_MAP=y
+          """
+
+          defconfig.write_text(config_text)
+          PY
+
+          find . \
+            -type f \
+            \( -name '*.rej' -o -name '*.orig' \) \
+            -delete
+
+      - name: Verify exact warning-clean adaptation fingerprint
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if find . \
+            -type f \
+            \( -name '*.rej' -o -name '*.orig' \) \
+            | grep -q .
+          then
+            echo "ERROR: reject/orig files remain"
+            exit 1
+          fi
+
+          if grep -wq \
+            'susfs_get_non_sus_mnt_id_from_mnt' \
+            fs/stat.c
+          then
+            echo "ERROR: warning source reappeared in fs/stat.c"
+            exit 1
+          fi
+
+          git diff --check
+
+          git add -N \
+            fs/susfs.c \
+            include/linux/susfs.h \
+            include/linux/susfs_def.h
+
+          git diff \
+            --no-ext-diff \
+            --no-color \
+            -- \
+            arch/arm64/configs/veux_defconfig \
+            fs \
+            include/linux/susfs.h \
+            include/linux/susfs_def.h \
+            kernel \
+            mm \
+            security \
+            drivers/input/input.c \
+            ':!drivers/kernelsu' \
+            > "$ARTIFACT_DIR/VEUX-SUSFS-2.2-WARNING-CLEAN.diff"
+
+          DIFF_SHA="$(
+            sha256sum "$ARTIFACT_DIR/VEUX-SUSFS-2.2-WARNING-CLEAN.diff" \
+              | awk '{print $1}'
+          )"
+
+          if [ "$DIFF_SHA" != "$EXPECTED_WARNING_CLEAN_DIFF_SHA256" ]; then
+            echo "ERROR: adaptation diff differs from Workflow 14"
+            echo "Expected: $EXPECTED_WARNING_CLEAN_DIFF_SHA256"
+            echo "Actual:   $DIFF_SHA"
+            exit 1
+          fi
+
+          printf '%s\n' "$DIFF_SHA" > "$ARTIFACT_DIR/source-diff.sha256"
+
+      - name: Resolve exact Workflow 14 config
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -rf "$OUT_DIR"
+          mkdir -p "$OUT_DIR"
+
+          make \
+            O="$OUT_DIR" \
+            ARCH="$ARCH" \
+            LLVM=1 \
+            LLVM_IAS=1 \
+            veux_defconfig \
+            2>&1 \
+            | tee "$ARTIFACT_DIR/defconfig.log"
+
+          CONFIG="$OUT_DIR/.config"
+          CONFIG_SHA="$(sha256sum "$CONFIG" | awk '{print $1}')"
+
+          if [ "$CONFIG_SHA" != "$EXPECTED_CONFIG_SHA256" ]; then
+            echo "ERROR: config differs from Workflow 14"
+            echo "Expected: $EXPECTED_CONFIG_SHA256"
+            echo "Actual:   $CONFIG_SHA"
+            exit 1
+          fi
+
+          for symbol in \
+            CONFIG_64BIT \
+            CONFIG_THREAD_INFO_IN_TASK \
+            CONFIG_KALLSYMS \
+            CONFIG_CC_IS_CLANG \
+            CONFIG_LD_IS_LLD \
+            CONFIG_KSU \
+            CONFIG_KSU_SUSFS \
+            CONFIG_KSU_SUSFS_SUS_PATH \
+            CONFIG_KSU_SUSFS_SUS_MOUNT \
+            CONFIG_KSU_SUSFS_SUS_KSTAT \
+            CONFIG_KSU_SUSFS_SPOOF_UNAME \
+            CONFIG_KSU_SUSFS_ENABLE_LOG \
+            CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \
+            CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \
+            CONFIG_KSU_SUSFS_OPEN_REDIRECT \
+            CONFIG_KSU_SUSFS_SUS_MAP
+          do
+            if ! grep -qx "$symbol=y" "$CONFIG"; then
+              echo "ERROR: required config not y: $symbol"
+              exit 1
+            fi
+          done
+
+          for symbol in \
+            CONFIG_KSU_TRACEPOINT_HOOK \
+            CONFIG_KSU_MANUAL_HOOK \
+            CONFIG_DEBUG_KERNEL \
+            CONFIG_KALLSYMS_ALL
+          do
+            if grep -qx "$symbol=y" "$CONFIG"; then
+              echo "ERROR: forbidden config active: $symbol"
+              exit 1
+            fi
+          done
+
+          cp "$CONFIG" "$ARTIFACT_DIR/final.config"
+          printf '%s\n' "$CONFIG_SHA" > "$ARTIFACT_DIR/final.config.sha256"
+
+      - name: Full build A or B
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          set +e
+
+          make \
+            -j"$(nproc)" \
+            O="$OUT_DIR" \
+            ARCH="$ARCH" \
+            LLVM=1 \
+            LLVM_IAS=1 \
+            Image \
+            dtbs \
+            2>&1 \
+            | tee "$ARTIFACT_DIR/full-build.log"
+
+          BUILD_RC=${PIPESTATUS[0]}
+
+          set -e
+
+          printf '%s\n' "$BUILD_RC" > "$ARTIFACT_DIR/full-build.exit-code"
+
+          if [ "$BUILD_RC" -ne 0 ]; then
+            echo "ERROR: full build $BUILD_LABEL failed"
+            exit "$BUILD_RC"
+          fi
+
+      - name: Audit compiler diagnostics
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          LOG="$ARTIFACT_DIR/full-build.log"
+
+          grep -Ei \
+            '(^|[[:space:]])error:' \
+            "$LOG" \
+            > "$ARTIFACT_DIR/FULL-BUILD-ERRORS.txt" \
+            || true
+
+          grep -Ei \
+            '(^|[[:space:]])warning:' \
+            "$LOG" \
+            > "$ARTIFACT_DIR/FULL-BUILD-WARNINGS.txt" \
+            || true
+
+          ERROR_COUNT="$(
+            wc -l < "$ARTIFACT_DIR/FULL-BUILD-ERRORS.txt" \
+              | tr -d ' '
+          )"
+
+          WARNING_COUNT="$(
+            wc -l < "$ARTIFACT_DIR/FULL-BUILD-WARNINGS.txt" \
+              | tr -d ' '
+          )"
+
+          if [ "$ERROR_COUNT" -ne 0 ]; then
+            echo "ERROR: compiler errors detected"
+            cat "$ARTIFACT_DIR/FULL-BUILD-ERRORS.txt"
+            exit 1
+          fi
+
+          if [ "$WARNING_COUNT" -ne 1 ]; then
+            echo "ERROR: expected exactly one known baseline warning"
+            cat "$ARTIFACT_DIR/FULL-BUILD-WARNINGS.txt"
+            exit 1
+          fi
+
+          if ! grep -Eq \
+            "drivers/cpufreq/qcom-cpufreq-hw\.c:[0-9]+:[0-9]+: warning: unused variable 'c' \[-Wunused-variable\]" \
+            "$ARTIFACT_DIR/FULL-BUILD-WARNINGS.txt"
+          then
+            echo "ERROR: warning is not the known Qualcomm CPUFreq baseline warning"
+            cat "$ARTIFACT_DIR/FULL-BUILD-WARNINGS.txt"
+            exit 1
+          fi
+
+          if grep -Ei \
+            '(KernelSU|ReSukiSU|kernelsu|susfs|fs/stat\.c|fs/proc/task_mmu\.c|fs/exec\.c|fs/open\.c|fs/read_write\.c|kernel/reboot\.c|kernel/sys\.c|drivers/input/input\.c).*warning:' \
+            "$LOG" \
+            > "$ARTIFACT_DIR/SUSFS-RESUKISU-WARNINGS.txt"
+          then
+            echo "ERROR: SUSFS/ReSukiSU/adaptation warning detected"
+            cat "$ARTIFACT_DIR/SUSFS-RESUKISU-WARNINGS.txt"
+            exit 1
+          else
+            : > "$ARTIFACT_DIR/SUSFS-RESUKISU-WARNINGS.txt"
+          fi
+
+      - name: Verify config unchanged through build
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          POST_SHA="$(
+            sha256sum "$OUT_DIR/.config" \
+              | awk '{print $1}'
+          )"
+
+          if [ "$POST_SHA" != "$EXPECTED_CONFIG_SHA256" ]; then
+            echo "ERROR: config changed during build"
+            exit 1
+          fi
+
+          if ! cmp -s "$ARTIFACT_DIR/final.config" "$OUT_DIR/.config"; then
+            echo "ERROR: config changed bytewise during build"
+            exit 1
+          fi
+
+      - name: Verify outputs and collect hashes
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          IMAGE="$OUT_DIR/arch/arm64/boot/Image"
+          VMLINUX="$OUT_DIR/vmlinux"
+          SYSTEM_MAP="$OUT_DIR/System.map"
+
+          if [ ! -s "$IMAGE" ]; then
+            echo "ERROR: Image missing"
+            exit 1
+          fi
+
+          if [ ! -s "$VMLINUX" ]; then
+            echo "ERROR: vmlinux missing"
+            exit 1
+          fi
+
+          if [ ! -s "$SYSTEM_MAP" ]; then
+            echo "ERROR: System.map missing"
+            exit 1
+          fi
+
+          mapfile -t DTBS < <(
+            find "$OUT_DIR/arch/arm64/boot/dts" \
+              -type f \
+              -name 'veux.dtb' \
+              -print \
+              | sort
+          )
+
+          if [ "${#DTBS[@]}" -ne 1 ]; then
+            echo "ERROR: expected exactly one veux.dtb"
+            printf '%s\n' "${DTBS[@]}"
+            exit 1
+          fi
+
+          DTB="${DTBS[0]}"
+
+          IMAGE_SHA="$(sha256sum "$IMAGE" | awk '{print $1}')"
+          DTB_SHA="$(sha256sum "$DTB" | awk '{print $1}')"
+          VMLINUX_SHA="$(sha256sum "$VMLINUX" | awk '{print $1}')"
+          SYSTEM_MAP_SHA="$(sha256sum "$SYSTEM_MAP" | awk '{print $1}')"
+
+          IMAGE_BYTES="$(stat -c '%s' "$IMAGE")"
+          DTB_BYTES="$(stat -c '%s' "$DTB")"
+          VMLINUX_BYTES="$(stat -c '%s' "$VMLINUX")"
+          SYSTEM_MAP_BYTES="$(stat -c '%s' "$SYSTEM_MAP")"
+
+          if [ "$DTB_SHA" != "$WORKFLOW15_DTB_SHA256" ]; then
+            echo "ERROR: DTB differs from Workflow 15 baseline"
+            echo "Expected: $WORKFLOW15_DTB_SHA256"
+            echo "Actual:   $DTB_SHA"
+            exit 1
+          fi
+
+          if [ "$DTB_BYTES" != "$WORKFLOW15_DTB_BYTES" ]; then
+            echo "ERROR: DTB size differs from Workflow 15"
+            exit 1
+          fi
+
+          if [ "$IMAGE_BYTES" != "$WORKFLOW15_IMAGE_BYTES" ]; then
+            echo "ERROR: Image size differs from Workflow 15"
+            echo "Expected: $WORKFLOW15_IMAGE_BYTES"
+            echo "Actual:   $IMAGE_BYTES"
+            exit 1
+          fi
+
+          KERNEL_RELEASE="$(
+            make -s \
+              O="$OUT_DIR" \
+              ARCH="$ARCH" \
+              LLVM=1 \
+              LLVM_IAS=1 \
+              kernelrelease
+          )"
+
+          printf '%s\n' "$KERNEL_RELEASE" > "$ARTIFACT_DIR/kernel-release.txt"
+          printf '%s\n' "$IMAGE_SHA" > "$ARTIFACT_DIR/image.sha256"
+          printf '%s\n' "$DTB_SHA" > "$ARTIFACT_DIR/dtb.sha256"
+          printf '%s\n' "$VMLINUX_SHA" > "$ARTIFACT_DIR/vmlinux.sha256"
+          printf '%s\n' "$SYSTEM_MAP_SHA" > "$ARTIFACT_DIR/system-map.sha256"
+
+          printf '%s\n' "$IMAGE_BYTES" > "$ARTIFACT_DIR/image.bytes"
+          printf '%s\n' "$DTB_BYTES" > "$ARTIFACT_DIR/dtb.bytes"
+          printf '%s\n' "$VMLINUX_BYTES" > "$ARTIFACT_DIR/vmlinux.bytes"
+          printf '%s\n' "$SYSTEM_MAP_BYTES" > "$ARTIFACT_DIR/system-map.bytes"
+
+          cp "$IMAGE" "$ARTIFACT_DIR/build-output/Image"
+          cp "$DTB" "$ARTIFACT_DIR/build-output/veux.dtb"
+          cp "$SYSTEM_MAP" "$ARTIFACT_DIR/build-output/System.map"
+
+          {
+            echo "BUILD=$BUILD_LABEL"
+            echo "KERNEL_RELEASE=$KERNEL_RELEASE"
+            echo "IMAGE_BYTES=$IMAGE_BYTES"
+            echo "IMAGE_SHA256=$IMAGE_SHA"
+            echo "DTB_BYTES=$DTB_BYTES"
+            echo "DTB_SHA256=$DTB_SHA"
+            echo "VMLINUX_BYTES=$VMLINUX_BYTES"
+            echo "VMLINUX_SHA256=$VMLINUX_SHA"
+            echo "SYSTEM_MAP_BYTES=$SYSTEM_MAP_BYTES"
+            echo "SYSTEM_MAP_SHA256=$SYSTEM_MAP_SHA"
+          } > "$ARTIFACT_DIR/OUTPUT-HASHES.txt"
+
+      - name: Audit linked ReSukiSU and SUSFS symbols
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          VMLINUX="$OUT_DIR/vmlinux"
+          NM="$TOOLCHAIN_DIR/bin/llvm-nm"
+          NM_FILE="${RUNNER_TEMP}/vmlinux-symbols.txt"
+
+          "$NM" -n "$VMLINUX" > "$NM_FILE"
+
+          : > "$ARTIFACT_DIR/required-linked-symbol-lines.txt"
+
+          require_symbol() {
+            local symbol="$1"
+
+            if ! awk -v target="$symbol" \
+              'NF >= 3 && $NF == target { found=1 } END { exit(found ? 0 : 1) }' \
+              "$NM_FILE"
+            then
+              echo "ERROR: linked symbol missing: $symbol"
+              exit 1
+            fi
+
+            awk -v target="$symbol" \
+              'NF >= 3 && $NF == target { print }' \
+              "$NM_FILE" \
+              >> "$ARTIFACT_DIR/required-linked-symbol-lines.txt"
+          }
+
+          for symbol in \
+            ksu_handle_setresuid \
+            ksu_handle_execveat \
+            ksu_handle_faccessat \
+            ksu_handle_sys_read \
+            ksu_handle_stat \
+            ksu_handle_sys_reboot \
+            ksu_handle_input_handle_event \
+            ksu_handle_vfs_fstat \
+            susfs_add_sus_map \
+            sel_handle_status_ops \
+            write_op
+          do
+            require_symbol "$symbol"
+          done
+
+          awk '
+            NF >= 3 {
+              name=$NF
+              if (
+                name ~ /^ksu_/ ||
+                name ~ /^susfs_/ ||
+                name == "sel_handle_status_ops" ||
+                name == "write_op"
+              ) {
+                print name
+              }
+            }
+          ' "$NM_FILE" \
+            | sort -u \
+            > "$ARTIFACT_DIR/linked-ksu-susfs-symbol-names.txt"
+
+          if [ ! -s "$ARTIFACT_DIR/linked-ksu-susfs-symbol-names.txt" ]; then
+            echo "ERROR: linked KSU/SUSFS symbol inventory is empty"
+            exit 1
+          fi
+
+      - name: Verify ReSukiSU SUSFS build identity
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          LOG="$ARTIFACT_DIR/full-build.log"
+          IMAGE="$OUT_DIR/arch/arm64/boot/Image"
+
+          for hook in \
+            ksu_handle_setresuid \
+            ksu_handle_execveat \
+            ksu_handle_faccessat \
+            ksu_handle_sys_read \
+            ksu_handle_stat \
+            ksu_handle_sys_reboot \
+            ksu_handle_input_handle_event
+          do
+            if ! grep -Fq "susfs_inline: $hook found" "$LOG"; then
+              echo "ERROR: Kbuild did not confirm hook: $hook"
+              exit 1
+            fi
+          done
+
+          if grep -Fq 'is incompatible hook' "$LOG"; then
+            echo "ERROR: incompatible hook reported"
+            grep -F 'is incompatible hook' "$LOG"
+            exit 1
+          fi
+
+          if ! grep -Fq 'ReSukiSU: using SuSFS Inline hook' "$LOG"; then
+            echo "ERROR: SUSFS Inline Hook mode not selected"
+            exit 1
+          fi
+
+          if ! grep -Fq 'SUSFS_VERSION: v2.2.0' "$LOG"; then
+            echo "ERROR: SUSFS v2.2.0 not detected"
+            exit 1
+          fi
+
+          if ! strings "$IMAGE" | grep -Fq "$EXPECTED_RESUKISU_VERSION"; then
+            echo "ERROR: expected ReSukiSU version string missing from Image"
+            exit 1
+          fi
+
+          strings "$IMAGE" \
+            | grep -Ei 'Linux version|ReSukiSU|KernelSU|SUSFS|positron' \
+            | head -n 200 \
+            > "$ARTIFACT_DIR/IMAGE-IDENTITY-STRINGS.txt" \
+            || true
+
+      - name: Verify no boot image was created
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          FOUND="$(
+            find . \
+              -type f \
+              \( \
+                -name 'boot.img' \
+                -o -name 'vendor_boot.img' \
+                -o -name 'init_boot.img' \
+              \) \
+              -print \
+              2>/dev/null || true
+          )"
+
+          if [ -n "$FOUND" ]; then
+            echo "ERROR: unexpected boot image artifact"
+            printf '%s\n' "$FOUND"
+            exit 1
+          fi
+
+          {
+            echo "BOOT_IMAGE_CREATED=NO"
+            echo "FLASH_PERFORMED=NO"
+          } > "$ARTIFACT_DIR/NO-FLASH-GUARD.txt"
+
+      - name: Write successful build summary
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          {
+            echo "VEUX ReSukiSU SUSFS 2.2 Reproducibility Build $BUILD_LABEL"
+            echo "============================================================"
+            echo
+            echo "RESULT: PASS"
+            echo "BUILD: $BUILD_LABEL"
+            echo
+            echo "Candidate tree: $(cat "$ARTIFACT_DIR/candidate-tree.txt")"
+            echo "Candidate commit: $(cat "$ARTIFACT_DIR/candidate-sha.txt")"
+            echo "ReSukiSU: $(cat "$ARTIFACT_DIR/resukisu-commit.txt")"
+            echo "Source diff SHA-256: $(cat "$ARTIFACT_DIR/source-diff.sha256")"
+            echo "Config SHA-256: $(cat "$ARTIFACT_DIR/final.config.sha256")"
+            echo "Kernel release: $(cat "$ARTIFACT_DIR/kernel-release.txt")"
+            echo
+            echo "Image bytes: $(cat "$ARTIFACT_DIR/image.bytes")"
+            echo "Image SHA-256: $(cat "$ARTIFACT_DIR/image.sha256")"
+            echo "DTB bytes: $(cat "$ARTIFACT_DIR/dtb.bytes")"
+            echo "DTB SHA-256: $(cat "$ARTIFACT_DIR/dtb.sha256")"
+            echo "vmlinux bytes: $(cat "$ARTIFACT_DIR/vmlinux.bytes")"
+            echo "vmlinux SHA-256: $(cat "$ARTIFACT_DIR/vmlinux.sha256")"
+            echo
+            echo "Compiler errors: 0"
+            echo "Compiler warnings: 1"
+            echo "Warning: known Qualcomm CPUFreq baseline only"
+            echo "SUSFS/ReSukiSU/adaptation warnings: 0"
+            echo
+            echo "boot.img created: NO"
+            echo "Flashed: NO"
+          } > "$ARTIFACT_DIR/BUILD-SUMMARY.txt"
+
+      - name: Collect failure diagnostics
+        if: failure()
+        working-directory: kernel
+        shell: bash
+        run: |
+          set +e
+
+          mkdir -p "$ARTIFACT_DIR" "$ARTIFACT_DIR/failure-output"
+
+          {
+            echo "VEUX reproducibility build $BUILD_LABEL: FAILURE"
+            echo "Finished: $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+            echo "No boot.img was intentionally created."
+            echo "Nothing was flashed."
+          } > "$ARTIFACT_DIR/FAILURE-SUMMARY.txt"
+
+          git status --short \
+            > "$ARTIFACT_DIR/FAILURE-git-status.txt" \
+            2>&1 \
+            || true
+
+          git diff \
+            --no-ext-diff \
+            --no-color \
+            > "$ARTIFACT_DIR/FAILURE-kernel.diff" \
+            2>&1 \
+            || true
+
+          find . \
+            -type f \
+            -name '*.rej' \
+            -print \
+            > "$ARTIFACT_DIR/FAILURE-reject-files.txt" \
+            2>&1 \
+            || true
+
+          if [ -f "$ARTIFACT_DIR/full-build.log" ]; then
+            tail -n 1000 \
+              "$ARTIFACT_DIR/full-build.log" \
+              > "$ARTIFACT_DIR/FAILURE-full-build-tail.txt"
+
+            grep -Ei \
+              '(^|[[:space:]])(warning|error):' \
+              "$ARTIFACT_DIR/full-build.log" \
+              > "$ARTIFACT_DIR/FAILURE-warning-error-lines.txt" \
+              || true
+          fi
+
+          if [ -f "$OUT_DIR/.config" ]; then
+            cp "$OUT_DIR/.config" "$ARTIFACT_DIR/failure-output/final.config"
+          fi
+
+          if [ -s "$OUT_DIR/arch/arm64/boot/Image" ]; then
+            cp "$OUT_DIR/arch/arm64/boot/Image" \
+              "$ARTIFACT_DIR/failure-output/Image"
+          fi
+
+          find "$OUT_DIR/arch/arm64/boot/dts" \
+            -type f \
+            -name 'veux.dtb' \
+            -exec cp {} "$ARTIFACT_DIR/failure-output/veux.dtb" \; \
+            2>/dev/null \
+            || true
+
+      - name: Upload build A or B evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: veux-5.4.274-resukisu-susfs-2.2-repro-build-${{ matrix.build }}
+          path: ${{ env.ARTIFACT_DIR }}
+          if-no-files-found: error
+          include-hidden-files: true
+          retention-days: 30
+
+  audit:
+    name: Compare independent builds A and B
+    needs:
+      - build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    env:
+      INPUT_DIR: ${{ github.workspace }}/input
+      AUDIT_DIR: ${{ github.workspace }}/audit
+
+    steps:
+      - name: Prepare comparison workspace
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p \
+            "$INPUT_DIR/A" \
+            "$INPUT_DIR/B" \
+            "$AUDIT_DIR"
+
+      - name: Download build A
+        uses: actions/download-artifact@v8
+        with:
+          name: veux-5.4.274-resukisu-susfs-2.2-repro-build-A
+          path: ${{ env.INPUT_DIR }}/A
+
+      - name: Download build B
+        uses: actions/download-artifact@v8
+        with:
+          name: veux-5.4.274-resukisu-susfs-2.2-repro-build-B
+          path: ${{ env.INPUT_DIR }}/B
+
+      - name: Verify both build summaries are PASS
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          for label in A B; do
+            SUMMARY="$INPUT_DIR/$label/BUILD-SUMMARY.txt"
+
+            if [ ! -f "$SUMMARY" ]; then
+              echo "ERROR: missing BUILD-SUMMARY.txt for build $label"
+              exit 1
+            fi
+
+            if ! grep -qx 'RESULT: PASS' "$SUMMARY"; then
+              echo "ERROR: build $label is not PASS"
+              cat "$SUMMARY"
+              exit 1
+            fi
+          done
+
+      - name: Compare deterministic source and config invariants
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          compare_exact() {
+            local file="$1"
+            local label="$2"
+
+            if ! cmp -s \
+              "$INPUT_DIR/A/$file" \
+              "$INPUT_DIR/B/$file"
+            then
+              echo "ERROR: A/B mismatch: $label"
+              diff -u \
+                "$INPUT_DIR/A/$file" \
+                "$INPUT_DIR/B/$file" \
+                || true
+              exit 1
+            fi
+
+            echo "PASS $label" \
+              >> "$AUDIT_DIR/DETERMINISTIC-COMPARISONS.txt"
+          }
+
+          : > "$AUDIT_DIR/DETERMINISTIC-COMPARISONS.txt"
+
+          compare_exact candidate-tree.txt "Candidate tree"
+          compare_exact resukisu-commit.txt "ReSukiSU commit"
+          compare_exact source-diff.sha256 "Warning-clean source diff SHA-256"
+          compare_exact final.config.sha256 "Config SHA-256"
+          compare_exact final.config "Resolved config bytes"
+          compare_exact dtb.sha256 "DTB SHA-256"
+          compare_exact dtb.bytes "DTB size"
+          compare_exact FULL-BUILD-WARNINGS.txt "Compiler warning lines"
+          compare_exact FULL-BUILD-ERRORS.txt "Compiler error lines"
+
+          for label in A B; do
+            if [ "$(cat "$INPUT_DIR/$label/candidate-tree.txt")" != "$EXPECTED_CANDIDATE_TREE" ]; then
+              echo "ERROR: build $label Candidate tree mismatch"
+              exit 1
+            fi
+
+            if [ "$(cat "$INPUT_DIR/$label/resukisu-commit.txt")" != "$RESUKISU_COMMIT" ]; then
+              echo "ERROR: build $label ReSukiSU pin mismatch"
+              exit 1
+            fi
+
+            if [ "$(cat "$INPUT_DIR/$label/source-diff.sha256")" != "$EXPECTED_WARNING_CLEAN_DIFF_SHA256" ]; then
+              echo "ERROR: build $label source diff mismatch"
+              exit 1
+            fi
+
+            if [ "$(cat "$INPUT_DIR/$label/final.config.sha256")" != "$EXPECTED_CONFIG_SHA256" ]; then
+              echo "ERROR: build $label config mismatch"
+              exit 1
+            fi
+
+            if [ "$(cat "$INPUT_DIR/$label/dtb.sha256")" != "$WORKFLOW15_DTB_SHA256" ]; then
+              echo "ERROR: build $label DTB differs from Workflow 15"
+              exit 1
+            fi
+
+            if [ "$(cat "$INPUT_DIR/$label/dtb.bytes")" != "$WORKFLOW15_DTB_BYTES" ]; then
+              echo "ERROR: build $label DTB size differs from Workflow 15"
+              exit 1
+            fi
+
+            if [ "$(cat "$INPUT_DIR/$label/image.bytes")" != "$WORKFLOW15_IMAGE_BYTES" ]; then
+              echo "ERROR: build $label Image size differs from Workflow 15"
+              exit 1
+            fi
+          done
+
+      - name: Compare DTB bytes directly
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if ! cmp -s \
+            "$INPUT_DIR/A/build-output/veux.dtb" \
+            "$INPUT_DIR/B/build-output/veux.dtb"
+          then
+            echo "ERROR: A/B DTB bytes differ"
+            exit 1
+          fi
+
+          {
+            echo "DTB_BYTES_IDENTICAL=YES"
+            echo "DTB_SHA256=$(cat "$INPUT_DIR/A/dtb.sha256")"
+            echo "DTB_BYTES=$(cat "$INPUT_DIR/A/dtb.bytes")"
+            echo "WORKFLOW15_DTB_MATCH=YES"
+          } > "$AUDIT_DIR/DTB-COMPARISON.txt"
+
+      - name: Compare Image size hashes and byte differences
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          IMAGE_A="$INPUT_DIR/A/build-output/Image"
+          IMAGE_B="$INPUT_DIR/B/build-output/Image"
+
+          SIZE_A="$(stat -c '%s' "$IMAGE_A")"
+          SIZE_B="$(stat -c '%s' "$IMAGE_B")"
+          SHA_A="$(sha256sum "$IMAGE_A" | awk '{print $1}')"
+          SHA_B="$(sha256sum "$IMAGE_B" | awk '{print $1}')"
+
+          if [ "$SIZE_A" != "$SIZE_B" ]; then
+            echo "ERROR: A/B Image sizes differ"
+            echo "A=$SIZE_A"
+            echo "B=$SIZE_B"
+            exit 1
+          fi
+
+          if [ "$SIZE_A" != "$WORKFLOW15_IMAGE_BYTES" ]; then
+            echo "ERROR: A/B Image size differs from Workflow 15"
+            exit 1
+          fi
+
+          if cmp -s "$IMAGE_A" "$IMAGE_B"; then
+            IDENTICAL="YES"
+            DIFFERING_BYTES="0"
+          else
+            IDENTICAL="NO"
+
+            DIFFERING_BYTES="$(
+              python3 - "$IMAGE_A" "$IMAGE_B" "$AUDIT_DIR/IMAGE-DIFFERENCE-OFFSETS.txt" <<'PY'
+          import sys
+
+          a_path, b_path, out_path = sys.argv[1:4]
+          count = 0
+          first_offsets = []
+          offset = 0
+          chunk_size = 1024 * 1024
+
+          with open(a_path, "rb") as fa, open(b_path, "rb") as fb:
+              while True:
+                  a = fa.read(chunk_size)
+                  b = fb.read(chunk_size)
+
+                  if not a and not b:
+                      break
+
+                  if len(a) != len(b):
+                      raise SystemExit("image size changed during comparison")
+
+                  for i, (x, y) in enumerate(zip(a, b)):
+                      if x != y:
+                          count += 1
+                          if len(first_offsets) < 100:
+                              first_offsets.append(offset + i)
+
+                  offset += len(a)
+
+          with open(out_path, "w") as f:
+              for item in first_offsets:
+                  f.write(f"{item}\n")
+
+          print(count)
+          PY
+            )"
+          fi
+
+          {
+            echo "IMAGE_SIZE_A=$SIZE_A"
+            echo "IMAGE_SIZE_B=$SIZE_B"
+            echo "IMAGE_SIZE_MATCH=YES"
+            echo "WORKFLOW15_IMAGE_SIZE_MATCH=YES"
+            echo "IMAGE_SHA256_A=$SHA_A"
+            echo "IMAGE_SHA256_B=$SHA_B"
+            echo "IMAGE_BYTES_IDENTICAL=$IDENTICAL"
+            echo "IMAGE_DIFFERING_BYTE_COUNT=$DIFFERING_BYTES"
+            echo
+            echo "Different Image hashes are not by themselves a failure:"
+            echo "generated Git/build metadata can make Image bytes differ while"
+            echo "the deterministic source/config/DTB/symbol invariants remain identical."
+          } > "$AUDIT_DIR/IMAGE-COMPARISON.txt"
+
+      - name: Compare vmlinux and System.map metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          VMLINUX_SIZE_A="$(cat "$INPUT_DIR/A/vmlinux.bytes")"
+          VMLINUX_SIZE_B="$(cat "$INPUT_DIR/B/vmlinux.bytes")"
+          VMLINUX_SHA_A="$(cat "$INPUT_DIR/A/vmlinux.sha256")"
+          VMLINUX_SHA_B="$(cat "$INPUT_DIR/B/vmlinux.sha256")"
+
+          MAP_SIZE_A="$(cat "$INPUT_DIR/A/system-map.bytes")"
+          MAP_SIZE_B="$(cat "$INPUT_DIR/B/system-map.bytes")"
+          MAP_SHA_A="$(cat "$INPUT_DIR/A/system-map.sha256")"
+          MAP_SHA_B="$(cat "$INPUT_DIR/B/system-map.sha256")"
+
+          if [ "$VMLINUX_SIZE_A" != "$VMLINUX_SIZE_B" ]; then
+            echo "ERROR: A/B vmlinux sizes differ"
+            exit 1
+          fi
+
+          if [ "$MAP_SIZE_A" != "$MAP_SIZE_B" ]; then
+            echo "ERROR: A/B System.map sizes differ"
+            exit 1
+          fi
+
+          if cmp -s \
+            "$INPUT_DIR/A/build-output/System.map" \
+            "$INPUT_DIR/B/build-output/System.map"
+          then
+            MAP_IDENTICAL="YES"
+          else
+            MAP_IDENTICAL="NO"
+          fi
+
+          {
+            echo "VMLINUX_BYTES_A=$VMLINUX_SIZE_A"
+            echo "VMLINUX_BYTES_B=$VMLINUX_SIZE_B"
+            echo "VMLINUX_SIZE_MATCH=YES"
+            echo "VMLINUX_SHA256_A=$VMLINUX_SHA_A"
+            echo "VMLINUX_SHA256_B=$VMLINUX_SHA_B"
+            echo "VMLINUX_HASH_MATCH=$([ "$VMLINUX_SHA_A" = "$VMLINUX_SHA_B" ] && echo YES || echo NO)"
+            echo
+            echo "SYSTEM_MAP_BYTES_A=$MAP_SIZE_A"
+            echo "SYSTEM_MAP_BYTES_B=$MAP_SIZE_B"
+            echo "SYSTEM_MAP_SIZE_MATCH=YES"
+            echo "SYSTEM_MAP_SHA256_A=$MAP_SHA_A"
+            echo "SYSTEM_MAP_SHA256_B=$MAP_SHA_B"
+            echo "SYSTEM_MAP_HASH_MATCH=$([ "$MAP_SHA_A" = "$MAP_SHA_B" ] && echo YES || echo NO)"
+            echo "SYSTEM_MAP_BYTES_IDENTICAL=$MAP_IDENTICAL"
+          } > "$AUDIT_DIR/VMLINUX-SYSTEM-MAP-COMPARISON.txt"
+
+      - name: Compare required linked symbols independent of addresses
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          normalize() {
+            awk 'NF >= 3 { print $NF }' "$1" \
+              | sort -u
+          }
+
+          normalize "$INPUT_DIR/A/required-linked-symbol-lines.txt" \
+            > "$AUDIT_DIR/required-symbols-A.txt"
+
+          normalize "$INPUT_DIR/B/required-linked-symbol-lines.txt" \
+            > "$AUDIT_DIR/required-symbols-B.txt"
+
+          if ! cmp -s \
+            "$AUDIT_DIR/required-symbols-A.txt" \
+            "$AUDIT_DIR/required-symbols-B.txt"
+          then
+            echo "ERROR: A/B required linked symbol names differ"
+            diff -u \
+              "$AUDIT_DIR/required-symbols-A.txt" \
+              "$AUDIT_DIR/required-symbols-B.txt" \
+              || true
+            exit 1
+          fi
+
+          REQUIRED_COUNT="$(
+            wc -l < "$AUDIT_DIR/required-symbols-A.txt" \
+              | tr -d ' '
+          )"
+
+          if [ "$REQUIRED_COUNT" -ne 11 ]; then
+            echo "ERROR: expected 11 required linked symbols, got $REQUIRED_COUNT"
+            cat "$AUDIT_DIR/required-symbols-A.txt"
+            exit 1
+          fi
+
+          if cmp -s \
+            "$INPUT_DIR/A/linked-ksu-susfs-symbol-names.txt" \
+            "$INPUT_DIR/B/linked-ksu-susfs-symbol-names.txt"
+          then
+            FULL_INVENTORY_MATCH="YES"
+          else
+            FULL_INVENTORY_MATCH="NO"
+
+            diff -u \
+              "$INPUT_DIR/A/linked-ksu-susfs-symbol-names.txt" \
+              "$INPUT_DIR/B/linked-ksu-susfs-symbol-names.txt" \
+              > "$AUDIT_DIR/FULL-SYMBOL-INVENTORY-DIFF.txt" \
+              || true
+          fi
+
+          {
+            echo "REQUIRED_LINKED_SYMBOL_NAMES_MATCH=YES"
+            echo "REQUIRED_LINKED_SYMBOL_COUNT=$REQUIRED_COUNT"
+            echo "FULL_KSU_SUSFS_SYMBOL_INVENTORY_MATCH=$FULL_INVENTORY_MATCH"
+            echo
+            echo "The full symbol inventory comparison is informational."
+            echo "The release gate is the exact required linked-symbol set."
+          } > "$AUDIT_DIR/REQUIRED-SYMBOL-COMPARISON.txt"
+
+      - name: Compare diagnostics and build identities
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          for label in A B; do
+            if [ -s "$INPUT_DIR/$label/FULL-BUILD-ERRORS.txt" ]; then
+              echo "ERROR: build $label contains compiler errors"
+              exit 1
+            fi
+
+            if [ "$(
+              wc -l < "$INPUT_DIR/$label/FULL-BUILD-WARNINGS.txt" \
+                | tr -d ' '
+            )" -ne 1 ]; then
+              echo "ERROR: build $label warning count changed"
+              exit 1
+            fi
+
+            if [ -s "$INPUT_DIR/$label/SUSFS-RESUKISU-WARNINGS.txt" ]; then
+              echo "ERROR: build $label contains SUSFS/ReSukiSU warnings"
+              exit 1
+            fi
+
+            if ! grep -Fq \
+              "$EXPECTED_RESUKISU_VERSION" \
+              "$INPUT_DIR/$label/IMAGE-IDENTITY-STRINGS.txt"
+            then
+              echo "ERROR: build $label Image identity lacks ReSukiSU version"
+              exit 1
+            fi
+
+            if ! grep -qx 'BOOT_IMAGE_CREATED=NO' \
+              "$INPUT_DIR/$label/NO-FLASH-GUARD.txt"
+            then
+              echo "ERROR: build $label boot image guard failed"
+              exit 1
+            fi
+
+            if ! grep -qx 'FLASH_PERFORMED=NO' \
+              "$INPUT_DIR/$label/NO-FLASH-GUARD.txt"
+            then
+              echo "ERROR: build $label flash guard failed"
+              exit 1
+            fi
+          done
+
+          {
+            echo "DIAGNOSTIC_COMPARISON=PASS"
+            echo "BUILD_A_ERRORS=0"
+            echo "BUILD_B_ERRORS=0"
+            echo "BUILD_A_WARNINGS=1"
+            echo "BUILD_B_WARNINGS=1"
+            echo "WARNING_CLASS=KNOWN_QCOM_CPUFREQ_BASELINE_ONLY"
+            echo "SUSFS_RESUKISU_ADAPTATION_WARNINGS_A=0"
+            echo "SUSFS_RESUKISU_ADAPTATION_WARNINGS_B=0"
+            echo "RESUKISU_IMAGE_VERSION_A=PASS"
+            echo "RESUKISU_IMAGE_VERSION_B=PASS"
+            echo "BOOT_IMAGE_A=NO"
+            echo "BOOT_IMAGE_B=NO"
+            echo "FLASH_A=NO"
+            echo "FLASH_B=NO"
+          } > "$AUDIT_DIR/DIAGNOSTIC-COMPARISON.txt"
+
+      - name: Write final reproducibility audit
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          IMAGE_SHA_A="$(cat "$INPUT_DIR/A/image.sha256")"
+          IMAGE_SHA_B="$(cat "$INPUT_DIR/B/image.sha256")"
+          IMAGE_BYTES="$(cat "$INPUT_DIR/A/image.bytes")"
+
+          DTB_SHA="$(cat "$INPUT_DIR/A/dtb.sha256")"
+          DTB_BYTES="$(cat "$INPUT_DIR/A/dtb.bytes")"
+
+          VMLINUX_SHA_A="$(cat "$INPUT_DIR/A/vmlinux.sha256")"
+          VMLINUX_SHA_B="$(cat "$INPUT_DIR/B/vmlinux.sha256")"
+          VMLINUX_BYTES="$(cat "$INPUT_DIR/A/vmlinux.bytes")"
+
+          RELEASE_A="$(cat "$INPUT_DIR/A/kernel-release.txt")"
+          RELEASE_B="$(cat "$INPUT_DIR/B/kernel-release.txt")"
+
+          CANDIDATE_SHA_A="$(cat "$INPUT_DIR/A/candidate-sha.txt")"
+          CANDIDATE_SHA_B="$(cat "$INPUT_DIR/B/candidate-sha.txt")"
+
+          IMAGE_IDENTICAL="$(
+            awk -F= '$1 == "IMAGE_BYTES_IDENTICAL" {print $2}' \
+              "$AUDIT_DIR/IMAGE-COMPARISON.txt"
+          )"
+
+          IMAGE_DIFF_COUNT="$(
+            awk -F= '$1 == "IMAGE_DIFFERING_BYTE_COUNT" {print $2}' \
+              "$AUDIT_DIR/IMAGE-COMPARISON.txt"
+          )"
+
+          {
+            echo "VEUX 5.4.274 ReSukiSU SUSFS 2.2 Full Build Reproducibility Audit"
+            echo "=================================================================="
+            echo
+            echo "RESULT: PASS"
+            echo
+            echo "Two independent GitHub-hosted runners: YES"
+            echo "Independent source/build workspaces: YES"
+            echo
+            echo "Candidate tree A/B identical: YES"
+            echo "Candidate tree: $EXPECTED_CANDIDATE_TREE"
+            echo "Candidate commit A: $CANDIDATE_SHA_A"
+            echo "Candidate commit B: $CANDIDATE_SHA_B"
+            echo
+            echo "Warning-clean source diff A/B identical: YES"
+            echo "Source diff SHA-256: $EXPECTED_WARNING_CLEAN_DIFF_SHA256"
+            echo
+            echo "Resolved config A/B byte-identical: YES"
+            echo "Config SHA-256: $EXPECTED_CONFIG_SHA256"
+            echo
+            echo "ReSukiSU A/B exact pin: YES"
+            echo "ReSukiSU commit: $RESUKISU_COMMIT"
+            echo "SUSFS: v2.2.0"
+            echo
+            echo "DTB A/B byte-identical: YES"
+            echo "DTB Workflow 15 match: YES"
+            echo "DTB bytes: $DTB_BYTES"
+            echo "DTB SHA-256: $DTB_SHA"
+            echo
+            echo "Required linked symbols A/B identical: YES"
+            echo
+            echo "Compiler errors A/B: 0 / 0"
+            echo "Compiler warnings A/B: 1 / 1"
+            echo "Warning class: known Qualcomm CPUFreq baseline only"
+            echo "SUSFS/ReSukiSU/adaptation warnings A/B: 0 / 0"
+            echo
+            echo "Image bytes A/B: $IMAGE_BYTES / $IMAGE_BYTES"
+            echo "Image SHA-256 A: $IMAGE_SHA_A"
+            echo "Image SHA-256 B: $IMAGE_SHA_B"
+            echo "Image byte-identical: $IMAGE_IDENTICAL"
+            echo "Image differing byte count: $IMAGE_DIFF_COUNT"
+            echo
+            echo "vmlinux bytes A/B: $VMLINUX_BYTES / $VMLINUX_BYTES"
+            echo "vmlinux SHA-256 A: $VMLINUX_SHA_A"
+            echo "vmlinux SHA-256 B: $VMLINUX_SHA_B"
+            echo
+            echo "Kernel release A: $RELEASE_A"
+            echo "Kernel release B: $RELEASE_B"
+            echo
+            echo "Image/vmlinux hash equality is informational, not a release gate."
+            echo "Generated Git/build metadata may differ between independent runners."
+            echo
+            echo "Release gates are deterministic source tree, adaptation diff,"
+            echo "resolved config, DTB bytes, required linked symbol names and diagnostics."
+            echo
+            echo "boot.img created: NO"
+            echo "Flashed: NO"
+          } | tee "$AUDIT_DIR/REPRODUCIBILITY-AUDIT.txt"
+
+      - name: Assemble final audit artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          FINAL="$AUDIT_DIR/final-artifact"
+
+          mkdir -p \
+            "$FINAL/A" \
+            "$FINAL/B" \
+            "$FINAL/audit"
+
+          for label in A B; do
+            cp "$INPUT_DIR/$label/BUILD-SUMMARY.txt" "$FINAL/$label/"
+            cp "$INPUT_DIR/$label/candidate2.txt" "$FINAL/$label/"
+            cp "$INPUT_DIR/$label/candidate-sha.txt" "$FINAL/$label/"
+            cp "$INPUT_DIR/$label/candidate-tree.txt" "$FINAL/$label/"
+            cp "$INPUT_DIR/$label/resukisu-commit.txt" "$FINAL/$label/"
+            cp "$INPUT_DIR/$label/source-diff.sha256" "$FINAL/$label/"
+            cp "$INPUT_DIR/$label/final.config" "$FINAL/$label/"
+            cp "$INPUT_DIR/$label/final.config.sha256" "$FINAL/$label/"
+            cp "$INPUT_DIR/$label/kernel-release.txt" "$FINAL/$label/"
+            cp "$INPUT_DIR/$label/OUTPUT-HASHES.txt" "$FINAL/$label/"
+            cp "$INPUT_DIR/$label/FULL-BUILD-WARNINGS.txt" "$FINAL/$label/"
+            cp "$INPUT_DIR/$label/FULL-BUILD-ERRORS.txt" "$FINAL/$label/"
+            cp "$INPUT_DIR/$label/SUSFS-RESUKISU-WARNINGS.txt" "$FINAL/$label/"
+            cp "$INPUT_DIR/$label/required-linked-symbol-lines.txt" "$FINAL/$label/"
+            cp "$INPUT_DIR/$label/linked-ksu-susfs-symbol-names.txt" "$FINAL/$label/"
+            cp "$INPUT_DIR/$label/IMAGE-IDENTITY-STRINGS.txt" "$FINAL/$label/"
+            cp "$INPUT_DIR/$label/NO-FLASH-GUARD.txt" "$FINAL/$label/"
+            cp "$INPUT_DIR/$label/full-build.log" "$FINAL/$label/"
+
+            mkdir -p "$FINAL/$label/build-output"
+            cp "$INPUT_DIR/$label/build-output/Image" "$FINAL/$label/build-output/"
+            cp "$INPUT_DIR/$label/build-output/veux.dtb" "$FINAL/$label/build-output/"
+            cp "$INPUT_DIR/$label/build-output/System.map" "$FINAL/$label/build-output/"
+          done
+
+          cp "$AUDIT_DIR/REPRODUCIBILITY-AUDIT.txt" "$FINAL/audit/"
+          cp "$AUDIT_DIR/DETERMINISTIC-COMPARISONS.txt" "$FINAL/audit/"
+          cp "$AUDIT_DIR/DTB-COMPARISON.txt" "$FINAL/audit/"
+          cp "$AUDIT_DIR/IMAGE-COMPARISON.txt" "$FINAL/audit/"
+          cp "$AUDIT_DIR/VMLINUX-SYSTEM-MAP-COMPARISON.txt" "$FINAL/audit/"
+          cp "$AUDIT_DIR/REQUIRED-SYMBOL-COMPARISON.txt" "$FINAL/audit/"
+          cp "$AUDIT_DIR/DIAGNOSTIC-COMPARISON.txt" "$FINAL/audit/"
+          cp "$AUDIT_DIR/required-symbols-A.txt" "$FINAL/audit/"
+          cp "$AUDIT_DIR/required-symbols-B.txt" "$FINAL/audit/"
+
+          if [ -f "$AUDIT_DIR/IMAGE-DIFFERENCE-OFFSETS.txt" ]; then
+            cp "$AUDIT_DIR/IMAGE-DIFFERENCE-OFFSETS.txt" "$FINAL/audit/"
+          fi
+
+          if [ -f "$AUDIT_DIR/FULL-SYMBOL-INVENTORY-DIFF.txt" ]; then
+            cp "$AUDIT_DIR/FULL-SYMBOL-INVENTORY-DIFF.txt" "$FINAL/audit/"
+          fi
+
+      - name: Upload final reproducibility audit
+        uses: actions/upload-artifact@v7
+        with:
+          name: veux-5.4.274-resukisu-susfs-2.2-reproducibility-audit-${{ github.run_number }}
+          path: ${{ env.AUDIT_DIR }}/final-artifact
+          if-no-files-found: error
+          include-hidden-files: true
+          retention-days: 30
