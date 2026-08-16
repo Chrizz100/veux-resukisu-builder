@@ -51,6 +51,7 @@ jobs:
           git config user.email "veux-stability@users.noreply.github.com"
 
           git remote remove android 2>/dev/null || true
+
           git remote add android \
             https://android.googlesource.com/kernel/common
 
@@ -66,78 +67,97 @@ jobs:
           PATCHLEVEL=$(awk '$1=="PATCHLEVEL" && $2=="=" {print $3; exit}' Makefile)
           SUBLEVEL=$(awk '$1=="SUBLEVEL" && $2=="=" {print $3; exit}' Makefile)
 
-          test "${VERSION}.${PATCHLEVEL}.${SUBLEVEL}" = "5.4.274"
+          KVER="${VERSION}.${PATCHLEVEL}.${SUBLEVEL}"
 
-      -       - name: Remove forced Blair minimum frequencies
+          echo
+          echo "Kernel version after upstream:"
+          echo "$KVER"
+
+          test "$KVER" = "5.4.274"
+
+          test -f arch/arm64/boot/dts/vendor/xiaomi/veux.dts
+          test -f arch/arm64/configs/veux_defconfig
+
+          echo
+          echo "✅ Linux 5.4.274"
+          echo "✅ veux.dts"
+          echo "✅ veux_defconfig"
+
+      - name: Remove forced Blair minimum frequencies
         shell: bash
         run: |
           set -euo pipefail
 
           cd kernel
 
-          echo "Reverting forced Blair minimum frequencies..."
+          echo "Reverting forced Blair minimum-frequency patch..."
 
           git revert \
             --no-edit \
             f74e5c1b7c3f3e42f694e5ab524f95f62a0dab80
 
           echo
-          echo "Applied stability revert:"
+          echo "Revert completed."
+          echo
           git log -1 --oneline
 
-          echo
-          echo "CASS is intentionally left unchanged from the"
-          echo "successfully compiled baseline."
-
-      - name: Verify stability changes
+      - name: Verify stability change
         shell: bash
         run: |
           set -euo pipefail
 
           cd kernel
 
-          echo "Checking CASS thermal-pressure handling..."
+          echo "Checking forced Blair minimum-frequency modification..."
 
-          grep -n \
-            'thermal_load_avg' \
-            kernel/sched/cass.c
-
-          echo
-          echo "Checking forced minimum-frequency table is gone..."
-
-          if grep -n \
-            'eff_table' \
+          if grep -q \
+            "eff_table" \
             drivers/cpuidle/lpm-levels.c; then
-            echo "ERROR: Positron eff_table is still present"
+            echo "ERROR: eff_table is still present"
             exit 20
           fi
 
-          if grep -n \
-            'freq_qos_update_request(policy.min_freq_req' \
+          if grep -q \
+            "freq_qos_update_request(policy.min_freq_req" \
             drivers/cpuidle/lpm-levels.c; then
-            echo "ERROR: Forced minimum-frequency request is still present"
+            echo "ERROR: forced minimum-frequency request is still present"
             exit 21
           fi
 
           echo
-          echo "✅ CASS thermal awareness restored"
-          echo "✅ Forced minimum frequencies removed"
+          echo "Checking CASS baseline state..."
+
+          if grep -q \
+            "thermal_load_avg" \
+            kernel/sched/cass.c; then
+            echo "ERROR: incompatible thermal_load_avg call is present"
+            exit 22
+          fi
 
           echo
+          echo "=========================================="
+          echo "STABILITY CHANGE VERIFIED"
+          echo "=========================================="
+          echo
+          echo "✅ Forced Blair minimum frequencies removed"
+          echo "✅ CASS remains at compiling baseline state"
+          echo
           echo "Intentionally untouched:"
-          echo "- VEUX thermal-zone device fixes"
-          echo "- VEUX USB overrides"
+          echo "- CASS scheduler implementation"
           echo "- Blair CPU frequency table"
           echo "- Blair energy model"
           echo "- schedutil tuning"
-          echo "- all other device-specific fixes"
+          echo "- VEUX thermal device fixes"
+          echo "- VEUX USB device fixes"
+          echo "- SUSFS / KernelSU / ReSukiSU"
 
       - name: Download official Android clang-r416183b
         shell: bash
         run: |
           set -euo pipefail
 
-          mkdir -p "$GITHUB_WORKSPACE/toolchain/clang-r416183b"
+          mkdir -p \
+            "$GITHUB_WORKSPACE/toolchain/clang-r416183b"
 
           curl \
             --fail \
@@ -150,11 +170,18 @@ jobs:
             -xzf "$RUNNER_TEMP/clang-r416183b.tar.gz" \
             -C "$GITHUB_WORKSPACE/toolchain/clang-r416183b"
 
-          rm -f "$RUNNER_TEMP/clang-r416183b.tar.gz"
+          rm -f \
+            "$RUNNER_TEMP/clang-r416183b.tar.gz"
 
-          echo "$GITHUB_WORKSPACE/toolchain/clang-r416183b/bin" >> "$GITHUB_PATH"
+          echo \
+            "$GITHUB_WORKSPACE/toolchain/clang-r416183b/bin" \
+            >> "$GITHUB_PATH"
 
-          "$GITHUB_WORKSPACE/toolchain/clang-r416183b/bin/clang" --version
+          "$GITHUB_WORKSPACE/toolchain/clang-r416183b/bin/clang" \
+            --version
+
+          "$GITHUB_WORKSPACE/toolchain/clang-r416183b/bin/ld.lld" \
+            --version
 
       - name: Configure VEUX
         shell: bash
@@ -176,6 +203,17 @@ jobs:
             2>&1 | tee "$GITHUB_WORKSPACE/config.log"
 
           echo
+          echo "Important configuration values:"
+          echo
+
+          grep '^CONFIG_ARCH_QCOM=y' out/.config
+          grep '^CONFIG_ARCH_HOLI=y' out/.config
+          grep '^CONFIG_ARCH_BLAIR=y' out/.config
+          grep '^CONFIG_WT_QGKI=y' out/.config
+          grep '^CONFIG_LTO_CLANG=y' out/.config
+          grep '^CONFIG_BUILD_ARM64_UNCOMPRESSED_KERNEL=y' out/.config
+
+          echo
           echo "Kernel release:"
 
           make \
@@ -194,6 +232,17 @@ jobs:
 
           export PATH="$GITHUB_WORKSPACE/toolchain/clang-r416183b/bin:$PATH"
           export KCFLAGS="-D__ANDROID_COMMON_KERNEL__"
+
+          echo "Compiler:"
+          clang --version
+
+          echo
+          echo "CPU threads:"
+          nproc
+
+          echo
+          echo "Starting VEUX 5.4.274 Stability Candidate 2..."
+          echo
 
           make \
             -j"$(nproc)" \
@@ -214,18 +263,30 @@ jobs:
           IMAGE="out/arch/arm64/boot/Image"
           VEUX_DTB="out/arch/arm64/boot/dts/vendor/xiaomi/veux.dtb"
 
+          echo "Checking build outputs..."
+
           test -s "$IMAGE"
           test -s "$VEUX_DTB"
           test -s out/.config
 
-          echo "✅ Image"
-          echo "✅ veux.dtb"
-          echo "✅ .config"
+          echo
+          echo "✅ Kernel Image exists"
+          echo "✅ VEUX DTB exists"
+          echo "✅ Kernel config exists"
+
+          echo
+          echo "Files:"
+          ls -lh "$IMAGE"
+          ls -lh "$VEUX_DTB"
+          ls -lh out/.config
 
           echo
           echo "SHA-256:"
           sha256sum "$IMAGE"
           sha256sum "$VEUX_DTB"
+
+          echo
+          echo "Parsing VEUX DTB..."
 
           out/scripts/dtc/dtc \
             -I dtb \
@@ -233,14 +294,16 @@ jobs:
             -o /dev/null \
             "$VEUX_DTB"
 
-          echo "✅ VEUX DTB parses"
+          echo
+          echo "✅ VEUX DTB parses successfully"
 
       - name: Prepare stability artifacts
         shell: bash
         run: |
           set -euo pipefail
 
-          mkdir -p "$GITHUB_WORKSPACE/artifacts"
+          mkdir -p \
+            "$GITHUB_WORKSPACE/artifacts"
 
           cp \
             kernel/out/arch/arm64/boot/Image \
@@ -265,22 +328,29 @@ jobs:
           cd kernel
 
           {
-            echo "VEUX 5.4.274 STABILITY CANDIDATE 1"
+            echo "VEUX 5.4.274 STABILITY CANDIDATE 2"
             echo
-            echo "Base: dereference23/kernel_xiaomi_sm6375 tag 20240619"
-            echo "Upstream: android11-5.4.274_r00"
-            echo "Compiler: clang-r416183b"
+            echo "Base:"
+            echo "dereference23/kernel_xiaomi_sm6375"
+            echo "Tag: 20240619"
             echo
-            echo "Stability changes:"
-            echo "- Restored CASS thermal-pressure awareness"
+            echo "Upstream:"
+            echo "android11-5.4.274_r00"
+            echo
+            echo "Compiler:"
+            echo "clang-r416183b"
+            echo
+            echo "Stability change:"
             echo "- Removed forced Blair minimum CPU frequencies"
+            echo "- CASS intentionally unchanged from known-good baseline"
             echo
-            echo "NOT changed:"
-            echo "- CPU frequency table"
-            echo "- Energy model"
-            echo "- VEUX thermal-zone fixes"
-            echo "- USB device overrides"
+            echo "Intentionally NOT changed:"
+            echo "- CASS scheduler implementation"
+            echo "- Blair CPU frequency table"
+            echo "- Blair energy model"
             echo "- schedutil tuning"
+            echo "- VEUX thermal device fixes"
+            echo "- VEUX USB device fixes"
             echo "- SUSFS / KernelSU / ReSukiSU"
             echo
             echo "Kernel release:"
@@ -292,17 +362,19 @@ jobs:
               kernelrelease
             echo
             echo "SHA-256:"
-            sha256sum out/arch/arm64/boot/Image
-            sha256sum out/arch/arm64/boot/dts/vendor/xiaomi/veux.dtb
+            sha256sum \
+              out/arch/arm64/boot/Image
+            sha256sum \
+              out/arch/arm64/boot/dts/vendor/xiaomi/veux.dtb
             echo
-            echo "Revert commits:"
-            git log -2 --oneline
+            echo "Stability revert:"
+            git log -1 --oneline
           } > "$GITHUB_WORKSPACE/artifacts/STABILITY-INFO.txt"
 
       - name: Upload stability candidate
         uses: actions/upload-artifact@v7
         with:
-          name: veux-5.4.274-stability-candidate-1
+          name: veux-5.4.274-stability-candidate-2
           path: artifacts/
           retention-days: 14
           if-no-files-found: error
@@ -311,7 +383,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v7
         with:
-          name: veux-5.4.274-stability-failure-logs
+          name: veux-5.4.274-stability-candidate-2-failure-logs
           path: |
             config.log
             build.log
