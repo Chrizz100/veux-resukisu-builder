@@ -8,7 +8,7 @@ jobs:
     runs-on: ubuntu-24.04
 
     steps:
-      - name: Checkout full VEUX history
+      - name: Checkout VEUX history
         uses: actions/checkout@v7
         with:
           repository: dereference23/kernel_xiaomi_sm6375
@@ -16,7 +16,7 @@ jobs:
           fetch-depth: 0
           path: kernel
 
-      - name: Find device-specific 5.4.274 commit
+      - name: Find last complete VEUX 5.4.274 commit
         shell: bash
         run: |
           set -euo pipefail
@@ -25,67 +25,104 @@ jobs:
 
           START=f60d08db833bc56f054420abe0c16e8ca60fb1a0
           END=20240819
-          BEST=""
+          TMPFILE="$RUNNER_TEMP/kernel_makefile"
 
-          echo "Searching from:"
-          echo "START=$START"
-          echo "END=$END"
-          echo
+          read_kver() {
+            git show "$1:Makefile" > "$TMPFILE"
 
-          for c in "$START" $(git rev-list --reverse "$START..$END"); do
+            VERSION=$(awk '$1=="VERSION" && $2=="=" {print $3; exit}' "$TMPFILE")
+            PATCHLEVEL=$(awk '$1=="PATCHLEVEL" && $2=="=" {print $3; exit}' "$TMPFILE")
+            SUBLEVEL=$(awk '$1=="SUBLEVEL" && $2=="=" {print $3; exit}' "$TMPFILE")
 
-            if ! git cat-file -e "$c:Makefile" 2>/dev/null; then
-              continue
-            fi
+            printf '%s.%s.%s\n' "$VERSION" "$PATCHLEVEL" "$SUBLEVEL"
+          }
 
-            VERSION=$(git show "$c:Makefile" | awk '/^VERSION =/{print $3; exit}')
-            PATCHLEVEL=$(git show "$c:Makefile" | awk '/^PATCHLEVEL =/{print $3; exit}')
-            SUBLEVEL=$(git show "$c:Makefile" | awk '/^SUBLEVEL =/{print $3; exit}')
+          echo "Checking ancestry..."
 
-            KVER="${VERSION}.${PATCHLEVEL}.${SUBLEVEL}"
-
-            if [ "$KVER" != "5.4.274" ]; then
-              continue
-            fi
-
-            if ! git cat-file -e \
-              "$c:arch/arm64/boot/dts/vendor/xiaomi/veux.dts" \
-              2>/dev/null; then
-              continue
-            fi
-
-            if ! git cat-file -e \
-              "$c:arch/arm64/configs/veux_defconfig" \
-              2>/dev/null; then
-              continue
-            fi
-
-            BEST="$c"
-
-            echo "MATCH: $c"
-            git show -s --format='Date: %ci%nSubject: %s' "$c"
-            echo
-          done
-
-          if [ -z "$BEST" ]; then
-            echo "ERROR: No complete VEUX 5.4.274 source commit found."
-            exit 1
+          if ! git merge-base --is-ancestor "$START" "$END"; then
+            echo "ERROR: 5.4.274 base is not an ancestor of $END"
+            exit 2
           fi
 
+          echo "START:"
+          echo "$START"
+          echo "Version: $(read_kver "$START")"
           echo
-          echo "========================================"
-          echo "BEST VEUX 5.4.274 COMMIT:"
-          echo "$BEST"
-          echo "========================================"
 
-          git show -s --format='Date: %ci%nSubject: %s' "$BEST"
+          BUMP=""
+
+          echo "Searching only commits that changed Makefile..."
+
+          while IFS= read -r COMMIT; do
+            KVER=$(read_kver "$COMMIT")
+            echo "$COMMIT -> $KVER"
+
+            if [ "$KVER" != "5.4.274" ]; then
+              BUMP="$COMMIT"
+              break
+            fi
+          done < <(
+            git rev-list \
+              --first-parent \
+              --reverse \
+              "$START..$END" \
+              -- Makefile
+          )
+
+          if [ -n "$BUMP" ]; then
+            CANDIDATE=$(git rev-parse "$BUMP^1")
+            echo
+            echo "First version after 5.4.274:"
+            echo "$BUMP"
+          else
+            CANDIDATE=$(git rev-parse "$END")
+          fi
+
+          KVER=$(read_kver "$CANDIDATE")
+
+          echo
+          echo "Candidate:"
+          echo "$CANDIDATE"
+          echo "Version: $KVER"
+
+          if [ "$KVER" != "5.4.274" ]; then
+            echo "ERROR: Candidate is not Linux 5.4.274"
+            exit 3
+          fi
+
+          VEUX_DTS="arch/arm64/boot/dts/vendor/xiaomi/veux.dts"
+          VEUX_DEFCONFIG="arch/arm64/configs/veux_defconfig"
+
+          echo
+          echo "Checking VEUX device files..."
+
+          git cat-file -e "$CANDIDATE:$VEUX_DTS" || {
+            echo "ERROR: veux.dts missing"
+            exit 4
+          }
+
+          git cat-file -e "$CANDIDATE:$VEUX_DEFCONFIG" || {
+            echo "ERROR: veux_defconfig missing"
+            exit 5
+          }
+
+          echo
+          echo "=========================================="
+          echo "FOUND COMPLETE VEUX 5.4.274 SOURCE"
+          echo "=========================================="
+          echo
+          echo "COMMIT=$CANDIDATE"
+          echo "VERSION=$KVER"
+          echo
+          git show -s --format='Date: %ci%nSubject: %s' "$CANDIDATE"
 
           {
-            echo "## VEUX 5.4.274 source found"
+            echo "## Complete VEUX 5.4.274 source"
             echo
-            echo "**Commit:** \`$BEST\`"
+            echo "**Commit:** \`$CANDIDATE\`"
             echo
-            echo '```'
-            git show -s --format='Date: %ci%nSubject: %s' "$BEST"
-            echo '```'
+            echo "**Kernel:** \`$KVER\`"
+            echo
+            echo "- ✅ veux.dts"
+            echo "- ✅ veux_defconfig"
           } >> "$GITHUB_STEP_SUMMARY"
