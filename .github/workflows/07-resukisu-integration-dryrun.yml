@@ -156,6 +156,7 @@ jobs:
 
           def sub_once(path, pattern, replacement, description, flags=0):
               text = load(path)
+
               new_text, count = re.subn(
                   pattern,
                   replacement,
@@ -174,12 +175,6 @@ jobs:
 
               save(path, new_text)
               print(f"OK: {description}")
-
-          # ------------------------------------------------------------
-          # fs/read_write.c
-          # Remove obsolete KernelSU vfs_read hook.
-          # ReSukiSU explicitly rejects ksu_vfs_read_hook.
-          # ------------------------------------------------------------
 
           sub_once(
               "fs/read_write.c",
@@ -209,12 +204,6 @@ jobs:
               "remove legacy ksu_vfs_read_hook call",
               re.VERBOSE,
           )
-
-          # ------------------------------------------------------------
-          # fs/exec.c
-          # Replace the old runtime bool/sucompat split with one
-          # current Manual Hook call in do_execveat_common().
-          # ------------------------------------------------------------
 
           sub_once(
               "fs/exec.c",
@@ -257,12 +246,6 @@ jobs:
               re.VERBOSE,
           )
 
-          # ------------------------------------------------------------
-          # fs/open.c
-          # Existing faccessat hook is usable; bind it specifically
-          # to the ReSukiSU Manual Hook configuration.
-          # ------------------------------------------------------------
-
           sub_once(
               "fs/open.c",
               r"""
@@ -289,12 +272,6 @@ jobs:
               "convert faccessat call guard",
               re.VERBOSE,
           )
-
-          # ------------------------------------------------------------
-          # fs/stat.c
-          # Keep the existing central vfs_statx path hook but convert
-          # its guard. Add the required return hooks for fd-based stat.
-          # ------------------------------------------------------------
 
           sub_once(
               "fs/stat.c",
@@ -369,11 +346,6 @@ jobs:
               re.VERBOSE | re.DOTALL,
           )
 
-          # ------------------------------------------------------------
-          # kernel/reboot.c
-          # Required ReSukiSU Manual Hook.
-          # ------------------------------------------------------------
-
           sub_once(
               "kernel/reboot.c",
               r"""
@@ -410,10 +382,6 @@ jobs:
               re.VERBOSE | re.DOTALL,
           )
 
-          # ------------------------------------------------------------
-          # Hard fail on known incompatible old hooks.
-          # ------------------------------------------------------------
-
           forbidden = {
               "fs/read_write.c": [
                   "ksu_vfs_read_hook",
@@ -427,6 +395,7 @@ jobs:
 
           for path, terms in forbidden.items():
               text = load(path)
+
               for term in terms:
                   if term in text:
                       print(
@@ -455,6 +424,7 @@ jobs:
 
           for path, terms in required.items():
               text = load(path)
+
               for term in terms:
                   if term not in text:
                       print(
@@ -519,7 +489,6 @@ jobs:
 
           python3 <<'PY'
           from pathlib import Path
-          import re
 
           path = Path("arch/arm64/configs/veux_defconfig")
           text = path.read_text()
@@ -541,15 +510,23 @@ jobs:
               for symbol in symbols:
                   if line == f"CONFIG_{symbol}=y":
                       return True
+
                   if line == f"CONFIG_{symbol}=m":
                       return True
+
                   if line.startswith(f"CONFIG_{symbol}="):
                       return True
+
                   if line == f"# CONFIG_{symbol} is not set":
                       return True
+
               return False
 
-          lines = [line for line in lines if not belongs(line)]
+          lines = [
+              line
+              for line in lines
+              if not belongs(line)
+          ]
 
           lines += [
               "",
@@ -564,8 +541,14 @@ jobs:
               "CONFIG_KSU_MANUAL_HOOK_AUTO_INPUT_HOOK=y",
           ]
 
-          path.write_text("\n".join(lines) + "\n")
+          path.write_text(
+              "\n".join(lines) + "\n"
+          )
           PY
+
+          echo
+          echo "ReSukiSU additions to defconfig:"
+          echo
 
           tail -n 15 "$DEFCONFIG"
 
@@ -576,15 +559,17 @@ jobs:
 
           cd kernel
 
+          rm -rf out
+
           make \
             O=out \
             ARCH=arm64 \
-            LLVM=1 \
-            LLVM_IAS=1 \
-            veux_defconfig
+            veux_defconfig \
+            2>&1 | tee "$GITHUB_WORKSPACE/defconfig.log"
 
           test -f out/.config
 
+          echo
           echo "Resolved ReSukiSU configuration:"
           echo
 
@@ -600,12 +585,23 @@ jobs:
 
           cd kernel
 
-          CONFIG=out/.config
+          CONFIG="out/.config"
 
-          grep -qx 'CONFIG_KSU=y' "$CONFIG"
-          grep -qx 'CONFIG_KSU_MANUAL_HOOK=y' "$CONFIG"
-          grep -qx '# CONFIG_KSU_TRACEPOINT_HOOK is not set' "$CONFIG"
-          grep -qx '# CONFIG_KSU_SUSFS is not set' "$CONFIG"
+          grep -qx \
+            'CONFIG_KSU=y' \
+            "$CONFIG"
+
+          grep -qx \
+            'CONFIG_KSU_MANUAL_HOOK=y' \
+            "$CONFIG"
+
+          grep -qx \
+            '# CONFIG_KSU_TRACEPOINT_HOOK is not set' \
+            "$CONFIG"
+
+          grep -qx \
+            '# CONFIG_KSU_SUSFS is not set' \
+            "$CONFIG"
 
           grep -qx \
             'CONFIG_KSU_MANUAL_HOOK_AUTO_SETUID_HOOK=y' \
@@ -619,13 +615,20 @@ jobs:
             'CONFIG_KSU_MANUAL_HOOK_AUTO_INPUT_HOOK=y' \
             "$CONFIG"
 
-          if ! grep -qx 'CONFIG_KALLSYMS_ALL=y' "$CONFIG"; then
+          if ! grep -qx \
+            'CONFIG_KALLSYMS_ALL=y' \
+            "$CONFIG"
+          then
             echo
             echo "ERROR: CONFIG_KALLSYMS_ALL did not resolve to y."
-            echo "We will not bypass the ReSukiSU static-symbol checks."
+            echo "Static-symbol requirements will not be bypassed."
             exit 50
           fi
 
+          echo
+          echo "=========================================="
+          echo "RESUKISU CONFIGURATION VERIFIED"
+          echo "=========================================="
           echo
           echo "✅ CONFIG_KSU=y"
           echo "✅ CONFIG_KSU_MANUAL_HOOK=y"
@@ -676,10 +679,14 @@ jobs:
               ksu_handle_execveat_sucompat \
               is_ksu_transition
             do
-              if git grep -n "$TERM" -- \
+              if git grep \
+                -n \
+                "$TERM" \
+                -- \
                 ':!KernelSU/**' \
                 ':!drivers/kernelsu/**'
               then
+                echo
                 echo "ERROR: incompatible legacy term remains: $TERM"
                 exit 61
               else
@@ -705,13 +712,19 @@ jobs:
             echo "Base:"
             echo "dereference23/kernel_xiaomi_sm6375 @ 20240619"
             echo
+            echo "Stability Candidate:"
+            echo "Candidate 2"
+            echo
             echo "ReSukiSU:"
             git -C KernelSU rev-parse HEAD
             echo
             echo "drivers/kernelsu:"
             readlink drivers/kernelsu
             echo
-            echo "No kernel image was compiled."
+            echo "SUSFS:"
+            echo "Not newly enabled in this dry run"
+            echo
+            echo "No kernel Image was compiled."
             echo "No boot image was created."
             echo "Nothing was flashed."
           } > "$GITHUB_WORKSPACE/INTEGRATION-SUMMARY.txt"
@@ -726,14 +739,18 @@ jobs:
             arch/arm64/configs/veux_defconfig \
             > "$GITHUB_WORKSPACE/RESUKISU-INTEGRATION.diff"
 
-          cp out/.config \
+          cp \
+            out/.config \
             "$GITHUB_WORKSPACE/resolved-veux.config"
 
-          cat "$GITHUB_WORKSPACE/INTEGRATION-SUMMARY.txt"
+          cat \
+            "$GITHUB_WORKSPACE/INTEGRATION-SUMMARY.txt"
 
           echo
           echo "Diff lines:"
-          wc -l "$GITHUB_WORKSPACE/RESUKISU-INTEGRATION.diff"
+
+          wc -l \
+            "$GITHUB_WORKSPACE/RESUKISU-INTEGRATION.diff"
 
       - name: Upload integration audit
         uses: actions/upload-artifact@v7
@@ -745,5 +762,22 @@ jobs:
             INTEGRATION-SUMMARY.txt
             RESUKISU-INTEGRATION.diff
             resolved-veux.config
+            defconfig.log
           retention-days: 14
           if-no-files-found: error
+
+      - name: Upload diagnostics if workflow fails
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: veux-5.4.274-resukisu-integration-failure
+          path: |
+            SUSFS-GUARD.txt
+            HOOK-AUDIT.txt
+            INTEGRATION-SUMMARY.txt
+            RESUKISU-INTEGRATION.diff
+            resolved-veux.config
+            defconfig.log
+            kernel/out/.config
+          retention-days: 14
+          if-no-files-found: warn
