@@ -1,1 +1,1 @@
-# veux-resukisu-builder
+veux ReSukiSU Builder
