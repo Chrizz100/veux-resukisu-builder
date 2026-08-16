@@ -1,0 +1,1548 @@
+name: 20 - VEUX ReSukiSU SUSFS 2.2 Packaging and AVB Audit
+
+on:
+  workflow_dispatch:
+    inputs:
+      workflow17_run_id:
+        description: "Optional exact successful Workflow 17 run ID; leave blank to use the latest successful Workflow 17 run"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  WF17_FILE: "17-susfs-final-release-candidate.yml"
+  WF17_ARTIFACT_PREFIX: "veux-5.4.274-resukisu-susfs-2.2-final-release-candidate-"
+
+  EXPECTED_IMAGE_BYTES: "29839872"
+  EXPECTED_IMAGE_SHA256: "e036175ada602df3bcb443da7c390e8cd4b0e900c26fbfa313725db02855ec96"
+  EXPECTED_DTB_BYTES: "275689"
+  EXPECTED_DTB_SHA256: "42728a6f3d48ae35ac6be4b14ea51bc8a323e77baec2ee544827487378f99d37"
+  EXPECTED_CONFIG_SHA256: "c9831aeadf65064bf6632973b2bd6f4da905da9707718bc75ded0bd228150ca6"
+  EXPECTED_SOURCE_DIFF_SHA256: "afdbab86f738aead94a12f896eeb5b74008dcf1c4fe5dfec4682651491a3de1e"
+  EXPECTED_CANDIDATE_TREE: "5d25b7e0124d7fb695f3f07b45928fcb5780d0e8"
+  EXPECTED_RESUKISU_COMMIT: "faccf4c5edc7be37776216e7d43dd3dca0239331"
+
+  STOCK_ROM_BUILD: "V816.0.12.0.TKCMIXM"
+  STOCK_BOOT_BYTES: "134217728"
+  STOCK_BOOT_SHA256: "ac6522e4eed55782dd2ae61362e9d345d01a1f229c87333818511d5537fa79c5"
+  STOCK_VENDOR_BOOT_BYTES: "100663296"
+  STOCK_VENDOR_BOOT_SHA256: "583e1f4c0e09c2267cda88bd48a8b4f56cf5c5e034fbda7b25bd65aa86385425"
+  STOCK_DTBO_BYTES: "8388608"
+  STOCK_DTBO_SHA256: "e9f3bae2c5417ff297162f1e7d2652ee98b347488fdf091d61daa986fbfb7690"
+  STOCK_VBMETA_BYTES: "8192"
+  STOCK_VBMETA_SHA256: "62a5b1a94c2247c786e8148b9d9d0aea943b57b1034b3fd82d9cac9a85fcde97"
+
+  STOCK_BOOT_DESCRIPTOR_DIGEST: "fc6d91cd4ce2e89703c59e6a35c60e3efd984cfb54a29760e4a3105c42399d8a"
+  STOCK_DTBO_DESCRIPTOR_DIGEST: "a49a514a35a1ee60c19716407eb70f8bf5f9a8fec7aa8394c00c370f7ca0c6d9"
+  STOCK_VENDOR_BOOT_DESCRIPTOR_DIGEST: "370f9c242bd161bd36effc3e7b56f208e21700a9a4e848b004f68595df2190c6"
+
+  ANYKERNEL_REPO: "https://github.com/osm0sis/AnyKernel3.git"
+  ANYKERNEL_COMMIT: "e4b1bb25ca2aabcfd57f694a5998d87130701b71"
+  ANYKERNEL_CORE_BLOB: "d9692acdb3501a7ccb60576ecce435e7a30156dc"
+  ANYKERNEL_UPDATE_BINARY_BLOB: "8c7006e7e3f6ef10f8f4117b291d6df204ef285e"
+  ANYKERNEL_MAGISKBOOT_BLOB: "56207debdf74b28059672c9ae39cc51897c7ca02"
+
+jobs:
+  packaging-audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    env:
+      WORK_DIR: ${{ github.workspace }}/workflow20
+      RC_DIR: ${{ github.workspace }}/workflow20/release-candidate
+      AK3_DIR: ${{ github.workspace }}/workflow20/AnyKernel3
+      STAGE_DIR: ${{ github.workspace }}/workflow20/stage
+      AUDIT_DIR: ${{ github.workspace }}/workflow20/audit
+      OUTPUT_DIR: ${{ github.workspace }}/workflow20/output
+
+    steps:
+      - name: Prepare Workflow 20
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -rf "$WORK_DIR"
+          mkdir -p \
+            "$RC_DIR" \
+            "$AUDIT_DIR" \
+            "$OUTPUT_DIR"
+
+          {
+            echo "VEUX Workflow 20 - Packaging and AVB Audit"
+            echo "=========================================="
+            echo
+            echo "Purpose:"
+            echo "- consume the exact frozen Workflow 17 release candidate"
+            echo "- pin the already-audited stock-ROM boot/vendor_boot/dtbo/vbmeta geometry"
+            echo "- pin one exact AnyKernel3 upstream commit"
+            echo "- create a guarded DO_NOT_FLASH staging installer"
+            echo "- prove the staging ZIP contains only the boot kernel payload"
+            echo "- prove it contains no vendor_boot, dtbo, vbmeta or DTB image"
+            echo
+            echo "Workflow 20 MUST NOT create an enabled flash package."
+            echo "The staging anykernel.sh contains an unconditional DO_NOT_FLASH guard."
+          } > "$AUDIT_DIR/WORKFLOW20-PLAN.txt"
+
+      - name: Install audit dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ca-certificates \
+            curl \
+            git \
+            python3 \
+            unzip \
+            zip
+
+      - name: Resolve exact Workflow 17 run
+        id: wf17
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUESTED_RUN_ID: ${{ inputs.workflow17_run_id }}
+        run: |
+          set -euo pipefail
+
+          API="https://api.github.com/repos/${GITHUB_REPOSITORY}"
+
+          auth_curl() {
+            curl \
+              --fail \
+              --silent \
+              --show-error \
+              --location \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "$@"
+          }
+
+          if [ -n "${REQUESTED_RUN_ID:-}" ]; then
+            if ! printf '%s' "$REQUESTED_RUN_ID" | grep -Eq '^[0-9]+$'; then
+              echo "ERROR: workflow17_run_id must be numeric"
+              exit 1
+            fi
+
+            RUN_ID="$REQUESTED_RUN_ID"
+
+            auth_curl \
+              "${API}/actions/runs/${RUN_ID}" \
+              -o "$AUDIT_DIR/workflow17-run.json"
+
+            python3 - "$AUDIT_DIR/workflow17-run.json" "$WF17_FILE" <<'PY'
+          import json
+          import sys
+
+          path, expected_file = sys.argv[1:3]
+          data = json.load(open(path, "r", encoding="utf-8"))
+
+          if data.get("conclusion") != "success":
+              raise SystemExit(
+                  f"Requested Workflow 17 run is not successful: "
+                  f"{data.get('conclusion')!r}"
+              )
+
+          actual_path = data.get("path", "")
+
+          if not actual_path.endswith("/" + expected_file):
+              raise SystemExit(
+                  f"Requested run uses unexpected workflow path: "
+                  f"{actual_path!r}"
+              )
+          PY
+
+          else
+            auth_curl \
+              "${API}/actions/workflows/${WF17_FILE}/runs?status=success&per_page=30" \
+              -o "$AUDIT_DIR/workflow17-runs.json"
+
+            RUN_ID="$(
+              python3 - "$AUDIT_DIR/workflow17-runs.json" <<'PY'
+          import json
+          import sys
+
+          data = json.load(open(sys.argv[1], "r", encoding="utf-8"))
+
+          runs = [
+              run
+              for run in data.get("workflow_runs", [])
+              if run.get("conclusion") == "success"
+          ]
+
+          if not runs:
+              raise SystemExit(
+                  "No successful Workflow 17 run was found."
+              )
+
+          print(runs[0]["id"])
+          PY
+            )"
+          fi
+
+          printf '%s\n' "$RUN_ID" \
+            > "$AUDIT_DIR/WORKFLOW17-RUN-ID.txt"
+
+          echo "run_id=$RUN_ID" >> "$GITHUB_OUTPUT"
+
+      - name: Download exact Workflow 17 artifact
+        id: wf17_artifact
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ steps.wf17.outputs.run_id }}
+        run: |
+          set -euo pipefail
+
+          API="https://api.github.com/repos/${GITHUB_REPOSITORY}"
+
+          curl \
+            --fail \
+            --silent \
+            --show-error \
+            --location \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "${API}/actions/runs/${RUN_ID}/artifacts?per_page=100" \
+            -o "$AUDIT_DIR/workflow17-artifacts.json"
+
+          readarray -t ARTIFACT_INFO < <(
+            python3 - \
+              "$AUDIT_DIR/workflow17-artifacts.json" \
+              "$WF17_ARTIFACT_PREFIX" <<'PY'
+          import json
+          import sys
+
+          path, prefix = sys.argv[1:3]
+
+          data = json.load(
+              open(path, "r", encoding="utf-8")
+          )
+
+          matches = [
+              artifact
+              for artifact in data.get("artifacts", [])
+              if artifact.get("name", "").startswith(prefix)
+              and not artifact.get("expired", False)
+          ]
+
+          if len(matches) != 1:
+              raise SystemExit(
+                  f"Expected exactly one non-expired Workflow 17 "
+                  f"artifact with prefix {prefix!r}, "
+                  f"found {len(matches)}."
+              )
+
+          artifact = matches[0]
+
+          print(artifact["id"])
+          print(artifact["name"])
+          print(artifact["archive_download_url"])
+          PY
+          )
+
+          ARTIFACT_ID="${ARTIFACT_INFO[0]}"
+          ARTIFACT_NAME="${ARTIFACT_INFO[1]}"
+          ARTIFACT_URL="${ARTIFACT_INFO[2]}"
+
+          printf '%s\n' "$ARTIFACT_ID" \
+            > "$AUDIT_DIR/WORKFLOW17-ARTIFACT-ID.txt"
+
+          printf '%s\n' "$ARTIFACT_NAME" \
+            > "$AUDIT_DIR/WORKFLOW17-ARTIFACT-NAME.txt"
+
+          curl \
+            --fail \
+            --silent \
+            --show-error \
+            --location \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "$ARTIFACT_URL" \
+            -o "$WORK_DIR/workflow17-artifact.zip"
+
+          unzip -q \
+            "$WORK_DIR/workflow17-artifact.zip" \
+            -d "$RC_DIR"
+
+          echo "artifact_name=$ARTIFACT_NAME" \
+            >> "$GITHUB_OUTPUT"
+
+      - name: Verify frozen Workflow 17 release candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          required=(
+            Image
+            veux.dtb
+            System.map
+            final.config
+            VEUX-SUSFS-2.2-WARNING-CLEAN.diff
+            REQUIRED-LINKED-SYMBOLS.txt
+            REQUIRED-LINKED-SYMBOL-LINES.txt
+            FULL-BUILD-WARNINGS.txt
+            BUILD-OUTPUT-HASHES.txt
+            candidate2.txt
+            resukisu-commit.txt
+            RELEASE-MANIFEST.txt
+            SHA256SUMS
+            SHA256SUMS.verify.txt
+          )
+
+          for file in "${required[@]}"; do
+            if [ ! -f "$RC_DIR/$file" ]; then
+              echo "ERROR: Workflow 17 artifact missing: $file"
+              exit 1
+            fi
+          done
+
+          (
+            cd "$RC_DIR"
+
+            sha256sum -c SHA256SUMS \
+              | tee \
+                "$AUDIT_DIR/WORKFLOW17-SHA256SUMS-REVERIFY.txt"
+          )
+
+          if ! grep -qx \
+            'RESULT: PASS' \
+            "$RC_DIR/RELEASE-MANIFEST.txt"
+          then
+            echo "ERROR: Workflow 17 release manifest is not PASS"
+            exit 1
+          fi
+
+          image_bytes="$(
+            stat -c '%s' "$RC_DIR/Image"
+          )"
+
+          image_sha="$(
+            sha256sum "$RC_DIR/Image" \
+              | awk '{print $1}'
+          )"
+
+          dtb_bytes="$(
+            stat -c '%s' "$RC_DIR/veux.dtb"
+          )"
+
+          dtb_sha="$(
+            sha256sum "$RC_DIR/veux.dtb" \
+              | awk '{print $1}'
+          )"
+
+          config_sha="$(
+            sha256sum "$RC_DIR/final.config" \
+              | awk '{print $1}'
+          )"
+
+          diff_sha="$(
+            sha256sum \
+              "$RC_DIR/VEUX-SUSFS-2.2-WARNING-CLEAN.diff" \
+              | awk '{print $1}'
+          )"
+
+          [ "$image_bytes" = "$EXPECTED_IMAGE_BYTES" ] || {
+            echo "ERROR: frozen Image size mismatch"
+            exit 1
+          }
+
+          [ "$image_sha" = "$EXPECTED_IMAGE_SHA256" ] || {
+            echo "ERROR: frozen Image SHA-256 mismatch"
+            echo "Expected: $EXPECTED_IMAGE_SHA256"
+            echo "Actual:   $image_sha"
+            exit 1
+          }
+
+          [ "$dtb_bytes" = "$EXPECTED_DTB_BYTES" ] || {
+            echo "ERROR: Workflow 17 DTB size mismatch"
+            exit 1
+          }
+
+          [ "$dtb_sha" = "$EXPECTED_DTB_SHA256" ] || {
+            echo "ERROR: Workflow 17 DTB SHA-256 mismatch"
+            exit 1
+          }
+
+          [ "$config_sha" = "$EXPECTED_CONFIG_SHA256" ] || {
+            echo "ERROR: Workflow 17 config SHA-256 mismatch"
+            exit 1
+          }
+
+          [ "$diff_sha" = "$EXPECTED_SOURCE_DIFF_SHA256" ] || {
+            echo "ERROR: Workflow 17 source-diff SHA-256 mismatch"
+            exit 1
+          }
+
+          grep -Fq \
+            "CANDIDATE_TREE=$EXPECTED_CANDIDATE_TREE" \
+            "$RC_DIR/candidate2.txt"
+
+          grep -Fxq \
+            "$EXPECTED_RESUKISU_COMMIT" \
+            "$RC_DIR/resukisu-commit.txt"
+
+          if [ "$(
+            wc -l \
+              < "$RC_DIR/REQUIRED-LINKED-SYMBOLS.txt" \
+              | tr -d ' '
+          )" -ne 11 ]; then
+            echo "ERROR: Workflow 17 required-symbol count is not 11"
+            exit 1
+          fi
+
+          if [ "$(
+            wc -l \
+              < "$RC_DIR/FULL-BUILD-WARNINGS.txt" \
+              | tr -d ' '
+          )" -ne 1 ]; then
+            echo "ERROR: Workflow 17 warning count changed"
+            exit 1
+          fi
+
+          if ! grep -Eq \
+            "^\.\./drivers/cpufreq/qcom-cpufreq-hw\.c:551:23: warning: unused variable 'c' \[-Wunused-variable\]$" \
+            "$RC_DIR/FULL-BUILD-WARNINGS.txt"
+          then
+            echo "ERROR: Workflow 17 warning is not the known Qualcomm baseline warning"
+            exit 1
+          fi
+
+          {
+            echo "WORKFLOW17_RELEASE_CANDIDATE=PASS"
+            echo "IMAGE_BYTES=$image_bytes"
+            echo "IMAGE_SHA256=$image_sha"
+            echo "DTB_BYTES=$dtb_bytes"
+            echo "DTB_SHA256=$dtb_sha"
+            echo "CONFIG_SHA256=$config_sha"
+            echo "SOURCE_DIFF_SHA256=$diff_sha"
+            echo "REQUIRED_LINKED_SYMBOLS=11"
+          } > \
+            "$AUDIT_DIR/WORKFLOW17-RELEASE-CANDIDATE-CHECK.txt"
+
+      - name: Write pinned stock-ROM AVB reference
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - \
+            "$AUDIT_DIR/STOCK-ROM-REFERENCE.json" <<'PY'
+          import json
+          import os
+          import sys
+
+          out = sys.argv[1]
+
+          data = {
+              "source": (
+                  "Pinned reference derived from the read-only audits "
+                  "of the user-supplied original ROM images. "
+                  "The large stock image files are intentionally not "
+                  "copied into GitHub."
+              ),
+              "rom": {
+                  "build": os.environ["STOCK_ROM_BUILD"],
+                  "fingerprint": (
+                      "qti/veux/veux:13/TKQ1.221114.001/"
+                      "V816.0.12.0.TKCMIXM:user/release-keys"
+                  ),
+                  "android_release": "13",
+                  "security_patch": "2024-12-01",
+              },
+              "boot": {
+                  "partition_bytes": int(
+                      os.environ["STOCK_BOOT_BYTES"]
+                  ),
+                  "partition_sha256": os.environ[
+                      "STOCK_BOOT_SHA256"
+                  ],
+                  "header_version": 3,
+                  "header_size": 1580,
+                  "alignment": 4096,
+                  "kernel_bytes": 45480448,
+                  "ramdisk_bytes": 22061278,
+                  "ramdisk_format": "lz4_legacy",
+                  "ramdisk_sha256": (
+                      "0bc8b54373b5501818e8b252517419786"
+                      "db207771047b6def7ec9bc89beb607a"
+                  ),
+                  "embedded_avb_footer": "1.0",
+                  "embedded_hash_digest": os.environ[
+                      "STOCK_BOOT_DESCRIPTOR_DIGEST"
+                  ],
+              },
+              "vendor_boot": {
+                  "partition_bytes": int(
+                      os.environ["STOCK_VENDOR_BOOT_BYTES"]
+                  ),
+                  "partition_sha256": os.environ[
+                      "STOCK_VENDOR_BOOT_SHA256"
+                  ],
+                  "header_version": 3,
+                  "header_size": 2112,
+                  "page_size": 4096,
+                  "kernel_addr": 32768,
+                  "ramdisk_addr": 16777216,
+                  "vendor_ramdisk_bytes": 1495296,
+                  "tags_addr": 256,
+                  "dtb_bytes": 651045,
+                  "dtb_addr": 0x1F00000,
+                  "dtb_fdt_blob_count": 3,
+                  "dtb_segment_sha256": (
+                      "10b7b848141bff201e1953d44128a3de"
+                      "92272a4fdc1afbf90b4e60682830ff46"
+                  ),
+                  "embedded_avb_footer": "1.0",
+                  "embedded_hash_digest": os.environ[
+                      "STOCK_VENDOR_BOOT_DESCRIPTOR_DIGEST"
+                  ],
+              },
+              "dtbo": {
+                  "partition_bytes": int(
+                      os.environ["STOCK_DTBO_BYTES"]
+                  ),
+                  "partition_sha256": os.environ[
+                      "STOCK_DTBO_SHA256"
+                  ],
+                  "table_magic": "0xd7b7ab1e",
+                  "table_total_size": 2760081,
+                  "table_header_size": 32,
+                  "entry_size": 32,
+                  "entry_count": 16,
+                  "entries_offset": 32,
+                  "page_size": 4096,
+                  "table_version": 0,
+                  "embedded_avb_footer": "1.0",
+                  "embedded_hash_digest": os.environ[
+                      "STOCK_DTBO_DESCRIPTOR_DIGEST"
+                  ],
+              },
+              "vbmeta": {
+                  "partition_bytes": int(
+                      os.environ["STOCK_VBMETA_BYTES"]
+                  ),
+                  "partition_sha256": os.environ[
+                      "STOCK_VBMETA_SHA256"
+                  ],
+                  "required_libavb": "1.0",
+                  "algorithm": "SHA256_RSA2048",
+                  "algorithm_type": 1,
+                  "authentication_block_bytes": 320,
+                  "auxiliary_block_bytes": 4224,
+                  "signature_verified_against_embedded_public_key": (
+                      True
+                  ),
+                  "signed_digest": (
+                      "4ba69147c283e7a43aec1c5f951901f9"
+                      "060057e21bae4e2c3df17400698bdb4c"
+                  ),
+                  "embedded_public_key_sha256": (
+                      "c5d3c71bc70d58e3e0409ca9d9b34c0"
+                      "dbac1d2f09a5de948a4b8f090f1926965"
+                  ),
+                  "chain_partition": {
+                      "name": "vbmeta_system",
+                      "rollback_index_location": 2,
+                      "public_key_sha256": (
+                          "c5d3c71bc70d58e3e0409ca9d9b34c0"
+                          "dbac1d2f09a5de948a4b8f090f1926965"
+                      ),
+                  },
+                  "direct_hash_descriptors": {
+                      "boot": {
+                          "image_size": 67551232,
+                          "algorithm": "sha256",
+                          "digest": os.environ[
+                              "STOCK_BOOT_DESCRIPTOR_DIGEST"
+                          ],
+                      },
+                      "dtbo": {
+                          "image_size": 2760081,
+                          "algorithm": "sha256",
+                          "digest": os.environ[
+                              "STOCK_DTBO_DESCRIPTOR_DIGEST"
+                          ],
+                      },
+                      "vendor_boot": {
+                          "image_size": 2154496,
+                          "algorithm": "sha256",
+                          "digest": os.environ[
+                              "STOCK_VENDOR_BOOT_DESCRIPTOR_DIGEST"
+                          ],
+                      },
+                  },
+                  "hashtree_partitions": [
+                      "mi_ext",
+                      "odm",
+                      "vendor",
+                  ],
+              },
+              "workflow19": {
+                  "dryrun_boot_sha256": (
+                      "2baffafce260348c247674c5e8176408d"
+                      "45dc75b35ccbf7ca5834cbb4679398e"
+                  ),
+                  "result": "PASS_DRYRUN",
+              },
+          }
+
+          with open(out, "w", encoding="utf-8") as f:
+              json.dump(
+                  data,
+                  f,
+                  indent=2,
+                  sort_keys=True,
+              )
+              f.write("\n")
+          PY
+
+          python3 - \
+            "$AUDIT_DIR/STOCK-ROM-REFERENCE.json" <<'PY'
+          import json
+          import sys
+
+          data = json.load(
+              open(sys.argv[1], "r", encoding="utf-8")
+          )
+
+          assert data["rom"]["build"] == (
+              "V816.0.12.0.TKCMIXM"
+          )
+
+          assert data["boot"]["header_version"] == 3
+          assert data["boot"]["partition_bytes"] == 134217728
+
+          assert data["vendor_boot"]["header_version"] == 3
+          assert data["vendor_boot"]["dtb_bytes"] == 651045
+          assert data["vendor_boot"]["dtb_fdt_blob_count"] == 3
+
+          assert data["dtbo"]["entry_count"] == 16
+
+          assert data["vbmeta"]["algorithm"] == (
+              "SHA256_RSA2048"
+          )
+
+          assert data["vbmeta"][
+              "signature_verified_against_embedded_public_key"
+          ]
+
+          assert sorted(
+              data["vbmeta"][
+                  "direct_hash_descriptors"
+              ].keys()
+          ) == [
+              "boot",
+              "dtbo",
+              "vendor_boot",
+          ]
+
+          assert data["vbmeta"][
+              "chain_partition"
+          ]["name"] == "vbmeta_system"
+
+          assert data["workflow19"]["result"] == (
+              "PASS_DRYRUN"
+          )
+          PY
+
+          sha256sum \
+            "$AUDIT_DIR/STOCK-ROM-REFERENCE.json" \
+            > \
+            "$AUDIT_DIR/STOCK-ROM-REFERENCE.json.sha256"
+
+      - name: Clone exact AnyKernel3
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -rf "$AK3_DIR"
+
+          git init "$AK3_DIR"
+
+          git -C "$AK3_DIR" \
+            remote add origin \
+            "$ANYKERNEL_REPO"
+
+          git -C "$AK3_DIR" fetch \
+            --depth=1 \
+            origin \
+            "$ANYKERNEL_COMMIT"
+
+          git -C "$AK3_DIR" checkout \
+            --detach \
+            FETCH_HEAD
+
+          actual_commit="$(
+            git -C "$AK3_DIR" rev-parse HEAD
+          )"
+
+          if [ "$actual_commit" != "$ANYKERNEL_COMMIT" ]; then
+            echo "ERROR: AnyKernel3 commit mismatch"
+            exit 1
+          fi
+
+          core_blob="$(
+            git -C "$AK3_DIR" \
+              hash-object tools/ak3-core.sh
+          )"
+
+          update_blob="$(
+            git -C "$AK3_DIR" \
+              hash-object \
+              META-INF/com/google/android/update-binary
+          )"
+
+          magiskboot_blob="$(
+            git -C "$AK3_DIR" \
+              hash-object tools/magiskboot
+          )"
+
+          [ "$core_blob" = "$ANYKERNEL_CORE_BLOB" ] || {
+            echo "ERROR: AnyKernel3 ak3-core.sh blob mismatch"
+            exit 1
+          }
+
+          [ "$update_blob" = "$ANYKERNEL_UPDATE_BINARY_BLOB" ] || {
+            echo "ERROR: AnyKernel3 update-binary blob mismatch"
+            exit 1
+          }
+
+          [ "$magiskboot_blob" = "$ANYKERNEL_MAGISKBOOT_BLOB" ] || {
+            echo "ERROR: AnyKernel3 magiskboot blob mismatch"
+            exit 1
+          }
+
+          {
+            echo "ANYKERNEL3_COMMIT=$actual_commit"
+            echo "AK3_CORE_BLOB=$core_blob"
+            echo "UPDATE_BINARY_BLOB=$update_blob"
+            echo "MAGISKBOOT_BLOB=$magiskboot_blob"
+          } > "$AUDIT_DIR/ANYKERNEL3-PIN.txt"
+
+      - name: Verify AnyKernel3 kernel-only contract
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          CORE="$AK3_DIR/tools/ak3-core.sh"
+
+          grep -Fq 'split_boot() {' "$CORE"
+          grep -Fq 'flash_boot() {' "$CORE"
+          grep -Fq 'magiskboot repack' "$CORE"
+          grep -Fq 'PATCH_VBMETA_FLAG' "$CORE"
+          grep -Fq 'NO_VBMETA_PARTITION_PATCH' "$CORE"
+
+          if ! grep -Fq \
+            'ramdisk=$(ls $SPLITIMG/ramdisk.cpio*' \
+            "$CORE"
+          then
+            echo "ERROR: pinned AnyKernel3 no longer exposes original split ramdisk fallback"
+            exit 1
+          fi
+
+          {
+            echo "ANYKERNEL3_CONTRACT_AUDIT=PASS"
+            echo "split_boot=FOUND"
+            echo "flash_boot=FOUND"
+            echo "magiskboot_repack=FOUND"
+            echo "original_split_ramdisk_fallback=FOUND"
+            echo "PATCH_VBMETA_FLAG=SUPPORTED"
+            echo "NO_VBMETA_PARTITION_PATCH=SUPPORTED"
+          } > \
+            "$AUDIT_DIR/ANYKERNEL3-CONTRACT-AUDIT.txt"
+
+      - name: Assemble guarded Workflow 20 staging installer
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -rf "$STAGE_DIR"
+          mkdir -p "$STAGE_DIR"
+
+          cp -a \
+            "$AK3_DIR/META-INF" \
+            "$STAGE_DIR/"
+
+          cp -a \
+            "$AK3_DIR/tools" \
+            "$STAGE_DIR/"
+
+          cp \
+            "$AK3_DIR/LICENSE" \
+            "$STAGE_DIR/LICENSE"
+
+          cp \
+            "$RC_DIR/Image" \
+            "$STAGE_DIR/Image"
+
+          cp \
+            "$AUDIT_DIR/STOCK-ROM-REFERENCE.json" \
+            "$STAGE_DIR/STOCK-ROM-REFERENCE.json"
+
+          cat > \
+            "$STAGE_DIR/WORKFLOW20_DO_NOT_FLASH" <<'EOF'
+          WORKFLOW 20 STAGING PACKAGE
+          DO NOT FLASH.
+
+          This marker intentionally causes anykernel.sh to abort before
+          split_boot or any write operation. Workflow 21 will only remove
+          this guard after the packaging/AVB audit has been reviewed.
+          EOF
+
+          cat > \
+            "$STAGE_DIR/anykernel.sh" <<'EOF'
+          ### AnyKernel3 Ramdisk Mod Script
+          ## VEUX 5.4.274 ReSukiSU + SUSFS 2.2
+
+          ### AnyKernel setup
+          properties() { '
+          kernel.string=VEUX 5.4.274 ReSukiSU SUSFS 2.2
+          do.devicecheck=1
+          do.modules=0
+          do.systemless=0
+          do.cleanup=1
+          do.cleanuponabort=1
+          device.name1=veux
+          device.name2=
+          device.name3=
+          device.name4=
+          device.name5=
+          supported.versions=13
+          supported.patchlevels=2024-12 - 2024-12
+          supported.vendorpatchlevels=2024-12 - 2024-12
+          '; } # end properties
+
+          ### boot shell variables
+          BLOCK=boot;
+          IS_SLOT_DEVICE=1;
+          SLOT_SELECT=active;
+          RAMDISK_COMPRESSION=auto;
+          PATCH_VBMETA_FLAG=0;
+
+          # Defense-in-depth:
+          # this package must not write top-level vbmeta.
+          NO_VBMETA_PARTITION_PATCH=1;
+
+          # ReSukiSU is already integrated in the approved kernel.
+          # Do not let AnyKernel3 alter the approved Image for Magisk.
+          NO_MAGISK_CHECK=1;
+
+          # Import AnyKernel3 functions.
+          . tools/ak3-core.sh;
+
+          # Workflow 20 is intentionally disabled.
+          if [ -f "$AKHOME/WORKFLOW20_DO_NOT_FLASH" ]; then
+            abort \
+              "Workflow 20 staging package only." \
+              "DO NOT FLASH." \
+              "Use the separately approved Workflow 21 final package.";
+          fi;
+
+          ui_print \
+            " " \
+            "VEUX 5.4.274 ReSukiSU + SUSFS 2.2" \
+            "Kernel-only installer";
+
+          # Dump/split active-slot boot without unpacking
+          # or recompressing its ramdisk.
+          split_boot;
+
+          # Runtime compatibility barriers.
+          BOOT_BYTES="$(
+            wc -c < "$BOOTIMG" \
+              | tr -d ' '
+          )";
+
+          [ "$BOOT_BYTES" = "134217728" ] || abort \
+            "Unexpected boot partition size: $BOOT_BYTES" \
+            "Expected 134217728 bytes. Aborting.";
+
+          grep -Eq \
+            'HEADER_VER[[:space:]]+\[3\]' \
+            "$SPLITIMG/infotmp" || abort \
+            "Expected Android boot header v3. Aborting.";
+
+          grep -Eq \
+            'PAGESIZE[[:space:]]+\[4096\]' \
+            "$SPLITIMG/infotmp" || abort \
+            "Expected boot page size 4096. Aborting.";
+
+          grep -Eq \
+            'OS_VERSION[[:space:]]+\[11\.0\.0\]' \
+            "$SPLITIMG/infotmp" || abort \
+            "Unexpected boot-header OS_VERSION. Aborting.";
+
+          grep -Eq \
+            'OS_PATCH_LEVEL[[:space:]]+\[2024-12\]' \
+            "$SPLITIMG/infotmp" || abort \
+            "Unexpected boot-header patch level. Aborting.";
+
+          grep -Eq \
+            'RAMDISK_FMT[[:space:]]+\[lz4_legacy\]' \
+            "$SPLITIMG/infotmp" || abort \
+            "Expected LZ4-legacy boot ramdisk. Aborting.";
+
+          ui_print \
+            "Boot-v3 compatibility checks passed.";
+
+          # Kernel-only repack/write.
+          # No ramdisk unpack/repack.
+          # No vendor_boot/dtbo/vbmeta operation.
+          flash_boot;
+
+          ui_print \
+            "Kernel installation complete.";
+          EOF
+
+          chmod 0755 \
+            "$STAGE_DIR/anykernel.sh"
+
+          cat > \
+            "$STAGE_DIR/VEUX-PACKAGE-MANIFEST.txt" <<EOF
+          VEUX 5.4.274 ReSukiSU SUSFS 2.2
+          =================================
+          WORKFLOW: 20
+          STATUS: DO_NOT_FLASH_STAGING
+
+          Frozen Workflow 17 Image:
+          Bytes: $EXPECTED_IMAGE_BYTES
+          SHA-256: $EXPECTED_IMAGE_SHA256
+
+          Candidate tree:
+          $EXPECTED_CANDIDATE_TREE
+
+          ReSukiSU:
+          $EXPECTED_RESUKISU_COMMIT
+
+          AnyKernel3:
+          $ANYKERNEL_COMMIT
+
+          ROM compatibility target:
+          $STOCK_ROM_BUILD
+          device: veux
+          Android userspace: 13
+          boot header: v3
+          boot partition: 134217728 bytes
+          boot ramdisk: lz4_legacy
+          security patch: 2024-12
+
+          Package scope:
+          boot kernel only
+
+          Explicitly excluded:
+          vendor_boot.img
+          dtbo.img
+          vbmeta.img
+          veux.dtb
+          ramdisk modifications
+          kernel modules
+
+          Safety:
+          WORKFLOW20_DO_NOT_FLASH is present.
+          anykernel.sh aborts before split_boot while that marker exists.
+          EOF
+
+          (
+            cd "$STAGE_DIR"
+
+            find . \
+              -type f \
+              ! -name 'PACKAGE-SHA256SUMS' \
+              -print0 \
+              | sort -z \
+              | xargs -0 sha256sum \
+              > PACKAGE-SHA256SUMS
+          )
+
+      - name: Static audit staging installer
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SCRIPT="$STAGE_DIR/anykernel.sh"
+
+          sh -n "$SCRIPT"
+          bash -n "$SCRIPT"
+
+          required_lines=(
+            'do.devicecheck=1'
+            'device.name1=veux'
+            'supported.versions=13'
+            'supported.patchlevels=2024-12 - 2024-12'
+            'supported.vendorpatchlevels=2024-12 - 2024-12'
+            'BLOCK=boot;'
+            'IS_SLOT_DEVICE=1;'
+            'SLOT_SELECT=active;'
+            'RAMDISK_COMPRESSION=auto;'
+            'PATCH_VBMETA_FLAG=0;'
+            'NO_VBMETA_PARTITION_PATCH=1;'
+            'NO_MAGISK_CHECK=1;'
+            'split_boot;'
+            'flash_boot;'
+          )
+
+          for line in "${required_lines[@]}"; do
+            if ! grep -Fq "$line" "$SCRIPT"; then
+              echo "ERROR: required installer line missing: $line"
+              exit 1
+            fi
+          done
+
+          if [ "$(
+            grep -Fc 'split_boot;' "$SCRIPT"
+          )" -ne 1 ]; then
+            echo "ERROR: split_boot must appear exactly once"
+            exit 1
+          fi
+
+          if [ "$(
+            grep -Fc 'flash_boot;' "$SCRIPT"
+          )" -ne 1 ]; then
+            echo "ERROR: flash_boot must appear exactly once"
+            exit 1
+          fi
+
+          forbidden_calls=(
+            'dump_boot;'
+            'unpack_ramdisk;'
+            'repack_ramdisk;'
+            'write_boot;'
+            'flash_generic '
+            'reset_ak'
+          )
+
+          for call in "${forbidden_calls[@]}"; do
+            if grep -Fq "$call" "$SCRIPT"; then
+              echo "ERROR: forbidden installer call present: $call"
+              exit 1
+            fi
+          done
+
+          if [ ! -f \
+            "$STAGE_DIR/WORKFLOW20_DO_NOT_FLASH" ]
+          then
+            echo "ERROR: DO_NOT_FLASH marker missing"
+            exit 1
+          fi
+
+          if ! grep -Fq \
+            'if [ -f "$AKHOME/WORKFLOW20_DO_NOT_FLASH" ]; then' \
+            "$SCRIPT"
+          then
+            echo "ERROR: unconditional Workflow 20 guard missing"
+            exit 1
+          fi
+
+          if ! grep -Fq \
+            '"Workflow 20 staging package only."' \
+            "$SCRIPT"
+          then
+            echo "ERROR: Workflow 20 abort message missing"
+            exit 1
+          fi
+
+          image_sha="$(
+            sha256sum "$STAGE_DIR/Image" \
+              | awk '{print $1}'
+          )"
+
+          image_bytes="$(
+            stat -c '%s' "$STAGE_DIR/Image"
+          )"
+
+          [ "$image_sha" = "$EXPECTED_IMAGE_SHA256" ] || {
+            echo "ERROR: staging Image SHA-256 mismatch"
+            exit 1
+          }
+
+          [ "$image_bytes" = "$EXPECTED_IMAGE_BYTES" ] || {
+            echo "ERROR: staging Image size mismatch"
+            exit 1
+          }
+
+          if find "$STAGE_DIR" \
+            -type f \
+            \( \
+              -iname 'vendor_boot.img' \
+              -o -iname 'dtbo.img' \
+              -o -iname 'vbmeta.img' \
+              -o -iname '*.dtb' \
+              -o -iname 'veux.dtb' \
+            \) \
+            | grep -q .
+          then
+            echo "ERROR: forbidden partition/DTB payload present"
+            exit 1
+          fi
+
+          for dir in \
+            ramdisk \
+            patch \
+            modules \
+            vendor_ramdisk \
+            vendor_patch
+          do
+            if [ -e "$STAGE_DIR/$dir" ]; then
+              echo "ERROR: forbidden modification directory present: $dir"
+              exit 1
+            fi
+          done
+
+          if [ -e "$STAGE_DIR/.git" ] \
+            || [ -e "$STAGE_DIR/.github" ]
+          then
+            echo "ERROR: repository metadata present in staging package"
+            exit 1
+          fi
+
+          (
+            cd "$STAGE_DIR"
+
+            sha256sum -c PACKAGE-SHA256SUMS \
+              | tee \
+                "$AUDIT_DIR/PACKAGE-SHA256SUMS-VERIFY.txt"
+          )
+
+          {
+            echo "STATIC_INSTALLER_AUDIT=PASS"
+            echo "WORKFLOW20_DO_NOT_FLASH_GUARD=PASS"
+            echo "DEVICE_CHECK=veux"
+            echo "BOOT_ONLY=YES"
+            echo "SLOT=active"
+            echo "BOOT_HEADER_RUNTIME_GATE=v3"
+            echo "BOOT_SIZE_RUNTIME_GATE=134217728"
+            echo "RAMDISK_FORMAT_RUNTIME_GATE=lz4_legacy"
+            echo "RAMDISK_UNPACK_REPACK=NO"
+            echo "VENDOR_BOOT_PAYLOAD=NO"
+            echo "DTBO_PAYLOAD=NO"
+            echo "VBMETA_PAYLOAD=NO"
+            echo "DTB_PAYLOAD=NO"
+            echo "TOP_LEVEL_VBMETA_PATCH_DISABLED=YES"
+            echo "MAGISK_KERNEL_REPATCH_DISABLED=YES"
+          } > \
+            "$AUDIT_DIR/STATIC-INSTALLER-AUDIT.txt"
+
+      - name: Build deterministic DO NOT FLASH staging ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ZIP="$OUTPUT_DIR/DO_NOT_FLASH_VEUX_5.4.274_ReSukiSU_SUSFS_2.2_WORKFLOW20_STAGING.zip"
+
+          rm -f "$ZIP"
+
+          # Normalize timestamps while preserving mode bits.
+          find "$STAGE_DIR" \
+            -exec touch \
+              -h \
+              -d '2000-01-01 00:00:00 UTC' \
+              {} +
+
+          (
+            cd "$STAGE_DIR"
+
+            LC_ALL=C find . \
+              -type f \
+              -printf '%P\n' \
+              | LC_ALL=C sort \
+              > "$AUDIT_DIR/STAGING-ZIP-FILELIST.txt"
+
+            zip \
+              -X \
+              -9 \
+              "$ZIP" \
+              -@ \
+              < "$AUDIT_DIR/STAGING-ZIP-FILELIST.txt" \
+              > "$AUDIT_DIR/zip-build.log"
+          )
+
+          zip_bytes="$(
+            stat -c '%s' "$ZIP"
+          )"
+
+          zip_sha="$(
+            sha256sum "$ZIP" \
+              | awk '{print $1}'
+          )"
+
+          {
+            echo "ZIP_BYTES=$zip_bytes"
+            echo "ZIP_SHA256=$zip_sha"
+          } > "$AUDIT_DIR/STAGING-ZIP-HASH.txt"
+
+      - name: Independently verify staging ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ZIP="$OUTPUT_DIR/DO_NOT_FLASH_VEUX_5.4.274_ReSukiSU_SUSFS_2.2_WORKFLOW20_STAGING.zip"
+
+          python3 - \
+            "$ZIP" \
+            "$EXPECTED_IMAGE_SHA256" \
+            "$EXPECTED_IMAGE_BYTES" \
+            "$AUDIT_DIR/STAGING-ZIP-INDEPENDENT-AUDIT.txt" <<'PY'
+          import hashlib
+          import stat
+          import sys
+          import zipfile
+
+          zip_path = sys.argv[1]
+          expected_sha = sys.argv[2]
+          expected_bytes = int(sys.argv[3])
+          report_path = sys.argv[4]
+
+          with zipfile.ZipFile(zip_path, "r") as z:
+              bad = z.testzip()
+
+              if bad is not None:
+                  raise SystemExit(
+                      f"ZIP CRC failure: {bad}"
+                  )
+
+              names = z.namelist()
+              name_set = set(names)
+
+              required = {
+                  "Image",
+                  "anykernel.sh",
+                  "LICENSE",
+                  "META-INF/com/google/android/update-binary",
+                  "META-INF/com/google/android/updater-script",
+                  "tools/ak3-core.sh",
+                  "tools/magiskboot",
+                  "WORKFLOW20_DO_NOT_FLASH",
+                  "VEUX-PACKAGE-MANIFEST.txt",
+                  "STOCK-ROM-REFERENCE.json",
+                  "PACKAGE-SHA256SUMS",
+              }
+
+              missing = sorted(
+                  required - name_set
+              )
+
+              if missing:
+                  raise SystemExit(
+                      f"Missing ZIP entries: {missing}"
+                  )
+
+              forbidden = [
+                  name
+                  for name in names
+                  if name.lower().endswith(
+                      (
+                          "vendor_boot.img",
+                          "dtbo.img",
+                          "vbmeta.img",
+                          ".dtb",
+                      )
+                  )
+                  or name.lower().endswith(
+                      "veux.dtb"
+                  )
+              ]
+
+              if forbidden:
+                  raise SystemExit(
+                      "Forbidden partition/DTB entries "
+                      f"in ZIP: {forbidden}"
+                  )
+
+              forbidden_prefixes = (
+                  "ramdisk/",
+                  "patch/",
+                  "modules/",
+                  "vendor_ramdisk/",
+                  "vendor_patch/",
+                  ".git/",
+                  ".github/",
+              )
+
+              bad_prefixes = [
+                  name
+                  for name in names
+                  if name.startswith(
+                      forbidden_prefixes
+                  )
+              ]
+
+              if bad_prefixes:
+                  raise SystemExit(
+                      "Forbidden directory entries "
+                      f"in ZIP: {bad_prefixes}"
+                  )
+
+              image = z.read("Image")
+              image_sha = hashlib.sha256(
+                  image
+              ).hexdigest()
+
+              if len(image) != expected_bytes:
+                  raise SystemExit(
+                      "Image size mismatch: "
+                      f"{len(image)} != "
+                      f"{expected_bytes}"
+                  )
+
+              if image_sha != expected_sha:
+                  raise SystemExit(
+                      "Image SHA mismatch: "
+                      f"{image_sha} != "
+                      f"{expected_sha}"
+                  )
+
+              script = z.read(
+                  "anykernel.sh"
+              ).decode("utf-8")
+
+              if "WORKFLOW20_DO_NOT_FLASH" \
+                      not in script:
+                  raise SystemExit(
+                      "DO_NOT_FLASH script guard missing"
+                  )
+
+              if "split_boot;" not in script \
+                      or "flash_boot;" not in script:
+                  raise SystemExit(
+                      "Kernel-only install calls missing"
+                  )
+
+              for executable in (
+                  "anykernel.sh",
+                  "META-INF/com/google/android/update-binary",
+                  "tools/ak3-core.sh",
+                  "tools/magiskboot",
+              ):
+                  mode = (
+                      z.getinfo(
+                          executable
+                      ).external_attr >> 16
+                  ) & 0xFFFF
+
+                  if not (
+                      mode & stat.S_IXUSR
+                  ):
+                      raise SystemExit(
+                          "Executable bit missing "
+                          f"in ZIP: {executable}"
+                      )
+
+              report = (
+                  "STAGING_ZIP_INDEPENDENT_AUDIT=PASS\n"
+                  f"ZIP_ENTRIES={len(names)}\n"
+                  "ZIP_CRC=PASS\n"
+                  f"IMAGE_BYTES={len(image)}\n"
+                  f"IMAGE_SHA256={image_sha}\n"
+                  "DO_NOT_FLASH_GUARD=FOUND\n"
+                  "VENDOR_BOOT_PAYLOAD=NO\n"
+                  "DTBO_PAYLOAD=NO\n"
+                  "VBMETA_PAYLOAD=NO\n"
+                  "DTB_PAYLOAD=NO\n"
+                  "EXECUTABLE_BITS=PASS\n"
+              )
+
+          with open(
+              report_path,
+              "w",
+              encoding="utf-8",
+          ) as f:
+              f.write(report)
+          PY
+
+      - name: Write Workflow 20 final audit
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ZIP="$OUTPUT_DIR/DO_NOT_FLASH_VEUX_5.4.274_ReSukiSU_SUSFS_2.2_WORKFLOW20_STAGING.zip"
+
+          ZIP_SHA="$(
+            sha256sum "$ZIP" \
+              | awk '{print $1}'
+          )"
+
+          ZIP_BYTES="$(
+            stat -c '%s' "$ZIP"
+          )"
+
+          {
+            echo "VEUX Workflow 20 - Packaging and AVB Audit"
+            echo "=========================================="
+            echo
+            echo "RESULT: PASS"
+            echo
+            echo "Frozen Workflow 17 release candidate: PASS"
+            echo "Image SHA-256: $EXPECTED_IMAGE_SHA256"
+            echo "Image bytes: $EXPECTED_IMAGE_BYTES"
+            echo
+            echo "Pinned stock ROM: $STOCK_ROM_BUILD"
+            echo "Stock boot reference: $STOCK_BOOT_SHA256"
+            echo "Stock vendor_boot reference: $STOCK_VENDOR_BOOT_SHA256"
+            echo "Stock dtbo reference: $STOCK_DTBO_SHA256"
+            echo "Stock vbmeta reference: $STOCK_VBMETA_SHA256"
+            echo
+            echo "Stock AVB topology from read-only audit:"
+            echo "- top-level vbmeta is SHA256_RSA2048 signed"
+            echo "- direct hash descriptors: boot, dtbo, vendor_boot"
+            echo "- chain partition: vbmeta_system"
+            echo "- vendor_boot v3 contains the DTB side"
+            echo "- dtbo has 16 table entries"
+            echo
+            echo "AnyKernel3 pin: $ANYKERNEL_COMMIT"
+            echo "Kernel-only contract: PASS"
+            echo
+            echo "Staging installer scope:"
+            echo "- active-slot boot only"
+            echo "- exact approved Image"
+            echo "- split_boot + flash_boot"
+            echo "- no ramdisk unpack/repack"
+            echo "- no vendor_boot payload"
+            echo "- no dtbo payload"
+            echo "- no vbmeta payload"
+            echo "- no DTB payload"
+            echo "- top-level vbmeta partition patch disabled"
+            echo "- Magisk kernel repatch disabled"
+            echo
+            echo "Runtime barriers embedded:"
+            echo "- device veux"
+            echo "- Android userspace 13"
+            echo "- security patch 2024-12"
+            echo "- boot partition 128 MiB"
+            echo "- boot header v3"
+            echo "- page size 4096"
+            echo "- boot-header OS_VERSION 11.0.0"
+            echo "- LZ4-legacy ramdisk"
+            echo
+            echo "STAGING ZIP:"
+            echo "$(basename "$ZIP")"
+            echo "Bytes: $ZIP_BYTES"
+            echo "SHA-256: $ZIP_SHA"
+            echo
+            echo "IMPORTANT:"
+            echo "Workflow 20 staging is intentionally NOT flash-enabled."
+            echo "WORKFLOW20_DO_NOT_FLASH is present and anykernel.sh aborts"
+            echo "before split_boot while the marker exists."
+            echo
+            echo "No device operation was performed."
+          } | tee \
+            "$AUDIT_DIR/WORKFLOW20-SUMMARY.txt"
+
+          cp \
+            "$AUDIT_DIR/WORKFLOW20-SUMMARY.txt" \
+            "$OUTPUT_DIR/WORKFLOW20-SUMMARY.txt"
+
+          cp \
+            "$AUDIT_DIR/STOCK-ROM-REFERENCE.json" \
+            "$OUTPUT_DIR/STOCK-ROM-REFERENCE.json"
+
+          cp \
+            "$AUDIT_DIR/ANYKERNEL3-PIN.txt" \
+            "$OUTPUT_DIR/ANYKERNEL3-PIN.txt"
+
+          cp \
+            "$AUDIT_DIR/ANYKERNEL3-CONTRACT-AUDIT.txt" \
+            "$OUTPUT_DIR/ANYKERNEL3-CONTRACT-AUDIT.txt"
+
+          cp \
+            "$AUDIT_DIR/STATIC-INSTALLER-AUDIT.txt" \
+            "$OUTPUT_DIR/STATIC-INSTALLER-AUDIT.txt"
+
+          cp \
+            "$AUDIT_DIR/STAGING-ZIP-INDEPENDENT-AUDIT.txt" \
+            "$OUTPUT_DIR/STAGING-ZIP-INDEPENDENT-AUDIT.txt"
+
+          cp \
+            "$AUDIT_DIR/STAGING-ZIP-HASH.txt" \
+            "$OUTPUT_DIR/STAGING-ZIP-HASH.txt"
+
+          cp \
+            "$AUDIT_DIR/WORKFLOW17-RELEASE-CANDIDATE-CHECK.txt" \
+            "$OUTPUT_DIR/WORKFLOW17-RELEASE-CANDIDATE-CHECK.txt"
+
+          (
+            cd "$OUTPUT_DIR"
+
+            find . \
+              -maxdepth 1 \
+              -type f \
+              ! -name 'SHA256SUMS' \
+              -printf '%f\n' \
+              | LC_ALL=C sort \
+              | while IFS= read -r file; do
+                  sha256sum "$file"
+                done \
+              > SHA256SUMS
+
+            sha256sum -c SHA256SUMS \
+              | tee SHA256SUMS.verify.txt
+          )
+
+      - name: Collect failure diagnostics
+        if: failure()
+        shell: bash
+        run: |
+          set +e
+
+          mkdir -p \
+            "$AUDIT_DIR" \
+            "$OUTPUT_DIR"
+
+          {
+            echo "VEUX Workflow 20: FAILURE"
+            echo "Finished: $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+            echo
+            echo "No flash was performed."
+            echo "No flash-enabled package should be used from this failed run."
+          } > "$AUDIT_DIR/FAILURE-SUMMARY.txt"
+
+          if [ -d "$STAGE_DIR" ]; then
+            find "$STAGE_DIR" \
+              -maxdepth 4 \
+              -printf '%M %s %p\n' \
+              > "$AUDIT_DIR/FAILURE-stage-tree.txt" \
+              2>&1 \
+              || true
+          fi
+
+          if [ -d "$RC_DIR" ]; then
+            find "$RC_DIR" \
+              -maxdepth 2 \
+              -printf '%M %s %p\n' \
+              > "$AUDIT_DIR/FAILURE-rc-tree.txt" \
+              2>&1 \
+              || true
+          fi
+
+          cp -a \
+            "$AUDIT_DIR" \
+            "$OUTPUT_DIR/failure-audit" \
+            2>/dev/null \
+            || true
+
+      - name: Upload Workflow 20 PASS artifact
+        if: success()
+        uses: actions/upload-artifact@v7
+        with:
+          name: veux-5.4.274-resukisu-susfs-2.2-workflow20-packaging-avb-audit-${{ github.run_number }}
+          path: ${{ env.OUTPUT_DIR }}
+          if-no-files-found: error
+          include-hidden-files: true
+          retention-days: 30
+          compression-level: 0
+
+      - name: Upload Workflow 20 failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: veux-5.4.274-resukisu-susfs-2.2-workflow20-failure-${{ github.run_number }}
+          path: ${{ env.WORK_DIR }}
+          if-no-files-found: warn
+          include-hidden-files: true
+          retention-days: 30
