@@ -1,0 +1,695 @@
+name: 11 - VEUX SUSFS 5.4 Adaptation Capture
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  capture:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+
+    env:
+      ARCH: arm64
+      COMMON_REF: "android11-5.4.274_r00"
+      STABILITY_REVERT: "f74e5c1b7c3f3e42f694e5ab524f95f62a0dab80"
+      CASS_COMMIT_DO_NOT_REVERT: "b9b5ddba28bf9f23ac1a2af27f574291451244fd"
+      EXPECTED_CANDIDATE_TREE: "5d25b7e0124d7fb695f3f07b45928fcb5780d0e8"
+      RESUKISU_COMMIT: "faccf4c5edc7be37776216e7d43dd3dca0239331"
+      SUSFS_BRANCH: "kernel-5.4"
+      SUSFS_COMMIT: "76affd70abf61d77feb0a132f61365d6848505df"
+      ARTIFACT_DIR: ${{ github.workspace }}/artifacts
+      SUSFS_DIR: ${{ github.workspace }}/susfs4ksu
+
+    steps:
+      - name: Prepare audit directory
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p "$ARTIFACT_DIR"
+
+          {
+            echo "VEUX 5.4.274 SUSFS adaptation capture"
+            echo "Started: $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+            echo "Candidate: Stability Candidate 2"
+            echo "Expected Candidate tree: $EXPECTED_CANDIDATE_TREE"
+            echo "ReSukiSU: $RESUKISU_COMMIT"
+            echo "SUSFS branch: $SUSFS_BRANCH"
+            echo "SUSFS commit: $SUSFS_COMMIT"
+            echo "CASS intentionally NOT reverted: $CASS_COMMIT_DO_NOT_REVERT"
+            echo "Purpose: capture every upstream SUSFS 5.4 reject against VEUX"
+            echo "No kernel Image will be compiled"
+            echo "No boot.img will be created"
+            echo "Nothing will be flashed"
+          } > "$ARTIFACT_DIR/CAPTURE-INFO.txt"
+
+      - name: Install capture dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          sudo apt-get update
+
+          sudo apt-get install -y --no-install-recommends \
+            bc \
+            bison \
+            build-essential \
+            ca-certificates \
+            flex \
+            git \
+            libelf-dev \
+            libssl-dev \
+            patch \
+            python3
+
+      - name: Checkout VEUX source
+        uses: actions/checkout@v7
+        with:
+          repository: dereference23/kernel_xiaomi_sm6375
+          ref: "20240619"
+          fetch-depth: 0
+          path: kernel
+          persist-credentials: false
+
+      - name: Recreate exact Stability Candidate 2
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          BASE_SHA="$(git rev-parse HEAD)"
+
+          git remote remove android-common 2>/dev/null || true
+          git remote add android-common https://android.googlesource.com/kernel/common
+
+          git fetch \
+            --no-tags \
+            android-common \
+            "$COMMON_REF"
+
+          git merge \
+            --no-edit \
+            FETCH_HEAD
+
+          if ! git cat-file -e "${STABILITY_REVERT}^{commit}" 2>/dev/null; then
+            echo "ERROR: Candidate 2 stability-revert commit unavailable"
+            exit 1
+          fi
+
+          git revert \
+            --no-edit \
+            "$STABILITY_REVERT"
+
+          KERNEL_VERSION="$(make -s kernelversion)"
+          CANDIDATE_SHA="$(git rev-parse HEAD)"
+          CANDIDATE_TREE_SHA="$(git rev-parse HEAD^{tree})"
+
+          {
+            echo "BASE_SHA=$BASE_SHA"
+            echo "CANDIDATE_SHA=$CANDIDATE_SHA"
+            echo "CANDIDATE_TREE_SHA=$CANDIDATE_TREE_SHA"
+            echo "KERNEL_VERSION=$KERNEL_VERSION"
+            echo "STABILITY_REVERT=$STABILITY_REVERT"
+            echo "CASS_COMMIT_DO_NOT_REVERT=$CASS_COMMIT_DO_NOT_REVERT"
+          } | tee "$ARTIFACT_DIR/candidate2.txt"
+
+          if [ "$KERNEL_VERSION" != "5.4.274" ]; then
+            echo "ERROR: expected Linux 5.4.274, got $KERNEL_VERSION"
+            exit 1
+          fi
+
+          if [ "$CANDIDATE_TREE_SHA" != "$EXPECTED_CANDIDATE_TREE" ]; then
+            echo "ERROR: Candidate 2 tree does not match Workflow 09 verified baseline"
+            echo "Expected: $EXPECTED_CANDIDATE_TREE"
+            echo "Actual:   $CANDIDATE_TREE_SHA"
+            exit 1
+          fi
+
+          echo "Candidate 2 tree verified exactly."
+
+      - name: Verify clean pre-SUSFS kernel side
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          MATCHES="$(
+            grep -RInE \
+              --exclude-dir=.git \
+              --exclude-dir=out \
+              --exclude-dir=kernelsu \
+              --include='*.c' \
+              --include='*.h' \
+              --include='Kconfig*' \
+              --include='Makefile*' \
+              --include='*.mk' \
+              '(^|[^A-Za-z0-9_])(CONFIG_KSU_SUSFS|CONFIG_SUSFS|susfs_[A-Za-z0-9_]+|SUSFS_VERSION|susfs\.h)([^A-Za-z0-9_]|$)' \
+              fs \
+              include \
+              kernel \
+              security \
+              mm \
+              drivers \
+              2>/dev/null || true
+          )"
+
+          if [ -n "$MATCHES" ]; then
+            printf '%s\n' "$MATCHES" \
+              | tee "$ARTIFACT_DIR/PRE-SUSFS-GUARD.txt"
+
+            echo "ERROR: pre-existing kernel-side SUSFS detected"
+            exit 1
+          fi
+
+          echo "No existing SUSFS kernel-side backport detected." \
+            | tee "$ARTIFACT_DIR/PRE-SUSFS-GUARD.txt"
+
+      - name: Replace legacy KernelSU with pinned ReSukiSU
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ ! -d drivers/kernelsu ]; then
+            echo "ERROR: legacy drivers/kernelsu not found"
+            exit 1
+          fi
+
+          find drivers/kernelsu -type f \
+            | sort \
+            > "$ARTIFACT_DIR/legacy-kernelsu-files.txt"
+
+          rm -rf \
+            drivers/kernelsu \
+            KernelSU
+
+          git clone \
+            https://github.com/ReSukiSU/ReSukiSU.git \
+            KernelSU
+
+          git -C KernelSU checkout \
+            --detach \
+            "$RESUKISU_COMMIT"
+
+          ACTUAL_KSU="$(git -C KernelSU rev-parse HEAD)"
+
+          if [ "$ACTUAL_KSU" != "$RESUKISU_COMMIT" ]; then
+            echo "ERROR: ReSukiSU pin mismatch"
+            echo "Expected: $RESUKISU_COMMIT"
+            echo "Actual:   $ACTUAL_KSU"
+            exit 1
+          fi
+
+          ln -s \
+            ../KernelSU/kernel \
+            drivers/kernelsu
+
+          if [ "$(readlink -f drivers/kernelsu)" != "$(readlink -f KernelSU/kernel)" ]; then
+            echo "ERROR: drivers/kernelsu does not resolve to pinned ReSukiSU/kernel"
+            exit 1
+          fi
+
+          grep -qF \
+            'config KSU_SUSFS' \
+            KernelSU/kernel/Kconfig
+
+          grep -qF \
+            'include $(KSU_SRC)/tools/inline_hook_check.mk' \
+            KernelSU/kernel/Kbuild
+
+          echo "$ACTUAL_KSU" \
+            > "$ARTIFACT_DIR/resukisu-commit.txt"
+
+      - name: Preserve required SELinux static-symbol compatibility
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("security/selinux/selinuxfs.c")
+          text = path.read_text()
+
+          replacements = [
+              (
+                  "static const struct file_operations sel_handle_status_ops = {",
+                  "const struct file_operations sel_handle_status_ops = {",
+              ),
+              (
+                  "static ssize_t (*const write_op[])(struct file *, char *, size_t) = {",
+                  "ssize_t (*const write_op[])(struct file *, char *, size_t) = {",
+              ),
+          ]
+
+          for old, new in replacements:
+              if text.count(old) != 1:
+                  raise SystemExit(
+                      f"expected exactly one SELinux source occurrence: {old!r}"
+                  )
+
+              text = text.replace(old, new, 1)
+
+          path.write_text(text)
+          PY
+
+          grep -qE \
+            '^[[:space:]]*const[[:space:]]+struct[[:space:]]+file_operations[[:space:]]+sel_handle_status_ops' \
+            security/selinux/selinuxfs.c
+
+          grep -qE \
+            '^[[:space:]]*ssize_t[[:space:]]+\(\*const[[:space:]]+write_op\[\]\)' \
+            security/selinux/selinuxfs.c
+
+          {
+            echo "write_op: link-visible"
+            echo "sel_handle_status_ops: link-visible"
+            echo "CONFIG_DEBUG_KERNEL remains disabled"
+            echo "CONFIG_KALLSYMS_ALL remains disabled"
+          } > "$ARTIFACT_DIR/STATIC-SYMBOL-POLICY.txt"
+
+      - name: Fetch exact SUSFS kernel-5.4 source
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -rf "$SUSFS_DIR"
+
+          git clone \
+            --depth=1 \
+            --branch "$SUSFS_BRANCH" \
+            --single-branch \
+            https://gitlab.com/simonpunk/susfs4ksu.git \
+            "$SUSFS_DIR"
+
+          ACTUAL_SUSFS="$(git -C "$SUSFS_DIR" rev-parse HEAD)"
+
+          if [ "$ACTUAL_SUSFS" != "$SUSFS_COMMIT" ]; then
+            echo "ERROR: SUSFS kernel-5.4 pin mismatch"
+            echo "Expected: $SUSFS_COMMIT"
+            echo "Actual:   $ACTUAL_SUSFS"
+            exit 1
+          fi
+
+          KERNEL_PATCH="$SUSFS_DIR/kernel_patches/50_add_susfs_in_kernel-5.4.patch"
+          KSU_PATCH="$SUSFS_DIR/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch"
+
+          for file in \
+            "$KERNEL_PATCH" \
+            "$KSU_PATCH"
+          do
+            if [ ! -s "$file" ]; then
+              echo "ERROR: missing SUSFS source file: $file"
+              exit 1
+            fi
+          done
+
+          if [ ! -d "$SUSFS_DIR/kernel_patches/fs" ]; then
+            echo "ERROR: missing SUSFS kernel_patches/fs directory"
+            exit 1
+          fi
+
+          if [ ! -d "$SUSFS_DIR/kernel_patches/include/linux" ]; then
+            echo "ERROR: missing SUSFS kernel_patches/include/linux directory"
+            exit 1
+          fi
+
+          cp \
+            "$KERNEL_PATCH" \
+            "$ARTIFACT_DIR/50_add_susfs_in_kernel-5.4.patch"
+
+          cp \
+            "$KSU_PATCH" \
+            "$ARTIFACT_DIR/10_enable_susfs_for_ksu-UPSTREAM-REFERENCE.patch"
+
+          {
+            echo "SUSFS_BRANCH=$SUSFS_BRANCH"
+            echo "SUSFS_COMMIT=$ACTUAL_SUSFS"
+            echo "KERNEL_PATCH_SHA256=$(sha256sum "$KERNEL_PATCH" | awk '{print $1}')"
+            echo "UPSTREAM_KSU_PATCH_SHA256=$(sha256sum "$KSU_PATCH" | awk '{print $1}')"
+            echo "UPSTREAM_KSU_PATCH_APPLIED=NO"
+          } | tee "$ARTIFACT_DIR/SUSFS-SOURCE.txt"
+
+      - name: Capture pristine VEUX target files before patching
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          PATCH_FILE="$SUSFS_DIR/kernel_patches/50_add_susfs_in_kernel-5.4.patch"
+
+          mkdir -p \
+            "$ARTIFACT_DIR/pre-patch-sources"
+
+          awk '
+            /^\+\+\+ b\// {
+              sub(/^\+\+\+ b\//, "")
+              if ($0 != "/dev/null")
+                print
+            }
+          ' "$PATCH_FILE" \
+            | sort -u \
+            > "$ARTIFACT_DIR/PATCH-TARGET-FILES.txt"
+
+          : > "$ARTIFACT_DIR/MISSING-TARGET-FILES.txt"
+          : > "$ARTIFACT_DIR/PRE-PATCH-SHA256.txt"
+
+          while IFS= read -r file; do
+            [ -n "$file" ] || continue
+
+            if [ -f "$file" ]; then
+              mkdir -p \
+                "$ARTIFACT_DIR/pre-patch-sources/$(dirname "$file")"
+
+              cp \
+                "$file" \
+                "$ARTIFACT_DIR/pre-patch-sources/$file"
+
+              sha256sum "$file" \
+                >> "$ARTIFACT_DIR/PRE-PATCH-SHA256.txt"
+            else
+              echo "$file" \
+                >> "$ARTIFACT_DIR/MISSING-TARGET-FILES.txt"
+            fi
+          done < "$ARTIFACT_DIR/PATCH-TARGET-FILES.txt"
+
+          {
+            echo "Patch targets: $(wc -l < "$ARTIFACT_DIR/PATCH-TARGET-FILES.txt" | tr -d ' ')"
+            echo "Missing targets: $(wc -l < "$ARTIFACT_DIR/MISSING-TARGET-FILES.txt" | tr -d ' ')"
+            echo
+            echo "Missing target files:"
+
+            if [ -s "$ARTIFACT_DIR/MISSING-TARGET-FILES.txt" ]; then
+              cat "$ARTIFACT_DIR/MISSING-TARGET-FILES.txt"
+            else
+              echo "NONE"
+            fi
+          } | tee "$ARTIFACT_DIR/PRE-PATCH-INVENTORY.txt"
+
+      - name: Copy SUSFS kernel-side source files
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cp -av \
+            "$SUSFS_DIR/kernel_patches/fs/." \
+            fs/ \
+            | tee "$ARTIFACT_DIR/SUSFS-COPY-FS.log"
+
+          cp -av \
+            "$SUSFS_DIR/kernel_patches/include/linux/." \
+            include/linux/ \
+            | tee "$ARTIFACT_DIR/SUSFS-COPY-INCLUDE.log"
+
+          for file in \
+            fs/susfs.c \
+            include/linux/susfs.h \
+            include/linux/susfs_def.h
+          do
+            if [ ! -s "$file" ]; then
+              echo "ERROR: required SUSFS source file missing after copy: $file"
+              exit 1
+            fi
+          done
+
+          find \
+            fs \
+            include/linux \
+            -maxdepth 1 \
+            -type f \
+            \( -name '*susfs*' -o -name 'sus_su*' \) \
+            -print \
+            | sort \
+            > "$ARTIFACT_DIR/SUSFS-INSTALLED-FILES.txt"
+
+          grep -E \
+            '^#define[[:space:]]+SUSFS_VERSION' \
+            include/linux/susfs.h \
+            | tee "$ARTIFACT_DIR/SUSFS-VERSION.txt" \
+            || true
+
+      - name: Apply upstream patch in reject-capture mode
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          PATCH_FILE="$SUSFS_DIR/kernel_patches/50_add_susfs_in_kernel-5.4.patch"
+
+          find . \
+            -type f \
+            \( -name '*.rej' -o -name '*.orig' \) \
+            -delete
+
+          set +e
+
+          patch \
+            --batch \
+            --forward \
+            --fuzz=0 \
+            -p1 \
+            < "$PATCH_FILE" \
+            > "$ARTIFACT_DIR/SUSFS-PATCH-APPLY-WITH-REJECTS.log" \
+            2>&1
+
+          PATCH_RC=$?
+
+          set -e
+
+          echo "$PATCH_RC" \
+            > "$ARTIFACT_DIR/SUSFS-PATCH-APPLY.exit-code"
+
+          cat "$ARTIFACT_DIR/SUSFS-PATCH-APPLY-WITH-REJECTS.log"
+
+          mkdir -p \
+            "$ARTIFACT_DIR/rejects" \
+            "$ARTIFACT_DIR/orig-files"
+
+          find . \
+            -type f \
+            -name '*.rej' \
+            -print \
+            | sort \
+            > "$ARTIFACT_DIR/REJECT-FILES.txt"
+
+          find . \
+            -type f \
+            -name '*.orig' \
+            -print \
+            | sort \
+            > "$ARTIFACT_DIR/ORIG-FILES.txt"
+
+          while IFS= read -r file; do
+            [ -n "$file" ] || continue
+
+            clean="${file#./}"
+
+            mkdir -p \
+              "$ARTIFACT_DIR/rejects/$(dirname "$clean")"
+
+            cp \
+              "$clean" \
+              "$ARTIFACT_DIR/rejects/$clean"
+          done < "$ARTIFACT_DIR/REJECT-FILES.txt"
+
+          while IFS= read -r file; do
+            [ -n "$file" ] || continue
+
+            clean="${file#./}"
+
+            mkdir -p \
+              "$ARTIFACT_DIR/orig-files/$(dirname "$clean")"
+
+            cp \
+              "$clean" \
+              "$ARTIFACT_DIR/orig-files/$clean"
+          done < "$ARTIFACT_DIR/ORIG-FILES.txt"
+
+          REJECT_COUNT="$(
+            wc -l < "$ARTIFACT_DIR/REJECT-FILES.txt" \
+              | tr -d ' '
+          )"
+
+          MISSING_COUNT="$(
+            wc -l < "$ARTIFACT_DIR/MISSING-TARGET-FILES.txt" \
+              | tr -d ' '
+          )"
+
+          {
+            echo "PATCH_EXIT_CODE=$PATCH_RC"
+            echo "REJECT_FILE_COUNT=$REJECT_COUNT"
+            echo "MISSING_TARGET_FILE_COUNT=$MISSING_COUNT"
+            echo
+            echo "Reject files:"
+
+            if [ -s "$ARTIFACT_DIR/REJECT-FILES.txt" ]; then
+              cat "$ARTIFACT_DIR/REJECT-FILES.txt"
+            else
+              echo "NONE"
+            fi
+
+            echo
+            echo "Missing patch target files:"
+
+            if [ -s "$ARTIFACT_DIR/MISSING-TARGET-FILES.txt" ]; then
+              cat "$ARTIFACT_DIR/MISSING-TARGET-FILES.txt"
+            else
+              echo "NONE"
+            fi
+          } | tee "$ARTIFACT_DIR/REJECT-SUMMARY.txt"
+
+      - name: Capture partial application and exact adaptation context
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git status --short \
+            > "$ARTIFACT_DIR/PARTIAL-git-status.txt"
+
+          git diff \
+            --no-ext-diff \
+            --no-color \
+            > "$ARTIFACT_DIR/PARTIAL-APPLIED-TRACKED.diff"
+
+          git diff \
+            --stat \
+            > "$ARTIFACT_DIR/PARTIAL-APPLIED-TRACKED.diffstat"
+
+          git diff \
+            --check \
+            > "$ARTIFACT_DIR/PARTIAL-DIFF-CHECK.txt" \
+            2>&1 \
+            || true
+
+          mkdir -p \
+            "$ARTIFACT_DIR/post-partial-sources"
+
+          while IFS= read -r reject; do
+            [ -n "$reject" ] || continue
+
+            source_path="${reject#./}"
+            source_path="${source_path%.rej}"
+
+            if [ -f "$source_path" ]; then
+              mkdir -p \
+                "$ARTIFACT_DIR/post-partial-sources/$(dirname "$source_path")"
+
+              cp \
+                "$source_path" \
+                "$ARTIFACT_DIR/post-partial-sources/$source_path"
+            fi
+          done < "$ARTIFACT_DIR/REJECT-FILES.txt"
+
+          while IFS= read -r missing; do
+            [ -n "$missing" ] || continue
+
+            {
+              echo "MISSING_TARGET=$missing"
+              echo "Directory listing:"
+              ls -la "$(dirname "$missing")" 2>/dev/null || true
+              echo
+            } >> "$ARTIFACT_DIR/MISSING-TARGET-CONTEXT.txt"
+          done < "$ARTIFACT_DIR/MISSING-TARGET-FILES.txt"
+
+          if [ ! -f "$ARTIFACT_DIR/MISSING-TARGET-CONTEXT.txt" ]; then
+            echo "No missing target files." \
+              > "$ARTIFACT_DIR/MISSING-TARGET-CONTEXT.txt"
+          fi
+
+          find \
+            "$ARTIFACT_DIR/pre-patch-sources" \
+            -type f \
+            -print0 \
+            | sort -z \
+            | xargs -0 sha256sum \
+            > "$ARTIFACT_DIR/CAPTURED-PRE-PATCH-SOURCES.sha256"
+
+          find \
+            "$ARTIFACT_DIR/rejects" \
+            -type f \
+            -print0 \
+            | sort -z \
+            | xargs -0 -r sha256sum \
+            > "$ARTIFACT_DIR/CAPTURED-REJECTS.sha256"
+
+      - name: Write adaptation-capture summary
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          PATCH_RC="$(
+            tr -d '\r\n' \
+              < "$ARTIFACT_DIR/SUSFS-PATCH-APPLY.exit-code"
+          )"
+
+          REJECT_COUNT="$(
+            wc -l < "$ARTIFACT_DIR/REJECT-FILES.txt" \
+              | tr -d ' '
+          )"
+
+          MISSING_COUNT="$(
+            wc -l < "$ARTIFACT_DIR/MISSING-TARGET-FILES.txt" \
+              | tr -d ' '
+          )"
+
+          PATCH_SHA="$(
+            sha256sum \
+              "$SUSFS_DIR/kernel_patches/50_add_susfs_in_kernel-5.4.patch" \
+              | awk '{print $1}'
+          )"
+
+          SUSFS_VERSION="$(
+            grep -E \
+              '^#define[[:space:]]+SUSFS_VERSION' \
+              include/linux/susfs.h \
+              | head -n1 \
+              | sed -E \
+                's/.*SUSFS_VERSION[[:space:]]+"?([^"[:space:]]+)"?.*/\1/' \
+              || true
+          )"
+
+          {
+            echo "VEUX 5.4.274 SUSFS Adaptation Capture"
+            echo "======================================"
+            echo
+            echo "RESULT: ADAPTATION_CONTEXT_CAPTURED"
+            echo
+            echo "Candidate 2 tree: $EXPECTED_CANDIDATE_TREE"
+            echo "ReSukiSU: $RESUKISU_COMMIT"
+            echo "SUSFS branch: $SUSFS_BRANCH"
+            echo "SUSFS commit: $SUSFS_COMMIT"
+            echo "SUSFS version: ${SUSFS_VERSION:-unknown}"
+            echo "SUSFS patch SHA-256: $PATCH_SHA"
+            echo
+            echo "Upstream patch exit code: $PATCH_RC"
+            echo "Reject files captured: $REJECT_COUNT"
+            echo "Missing patch target files: $MISSING_COUNT"
+            echo
+            echo "This workflow intentionally does NOT require the upstream patch to apply."
+            echo "Every rejected hunk and pristine VEUX target source is preserved."
+            echo "The next step is a VEUX-specific fuzz-free SUSFS 5.4 adaptation."
+            echo
+            echo "Kernel Image compiled: NO"
+            echo "boot.img created: NO"
+            echo "Flashed: NO"
+          } | tee "$ARTIFACT_DIR/ADAPTATION-CAPTURE-SUMMARY.txt"
+
+      - name: Upload adaptation capture
+        uses: actions/upload-artifact@v7
+        with:
+          name: veux-5.4.274-susfs-adaptation-capture-${{ github.run_number }}
+          path: ${{ env.ARTIFACT_DIR }}
+          if-no-files-found: error
+          include-hidden-files: true
+          retention-days: 30
