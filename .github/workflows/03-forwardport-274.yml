@@ -1,0 +1,146 @@
+name: 03 - VEUX 5.4.268 to 5.4.274 Dry Run
+
+on:
+  workflow_dispatch:
+
+jobs:
+  forwardport:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout complete VEUX 5.4.268 source
+        uses: actions/checkout@v7
+        with:
+          repository: dereference23/kernel_xiaomi_sm6375
+          ref: 20240619
+          fetch-depth: 0
+          path: kernel
+
+      - name: Verify VEUX base
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd kernel
+
+          VERSION=$(awk '$1=="VERSION" && $2=="=" {print $3; exit}' Makefile)
+          PATCHLEVEL=$(awk '$1=="PATCHLEVEL" && $2=="=" {print $3; exit}' Makefile)
+          SUBLEVEL=$(awk '$1=="SUBLEVEL" && $2=="=" {print $3; exit}' Makefile)
+
+          echo "Base kernel: ${VERSION}.${PATCHLEVEL}.${SUBLEVEL}"
+
+          test "${VERSION}.${PATCHLEVEL}.${SUBLEVEL}" = "5.4.268"
+          test -f arch/arm64/boot/dts/vendor/xiaomi/veux.dts
+          test -f arch/arm64/configs/veux_defconfig
+
+          echo "✅ Linux 5.4.268"
+          echo "✅ veux.dts"
+          echo "✅ veux_defconfig"
+
+          grep -E \
+            'CONFIG_(ARCH_HOLI|WT_QGKI|BUILD_ARM64_UNCOMPRESSED_KERNEL)=' \
+            arch/arm64/configs/veux_defconfig || true
+
+      - name: Fetch official Android 5.4.274
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd kernel
+
+          git remote remove android 2>/dev/null || true
+          git remote add android \
+            https://android.googlesource.com/kernel/common
+
+          git fetch android \
+            refs/tags/android11-5.4.274_r00:refs/tags/android11-5.4.274_r00
+
+          echo "Official Android target:"
+          git show -s \
+            --format='%H%n%ci%n%s' \
+            android11-5.4.274_r00
+
+      - name: Check common ancestry
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd kernel
+
+          BASE=$(git merge-base HEAD android11-5.4.274_r00)
+
+          echo "Common ancestor:"
+          echo "$BASE"
+
+          test -n "$BASE"
+
+      - name: Dry-run merge to Android 5.4.274
+        shell: bash
+        run: |
+          set +e
+          cd kernel
+
+          git config user.name "VEUX Build Audit"
+          git config user.email "veux-build-audit@users.noreply.github.com"
+
+          git merge \
+            --no-commit \
+            --no-ff \
+            android11-5.4.274_r00
+
+          MERGE_RC=$?
+
+          echo
+          echo "======================================"
+          echo "DRY-RUN RESULT"
+          echo "======================================"
+
+          if [ "$MERGE_RC" -eq 0 ]; then
+            echo "✅ Merge completed without conflicts"
+
+            VERSION=$(awk '$1=="VERSION" && $2=="=" {print $3; exit}' Makefile)
+            PATCHLEVEL=$(awk '$1=="PATCHLEVEL" && $2=="=" {print $3; exit}' Makefile)
+            SUBLEVEL=$(awk '$1=="SUBLEVEL" && $2=="=" {print $3; exit}' Makefile)
+
+            KVER="${VERSION}.${PATCHLEVEL}.${SUBLEVEL}"
+
+            echo "Resulting kernel version: $KVER"
+
+            test "$KVER" = "5.4.274" || exit 20
+
+            test -f arch/arm64/boot/dts/vendor/xiaomi/veux.dts || exit 21
+            test -f arch/arm64/configs/veux_defconfig || exit 22
+
+            echo "✅ Linux 5.4.274"
+            echo "✅ veux.dts preserved"
+            echo "✅ veux_defconfig preserved"
+
+            {
+              echo "## ✅ VEUX forward-port dry-run successful"
+              echo
+              echo "- Base: Linux 5.4.268"
+              echo "- Target: Android Linux 5.4.274"
+              echo "- veux.dts preserved"
+              echo "- veux_defconfig preserved"
+              echo "- No conflicts"
+              echo "- Nothing was compiled or flashed"
+            } >> "$GITHUB_STEP_SUMMARY"
+
+            git merge --abort || true
+            exit 0
+          fi
+
+          echo "❌ Merge conflicts detected"
+          echo
+          echo "Conflicting files:"
+          git diff --name-only --diff-filter=U
+
+          {
+            echo "## ❌ VEUX 5.4.274 forward-port needs conflict resolution"
+            echo
+            echo '```text'
+            git diff --name-only --diff-filter=U
+            echo '```'
+            echo
+            echo "Nothing was compiled or flashed."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          git merge --abort || true
+          exit 10
