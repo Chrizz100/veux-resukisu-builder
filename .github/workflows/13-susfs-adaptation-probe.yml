@@ -50,6 +50,7 @@ jobs:
             echo "CASS intentionally NOT reverted: $CASS_COMMIT_DO_NOT_REVERT"
             echo "Expected upstream reject: fs/proc/task_mmu.c only"
             echo "ReSukiSU subdirectory probe target: drivers/kernelsu/"
+            echo "compile.h prerequisite target: init/version.o"
             echo "No full kernel Image will be built"
             echo "No boot.img will be created"
             echo "Nothing will be flashed"
@@ -477,10 +478,6 @@ jobs:
 
               write(path, new_text)
 
-          # --------------------------------------------------------------
-          # 1. Repair the one known SUSFS 2.2 reject on VEUX.
-          # --------------------------------------------------------------
-
           task = "fs/proc/task_mmu.c"
 
           task_include = """#if defined(CONFIG_KSU_SUSFS_SUS_KSTAT) || defined(CONFIG_KSU_SUSFS_SUS_MAP) || defined(CONFIG_KSU_SUSFS_OPEN_REDIRECT)
@@ -542,7 +539,6 @@ jobs:
 
           reject.unlink()
 
-          # Normalize one known trailing-tab artifact introduced by patch.
           namei = "fs/namei.c"
           text = read(namei)
 
@@ -558,11 +554,6 @@ jobs:
               namei,
               text.replace(old, "\t\treturn dentry;\n", 1),
           )
-
-          # --------------------------------------------------------------
-          # 2. Replace old KernelSU hook paths with pinned ReSukiSU
-          #    SUSFS-inline integration.
-          # --------------------------------------------------------------
 
           regex_once(
               "fs/exec.c",
@@ -892,10 +883,6 @@ jobs:
               "input hook insertion",
           )
 
-          # --------------------------------------------------------------
-          # 3. Keep Workflow 08/09 static-symbol path.
-          # --------------------------------------------------------------
-
           replace_once(
               "security/selinux/selinuxfs.c",
               "static const struct file_operations sel_handle_status_ops = {",
@@ -909,10 +896,6 @@ jobs:
               "ssize_t (*const write_op[])(struct file *, char *, size_t) = {",
               "SELinux write_op export",
           )
-
-          # --------------------------------------------------------------
-          # 4. Select ReSukiSU SUSFS Inline Hook.
-          # --------------------------------------------------------------
 
           defconfig = Path("arch/arm64/configs/veux_defconfig")
           config_text = defconfig.read_text()
@@ -1303,20 +1286,75 @@ jobs:
             exit "$PROBE_RC"
           fi
 
+      - name: Generate compile.h prerequisite for ReSukiSU
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # ReSukiSU core/init.c includes <generated/compile.h>
+          # for built-in builds.
+          #
+          # On this 5.4 kernel, init/version.o has an explicit dependency
+          # on include/generated/compile.h, so building init/version.o
+          # generates the exact prerequisite using the normal Kbuild path.
+
+          set +e
+
+          make \
+            O="$OUT_DIR" \
+            ARCH="$ARCH" \
+            LLVM=1 \
+            LLVM_IAS=1 \
+            init/version.o \
+            2>&1 \
+            | tee "$ARTIFACT_DIR/compile-h-prerequisite.log"
+
+          COMPILE_H_RC=${PIPESTATUS[0]}
+
+          set -e
+
+          echo "$COMPILE_H_RC" \
+            > "$ARTIFACT_DIR/compile-h-prerequisite.exit-code"
+
+          if [ "$COMPILE_H_RC" -ne 0 ]; then
+            echo "ERROR: init/version.o prerequisite build failed"
+            exit "$COMPILE_H_RC"
+          fi
+
+          COMPILE_H="$OUT_DIR/include/generated/compile.h"
+
+          if [ ! -s "$COMPILE_H" ]; then
+            echo "ERROR: expected generated compile.h is missing or empty:"
+            echo "$COMPILE_H"
+            exit 1
+          fi
+
+          cp \
+            "$COMPILE_H" \
+            "$ARTIFACT_DIR/generated-compile.h"
+
+          sha256sum \
+            "$COMPILE_H" \
+            > "$ARTIFACT_DIR/generated-compile.h.sha256"
+
+          {
+            echo "COMPILE_H_READY=YES"
+            echo "PATH=$COMPILE_H"
+            echo "BYTES=$(stat -c '%s' "$COMPILE_H")"
+            echo "SHA256=$(sha256sum "$COMPILE_H" | awk '{print $1}')"
+          } | tee "$ARTIFACT_DIR/COMPILE-H-SUMMARY.txt"
+
       - name: Compile pinned ReSukiSU subdirectory probe
         working-directory: kernel
         shell: bash
         run: |
           set -euo pipefail
 
-          # Kernel Makefile explicitly supports:
-          #
-          #   make foo/bar/baz/
-          #
-          # to build only a specific in-tree subdirectory.
-          #
-          # drivers/kernelsu is a symlink to the pinned ReSukiSU/kernel
-          # directory, while drivers/Makefile selects it with CONFIG_KSU.
+          if [ ! -s "$OUT_DIR/include/generated/compile.h" ]; then
+            echo "ERROR: compile.h prerequisite disappeared before ReSukiSU build"
+            exit 1
+          fi
 
           set +e
 
@@ -1354,6 +1392,7 @@ jobs:
 
           for log in \
             "$ARTIFACT_DIR/compile-probe.log" \
+            "$ARTIFACT_DIR/compile-h-prerequisite.log" \
             "$ARTIFACT_DIR/resukisu-subdir-probe.log"
           do
             if [ -f "$log" ]; then
@@ -1388,6 +1427,7 @@ jobs:
           cat \
             "$ARTIFACT_DIR/prepare.log" \
             "$ARTIFACT_DIR/compile-probe.log" \
+            "$ARTIFACT_DIR/compile-h-prerequisite.log" \
             "$ARTIFACT_DIR/resukisu-subdir-probe.log" \
             > "$ARTIFACT_DIR/KBUILD-COMBINED.log"
 
@@ -1444,6 +1484,7 @@ jobs:
             echo "RESUKISU_INLINE_KBUILD_CHECK=PASS"
             echo "Seven required inline hooks confirmed by pinned ReSukiSU Kbuild."
             echo "SUSFS v2.2.0 detected."
+            echo "compile.h prerequisite generated through init/version.o."
             echo "ReSukiSU subdirectory compile target: drivers/kernelsu/"
           } | tee "$ARTIFACT_DIR/RESUKISU-KBUILD-HOOK-CHECK.txt"
 
@@ -1458,6 +1499,11 @@ jobs:
               < "$ARTIFACT_DIR/kernel-object-probe.exit-code"
           )"
 
+          COMPILE_H_RC="$(
+            tr -d '\r\n' \
+              < "$ARTIFACT_DIR/compile-h-prerequisite.exit-code"
+          )"
+
           KSU_RC="$(
             tr -d '\r\n' \
               < "$ARTIFACT_DIR/resukisu-subdir-probe.exit-code"
@@ -1468,8 +1514,18 @@ jobs:
             exit 1
           fi
 
+          if [ "$COMPILE_H_RC" != "0" ]; then
+            echo "ERROR: compile.h prerequisite exit code is $COMPILE_H_RC"
+            exit 1
+          fi
+
           if [ "$KSU_RC" != "0" ]; then
             echo "ERROR: ReSukiSU subdirectory probe exit code is $KSU_RC"
+            exit 1
+          fi
+
+          if [ ! -s "$OUT_DIR/include/generated/compile.h" ]; then
+            echo "ERROR: generated compile.h missing at final verification"
             exit 1
           fi
 
@@ -1555,6 +1611,11 @@ jobs:
               | tr -d ' '
           )"
 
+          COMPILE_H_SHA="$(
+            sha256sum "$OUT_DIR/include/generated/compile.h" \
+              | awk '{print $1}'
+          )"
+
           {
             echo "VEUX 5.4.274 ReSukiSU SUSFS 2.2 Adaptation Probe"
             echo "=================================================="
@@ -1571,6 +1632,8 @@ jobs:
             echo "Remaining .orig files: 0"
             echo "Old incompatible KernelSU hooks: removed"
             echo "ReSukiSU SUSFS inline hooks: accepted"
+            echo "compile.h prerequisite build: PASS"
+            echo "compile.h SHA-256: $COMPILE_H_SHA"
             echo "ReSukiSU subdirectory compile: PASS"
             echo "ReSukiSU compiled object files: $KSU_OBJECT_COUNT"
             echo
@@ -1627,6 +1690,12 @@ jobs:
               > "$ARTIFACT_DIR/FAILURE-compile-tail.txt"
           fi
 
+          if [ -f "$ARTIFACT_DIR/compile-h-prerequisite.log" ]; then
+            tail -n 500 \
+              "$ARTIFACT_DIR/compile-h-prerequisite.log" \
+              > "$ARTIFACT_DIR/FAILURE-compile-h-tail.txt"
+          fi
+
           if [ -f "$ARTIFACT_DIR/resukisu-subdir-probe.log" ]; then
             tail -n 500 \
               "$ARTIFACT_DIR/resukisu-subdir-probe.log" \
@@ -1637,6 +1706,12 @@ jobs:
             cp \
               "$OUT_DIR/.config" \
               "$ARTIFACT_DIR/failure-resolved.config"
+          fi
+
+          if [ -f "$OUT_DIR/include/generated/compile.h" ]; then
+            cp \
+              "$OUT_DIR/include/generated/compile.h" \
+              "$ARTIFACT_DIR/failure-generated-compile.h"
           fi
 
       - name: Upload successful adaptation probe
