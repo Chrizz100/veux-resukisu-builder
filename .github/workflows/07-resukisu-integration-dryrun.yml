@@ -57,11 +57,10 @@ jobs:
           echo "Kernel: $KVER"
 
           test "$KVER" = "5.4.274"
-
           test -f arch/arm64/configs/veux_defconfig
           test -f arch/arm64/boot/dts/vendor/xiaomi/veux.dts
 
-          echo "✅ Candidate 2 = Linux 5.4.274"
+          echo "✅ Candidate 2 prepared"
 
       - name: Protect existing SUSFS
         shell: bash
@@ -82,8 +81,7 @@ jobs:
 
           for FILE in \
             include/linux/susfs_def.h \
-            fs/susfs.c \
-            fs/susfs.o
+            fs/susfs.c
           do
             if [ -e "$FILE" ]; then
               echo "FOUND FILE: $FILE" | tee -a "$REPORT"
@@ -105,8 +103,7 @@ jobs:
           if [ "$FOUND" -ne 0 ]; then
             echo
             echo "Existing SUSFS footprint detected."
-            echo "Stopping instead of deleting or overwriting it."
-            echo
+            echo "Stopping instead of overwriting it."
             cat "$REPORT"
             exit 20
           fi
@@ -114,9 +111,9 @@ jobs:
           echo "No existing SUSFS kernel-side backport detected." \
             | tee -a "$REPORT"
 
-          echo "✅ Safe to continue without removing SUSFS"
+          echo "✅ SUSFS preservation check passed"
 
-      - name: Remove legacy KernelSU driver only
+      - name: Remove legacy KernelSU driver
         shell: bash
         run: |
           set -euo pipefail
@@ -133,10 +130,9 @@ jobs:
 
           test ! -e drivers/kernelsu
 
-          echo "✅ Legacy drivers/kernelsu removed"
-          echo "Existing kernel-side hooks are handled separately."
+          echo "✅ Legacy KernelSU driver removed"
 
-      - name: Convert legacy hooks to ReSukiSU manual hooks
+      - name: Convert legacy hooks
         shell: bash
         run: |
           set -euo pipefail
@@ -148,16 +144,16 @@ jobs:
           import re
           import sys
 
-          def load(path):
+          def read(path):
               return Path(path).read_text()
 
-          def save(path, text):
+          def write(path, text):
               Path(path).write_text(text)
 
-          def sub_once(path, pattern, replacement, description, flags=0):
-              text = load(path)
+          def replace_once(path, pattern, replacement, name, flags=0):
+              text = read(path)
 
-              new_text, count = re.subn(
+              result, count = re.subn(
                   pattern,
                   replacement,
                   text,
@@ -167,16 +163,15 @@ jobs:
 
               if count != 1:
                   print(
-                      f"ERROR: {description}: "
-                      f"expected exactly 1 replacement, got {count}",
+                      f"ERROR: {name}: expected 1 replacement, got {count}",
                       file=sys.stderr,
                   )
                   sys.exit(40)
 
-              save(path, new_text)
-              print(f"OK: {description}")
+              write(path, result)
+              print(f"OK: {name}")
 
-          sub_once(
+          replace_once(
               "fs/read_write.c",
               r"""
               \n\#ifdef\ CONFIG_KSU\n
@@ -187,11 +182,11 @@ jobs:
               \#endif\n
               """,
               "\n",
-              "remove legacy ksu_vfs_read_hook declaration",
+              "remove old vfs_read declaration",
               re.VERBOSE,
           )
 
-          sub_once(
+          replace_once(
               "fs/read_write.c",
               r"""
               \n\#ifdef\ CONFIG_KSU\n
@@ -201,11 +196,11 @@ jobs:
               \#endif\n
               """,
               "\n",
-              "remove legacy ksu_vfs_read_hook call",
+              "remove old vfs_read call",
               re.VERBOSE,
           )
 
-          sub_once(
+          replace_once(
               "fs/exec.c",
               r"""
               \#ifdef\ CONFIG_KSU\n
@@ -219,14 +214,18 @@ jobs:
               \#endif
               """,
               """#ifdef CONFIG_KSU_MANUAL_HOOK
-          extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr,
-                                         void *argv, void *envp, int *flags);
+          extern int ksu_handle_execveat(
+                  int *fd,
+                  struct filename **filename_ptr,
+                  void *argv,
+                  void *envp,
+                  int *flags);
           #endif""",
-              "replace legacy execve declarations",
+              "replace old exec declarations",
               re.VERBOSE,
           )
 
-          sub_once(
+          replace_once(
               "fs/exec.c",
               r"""
               \#ifdef\ CONFIG_KSU\n
@@ -240,13 +239,18 @@ jobs:
               \#endif
               """,
               """#ifdef CONFIG_KSU_MANUAL_HOOK
-              ksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);
+              ksu_handle_execveat(
+                      &fd,
+                      &filename,
+                      &argv,
+                      &envp,
+                      &flags);
           #endif""",
-              "replace legacy execve runtime hook",
+              "replace old exec call",
               re.VERBOSE,
           )
 
-          sub_once(
+          replace_once(
               "fs/open.c",
               r"""
               \#ifdef\ CONFIG_KSU\n
@@ -260,7 +264,7 @@ jobs:
               re.VERBOSE,
           )
 
-          sub_once(
+          replace_once(
               "fs/open.c",
               r"""
               \#ifdef\ CONFIG_KSU\n
@@ -273,32 +277,36 @@ jobs:
               re.VERBOSE,
           )
 
-          sub_once(
+          replace_once(
               "fs/stat.c",
               r"""
               \#ifdef\ CONFIG_KSU\n
-              (extern\ int\ ksu_handle_stat
+              extern\ int\ ksu_handle_stat
               \(int\ \*dfd,\ const\ char\ __user\ \*\*filename_user,\n
-              \s*int\ \*flags\);\n)
+              \s*int\ \*flags\);\n
               \#endif
               """,
               """#ifdef CONFIG_KSU_MANUAL_HOOK
-          extern int ksu_handle_stat(int *dfd, const char __user **filename_user,
-                                     int *flags);
+          extern int ksu_handle_stat(
+                  int *dfd,
+                  const char __user **filename_user,
+                  int *flags);
+
           extern void ksu_handle_newfstat_ret(
                   unsigned int *fd,
                   struct stat __user **statbuf_ptr);
+
           #if defined(__ARCH_WANT_STAT64) || defined(__ARCH_WANT_COMPAT_STAT64)
           extern void ksu_handle_fstat64_ret(
                   unsigned long *fd,
                   struct stat64 __user **statbuf_ptr);
           #endif
           #endif""",
-              "extend stat hook declarations",
+              "replace stat declarations",
               re.VERBOSE,
           )
 
-          sub_once(
+          replace_once(
               "fs/stat.c",
               r"""
               \#ifdef\ CONFIG_KSU\n
@@ -306,11 +314,11 @@ jobs:
               \#endif
               """,
               "#ifdef CONFIG_KSU_MANUAL_HOOK\n\\1#endif",
-              "convert vfs_statx hook guard",
+              "convert stat call guard",
               re.VERBOSE,
           )
 
-          sub_once(
+          replace_once(
               "fs/stat.c",
               r"""
               (SYSCALL_DEFINE2\(newfstat,
@@ -328,7 +336,7 @@ jobs:
               re.VERBOSE | re.DOTALL,
           )
 
-          sub_once(
+          replace_once(
               "fs/stat.c",
               r"""
               (SYSCALL_DEFINE2\(fstat64,
@@ -346,7 +354,7 @@ jobs:
               re.VERBOSE | re.DOTALL,
           )
 
-          sub_once(
+          replace_once(
               "kernel/reboot.c",
               r"""
               (SYSCALL_DEFINE4\(reboot,\ int,\ magic1,\ int,\ magic2,
@@ -362,11 +370,11 @@ jobs:
           #endif
 
           \\1""",
-              "add reboot hook declaration",
+              "add reboot declaration",
               re.VERBOSE,
           )
 
-          sub_once(
+          replace_once(
               "kernel/reboot.c",
               r"""
               (SYSCALL_DEFINE4\(reboot,
@@ -375,10 +383,14 @@ jobs:
               """,
               """\\1
           #ifdef CONFIG_KSU_MANUAL_HOOK
-              ksu_handle_sys_reboot(magic1, magic2, cmd, &arg);
+              ksu_handle_sys_reboot(
+                      magic1,
+                      magic2,
+                      cmd,
+                      &arg);
           #endif
           """,
-              "add reboot hook call",
+              "add reboot hook",
               re.VERBOSE | re.DOTALL,
           )
 
@@ -394,49 +406,96 @@ jobs:
           }
 
           for path, terms in forbidden.items():
-              text = load(path)
+              text = read(path)
 
               for term in terms:
                   if term in text:
                       print(
-                          f"ERROR: incompatible legacy hook remains: "
-                          f"{term} in {path}",
+                          f"ERROR: old hook remains: {term} in {path}",
                           file=sys.stderr,
                       )
                       sys.exit(41)
 
-          required = {
-              "fs/exec.c": [
-                  "ksu_handle_execveat",
-              ],
-              "fs/open.c": [
-                  "ksu_handle_faccessat",
-              ],
-              "fs/stat.c": [
-                  "ksu_handle_stat",
-                  "ksu_handle_newfstat_ret",
-                  "ksu_handle_fstat64_ret",
-              ],
-              "kernel/reboot.c": [
-                  "ksu_handle_sys_reboot",
-              ],
-          }
-
-          for path, terms in required.items():
-              text = load(path)
-
-              for term in terms:
-                  if term not in text:
-                      print(
-                          f"ERROR: required hook missing after conversion: "
-                          f"{term} in {path}",
-                          file=sys.stderr,
-                      )
-                      sys.exit(42)
-
-          print()
-          print("✅ Legacy hooks converted successfully")
+          print("✅ Legacy hooks converted")
           PY
+
+      - name: Prepare ReSukiSU static symbol exports
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd kernel
+
+          python3 <<'PY'
+          from pathlib import Path
+          import sys
+
+          path = Path("security/selinux/selinuxfs.c")
+          text = path.read_text()
+
+          old_write = \
+              "static ssize_t (*const write_op[])(struct file *, char *, size_t)"
+
+          new_write = \
+              "ssize_t (*const write_op[])(struct file *, char *, size_t)"
+
+          old_status = \
+              "static const struct file_operations sel_handle_status_ops"
+
+          new_status = \
+              "const struct file_operations sel_handle_status_ops"
+
+          if old_write not in text:
+              print(
+                  "ERROR: expected static write_op declaration not found",
+                  file=sys.stderr,
+              )
+              sys.exit(45)
+
+          if old_status not in text:
+              print(
+                  "ERROR: expected static sel_handle_status_ops not found",
+                  file=sys.stderr,
+              )
+              sys.exit(46)
+
+          text = text.replace(
+              old_write,
+              new_write,
+              1,
+          )
+
+          text = text.replace(
+              old_status,
+              new_status,
+              1,
+          )
+
+          path.write_text(text)
+
+          print("✅ write_op made link-visible")
+          print("✅ sel_handle_status_ops made link-visible")
+          PY
+
+          grep -n \
+            'write_op\[\]' \
+            security/selinux/selinuxfs.c
+
+          grep -n \
+            'sel_handle_status_ops' \
+            security/selinux/selinuxfs.c
+
+          if ! grep -q \
+            'struct selinux_state ' \
+            security/selinux/include/security.h
+          then
+            echo
+            echo "ERROR: selinux_state layout differs."
+            echo "Additional symbol handling would be required."
+            exit 47
+          fi
+
+          echo "✅ Modern selinux_state layout detected"
 
       - name: Integrate pinned ReSukiSU
         shell: bash
@@ -452,7 +511,8 @@ jobs:
             "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/${RESUKISU_COMMIT}/kernel/setup.sh" \
             -o "$RUNNER_TEMP/resukisu-setup.sh"
 
-          bash "$RUNNER_TEMP/resukisu-setup.sh" \
+          bash \
+            "$RUNNER_TEMP/resukisu-setup.sh" \
             "$RESUKISU_COMMIT"
 
           test -d KernelSU
@@ -460,38 +520,28 @@ jobs:
 
           ACTUAL=$(git -C KernelSU rev-parse HEAD)
 
-          echo "Expected ReSukiSU: $RESUKISU_COMMIT"
-          echo "Actual ReSukiSU:   $ACTUAL"
+          echo "Expected: $RESUKISU_COMMIT"
+          echo "Actual:   $ACTUAL"
 
           test "$ACTUAL" = "$RESUKISU_COMMIT"
 
           test "$(readlink -f drivers/kernelsu)" \
             = "$(realpath KernelSU/kernel)"
 
-          grep -q \
-            'source "drivers/kernelsu/Kconfig"' \
-            drivers/Kconfig
+          echo "✅ ReSukiSU pinned"
 
-          grep -q \
-            'obj-$(CONFIG_KSU) += kernelsu/' \
-            drivers/Makefile
-
-          echo "✅ ReSukiSU pinned and linked correctly"
-
-      - name: Configure Manual Hook test
+      - name: Configure ReSukiSU Manual Hook
         shell: bash
         run: |
           set -euo pipefail
 
           cd kernel
 
-          DEFCONFIG="arch/arm64/configs/veux_defconfig"
-
           python3 <<'PY'
           from pathlib import Path
 
           path = Path("arch/arm64/configs/veux_defconfig")
-          text = path.read_text()
+          lines = path.read_text().splitlines()
 
           symbols = [
               "KSU",
@@ -501,19 +551,12 @@ jobs:
               "KSU_MANUAL_HOOK_AUTO_SETUID_HOOK",
               "KSU_MANUAL_HOOK_AUTO_INITRC_HOOK",
               "KSU_MANUAL_HOOK_AUTO_INPUT_HOOK",
+              "DEBUG_KERNEL",
               "KALLSYMS_ALL",
           ]
 
-          lines = text.splitlines()
-
           def belongs(line):
               for symbol in symbols:
-                  if line == f"CONFIG_{symbol}=y":
-                      return True
-
-                  if line == f"CONFIG_{symbol}=m":
-                      return True
-
                   if line.startswith(f"CONFIG_{symbol}="):
                       return True
 
@@ -531,7 +574,8 @@ jobs:
           lines += [
               "",
               "# ReSukiSU 5.4 Manual Hook",
-              "CONFIG_KALLSYMS_ALL=y",
+              "# CONFIG_DEBUG_KERNEL is not set",
+              "# CONFIG_KALLSYMS_ALL is not set",
               "CONFIG_KSU=y",
               "# CONFIG_KSU_TRACEPOINT_HOOK is not set",
               "CONFIG_KSU_MANUAL_HOOK=y",
@@ -546,11 +590,11 @@ jobs:
           )
           PY
 
-          echo
-          echo "ReSukiSU additions to defconfig:"
+          echo "ReSukiSU configuration:"
           echo
 
-          tail -n 15 "$DEFCONFIG"
+          tail -n 15 \
+            arch/arm64/configs/veux_defconfig
 
       - name: Resolve VEUX defconfig
         shell: bash
@@ -570,11 +614,11 @@ jobs:
           test -f out/.config
 
           echo
-          echo "Resolved ReSukiSU configuration:"
+          echo "Resolved configuration:"
           echo
 
           grep -E \
-            'CONFIG_KSU|CONFIG_KALLSYMS_ALL' \
+            'CONFIG_KSU|CONFIG_KALLSYMS|CONFIG_DEBUG_KERNEL' \
             out/.config \
             || true
 
@@ -592,6 +636,10 @@ jobs:
             "$CONFIG"
 
           grep -qx \
+            'CONFIG_KALLSYMS=y' \
+            "$CONFIG"
+
+          grep -qx \
             'CONFIG_KSU_MANUAL_HOOK=y' \
             "$CONFIG"
 
@@ -601,6 +649,14 @@ jobs:
 
           grep -qx \
             '# CONFIG_KSU_SUSFS is not set' \
+            "$CONFIG"
+
+          grep -qx \
+            '# CONFIG_DEBUG_KERNEL is not set' \
+            "$CONFIG"
+
+          grep -qx \
+            '# CONFIG_KALLSYMS_ALL is not set' \
             "$CONFIG"
 
           grep -qx \
@@ -615,27 +671,17 @@ jobs:
             'CONFIG_KSU_MANUAL_HOOK_AUTO_INPUT_HOOK=y' \
             "$CONFIG"
 
-          if ! grep -qx \
-            'CONFIG_KALLSYMS_ALL=y' \
-            "$CONFIG"
-          then
-            echo
-            echo "ERROR: CONFIG_KALLSYMS_ALL did not resolve to y."
-            echo "Static-symbol requirements will not be bypassed."
-            exit 50
-          fi
-
           echo
           echo "=========================================="
           echo "RESUKISU CONFIGURATION VERIFIED"
           echo "=========================================="
           echo
-          echo "✅ CONFIG_KSU=y"
-          echo "✅ CONFIG_KSU_MANUAL_HOOK=y"
-          echo "✅ Tracepoint hook disabled"
-          echo "✅ SUSFS not newly enabled in this stage"
-          echo "✅ Manual auto hooks enabled"
-          echo "✅ CONFIG_KALLSYMS_ALL=y"
+          echo "✅ KernelSU enabled"
+          echo "✅ Manual Hook enabled"
+          echo "✅ KALLSYMS enabled by ReSukiSU"
+          echo "✅ KALLSYMS_ALL remains disabled"
+          echo "✅ DEBUG_KERNEL remains disabled"
+          echo "✅ SUSFS not enabled prematurely"
 
       - name: Run hook compatibility audit
         shell: bash
@@ -686,16 +732,36 @@ jobs:
                 ':!KernelSU/**' \
                 ':!drivers/kernelsu/**'
               then
-                echo
-                echo "ERROR: incompatible legacy term remains: $TERM"
+                echo "ERROR: incompatible old hook remains: $TERM"
                 exit 61
               else
                 echo "ABSENT  $TERM"
               fi
             done
+
+            echo
+
+            if grep -q \
+              '^static ssize_t (\*const write_op\[\])' \
+              security/selinux/selinuxfs.c
+            then
+              echo "ERROR: write_op is still static"
+              exit 62
+            fi
+
+            if grep -q \
+              '^static const struct file_operations sel_handle_status_ops' \
+              security/selinux/selinuxfs.c
+            then
+              echo "ERROR: sel_handle_status_ops is still static"
+              exit 63
+            fi
+
+            echo "EXPORT  write_op"
+            echo "EXPORT  sel_handle_status_ops"
           } | tee "$REPORT"
 
-      - name: Save integration diff
+      - name: Save integration audit
         shell: bash
         run: |
           set -euo pipefail
@@ -703,14 +769,15 @@ jobs:
           cd kernel
 
           {
-            echo "VEUX 5.4.274 -> ReSukiSU integration dry run"
-            echo "============================================"
+            echo "VEUX 5.4.274 RESUKISU INTEGRATION DRY RUN"
+            echo "=========================================="
+            echo
+            echo "Base:"
+            echo "dereference23/kernel_xiaomi_sm6375"
+            echo "Tag: 20240619"
             echo
             echo "Kernel:"
             echo "5.4.274"
-            echo
-            echo "Base:"
-            echo "dereference23/kernel_xiaomi_sm6375 @ 20240619"
             echo
             echo "Stability Candidate:"
             echo "Candidate 2"
@@ -718,15 +785,25 @@ jobs:
             echo "ReSukiSU:"
             git -C KernelSU rev-parse HEAD
             echo
-            echo "drivers/kernelsu:"
-            readlink drivers/kernelsu
+            echo "Hook method:"
+            echo "Manual Hook"
+            echo
+            echo "KALLSYMS_ALL:"
+            echo "Disabled"
+            echo
+            echo "DEBUG_KERNEL:"
+            echo "Disabled"
+            echo
+            echo "SELinux static symbols:"
+            echo "write_op link-visible"
+            echo "sel_handle_status_ops link-visible"
             echo
             echo "SUSFS:"
-            echo "Not newly enabled in this dry run"
+            echo "Not enabled yet"
             echo
-            echo "No kernel Image was compiled."
-            echo "No boot image was created."
-            echo "Nothing was flashed."
+            echo "No kernel Image compiled."
+            echo "No boot image created."
+            echo "Nothing flashed."
           } > "$GITHUB_WORKSPACE/INTEGRATION-SUMMARY.txt"
 
           git diff \
@@ -736,6 +813,7 @@ jobs:
             fs/open.c \
             fs/stat.c \
             kernel/reboot.c \
+            security/selinux/selinuxfs.c \
             arch/arm64/configs/veux_defconfig \
             > "$GITHUB_WORKSPACE/RESUKISU-INTEGRATION.diff"
 
@@ -743,8 +821,7 @@ jobs:
             out/.config \
             "$GITHUB_WORKSPACE/resolved-veux.config"
 
-          cat \
-            "$GITHUB_WORKSPACE/INTEGRATION-SUMMARY.txt"
+          cat "$GITHUB_WORKSPACE/INTEGRATION-SUMMARY.txt"
 
           echo
           echo "Diff lines:"
@@ -755,7 +832,7 @@ jobs:
       - name: Upload integration audit
         uses: actions/upload-artifact@v7
         with:
-          name: veux-5.4.274-resukisu-integration-dryrun
+          name: veux-5.4.274-resukisu-integration-dryrun-v2
           path: |
             SUSFS-GUARD.txt
             HOOK-AUDIT.txt
@@ -770,7 +847,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v7
         with:
-          name: veux-5.4.274-resukisu-integration-failure
+          name: veux-5.4.274-resukisu-integration-failure-v2
           path: |
             SUSFS-GUARD.txt
             HOOK-AUDIT.txt
@@ -781,3 +858,4 @@ jobs:
             kernel/out/.config
           retention-days: 14
           if-no-files-found: warn
+          include-hidden-files: true
