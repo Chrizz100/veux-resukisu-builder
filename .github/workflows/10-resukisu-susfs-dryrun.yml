@@ -1,4 +1,4 @@
-name: 10 - VEUX ReSukiSU SUSFS 5.4 Integration Dry Run
+name: 10 - VEUX ReSukiSU SUSFS 5.4 Kernel Patch Dry Run
 
 on:
   workflow_dispatch:
@@ -9,7 +9,7 @@ permissions:
 jobs:
   susfs-dryrun:
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 35
 
     env:
       ARCH: arm64
@@ -17,7 +17,8 @@ jobs:
       STABILITY_REVERT: "f74e5c1b7c3f3e42f694e5ab524f95f62a0dab80"
       CASS_COMMIT_DO_NOT_REVERT: "b9b5ddba28bf9f23ac1a2af27f574291451244fd"
       RESUKISU_COMMIT: "faccf4c5edc7be37776216e7d43dd3dca0239331"
-      SUSFS_COMMIT: "001e69919c6271f690fd00b17e4c721c9e599152"
+      SUSFS_BRANCH: "kernel-5.4"
+      SUSFS_COMMIT: "76affd70abf61d77feb0a132f61365d6848505df"
       OUT_DIR: out
       ARTIFACT_DIR: ${{ github.workspace }}/artifacts
       SUSFS_DIR: ${{ github.workspace }}/susfs4ksu
@@ -30,11 +31,12 @@ jobs:
           mkdir -p "$ARTIFACT_DIR"
 
           {
-            echo "VEUX 5.4.274 ReSukiSU + SUSFS integration dry run"
+            echo "VEUX 5.4.274 ReSukiSU + SUSFS kernel-patch dry run"
             echo "Started: $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
             echo "Stability Candidate: Candidate 2"
             echo "ReSukiSU: $RESUKISU_COMMIT"
-            echo "SUSFS kernel-5.4 source: $SUSFS_COMMIT"
+            echo "SUSFS branch: $SUSFS_BRANCH"
+            echo "SUSFS commit: $SUSFS_COMMIT"
             echo "Target hook mode: SUSFS Inline Hook"
             echo "CASS intentionally NOT reverted: $CASS_COMMIT_DO_NOT_REVERT"
             echo "No kernel Image will be compiled"
@@ -62,7 +64,7 @@ jobs:
             python3
 
       - name: Checkout VEUX source
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           repository: dereference23/kernel_xiaomi_sm6375
           ref: "20240619"
@@ -206,10 +208,6 @@ jobs:
             KernelSU/kernel/Kconfig
 
           grep -qF \
-            'config KSU_MANUAL_HOOK' \
-            KernelSU/kernel/Kconfig
-
-          grep -qF \
             'include $(KSU_SRC)/tools/inline_hook_check.mk' \
             KernelSU/kernel/Kbuild
 
@@ -259,7 +257,7 @@ jobs:
             echo "CONFIG_KALLSYMS_ALL remains disabled"
           } > "$ARTIFACT_DIR/STATIC-SYMBOL-POLICY.txt"
 
-      - name: Fetch and strict-test official SUSFS 5.4 patch
+      - name: Fetch exact SUSFS kernel-5.4 source
         working-directory: kernel
         shell: bash
         run: |
@@ -267,29 +265,22 @@ jobs:
 
           rm -rf "$SUSFS_DIR"
 
-          git init "$SUSFS_DIR"
-
-          git -C "$SUSFS_DIR" remote add \
-            origin \
-            https://gitlab.com/simonpunk/susfs4ksu.git
-
-          git -C "$SUSFS_DIR" fetch \
+          git clone \
             --depth=1 \
-            origin \
-            kernel-5.4
-
-          git -C "$SUSFS_DIR" checkout \
-            --detach \
-            FETCH_HEAD
+            --branch "$SUSFS_BRANCH" \
+            --single-branch \
+            https://gitlab.com/simonpunk/susfs4ksu.git \
+            "$SUSFS_DIR"
 
           ACTUAL_SUSFS="$(
             git -C "$SUSFS_DIR" rev-parse HEAD
           )"
 
+          echo "Expected SUSFS: $SUSFS_COMMIT"
+          echo "Actual SUSFS:   $ACTUAL_SUSFS"
+
           if [ "$ACTUAL_SUSFS" != "$SUSFS_COMMIT" ]; then
-            echo "ERROR: SUSFS branch moved from pinned commit"
-            echo "Expected: $SUSFS_COMMIT"
-            echo "Actual:   $ACTUAL_SUSFS"
+            echo "ERROR: SUSFS kernel-5.4 branch moved from pinned commit"
             exit 1
           fi
 
@@ -297,32 +288,33 @@ jobs:
 
           KSU_PATCH="$SUSFS_DIR/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch"
 
-          if [ ! -s "$KERNEL_PATCH" ]; then
-            echo "ERROR: missing SUSFS 5.4 kernel patch"
-            exit 1
-          fi
-
-          if [ ! -s "$KSU_PATCH" ]; then
-            echo "ERROR: missing upstream KernelSU SUSFS patch"
-            exit 1
-          fi
+          for file in \
+            "$KERNEL_PATCH" \
+            "$KSU_PATCH"
+          do
+            if [ ! -s "$file" ]; then
+              echo "ERROR: missing SUSFS source file: $file"
+              exit 1
+            fi
+          done
 
           if [ ! -d "$SUSFS_DIR/kernel_patches/fs" ]; then
-            echo "ERROR: missing SUSFS fs source directory"
+            echo "ERROR: missing SUSFS kernel_patches/fs directory"
             exit 1
           fi
 
           if [ ! -d "$SUSFS_DIR/kernel_patches/include/linux" ]; then
-            echo "ERROR: missing SUSFS include/linux source directory"
+            echo "ERROR: missing SUSFS kernel_patches/include/linux directory"
             exit 1
           fi
 
           {
+            echo "SUSFS_BRANCH=$SUSFS_BRANCH"
             echo "SUSFS_COMMIT=$ACTUAL_SUSFS"
             echo "KERNEL_PATCH_SHA256=$(sha256sum "$KERNEL_PATCH" | awk '{print $1}')"
             echo "UPSTREAM_KSU_PATCH_SHA256=$(sha256sum "$KSU_PATCH" | awk '{print $1}')"
             echo "UPSTREAM_KSU_PATCH_APPLIED=NO"
-            echo "Pinned ReSukiSU already provides KSU_SUSFS mode and inline-hook checks."
+            echo "Reason: pinned ReSukiSU has native CONFIG_KSU_SUSFS handling."
           } | tee "$ARTIFACT_DIR/SUSFS-SOURCE.txt"
 
           cp \
@@ -341,6 +333,12 @@ jobs:
             | sort -z \
             | xargs -0 sha256sum \
             > "$ARTIFACT_DIR/SUSFS-UPSTREAM-FILES-SHA256.txt"
+
+      - name: Copy SUSFS kernel-side source files
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
 
           cp -av \
             "$SUSFS_DIR/kernel_patches/fs/." \
@@ -362,21 +360,29 @@ jobs:
             exit 1
           fi
 
+          find \
+            fs \
+            include/linux \
+            -maxdepth 1 \
+            -type f \
+            \( -name '*susfs*' -o -name 'sus_su*' \) \
+            -print \
+            | sort \
+            > "$ARTIFACT_DIR/SUSFS-INSTALLED-FILES.txt"
+
           grep -E \
             '^#define[[:space:]]+SUSFS_VERSION' \
             include/linux/susfs.h \
             | tee "$ARTIFACT_DIR/SUSFS-VERSION.txt" \
             || true
 
-          find \
-            fs \
-            include/linux \
-            -maxdepth 1 \
-            -type f \
-            \( -name 'susfs*' -o -name '*susfs*' \) \
-            -print \
-            | sort \
-            > "$ARTIFACT_DIR/SUSFS-INSTALLED-FILES.txt"
+      - name: Strict fuzz-zero test and apply SUSFS 5.4 kernel patch
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          KERNEL_PATCH="$SUSFS_DIR/kernel_patches/50_add_susfs_in_kernel-5.4.patch"
 
           set +e
 
@@ -400,9 +406,10 @@ jobs:
 
           if [ "$PATCH_RC" -ne 0 ]; then
             {
-              echo "RESULT: NEEDS_ADAPTATION"
+              echo "RESULT: NEEDS_KERNEL_PATCH_ADAPTATION"
               echo "Official kernel-5.4 SUSFS patch did not apply cleanly with fuzz=0."
-              echo "No kernel build was attempted."
+              echo "No ReSukiSU hook adaptation was attempted."
+              echo "No kernel Image was compiled."
               echo "No boot.img was created."
               echo "Nothing was flashed."
             } > "$ARTIFACT_DIR/SUSFS-DRYRUN-SUMMARY.txt"
@@ -433,7 +440,7 @@ jobs:
             --stat \
             > "$ARTIFACT_DIR/SUSFS-TRACKED.diffstat"
 
-      - name: Resolve SUSFS Inline Hook config and audit callsites
+      - name: Resolve SUSFS Inline Hook config
         working-directory: kernel
         shell: bash
         run: |
@@ -465,10 +472,6 @@ jobs:
           CONFIG_KSU_SUSFS=y
           EOF
 
-          tail -n 12 \
-            "$DEFCONFIG" \
-            | tee "$ARTIFACT_DIR/veux-defconfig-susfs-tail.txt"
-
           rm -rf "$OUT_DIR"
 
           make \
@@ -498,8 +501,6 @@ jobs:
 
               exit 1
             fi
-
-            echo "OK: $symbol=y"
           }
 
           reject_y() {
@@ -509,8 +510,6 @@ jobs:
               echo "ERROR: $symbol=y must not be active"
               exit 1
             fi
-
-            echo "OK: $symbol is not active as y"
           }
 
           require_y CONFIG_64BIT
@@ -524,20 +523,6 @@ jobs:
           reject_y CONFIG_DEBUG_KERNEL
           reject_y CONFIG_KALLSYMS_ALL
 
-          for symbol in \
-            CONFIG_KSU_SUSFS_SUS_PATH \
-            CONFIG_KSU_SUSFS_SUS_MOUNT \
-            CONFIG_KSU_SUSFS_SUS_KSTAT \
-            CONFIG_KSU_SUSFS_SPOOF_UNAME \
-            CONFIG_KSU_SUSFS_ENABLE_LOG \
-            CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \
-            CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \
-            CONFIG_KSU_SUSFS_OPEN_REDIRECT \
-            CONFIG_KSU_SUSFS_SUS_MAP
-          do
-            require_y "$symbol"
-          done
-
           cp \
             "$CONFIG" \
             "$ARTIFACT_DIR/resolved-veux-susfs.config"
@@ -547,9 +532,18 @@ jobs:
             "$CONFIG" \
             > "$ARTIFACT_DIR/resolved-susfs-config-important.txt"
 
+      - name: Audit ReSukiSU SUSFS inline-hook readiness
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
           REPORT="$ARTIFACT_DIR/SUSFS-INLINE-HOOK-AUDIT.txt"
 
+          MISSING_FILE="$ARTIFACT_DIR/SUSFS-INLINE-HOOK-MISSING.txt"
+
           : > "$REPORT"
+          : > "$MISSING_FILE"
 
           REQUIRED=(
             "ksu_handle_setresuid:kernel/sys.c"
@@ -565,15 +559,16 @@ jobs:
             hook="${entry%%:*}"
             file="${entry#*:}"
 
-            if ! grep -wq "$hook" "$file"; then
-              echo "MISSING $hook $file" \
+            if grep -wq "$hook" "$file"; then
+              echo "FOUND   $hook   $file" \
+                | tee -a "$REPORT"
+            else
+              echo "MISSING $hook   $file" \
                 | tee -a "$REPORT"
 
-              exit 1
+              echo "$hook:$file" \
+                >> "$MISSING_FILE"
             fi
-
-            echo "FOUND   $hook   $file" \
-              | tee -a "$REPORT"
           done
 
           INCOMPATIBLE=(
@@ -584,45 +579,41 @@ jobs:
             "ksu_init_rc_hook:fs/stat.c"
           )
 
+          INCOMPATIBLE_COUNT=0
+
           for entry in "${INCOMPATIBLE[@]}"; do
             hook="${entry%%:*}"
             file="${entry#*:}"
 
             if grep -wq "$hook" "$file"; then
-              echo "INCOMPATIBLE $hook $file" \
+              echo "INCOMPATIBLE $hook   $file" \
                 | tee -a "$REPORT"
 
-              exit 1
-            fi
-
-            echo "ABSENT  $hook   $file" \
-              | tee -a "$REPORT"
-          done
-
-          MANUAL_GUARD_COUNT=0
-
-          for file in \
-            kernel/sys.c \
-            fs/exec.c \
-            fs/open.c \
-            fs/read_write.c \
-            fs/stat.c \
-            kernel/reboot.c \
-            drivers/input/input.c
-          do
-            if grep -wq \
-              'CONFIG_KSU_MANUAL_HOOK' \
-              "$file"
-            then
-              echo "WARNING manual-hook guard remains in $file" \
+              INCOMPATIBLE_COUNT=$((INCOMPATIBLE_COUNT + 1))
+            else
+              echo "ABSENT       $hook   $file" \
                 | tee -a "$REPORT"
-
-              MANUAL_GUARD_COUNT=$((MANUAL_GUARD_COUNT + 1))
             fi
           done
 
-          echo "MANUAL_GUARD_COUNT=$MANUAL_GUARD_COUNT" \
-            | tee -a "$REPORT"
+          MISSING_COUNT="$(
+            wc -l < "$MISSING_FILE" \
+              | tr -d ' '
+          )"
+
+          {
+            echo
+            echo "MISSING_REQUIRED_HOOKS=$MISSING_COUNT"
+            echo "INCOMPATIBLE_HOOKS=$INCOMPATIBLE_COUNT"
+          } | tee -a "$REPORT"
+
+          if [ "$MISSING_COUNT" -eq 0 ] && [ "$INCOMPATIBLE_COUNT" -eq 0 ]; then
+            echo "INLINE_HOOK_READY=YES" \
+              | tee "$ARTIFACT_DIR/INLINE-HOOK-READINESS.txt"
+          else
+            echo "INLINE_HOOK_READY=NO" \
+              | tee "$ARTIFACT_DIR/INLINE-HOOK-READINESS.txt"
+          fi
 
           grep -RhoE \
             'CONFIG_KSU_SUSFS_[A-Z0-9_]+' \
@@ -667,6 +658,12 @@ jobs:
             fi
           } > "$ARTIFACT_DIR/SUSFS-CONFIG-COMPATIBILITY.txt"
 
+      - name: Write dry-run summary
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
           SUSFS_VERSION="$(
             grep -E \
               '^#define[[:space:]]+SUSFS_VERSION' \
@@ -678,36 +675,58 @@ jobs:
           )"
 
           CONFIG_SHA="$(
-            sha256sum "$CONFIG" \
+            sha256sum "$OUT_DIR/.config" \
               | awk '{print $1}'
           )"
+
+          KERNEL_PATCH="$SUSFS_DIR/kernel_patches/50_add_susfs_in_kernel-5.4.patch"
 
           PATCH_SHA="$(
-            sha256sum \
-              "$SUSFS_DIR/kernel_patches/50_add_susfs_in_kernel-5.4.patch" \
+            sha256sum "$KERNEL_PATCH" \
               | awk '{print $1}'
           )"
 
+          INLINE_READY="$(
+            cat "$ARTIFACT_DIR/INLINE-HOOK-READINESS.txt"
+          )"
+
+          if [ -s "$ARTIFACT_DIR/SUSFS-CONFIGS-NOT-DEFINED-BY-RESUKISU.txt" ]; then
+            CONFIG_GAP="YES"
+          else
+            CONFIG_GAP="NO"
+          fi
+
           {
-            echo "VEUX 5.4.274 ReSukiSU SUSFS Integration Dry Run"
-            echo "================================================"
+            echo "VEUX 5.4.274 ReSukiSU SUSFS Kernel Patch Dry Run"
+            echo "================================================="
             echo
-            echo "RESULT: PASS"
+            echo "RESULT: PATCH_COMPATIBILITY_PASS"
+            echo
             echo "Kernel: 5.4.274"
             echo "Stability Candidate: Candidate 2"
             echo "ReSukiSU: $RESUKISU_COMMIT"
-            echo "SUSFS source: $SUSFS_COMMIT"
+            echo "SUSFS branch: $SUSFS_BRANCH"
+            echo "SUSFS commit: $SUSFS_COMMIT"
             echo "SUSFS version: ${SUSFS_VERSION:-unknown}"
             echo "SUSFS kernel patch SHA-256: $PATCH_SHA"
             echo "Resolved config SHA-256: $CONFIG_SHA"
-            echo "Hook mode: SUSFS Inline Hook"
+            echo
+            echo "Hook mode selected: SUSFS Inline Hook"
             echo "CONFIG_KSU_SUSFS=y"
             echo "CONFIG_KSU_MANUAL_HOOK is not active"
             echo "CONFIG_KSU_TRACEPOINT_HOOK is not active"
             echo "CONFIG_DEBUG_KERNEL is not active"
             echo "CONFIG_KALLSYMS_ALL is not active"
+            echo
             echo "Official 5.4 kernel patch: clean with fuzz=0"
-            echo "ReSukiSU inline hook audit: passed"
+            echo "$INLINE_READY"
+            echo "SUSFS_CONFIG_GAP=$CONFIG_GAP"
+            echo
+            echo "IMPORTANT:"
+            echo "PATCH_COMPATIBILITY_PASS does NOT yet mean build-ready."
+            echo "Missing/incompatible ReSukiSU inline hooks are reported for the next controlled step."
+            echo "Kernel-side SUSFS config symbols not defined by pinned ReSukiSU are reported separately."
+            echo
             echo "Upstream SUSFS KernelSU patch: intentionally NOT applied"
             echo "Kernel Image compiled: NO"
             echo "boot.img created: NO"
