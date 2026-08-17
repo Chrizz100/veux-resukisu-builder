@@ -1,0 +1,1512 @@
+name: 20R2 - VEUX AnyKernel3 Runtime Differential Capture
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  W18_ARTIFACT_NAME: "veux-os1.0.12.0-workflow18-stock-rom-audit-3"
+  W19_ARTIFACT_NAME: "veux-5.4.274-workflow19-boot-v3-dryrun-repack-avb-audit-1"
+  W20_ARTIFACT_NAME: "veux-5.4.274-resukisu-susfs-2.2-workflow20-canonical-packaging-avb-audit-1"
+
+  W20_STAGING_NAME: "DO_NOT_FLASH_VEUX_5.4.274_ReSukiSU_SUSFS_2.2_WORKFLOW20_STAGING.zip"
+  W20_STAGING_SHA256: "4aac7c58bade71233ee02769d581e5c5629b2d9e5b2d4dd98aa8f542101e48d4"
+
+  STOCK_BOOT_BYTES: "134217728"
+  STOCK_BOOT_SHA256: "ac6522e4eed55782dd2ae61362e9d345d01a1f229c87333818511d5537fa79c5"
+
+  W17_IMAGE_BYTES: "29839872"
+  W17_IMAGE_SHA256: "e036175ada602df3bcb443da7c390e8cd4b0e900c26fbfa313725db02855ec96"
+
+  W19_DRYRUN_SHA256: "2baffafce260348c247674c5e8176408d45dc75b35ccbf7ca5834cbb4679398e"
+  W19_AVB_DIGEST: "8b6af8a52796027ece9afb816e2354e0a9548808226749400fe8de86e0fdf397"
+
+  W20R_MAGISKBOOT_RESULT_SHA256: "bd355dc513524105216ce89f5bdbf286629473b315d7f702fa2f183715ef06ec"
+
+  MAGISKBOOT_SHA256: "0b19472b291ce9033c29a83155ff4c1b18be9d1d17d901d63e50f57436378762"
+
+jobs:
+  audit:
+    name: Capture exact AnyKernel3 differential
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    env:
+      WORK: ${{ github.workspace }}/workflow20R2
+      INPUTS: ${{ github.workspace }}/workflow20R2/inputs
+      W18: ${{ github.workspace }}/workflow20R2/inputs/w18
+      W19: ${{ github.workspace }}/workflow20R2/inputs/w19
+      W20: ${{ github.workspace }}/workflow20R2/inputs/w20
+      PACKAGE: ${{ github.workspace }}/workflow20R2/package
+      OUTPUT: ${{ github.workspace }}/workflow20R2/output
+      RUN_A: ${{ github.workspace }}/workflow20R2/run-A
+      RUN_B: ${{ github.workspace }}/workflow20R2/run-B
+
+    steps:
+      - name: Prepare audit workspace
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -rf "$WORK"
+
+          mkdir -p \
+            "$INPUTS" \
+            "$W18" \
+            "$W19" \
+            "$W20" \
+            "$PACKAGE" \
+            "$OUTPUT" \
+            "$RUN_A" \
+            "$RUN_B"
+
+          cat > "$OUTPUT/SCOPE.txt" <<'EOF'
+          VEUX Workflow 20R2
+          ==================
+
+          PURPOSE:
+          Capture and explain the exact byte difference between:
+
+          1. canonical Workflow-19 deterministic Boot-v3 reconstruction
+          2. the real AnyKernel3 / magiskboot runtime reconstruction
+
+          THIS WORKFLOW:
+          - does not build the kernel
+          - does not modify vendor_boot
+          - does not modify dtbo
+          - does not modify top-level vbmeta
+          - does not access a phone
+          - does not flash anything
+
+          A byte difference between W19 and magiskboot is NOT automatically
+          considered a kernel failure.
+
+          The important questions are:
+          - Is the exact W17 kernel preserved?
+          - Is the logical ramdisk content preserved?
+          - Is the resulting Boot-v3 image structurally valid?
+          - Does its embedded AVB descriptor verify?
+          - Is the result deterministic?
+          EOF
+
+      - name: Download exact canonical artifacts
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          ALL="$WORK/artifacts.ndjson"
+          : > "$ALL"
+
+          page=1
+
+          while :; do
+            PAGE_JSON="$WORK/artifacts-page-${page}.json"
+
+            curl \
+              --fail \
+              --silent \
+              --show-error \
+              --retry 3 \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts?per_page=100&page=${page}" \
+              -o "$PAGE_JSON"
+
+            COUNT="$(jq '.artifacts | length' "$PAGE_JSON")"
+
+            jq -c '.artifacts[]' "$PAGE_JSON" >> "$ALL"
+
+            if [ "$COUNT" -lt 100 ]; then
+              break
+            fi
+
+            page=$((page + 1))
+
+            [ "$page" -le 20 ] || {
+              echo "ERROR: artifact pagination safety limit"
+              exit 1
+            }
+          done
+
+          download_artifact() {
+            local NAME="$1"
+            local DEST="$2"
+            local META="$3"
+
+            MATCHES="$(
+              jq -s \
+                --arg NAME "$NAME" \
+                '[.[] | select(.name == $NAME and .expired == false)] | sort_by(.created_at)' \
+                "$ALL"
+            )"
+
+            COUNT="$(jq 'length' <<< "$MATCHES")"
+
+            [ "$COUNT" -ge 1 ] || {
+              echo "ERROR: artifact not found: $NAME"
+              exit 1
+            }
+
+            SELECTED="$(jq '.[-1]' <<< "$MATCHES")"
+            URL="$(jq -r '.archive_download_url' <<< "$SELECTED")"
+
+            jq . <<< "$SELECTED" > "$META"
+
+            curl \
+              --fail \
+              --location \
+              --silent \
+              --show-error \
+              --retry 3 \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "$URL" \
+              -o "$DEST"
+
+            unzip -t "$DEST" \
+              > "${DEST}.ziptest.txt"
+          }
+
+          download_artifact \
+            "$W18_ARTIFACT_NAME" \
+            "$INPUTS/w18.zip" \
+            "$OUTPUT/W18-ARTIFACT-METADATA.json"
+
+          download_artifact \
+            "$W19_ARTIFACT_NAME" \
+            "$INPUTS/w19.zip" \
+            "$OUTPUT/W19-ARTIFACT-METADATA.json"
+
+          download_artifact \
+            "$W20_ARTIFACT_NAME" \
+            "$INPUTS/w20.zip" \
+            "$OUTPUT/W20-ARTIFACT-METADATA.json"
+
+      - name: Verify canonical Workflow 18
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          unzip -q "$INPUTS/w18.zip" -d "$W18"
+
+          (
+            cd "$W18"
+
+            sha256sum -c SHA256SUMS \
+              > "$OUTPUT/W18-SHA256SUMS.verify.txt"
+          )
+
+          grep -Fxq \
+            'RESULT: PASS_READ_ONLY_REPRODUCED_FROM_FASTBOOT_ROM' \
+            "$W18/audit/WORKFLOW18-SUMMARY.txt"
+
+          STOCK="$W18/stock_images/stock_boot.img"
+
+          test \
+            "$(stat -c '%s' "$STOCK")" \
+            = "$STOCK_BOOT_BYTES"
+
+          test \
+            "$(sha256sum "$STOCK" | awk '{print $1}')" \
+            = "$STOCK_BOOT_SHA256"
+
+          {
+            echo "WORKFLOW18=PASS"
+            echo "STOCK_BOOT_BYTES=$STOCK_BOOT_BYTES"
+            echo "STOCK_BOOT_SHA256=$STOCK_BOOT_SHA256"
+          } > "$OUTPUT/W18-GATE.txt"
+
+      - name: Verify canonical Workflow 19
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          unzip -q "$INPUTS/w19.zip" -d "$W19"
+
+          (
+            cd "$W19"
+
+            sha256sum -c SHA256SUMS \
+              > "$OUTPUT/W19-SHA256SUMS.verify.txt"
+          )
+
+          grep -Fxq \
+            'RESULT: PASS_DRYRUN_REPRODUCED_FROM_W17_W18' \
+            "$W19/WORKFLOW19-DRYRUN-REPACK-AUDIT.txt"
+
+          DRY="$W19/DO_NOT_FLASH_workflow19_dryrun_boot.img"
+
+          test \
+            "$(stat -c '%s' "$DRY")" \
+            = "$STOCK_BOOT_BYTES"
+
+          test \
+            "$(sha256sum "$DRY" | awk '{print $1}')" \
+            = "$W19_DRYRUN_SHA256"
+
+          jq -e \
+            --arg SHA "$W19_DRYRUN_SHA256" \
+            --arg DIGEST "$W19_AVB_DIGEST" \
+            '
+              .result == "PASS_DRYRUN_REPRODUCED_FROM_W17_W18"
+              and .dryrun_boot.sha256 == $SHA
+              and .embedded_boot_avb.dryrun_digest_hex == $DIGEST
+              and .embedded_boot_avb.dryrun_digest_verifies == true
+            ' \
+            "$W19/WORKFLOW19-STRUCTURE.json" \
+            > /dev/null
+
+          {
+            echo "WORKFLOW19=PASS"
+            echo "REFERENCE_SHA256=$W19_DRYRUN_SHA256"
+            echo "REFERENCE_AVB_DIGEST=$W19_AVB_DIGEST"
+          } > "$OUTPUT/W19-GATE.txt"
+
+      - name: Verify canonical Workflow 20
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          unzip -q "$INPUTS/w20.zip" -d "$W20"
+
+          (
+            cd "$W20"
+
+            sha256sum -c SHA256SUMS \
+              > "$OUTPUT/W20-SHA256SUMS.verify.txt"
+          )
+
+          grep -Fxq \
+            'RESULT: PASS_CANONICAL_W17_W18_W19' \
+            "$W20/WORKFLOW20-SUMMARY.txt"
+
+          STAGING="$W20/$W20_STAGING_NAME"
+
+          test \
+            "$(sha256sum "$STAGING" | awk '{print $1}')" \
+            = "$W20_STAGING_SHA256"
+
+          unzip -t "$STAGING" \
+            > "$OUTPUT/W20-STAGING-CRC.txt"
+
+          unzip -q "$STAGING" -d "$PACKAGE"
+
+          (
+            cd "$PACKAGE"
+
+            sha256sum -c PACKAGE-SHA256SUMS \
+              > "$OUTPUT/W20-PACKAGE-SHA256SUMS.verify.txt"
+          )
+
+          test \
+            "$(stat -c '%s' "$PACKAGE/Image")" \
+            = "$W17_IMAGE_BYTES"
+
+          test \
+            "$(sha256sum "$PACKAGE/Image" | awk '{print $1}')" \
+            = "$W17_IMAGE_SHA256"
+
+          test \
+            "$(sha256sum "$PACKAGE/tools/magiskboot" | awk '{print $1}')" \
+            = "$MAGISKBOOT_SHA256"
+
+          {
+            echo "WORKFLOW20=PASS"
+            echo "STAGING_SHA256=$W20_STAGING_SHA256"
+            echo "IMAGE_SHA256=$W17_IMAGE_SHA256"
+            echo "MAGISKBOOT_SHA256=$MAGISKBOOT_SHA256"
+          } > "$OUTPUT/W20-GATE.txt"
+
+      - name: Install ARM emulator
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          sudo apt-get update -qq
+
+          sudo DEBIAN_FRONTEND=noninteractive \
+            apt-get install -y \
+            qemu-user-static
+
+          QEMU="$(command -v qemu-arm-static)"
+
+          test -x "$QEMU"
+
+          echo "QEMU_ARM=$QEMU" \
+            >> "$GITHUB_ENV"
+
+          "$QEMU" \
+            "$PACKAGE/tools/magiskboot" \
+            > "$OUTPUT/MAGISKBOOT-HELP.txt" \
+            2>&1 \
+            || true
+
+          grep -qi \
+            'MagiskBoot' \
+            "$OUTPUT/MAGISKBOOT-HELP.txt"
+
+          {
+            echo "QEMU_ARM=$QEMU"
+            echo "MAGISKBOOT_EXECUTION=PASS"
+          } > "$OUTPUT/QEMU-GATE.txt"
+
+      - name: Confirm AnyKernel3 actually decompresses normal unpack
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          CORE="$PACKAGE/tools/ak3-core.sh"
+
+          grep -Fq \
+            'magiskboot unpack -h $BOOTIMG' \
+            "$CORE"
+
+          if grep -Fq \
+            'magiskboot unpack -n -h $BOOTIMG' \
+            "$CORE"
+          then
+            echo "ERROR: unexpected -n split path"
+            exit 1
+          fi
+
+          grep -Fq \
+            'magiskboot repack $nocompflag $BOOTIMG $AKHOME/boot-new.img' \
+            "$CORE"
+
+          grep -Fq \
+            'RAMDISK_COMPRESSION=auto;' \
+            "$PACKAGE/anykernel.sh"
+
+          {
+            echo "ANYKERNEL3_SPLIT_REPACK_BEHAVIOR=CONFIRMED"
+            echo
+            echo "split_boot uses:"
+            echo "magiskboot unpack -h"
+            echo
+            echo "It does NOT use:"
+            echo "magiskboot unpack -n -h"
+            echo
+            echo "Package RAMDISK_COMPRESSION=auto"
+            echo
+            echo "Therefore magiskboot is allowed to decompress the ramdisk"
+            echo "during unpack and recompress it during repack."
+          } > "$OUTPUT/ANYKERNEL3-RAMDISK-BEHAVIOR.txt"
+
+      - name: Emulate exact magiskboot runtime twice
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          STOCK="$W18/stock_images/stock_boot.img"
+          IMAGE="$PACKAGE/Image"
+          MAGISKBOOT="$PACKAGE/tools/magiskboot"
+
+          emulate() {
+            local NAME="$1"
+            local DIR="$2"
+
+            mkdir -p \
+              "$DIR/original-unpack" \
+              "$DIR/emulated-unpack"
+
+            cp "$STOCK" \
+              "$DIR/boot.img"
+
+            cp "$IMAGE" \
+              "$DIR/Image"
+
+            cp "$MAGISKBOOT" \
+              "$DIR/magiskboot"
+
+            chmod 755 \
+              "$DIR/magiskboot"
+
+            (
+              cd "$DIR"
+
+              "$QEMU_ARM" \
+                ./magiskboot \
+                unpack \
+                -h \
+                boot.img \
+                2>&1 \
+                | tee "$OUTPUT/${NAME}-ORIGINAL-UNPACK.txt"
+
+              test -f kernel
+              test -f ramdisk.cpio
+
+              cp ramdisk.cpio \
+                original-unpack/ramdisk.cpio
+
+              cp header \
+                original-unpack/header \
+                2>/dev/null || true
+
+              cp -f Image kernel
+
+              export PATCHVBMETAFLAG=false
+
+              "$QEMU_ARM" \
+                ./magiskboot \
+                repack \
+                boot.img \
+                boot-new.img \
+                2>&1 \
+                | tee "$OUTPUT/${NAME}-REPACK.txt"
+
+              unset PATCHVBMETAFLAG
+
+              test -s boot-new.img
+            )
+
+            cp "$DIR/boot-new.img" \
+              "$DIR/emulated-boot-partition.img"
+
+            test \
+              "$(stat -c '%s' "$DIR/emulated-boot-partition.img")" \
+              = "$STOCK_BOOT_BYTES"
+
+            cp "$DIR/emulated-boot-partition.img" \
+              "$DIR/emulated-unpack/emulated.img"
+
+            cp "$MAGISKBOOT" \
+              "$DIR/emulated-unpack/magiskboot"
+
+            chmod 755 \
+              "$DIR/emulated-unpack/magiskboot"
+
+            (
+              cd "$DIR/emulated-unpack"
+
+              "$QEMU_ARM" \
+                ./magiskboot \
+                unpack \
+                -h \
+                emulated.img \
+                2>&1 \
+                | tee "$OUTPUT/${NAME}-EMULATED-UNPACK.txt"
+
+              test -f kernel
+              test -f ramdisk.cpio
+            )
+
+            ORIGINAL_CPIO_SHA="$(
+              sha256sum \
+                "$DIR/original-unpack/ramdisk.cpio" \
+                | awk '{print $1}'
+            )"
+
+            EMULATED_CPIO_SHA="$(
+              sha256sum \
+                "$DIR/emulated-unpack/ramdisk.cpio" \
+                | awk '{print $1}'
+            )"
+
+            EMULATED_SHA="$(
+              sha256sum \
+                "$DIR/emulated-boot-partition.img" \
+                | awk '{print $1}'
+            )"
+
+            {
+              echo "RUN=$NAME"
+              echo "EMULATED_BOOT_BYTES=$(stat -c '%s' "$DIR/emulated-boot-partition.img")"
+              echo "EMULATED_BOOT_SHA256=$EMULATED_SHA"
+              echo "ORIGINAL_UNPACKED_RAMDISK_SHA256=$ORIGINAL_CPIO_SHA"
+              echo "EMULATED_UNPACKED_RAMDISK_SHA256=$EMULATED_CPIO_SHA"
+
+              if cmp -s \
+                "$DIR/original-unpack/ramdisk.cpio" \
+                "$DIR/emulated-unpack/ramdisk.cpio"
+              then
+                echo "LOGICAL_RAMDISK_BYTE_IDENTICAL=YES"
+              else
+                echo "LOGICAL_RAMDISK_BYTE_IDENTICAL=NO"
+              fi
+            } > "$OUTPUT/${NAME}-RESULT.txt"
+          }
+
+          emulate A "$RUN_A"
+          emulate B "$RUN_B"
+
+          cmp -s \
+            "$RUN_A/emulated-boot-partition.img" \
+            "$RUN_B/emulated-boot-partition.img"
+
+          A_SHA="$(
+            sha256sum \
+              "$RUN_A/emulated-boot-partition.img" \
+              | awk '{print $1}'
+          )"
+
+          B_SHA="$(
+            sha256sum \
+              "$RUN_B/emulated-boot-partition.img" \
+              | awk '{print $1}'
+          )"
+
+          test "$A_SHA" = "$B_SHA"
+
+          test \
+            "$A_SHA" \
+            = "$W20R_MAGISKBOOT_RESULT_SHA256"
+
+          {
+            echo "MAGISKBOOT_REPRODUCIBILITY=PASS"
+            echo "A_SHA256=$A_SHA"
+            echo "B_SHA256=$B_SHA"
+            echo "BYTE_IDENTICAL=YES"
+            echo
+            echo "Previous 20R result reproduced exactly:"
+            echo "$W20R_MAGISKBOOT_RESULT_SHA256"
+          } > "$OUTPUT/MAGISKBOOT-REPRODUCIBILITY.txt"
+
+      - name: Preserve real magiskboot output before analysis
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cp \
+            "$RUN_A/emulated-boot-partition.img" \
+            "$OUTPUT/DO_NOT_FLASH_MAGISKBOOT_EMULATED_BOOT.img"
+
+          test \
+            "$(sha256sum "$OUTPUT/DO_NOT_FLASH_MAGISKBOOT_EMULATED_BOOT.img" | awk '{print $1}')" \
+            = "$W20R_MAGISKBOOT_RESULT_SHA256"
+
+      - name: Analyze compressed ramdisk kernel AVB and binary delta
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - \
+            "$W18/stock_images/stock_boot.img" \
+            "$W19/DO_NOT_FLASH_workflow19_dryrun_boot.img" \
+            "$OUTPUT/DO_NOT_FLASH_MAGISKBOOT_EMULATED_BOOT.img" \
+            "$PACKAGE/Image" \
+            "$RUN_A/original-unpack/ramdisk.cpio" \
+            "$RUN_A/emulated-unpack/ramdisk.cpio" \
+            "$OUTPUT" <<'PY'
+          import hashlib
+          import json
+          import struct
+          import sys
+          from pathlib import Path
+
+          stock_path = Path(sys.argv[1])
+          w19_path = Path(sys.argv[2])
+          emulated_path = Path(sys.argv[3])
+          image_path = Path(sys.argv[4])
+          stock_cpio_path = Path(sys.argv[5])
+          emulated_cpio_path = Path(sys.argv[6])
+          output = Path(sys.argv[7])
+
+          stock = stock_path.read_bytes()
+          w19 = w19_path.read_bytes()
+          emulated = emulated_path.read_bytes()
+          image = image_path.read_bytes()
+          stock_cpio = stock_cpio_path.read_bytes()
+          emulated_cpio = emulated_cpio_path.read_bytes()
+
+          def sha(data):
+              return hashlib.sha256(data).hexdigest()
+
+          def align(value, alignment=4096):
+              return (
+                  value + alignment - 1
+              ) // alignment * alignment
+
+          def need(condition, message):
+              if not condition:
+                  raise SystemExit(
+                      "ERROR: " + message
+                  )
+
+          def boot_parts(data):
+              need(
+                  data[:8] == b"ANDROID!",
+                  "Android boot magic",
+              )
+
+              kernel_size, ramdisk_size, os_raw, header_size = (
+                  struct.unpack_from(
+                      "<4I",
+                      data,
+                      8,
+                  )
+              )
+
+              header_version = struct.unpack_from(
+                  "<I",
+                  data,
+                  40,
+              )[0]
+
+              kernel_offset = 4096
+
+              ramdisk_offset = (
+                  4096
+                  + align(kernel_size)
+              )
+
+              kernel = data[
+                  kernel_offset:
+                  kernel_offset + kernel_size
+              ]
+
+              ramdisk = data[
+                  ramdisk_offset:
+                  ramdisk_offset + ramdisk_size
+              ]
+
+              return {
+                  "kernel_size":
+                      kernel_size,
+                  "ramdisk_size":
+                      ramdisk_size,
+                  "header_size":
+                      header_size,
+                  "header_version":
+                      header_version,
+                  "kernel_offset":
+                      kernel_offset,
+                  "ramdisk_offset":
+                      ramdisk_offset,
+                  "kernel":
+                      kernel,
+                  "ramdisk":
+                      ramdisk,
+                  "os_raw":
+                      os_raw,
+              }
+
+          def parse_footer(data):
+              raw = data[-64:]
+
+              need(
+                  raw[:4] == b"AVBf",
+                  "AVB footer magic",
+              )
+
+              major, minor = struct.unpack_from(
+                  ">II",
+                  raw,
+                  4,
+              )
+
+              original, offset, size = struct.unpack_from(
+                  ">QQQ",
+                  raw,
+                  12,
+              )
+
+              need(
+                  offset + size <= len(data) - 64,
+                  "AVB footer geometry",
+              )
+
+              return {
+                  "major":
+                      major,
+                  "minor":
+                      minor,
+                  "original":
+                      original,
+                  "offset":
+                      offset,
+                  "size":
+                      size,
+                  "vbmeta":
+                      data[
+                          offset:
+                          offset + size
+                      ],
+              }
+
+          def parse_boot_descriptor(data, footer):
+              vb = footer["vbmeta"]
+
+              need(
+                  vb[:4] == b"AVB0",
+                  "AVB0 magic",
+              )
+
+              auth_size, aux_size = struct.unpack_from(
+                  ">QQ",
+                  vb,
+                  12,
+              )
+
+              algorithm_type = struct.unpack_from(
+                  ">I",
+                  vb,
+                  28,
+              )[0]
+
+              values = struct.unpack_from(
+                  ">QQQQQQQQQQQ",
+                  vb,
+                  32,
+              )
+
+              descriptors_offset = values[8]
+              descriptors_size = values[9]
+
+              aux_start = 256 + auth_size
+              pos = aux_start + descriptors_offset
+              end = pos + descriptors_size
+
+              found = []
+
+              while pos < end:
+                  tag, following = struct.unpack_from(
+                      ">QQ",
+                      vb,
+                      pos,
+                  )
+
+                  raw = vb[
+                      pos:
+                      pos + 16 + following
+                  ]
+
+                  need(
+                      len(raw)
+                      == 16 + following,
+                      "truncated AVB descriptor",
+                  )
+
+                  if tag == 2:
+                      image_size = struct.unpack_from(
+                          ">Q",
+                          raw,
+                          16,
+                      )[0]
+
+                      algorithm = (
+                          raw[24:56]
+                          .split(b"\0", 1)[0]
+                          .decode(
+                              "ascii",
+                              "replace",
+                          )
+                      )
+
+                      (
+                          name_len,
+                          salt_len,
+                          digest_len,
+                          flags,
+                      ) = struct.unpack_from(
+                          ">IIII",
+                          raw,
+                          56,
+                      )
+
+                      q = 132
+
+                      partition = raw[
+                          q:
+                          q + name_len
+                      ].decode(
+                          "ascii",
+                          "replace",
+                      )
+
+                      q += name_len
+
+                      salt = raw[
+                          q:
+                          q + salt_len
+                      ]
+
+                      q += salt_len
+
+                      digest = raw[
+                          q:
+                          q + digest_len
+                      ]
+
+                      found.append({
+                          "partition":
+                              partition,
+                          "image_size":
+                              image_size,
+                          "algorithm":
+                              algorithm,
+                          "salt":
+                              salt,
+                          "digest":
+                              digest,
+                          "flags":
+                              flags,
+                      })
+
+                  pos += 16 + following
+
+              boot = [
+                  descriptor
+                  for descriptor in found
+                  if descriptor["partition"] == "boot"
+              ]
+
+              need(
+                  len(boot) == 1,
+                  "exactly one boot hash descriptor",
+              )
+
+              descriptor = boot[0]
+
+              need(
+                  descriptor["algorithm"] == "sha256",
+                  "boot hash algorithm",
+              )
+
+              calculated = hashlib.sha256(
+                  descriptor["salt"]
+                  + data[
+                      :descriptor["image_size"]
+                  ]
+              ).digest()
+
+              return {
+                  "algorithm_type":
+                      algorithm_type,
+                  "descriptor":
+                      descriptor,
+                  "calculated":
+                      calculated,
+                  "verifies":
+                      calculated
+                      == descriptor["digest"],
+              }
+
+          def difference_stats(left, right):
+              need(
+                  len(left) == len(right),
+                  "binary comparison length",
+              )
+
+              chunk_size = 1024 * 1024
+
+              count = 0
+              first = None
+              last = None
+              differing_chunks = []
+
+              for start in range(
+                  0,
+                  len(left),
+                  chunk_size,
+              ):
+                  a = left[
+                      start:
+                      start + chunk_size
+                  ]
+
+                  b = right[
+                      start:
+                      start + chunk_size
+                  ]
+
+                  if a == b:
+                      continue
+
+                  differing_chunks.append(
+                      start // chunk_size
+                  )
+
+                  for offset, (
+                      av,
+                      bv,
+                  ) in enumerate(
+                      zip(a, b)
+                  ):
+                      if av != bv:
+                          absolute = (
+                              start + offset
+                          )
+
+                          count += 1
+
+                          if first is None:
+                              first = absolute
+
+                          last = absolute
+
+              return {
+                  "different_bytes":
+                      count,
+                  "first_difference":
+                      first,
+                  "last_difference":
+                      last,
+                  "differing_1MiB_chunks":
+                      differing_chunks,
+              }
+
+          need(
+              len(stock) == 134217728,
+              "stock boot size",
+          )
+
+          need(
+              len(w19) == 134217728,
+              "W19 boot size",
+          )
+
+          need(
+              len(emulated) == 134217728,
+              "magiskboot output size",
+          )
+
+          need(
+              sha(stock)
+              == "ac6522e4eed55782dd2ae61362e9d345d01a1f229c87333818511d5537fa79c5",
+              "stock boot identity",
+          )
+
+          need(
+              sha(w19)
+              == "2baffafce260348c247674c5e8176408d45dc75b35ccbf7ca5834cbb4679398e",
+              "W19 identity",
+          )
+
+          need(
+              sha(emulated)
+              == "bd355dc513524105216ce89f5bdbf286629473b315d7f702fa2f183715ef06ec",
+              "20R magiskboot identity",
+          )
+
+          need(
+              sha(image)
+              == "e036175ada602df3bcb443da7c390e8cd4b0e900c26fbfa313725db02855ec96",
+              "W17 Image identity",
+          )
+
+          stock_parts = boot_parts(
+              stock
+          )
+
+          w19_parts = boot_parts(
+              w19
+          )
+
+          emulated_parts = boot_parts(
+              emulated
+          )
+
+          need(
+              stock_parts["header_version"] == 3,
+              "stock header v3",
+          )
+
+          need(
+              w19_parts["header_version"] == 3,
+              "W19 header v3",
+          )
+
+          need(
+              emulated_parts["header_version"] == 3,
+              "magiskboot header v3",
+          )
+
+          need(
+              emulated_parts["kernel"] == image,
+              "magiskboot output does not contain exact W17 Image",
+          )
+
+          logical_ramdisk_equal = (
+              stock_cpio == emulated_cpio
+          )
+
+          stock_raw_ramdisk_sha = sha(
+              stock_parts["ramdisk"]
+          )
+
+          w19_raw_ramdisk_sha = sha(
+              w19_parts["ramdisk"]
+          )
+
+          emulated_raw_ramdisk_sha = sha(
+              emulated_parts["ramdisk"]
+          )
+
+          w19_footer = parse_footer(
+              w19
+          )
+
+          emulated_footer = parse_footer(
+              emulated
+          )
+
+          w19_avb = parse_boot_descriptor(
+              w19,
+              w19_footer,
+          )
+
+          emulated_avb = parse_boot_descriptor(
+              emulated,
+              emulated_footer,
+          )
+
+          need(
+              w19_avb["verifies"],
+              "W19 embedded AVB does not verify",
+          )
+
+          need(
+              emulated_avb["verifies"],
+              "magiskboot embedded AVB does not verify",
+          )
+
+          diff = difference_stats(
+              emulated,
+              w19,
+          )
+
+          report = {
+              "result":
+                  "PASS_DIFFERENTIAL_CAPTURED",
+
+              "identities": {
+                  "stock_boot_sha256":
+                      sha(stock),
+                  "workflow19_sha256":
+                      sha(w19),
+                  "magiskboot_sha256":
+                      sha(emulated),
+                  "w17_image_sha256":
+                      sha(image),
+              },
+
+              "boot_v3": {
+                  "stock": {
+                      "header_version":
+                          stock_parts["header_version"],
+                      "kernel_size":
+                          stock_parts["kernel_size"],
+                      "ramdisk_size":
+                          stock_parts["ramdisk_size"],
+                      "ramdisk_offset":
+                          stock_parts["ramdisk_offset"],
+                  },
+
+                  "workflow19": {
+                      "header_version":
+                          w19_parts["header_version"],
+                      "kernel_size":
+                          w19_parts["kernel_size"],
+                      "ramdisk_size":
+                          w19_parts["ramdisk_size"],
+                      "ramdisk_offset":
+                          w19_parts["ramdisk_offset"],
+                  },
+
+                  "magiskboot": {
+                      "header_version":
+                          emulated_parts["header_version"],
+                      "kernel_size":
+                          emulated_parts["kernel_size"],
+                      "ramdisk_size":
+                          emulated_parts["ramdisk_size"],
+                      "ramdisk_offset":
+                          emulated_parts["ramdisk_offset"],
+                  },
+              },
+
+              "kernel": {
+                  "magiskboot_exact_w17":
+                      emulated_parts["kernel"]
+                      == image,
+              },
+
+              "ramdisk": {
+                  "stock_compressed_sha256":
+                      stock_raw_ramdisk_sha,
+                  "workflow19_compressed_sha256":
+                      w19_raw_ramdisk_sha,
+                  "magiskboot_compressed_sha256":
+                      emulated_raw_ramdisk_sha,
+
+                  "workflow19_compressed_equals_stock":
+                      (
+                          w19_parts["ramdisk"]
+                          == stock_parts["ramdisk"]
+                      ),
+
+                  "magiskboot_compressed_equals_stock":
+                      (
+                          emulated_parts["ramdisk"]
+                          == stock_parts["ramdisk"]
+                      ),
+
+                  "stock_unpacked_cpio_sha256":
+                      sha(stock_cpio),
+
+                  "magiskboot_unpacked_cpio_sha256":
+                      sha(emulated_cpio),
+
+                  "logical_unpacked_cpio_byte_identical":
+                      logical_ramdisk_equal,
+              },
+
+              "embedded_avb": {
+                  "workflow19": {
+                      "footer_version":
+                          (
+                              f"{w19_footer['major']}."
+                              f"{w19_footer['minor']}"
+                          ),
+
+                      "original_image_size":
+                          w19_footer["original"],
+
+                      "vbmeta_offset":
+                          w19_footer["offset"],
+
+                      "vbmeta_size":
+                          w19_footer["size"],
+
+                      "digest":
+                          w19_avb[
+                              "descriptor"
+                          ][
+                              "digest"
+                          ].hex(),
+
+                      "calculated":
+                          w19_avb[
+                              "calculated"
+                          ].hex(),
+
+                      "verifies":
+                          w19_avb[
+                              "verifies"
+                          ],
+                  },
+
+                  "magiskboot": {
+                      "footer_version":
+                          (
+                              f"{emulated_footer['major']}."
+                              f"{emulated_footer['minor']}"
+                          ),
+
+                      "original_image_size":
+                          emulated_footer["original"],
+
+                      "vbmeta_offset":
+                          emulated_footer["offset"],
+
+                      "vbmeta_size":
+                          emulated_footer["size"],
+
+                      "digest":
+                          emulated_avb[
+                              "descriptor"
+                          ][
+                              "digest"
+                          ].hex(),
+
+                      "calculated":
+                          emulated_avb[
+                              "calculated"
+                          ].hex(),
+
+                      "verifies":
+                          emulated_avb[
+                              "verifies"
+                          ],
+                  },
+              },
+
+              "workflow19_vs_magiskboot": {
+                  "byte_identical":
+                      emulated == w19,
+
+                  "difference":
+                      diff,
+              },
+
+              "safety": {
+                  "phone_accessed":
+                      False,
+                  "flashed":
+                      False,
+                  "vendor_boot_modified":
+                      False,
+                  "dtbo_modified":
+                      False,
+                  "top_level_vbmeta_modified":
+                      False,
+              },
+          }
+
+          (
+              output
+              / "WORKFLOW20R2-DIFFERENTIAL.json"
+          ).write_text(
+              json.dumps(
+                  report,
+                  indent=2,
+                  sort_keys=True,
+              )
+              + "\n",
+              encoding="utf-8",
+          )
+
+          text = f"""
+          VEUX Workflow 20R2 Differential Capture
+          ========================================
+
+          RESULT: PASS_DIFFERENTIAL_CAPTURED
+
+          STOCK BOOT
+          ----------
+          SHA-256:
+          {sha(stock)}
+
+          WORKFLOW 19
+          -----------
+          SHA-256:
+          {sha(w19)}
+
+          MAGISKBOOT / ANYKERNEL3
+          -----------------------
+          SHA-256:
+          {sha(emulated)}
+
+          Previous 20R result reproduced:
+          YES
+
+          KERNEL
+          ------
+          Exact Workflow-17 Image inside magiskboot result:
+          {'YES' if emulated_parts['kernel'] == image else 'NO'}
+
+          RAMDISK - COMPRESSED BYTES
+          --------------------------
+          Stock:
+          {stock_raw_ramdisk_sha}
+
+          Workflow 19:
+          {w19_raw_ramdisk_sha}
+
+          Magiskboot:
+          {emulated_raw_ramdisk_sha}
+
+          Workflow-19 compressed ramdisk equals Stock:
+          {'YES' if w19_parts['ramdisk'] == stock_parts['ramdisk'] else 'NO'}
+
+          Magiskboot compressed ramdisk equals Stock:
+          {'YES' if emulated_parts['ramdisk'] == stock_parts['ramdisk'] else 'NO'}
+
+          RAMDISK - LOGICAL UNPACKED CPIO
+          --------------------------------
+          Stock unpacked CPIO:
+          {sha(stock_cpio)}
+
+          Magiskboot-result unpacked CPIO:
+          {sha(emulated_cpio)}
+
+          Byte-identical logical ramdisk:
+          {'YES' if logical_ramdisk_equal else 'NO'}
+
+          EMBEDDED AVB
+          ------------
+          Workflow-19 digest:
+          {w19_avb['descriptor']['digest'].hex()}
+
+          Workflow-19 verifies:
+          {'YES' if w19_avb['verifies'] else 'NO'}
+
+          Magiskboot digest:
+          {emulated_avb['descriptor']['digest'].hex()}
+
+          Magiskboot verifies:
+          {'YES' if emulated_avb['verifies'] else 'NO'}
+
+          Workflow-19 AVB original image size:
+          {w19_footer['original']}
+
+          Magiskboot AVB original image size:
+          {emulated_footer['original']}
+
+          Workflow-19 AVB vbmeta offset:
+          {w19_footer['offset']}
+
+          Magiskboot AVB vbmeta offset:
+          {emulated_footer['offset']}
+
+          BINARY COMPARISON
+          -----------------
+          Byte-identical:
+          {'YES' if emulated == w19 else 'NO'}
+
+          Different bytes:
+          {diff['different_bytes']}
+
+          First difference:
+          {diff['first_difference']}
+
+          Last difference:
+          {diff['last_difference']}
+
+          Differing 1 MiB chunks:
+          {diff['differing_1MiB_chunks']}
+
+          INTERPRETATION RULE
+          -------------------
+          A different compressed ramdisk hash is not by itself considered
+          a logical ramdisk mutation if the decompressed CPIO remains
+          byte-identical.
+
+          The exact Workflow-17 kernel must be preserved.
+
+          Both embedded AVB descriptors must independently verify.
+
+          NO DEVICE OPERATION
+          NO FLASH
+          """
+
+          cleaned = "\n".join(
+              line.strip()
+              for line in text.splitlines()
+          ).strip() + "\n"
+
+          (
+              output
+              / "WORKFLOW20R2-DIFFERENTIAL.txt"
+          ).write_text(
+              cleaned,
+              encoding="utf-8",
+          )
+
+          print(cleaned)
+
+          need(
+              emulated_parts["kernel"] == image,
+              "exact W17 Image was not preserved",
+          )
+
+          need(
+              logical_ramdisk_equal,
+              "logical decompressed ramdisk changed",
+          )
+
+          need(
+              emulated_avb["verifies"],
+              "magiskboot embedded AVB verification failed",
+          )
+          PY
+
+      - name: Require deterministic structurally-valid differential
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          jq -e \
+            --arg MAGISK "$W20R_MAGISKBOOT_RESULT_SHA256" \
+            --arg W19 "$W19_DRYRUN_SHA256" \
+            '
+              .result == "PASS_DIFFERENTIAL_CAPTURED"
+              and .identities.magiskboot_sha256 == $MAGISK
+              and .identities.workflow19_sha256 == $W19
+              and .kernel.magiskboot_exact_w17 == true
+              and .ramdisk.logical_unpacked_cpio_byte_identical == true
+              and .embedded_avb.workflow19.verifies == true
+              and .embedded_avb.magiskboot.verifies == true
+              and .safety.phone_accessed == false
+              and .safety.flashed == false
+              and .safety.vendor_boot_modified == false
+              and .safety.dtbo_modified == false
+              and .safety.top_level_vbmeta_modified == false
+            ' \
+            "$OUTPUT/WORKFLOW20R2-DIFFERENTIAL.json" \
+            > /dev/null
+
+          {
+            echo "RESULT: PASS_DIFFERENTIAL_CAPTURED"
+            echo
+            echo "AnyKernel3/magiskboot result:"
+            echo "$W20R_MAGISKBOOT_RESULT_SHA256"
+            echo
+            echo "Workflow 19 result:"
+            echo "$W19_DRYRUN_SHA256"
+            echo
+            echo "They are intentionally NOT required to be byte-identical."
+            echo
+            echo "Required instead:"
+            echo "- deterministic magiskboot A/B output"
+            echo "- exact Workflow-17 kernel"
+            echo "- byte-identical logical unpacked ramdisk"
+            echo "- valid embedded AVB"
+            echo "- no device operation"
+            echo
+            echo "FINAL FLASH STRATEGY IS NOT DECIDED BY THIS WORKFLOW."
+          } > "$OUTPUT/WORKFLOW20R2-SUMMARY.txt"
+
+      - name: Create complete output checksums
+        if: always()
+        shell: bash
+        run: |
+          set +e
+
+          mkdir -p "$OUTPUT"
+
+          (
+            cd "$OUTPUT"
+
+            find . \
+              -maxdepth 1 \
+              -type f \
+              ! -name SHA256SUMS \
+              ! -name SHA256SUMS.verify.txt \
+              -printf '%f\n' \
+              | LC_ALL=C sort \
+              | while IFS= read -r FILE; do
+                  sha256sum "$FILE"
+                done \
+              > SHA256SUMS
+
+            sha256sum -c SHA256SUMS \
+              > SHA256SUMS.verify.txt
+          )
+
+      - name: Collect failure diagnostics
+        if: failure()
+        shell: bash
+        run: |
+          set +e
+
+          {
+            echo "WORKFLOW20R2_STATUS=REQUIRES_REVIEW"
+            echo
+            echo "A structural gate failed."
+            echo
+            echo "This is not automatically a kernel failure."
+            echo
+            echo "Inspect the uploaded files before proceeding."
+            echo
+            echo "NO DEVICE OPERATION"
+            echo "NO FLASH"
+          } > "$OUTPUT/FAILURE-SUMMARY.txt"
+
+      - name: Upload Workflow 20R2 differential artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: veux-5.4.274-workflow20R2-anykernel3-runtime-differential-${{ github.run_number }}
+          path: ${{ env.OUTPUT }}
+          if-no-files-found: error
+          include-hidden-files: true
+          retention-days: 30
+          compression-level: 6
