@@ -1,0 +1,807 @@
+name: 18 - VEUX Exact Stock ROM Read-Only Audit
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  ROM_VERSION: "OS1.0.12.0.TKCMIXM"
+  ROM_FILE: "veux_global_images_OS1.0.12.0.TKCMIXM_20241205.0000.00_13.0_global_cda1240a45.tgz"
+  ROM_ROOT: "veux_global_images_OS1.0.12.0.TKCMIXM_20241205.0000.00_13.0_global_cda1240a45"
+  ROM_URL: "https://bigota.d.miui.com/OS1.0.12.0.TKCMIXM/veux_global_images_OS1.0.12.0.TKCMIXM_20241205.0000.00_13.0_global_cda1240a45.tgz"
+  ROM_MD5: "cda1240a451dd4f75776878b52f0cea3"
+
+  BOOT_BYTES: "134217728"
+  BOOT_SHA: "ac6522e4eed55782dd2ae61362e9d345d01a1f229c87333818511d5537fa79c5"
+  VENDOR_BOOT_BYTES: "100663296"
+  VENDOR_BOOT_SHA: "583e1f4c0e09c2267cda88bd48a8b4f56cf5c5e034fbda7b25bd65aa86385425"
+  DTBO_BYTES: "8388608"
+  DTBO_SHA: "e9f3bae2c5417ff297162f1e7d2652ee98b347488fdf091d61daa986fbfb7690"
+  VBMETA_BYTES: "8192"
+  VBMETA_SHA: "62a5b1a94c2247c786e8148b9d9d0aea943b57b1034b3fd82d9cac9a85fcde97"
+
+  STOCK_KERNEL_BYTES: "45480448"
+  STOCK_KERNEL_SHA: "6e513b3652aa1de599c26b6aaeefef12dac569daf8648bbb67de99932782c50b"
+  RAMDISK_BYTES: "22061278"
+  RAMDISK_SHA: "0bc8b54373b5501818e8b252517419786db207771047b6def7ec9bc89beb607a"
+
+  BOOT_AVB_DIGEST: "fc6d91cd4ce2e89703c59e6a35c60e3efd984cfb54a29760e4a3105c42399d8a"
+  VENDOR_BOOT_AVB_DIGEST: "370f9c242bd161bd36effc3e7b56f208e21700a9a4e848b004f68595df2190c6"
+  DTBO_AVB_DIGEST: "a49a514a35a1ee60c19716407eb70f8bf5f9a8fec7aa8394c00c370f7ca0c6d9"
+
+  VENDOR_DTB_BYTES: "651045"
+  VENDOR_DTB_SHA: "10b7b848141bff201e1953d44128a3de92272a4fdc1afbf90b4e60682830ff46"
+
+  VBMETA_SIGNED_DIGEST: "4ba69147c283e7a43aec1c5f951901f9060057e21bae4e2c3df17400698bdb4c"
+  VBMETA_KEY_SHA: "c5d3c71bc70d58e3e0409ca9d9b34c0dbac1d2f09a5de948a4b8f090f1926965"
+  STOCK_FINGERPRINT: "qti/veux/veux:13/TKQ1.221114.001/V816.0.12.0.TKCMIXM:user/release-keys"
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+
+    env:
+      WORK: ${{ github.workspace }}/workflow18
+      DOWNLOAD: ${{ github.workspace }}/workflow18/download
+      EXTRACT: ${{ github.workspace }}/workflow18/extract
+      STOCK: ${{ github.workspace }}/workflow18/output/stock_images
+      AUDIT: ${{ github.workspace }}/workflow18/output/audit
+      OUTPUT: ${{ github.workspace }}/workflow18/output
+
+    steps:
+      - name: Prepare workspace and disk
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$WORK"
+          mkdir -p "$DOWNLOAD" "$EXTRACT" "$STOCK" "$AUDIT"
+
+          # The exact fastboot archive is ~6 GB. These runner components
+          # are not used by this audit and are removed only from this VM.
+          sudo rm -rf \
+            /usr/local/lib/android \
+            /usr/share/dotnet \
+            /opt/ghc \
+            /usr/local/.ghcup \
+            2>/dev/null || true
+
+          df -h / | tee "$AUDIT/DISK.txt"
+          free_kb="$(df -Pk / | awk 'NR==2 {print $4}')"
+          [ "$free_kb" -ge 9000000 ] || {
+            echo "ERROR: less than 9 GB free"
+            exit 1
+          }
+
+      - name: Download and authenticate exact fastboot ROM
+        shell: bash
+        run: |
+          set -euo pipefail
+          file="$DOWNLOAD/$ROM_FILE"
+
+          curl \
+            --fail \
+            --location \
+            --retry 5 \
+            --retry-delay 5 \
+            --retry-all-errors \
+            --connect-timeout 30 \
+            --progress-bar \
+            --output "$file" \
+            "$ROM_URL"
+
+          md5="$(md5sum "$file" | awk '{print $1}')"
+          sha="$(sha256sum "$file" | awk '{print $1}')"
+          bytes="$(stat -c '%s' "$file")"
+
+          [ "$md5" = "$ROM_MD5" ] || {
+            echo "ERROR: ROM MD5 mismatch"
+            echo "Expected: $ROM_MD5"
+            echo "Actual:   $md5"
+            exit 1
+          }
+
+          {
+            echo "ROM_VERSION=$ROM_VERSION"
+            echo "ROM_FILE=$ROM_FILE"
+            echo "ROM_URL=$ROM_URL"
+            echo "ROM_BYTES=$bytes"
+            echo "ROM_MD5=$md5"
+            echo "ROM_SHA256=$sha"
+          } | tee "$AUDIT/FASTBOOT-ROM-SOURCE.txt"
+
+      - name: Extract only boot vendor_boot dtbo and vbmeta
+        shell: bash
+        run: |
+          set -euo pipefail
+          file="$DOWNLOAD/$ROM_FILE"
+
+          tar -xzf "$file" -C "$EXTRACT" \
+            "$ROM_ROOT/images/boot.img" \
+            "$ROM_ROOT/images/vendor_boot.img" \
+            "$ROM_ROOT/images/dtbo.img" \
+            "$ROM_ROOT/images/vbmeta.img"
+
+          cp "$EXTRACT/$ROM_ROOT/images/boot.img" "$STOCK/stock_boot.img"
+          cp "$EXTRACT/$ROM_ROOT/images/vendor_boot.img" "$STOCK/stock_vendor_boot.img"
+          cp "$EXTRACT/$ROM_ROOT/images/dtbo.img" "$STOCK/stock_dtbo.img"
+          cp "$EXTRACT/$ROM_ROOT/images/vbmeta.img" "$STOCK/stock_vbmeta.img"
+
+          rm -rf "$EXTRACT"
+          rm -f "$file"
+
+      - name: Require byte-identical stock images
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          check() {
+            local file="$1" bytes="$2" sha="$3" label="$4"
+            local got_bytes got_sha
+            got_bytes="$(stat -c '%s' "$file")"
+            got_sha="$(sha256sum "$file" | awk '{print $1}')"
+
+            [ "$got_bytes" = "$bytes" ] || {
+              echo "ERROR: $label size mismatch: $got_bytes != $bytes"
+              exit 1
+            }
+            [ "$got_sha" = "$sha" ] || {
+              echo "ERROR: $label SHA mismatch"
+              echo "Expected: $sha"
+              echo "Actual:   $got_sha"
+              exit 1
+            }
+
+            echo "${label}_BYTES=$got_bytes"
+            echo "${label}_SHA256=$got_sha"
+          }
+
+          {
+            check "$STOCK/stock_boot.img" "$BOOT_BYTES" "$BOOT_SHA" BOOT
+            check "$STOCK/stock_vendor_boot.img" "$VENDOR_BOOT_BYTES" "$VENDOR_BOOT_SHA" VENDOR_BOOT
+            check "$STOCK/stock_dtbo.img" "$DTBO_BYTES" "$DTBO_SHA" DTBO
+            check "$STOCK/stock_vbmeta.img" "$VBMETA_BYTES" "$VBMETA_SHA" VBMETA
+          } | tee "$AUDIT/PARTITION-HASH-AUDIT.txt"
+
+      - name: Deep read-only boot and AVB audit
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cat > "$WORK/audit.py" <<'PY'
+          import hashlib, json, os, struct, sys
+          from pathlib import Path
+
+          S = Path(sys.argv[1])
+          OUT = Path(sys.argv[2])
+          boot = (S / "stock_boot.img").read_bytes()
+          vendor = (S / "stock_vendor_boot.img").read_bytes()
+          dtbo = (S / "stock_dtbo.img").read_bytes()
+          vbmeta = (S / "stock_vbmeta.img").read_bytes()
+
+          H = lambda b: hashlib.sha256(b).hexdigest()
+          A = lambda n, a: (n + a - 1) // a * a
+
+          def need(ok, msg):
+              if not ok:
+                  raise SystemExit("ERROR: " + msg)
+
+          def footer(image):
+              f = image[-64:]
+              need(f[:4] == b"AVBf", "AVB footer missing")
+              major, minor = struct.unpack_from(">II", f, 4)
+              original, off, size = struct.unpack_from(">QQQ", f, 12)
+              need(off + size <= len(image) - 64, "invalid AVB footer geometry")
+              return {
+                  "version": f"{major}.{minor}",
+                  "original_size": original,
+                  "offset": off,
+                  "size": size,
+                  "vbmeta": image[off:off + size],
+              }
+
+          def parse_vbmeta(v):
+              need(v[:4] == b"AVB0", "AVB0 magic missing")
+              req_major, req_minor = struct.unpack_from(">II", v, 4)
+              auth, aux = struct.unpack_from(">QQ", v, 12)
+              alg = struct.unpack_from(">I", v, 28)[0]
+              vals = struct.unpack_from(">QQQQQQQQQQQ", v, 32)
+              (ho, hs, so, ss, pko, pks, pkmo, pkms, do, ds, rollback) = vals
+              flags, rollback_loc = struct.unpack_from(">II", v, 120)
+              release = v[128:176].split(b"\0", 1)[0].decode("ascii", "replace")
+              auth_start, aux_start = 256, 256 + auth
+              need(aux_start + aux <= len(v), "vbmeta blocks exceed image")
+
+              digest = None
+              hash_ok = True
+              if hs:
+                  need(hs == 32, "unexpected vbmeta hash size")
+                  digest = hashlib.sha256(v[:256] + v[aux_start:aux_start + aux]).digest()
+                  hash_ok = digest == v[auth_start + ho:auth_start + ho + hs]
+
+              sig_ok = True
+              key_sha = None
+              if alg == 1:
+                  need(hs == 32 and ss == 256 and pks == 520, "unexpected RSA2048 geometry")
+                  sig = v[auth_start + so:auth_start + so + ss]
+                  key = v[aux_start + pko:aux_start + pko + pks]
+                  key_sha = H(key)
+                  bits = struct.unpack_from(">I", key, 0)[0]
+                  need(bits == 2048, "unexpected RSA key size")
+                  nbytes = bits // 8
+                  modulus = int.from_bytes(key[8:8 + nbytes], "big")
+                  decoded = pow(int.from_bytes(sig, "big"), 65537, modulus).to_bytes(nbytes, "big")
+                  der = bytes.fromhex("3031300d060960864801650304020105000420")
+                  expected = b"\x00\x01" + b"\xff" * (nbytes - 3 - len(der) - 32) + b"\x00" + der + digest
+                  sig_ok = decoded == expected
+              elif alg == 0:
+                  need(auth == 0 and hs == 0 and ss == 0, "unexpected unsigned vbmeta auth block")
+              else:
+                  raise SystemExit(f"ERROR: unsupported AVB algorithm type {alg}")
+
+              desc, props = [], {}
+              p, end = aux_start + do, aux_start + do + ds
+              need(end <= aux_start + aux, "descriptors outside auxiliary block")
+              while p < end:
+                  tag, n = struct.unpack_from(">QQ", v, p)
+                  d = v[p:p + 16 + n]
+                  need(len(d) == 16 + n, "truncated descriptor")
+
+                  if tag == 0:
+                      kl, vl = struct.unpack_from(">QQ", d, 16)
+                      q = 32
+                      key = d[q:q + kl].decode("utf-8", "replace")
+                      q += kl + (1 if q + kl < len(d) and d[q + kl] == 0 else 0)
+                      value = d[q:q + vl].decode("utf-8", "replace")
+                      props.setdefault(key, []).append(value)
+
+                  elif tag == 1:
+                      pn, sl, rl, fl = struct.unpack_from(">IIII", d, 104)
+                      name = d[180:180 + pn].decode()
+                      ha = d[72:104].split(b"\0", 1)[0].decode()
+                      desc.append({
+                          "type": "hashtree",
+                          "partition": name,
+                          "algorithm": ha,
+                      })
+
+                  elif tag == 2:
+                      image_size = struct.unpack_from(">Q", d, 16)[0]
+                      ha = d[24:56].split(b"\0", 1)[0].decode()
+                      pn, sl, dl, fl = struct.unpack_from(">IIII", d, 56)
+                      q = 132
+                      name = d[q:q + pn].decode()
+                      q += pn
+                      salt = d[q:q + sl]
+                      q += sl
+                      dg = d[q:q + dl]
+                      desc.append({
+                          "type": "hash",
+                          "partition": name,
+                          "image_size": image_size,
+                          "algorithm": ha,
+                          "salt": salt.hex(),
+                          "digest": dg.hex(),
+                      })
+
+                  elif tag == 4:
+                      rl, pn, pkl = struct.unpack_from(">III", d, 16)
+                      q = 92
+                      name = d[q:q + pn].decode()
+                      q += pn
+                      key = d[q:q + pkl]
+                      desc.append({
+                          "type": "chain",
+                          "partition": name,
+                          "rollback_index_location": rl,
+                          "public_key_sha256": H(key),
+                      })
+
+                  p += 16 + n
+
+              need(p == end, "descriptor parse did not end exactly")
+              return {
+                  "required_libavb": f"{req_major}.{req_minor}",
+                  "algorithm_type": alg,
+                  "auth_bytes": auth,
+                  "aux_bytes": aux,
+                  "hash_verifies": hash_ok,
+                  "signature_verifies": sig_ok,
+                  "signed_digest": digest.hex() if digest else None,
+                  "public_key_sha256": key_sha,
+                  "rollback_index": rollback,
+                  "flags": flags,
+                  "rollback_index_location": rollback_loc,
+                  "release_string": release,
+                  "descriptors": desc,
+                  "properties": props,
+              }
+
+          def hashes(info):
+              return {
+                  d["partition"]: d
+                  for d in info["descriptors"]
+                  if d["type"] == "hash"
+              }
+
+          def verify_hash(image, d):
+              need(d["algorithm"] == "sha256", "non-sha256 hash descriptor")
+              size = d["image_size"]
+              need(size <= len(image), "hash descriptor size exceeds partition")
+              got = hashlib.sha256(
+                  bytes.fromhex(d["salt"]) + image[:size]
+              ).hexdigest()
+              return got == d["digest"]
+
+          # boot v3
+          need(boot[:8] == b"ANDROID!", "boot magic")
+          kernel_size, ramdisk_size, os_raw, header_size = struct.unpack_from("<4I", boot, 8)
+          header_version = struct.unpack_from("<I", boot, 40)[0]
+          reserved = struct.unpack_from("<4I", boot, 24)
+          ramdisk_off = 4096 + A(kernel_size, 4096)
+          payload_end = ramdisk_off + A(ramdisk_size, 4096)
+          kernel = boot[4096:4096 + kernel_size]
+          ramdisk = boot[ramdisk_off:ramdisk_off + ramdisk_size]
+          text_offset, arm_size, arm_flags = struct.unpack_from("<QQQ", kernel, 8)
+          arm_magic, arm_res5 = struct.unpack_from("<II", kernel, 56)
+          bf = footer(boot)
+          bi = parse_vbmeta(bf["vbmeta"])
+          bh = hashes(bi)
+          need(
+              set(bh) == {"boot"} and verify_hash(boot, bh["boot"]),
+              "boot embedded AVB hash",
+          )
+
+          # vendor_boot v3 + concatenated DTBs
+          need(vendor[:8] == b"VNDRBOOT", "vendor_boot magic")
+          vhv, page, kaddr, raddr, vrsize = struct.unpack_from("<IIIII", vendor, 8)
+          tags = struct.unpack_from("<I", vendor, 2076)[0]
+          vhsize = struct.unpack_from("<I", vendor, 2096)[0]
+          vdsize = struct.unpack_from("<I", vendor, 2100)[0]
+          vdaddr = struct.unpack_from("<Q", vendor, 2104)[0]
+          vrd_off = A(vhsize, page)
+          vdt_off = vrd_off + A(vrsize, page)
+          vdt = vendor[vdt_off:vdt_off + vdsize]
+          fdt = []
+          p = 0
+          while p < len(vdt):
+              need(
+                  vdt[p:p + 4] == b"\xd0\r\xfe\xed",
+                  f"vendor DTB non-FDT at {p}",
+              )
+              size = struct.unpack_from(">I", vdt, p + 4)[0]
+              need(
+                  size >= 40 and p + size <= len(vdt),
+                  "invalid vendor FDT size",
+              )
+              fdt.append({"offset": p, "bytes": size})
+              p += size
+
+          vf = footer(vendor)
+          vi = parse_vbmeta(vf["vbmeta"])
+          vh = hashes(vi)
+          need(
+              set(vh) == {"vendor_boot"}
+              and verify_hash(vendor, vh["vendor_boot"]),
+              "vendor_boot embedded AVB hash",
+          )
+
+          # dtbo table
+          dtvals = struct.unpack_from(">8I", dtbo, 0)
+          magic, table_size, dt_hdr, entry_size, entry_count, entries_off, dt_page, dt_ver = dtvals
+
+          for i in range(entry_count):
+              off = entries_off + i * entry_size
+              size, start = struct.unpack_from(">II", dtbo, off)
+              need(
+                  start + size <= table_size,
+                  f"DTBO entry {i} outside table",
+              )
+              need(
+                  dtbo[start:start + 4] == b"\xd0\r\xfe\xed",
+                  f"DTBO entry {i} not FDT",
+              )
+
+          df = footer(dtbo)
+          di = parse_vbmeta(df["vbmeta"])
+          dh = hashes(di)
+          need(
+              set(dh) == {"dtbo"} and verify_hash(dtbo, dh["dtbo"]),
+              "dtbo embedded AVB hash",
+          )
+
+          # top-level signed vbmeta
+          ti = parse_vbmeta(vbmeta)
+          th = hashes(ti)
+          need(
+              ti["algorithm_type"] == 1
+              and ti["hash_verifies"]
+              and ti["signature_verifies"],
+              "top-level vbmeta signature",
+          )
+          need(
+              set(th) == {"boot", "dtbo", "vendor_boot"},
+              "top-level hash descriptor set",
+          )
+
+          images = {
+              "boot": boot,
+              "dtbo": dtbo,
+              "vendor_boot": vendor,
+          }
+
+          need(
+              all(verify_hash(images[n], d) for n, d in th.items()),
+              "top-level direct hash verification",
+          )
+
+          chains = {
+              d["partition"]: d
+              for d in ti["descriptors"]
+              if d["type"] == "chain"
+          }
+
+          trees = sorted(
+              d["partition"]
+              for d in ti["descriptors"]
+              if d["type"] == "hashtree"
+          )
+
+          # Exact identity gates.
+          need(
+              len(boot) == int(os.environ["BOOT_BYTES"])
+              and H(boot) == os.environ["BOOT_SHA"],
+              "boot identity",
+          )
+          need(
+              len(vendor) == int(os.environ["VENDOR_BOOT_BYTES"])
+              and H(vendor) == os.environ["VENDOR_BOOT_SHA"],
+              "vendor_boot identity",
+          )
+          need(
+              len(dtbo) == int(os.environ["DTBO_BYTES"])
+              and H(dtbo) == os.environ["DTBO_SHA"],
+              "dtbo identity",
+          )
+          need(
+              len(vbmeta) == int(os.environ["VBMETA_BYTES"])
+              and H(vbmeta) == os.environ["VBMETA_SHA"],
+              "vbmeta identity",
+          )
+
+          need(
+              header_version == 3
+              and header_size == 1580
+              and reserved == (0, 0, 0, 0),
+              "boot v3 header",
+          )
+          need(
+              kernel_size == int(os.environ["STOCK_KERNEL_BYTES"])
+              and H(kernel) == os.environ["STOCK_KERNEL_SHA"],
+              "stock kernel identity",
+          )
+          need(
+              ramdisk_size == int(os.environ["RAMDISK_BYTES"])
+              and H(ramdisk) == os.environ["RAMDISK_SHA"],
+              "stock ramdisk identity",
+          )
+          need(
+              ramdisk[:4] == bytes.fromhex("02214c18"),
+              "ramdisk is not LZ4 legacy",
+          )
+          need(
+              text_offset == 0x80000
+              and arm_flags == 0xA
+              and arm_magic == 0x644D5241
+              and arm_res5 == 0x40,
+              "ARM64 header",
+          )
+          need(
+              bf["original_size"] == payload_end
+              and bh["boot"]["digest"] == os.environ["BOOT_AVB_DIGEST"],
+              "boot AVB identity",
+          )
+
+          need(
+              vhv == 3
+              and vhsize == 2112
+              and page == 4096,
+              "vendor_boot v3 header",
+          )
+          need(
+              kaddr == 32768
+              and raddr == 16777216
+              and tags == 256
+              and vdaddr == 0x1F00000,
+              "vendor_boot addresses",
+          )
+          need(
+              vdsize == int(os.environ["VENDOR_DTB_BYTES"])
+              and H(vdt) == os.environ["VENDOR_DTB_SHA"]
+              and len(fdt) == 3,
+              "vendor DTB identity",
+          )
+          need(
+              vh["vendor_boot"]["digest"]
+              == os.environ["VENDOR_BOOT_AVB_DIGEST"],
+              "vendor_boot AVB identity",
+          )
+
+          need(
+              magic == 0xD7B7AB1E
+              and table_size == 2760081,
+              "DTBO table identity",
+          )
+          need(
+              dt_hdr == 32
+              and entry_size == 32
+              and entry_count == 16
+              and entries_off == 32
+              and dt_page == 4096
+              and dt_ver == 0,
+              "DTBO geometry",
+          )
+          need(
+              dh["dtbo"]["digest"] == os.environ["DTBO_AVB_DIGEST"],
+              "dtbo AVB identity",
+          )
+
+          need(
+              ti["signed_digest"] == os.environ["VBMETA_SIGNED_DIGEST"],
+              "vbmeta signed digest",
+          )
+          need(
+              ti["public_key_sha256"] == os.environ["VBMETA_KEY_SHA"],
+              "vbmeta public key",
+          )
+          need(
+              sorted(chains) == ["vbmeta_system"]
+              and chains["vbmeta_system"]["rollback_index_location"] == 2,
+              "vbmeta chain",
+          )
+          need(
+              trees == ["mi_ext", "odm", "vendor"],
+              "vbmeta hashtrees",
+          )
+          need(
+              th["boot"]["digest"] == os.environ["BOOT_AVB_DIGEST"],
+              "top-level boot digest",
+          )
+          need(
+              th["dtbo"]["digest"] == os.environ["DTBO_AVB_DIGEST"],
+              "top-level dtbo digest",
+          )
+          need(
+              th["vendor_boot"]["digest"]
+              == os.environ["VENDOR_BOOT_AVB_DIGEST"],
+              "top-level vendor_boot digest",
+          )
+          need(
+              os.environ["STOCK_FINGERPRINT"]
+              in ti["properties"].get(
+                  "com.android.build.boot.fingerprint",
+                  [],
+              ),
+              "boot fingerprint",
+          )
+          need(
+              "2024-12-01"
+              in ti["properties"].get(
+                  "com.android.build.boot.security_patch",
+                  [],
+              ),
+              "security patch",
+          )
+
+          a = (os_raw >> 25) & 0x7F
+          b = (os_raw >> 18) & 0x7F
+          c = (os_raw >> 11) & 0x7F
+          year = ((os_raw >> 4) & 0x7F) + 2000
+          month = os_raw & 0xF
+
+          result = {
+              "result": "PASS_READ_ONLY_REPRODUCED_FROM_FASTBOOT_ROM",
+              "source": {
+                  "version": os.environ["ROM_VERSION"],
+                  "file": os.environ["ROM_FILE"],
+                  "md5": os.environ["ROM_MD5"],
+              },
+              "boot": {
+                  "bytes": len(boot),
+                  "sha256": H(boot),
+                  "header_version": header_version,
+                  "header_size": header_size,
+                  "kernel_bytes": kernel_size,
+                  "kernel_sha256": H(kernel),
+                  "ramdisk_bytes": ramdisk_size,
+                  "ramdisk_sha256": H(ramdisk),
+                  "ramdisk_format": "lz4_legacy",
+                  "ramdisk_offset": ramdisk_off,
+                  "payload_end": payload_end,
+                  "os_version": f"{a}.{b}.{c}",
+                  "security_patch": f"{year:04d}-{month:02d}",
+                  "arm64": {
+                      "text_offset": text_offset,
+                      "image_size": arm_size,
+                      "flags": arm_flags,
+                      "magic": f"0x{arm_magic:08x}",
+                      "res5": arm_res5,
+                  },
+                  "embedded_avb_digest": bh["boot"]["digest"],
+              },
+              "vendor_boot": {
+                  "bytes": len(vendor),
+                  "sha256": H(vendor),
+                  "header_version": vhv,
+                  "header_size": vhsize,
+                  "page_size": page,
+                  "vendor_ramdisk_bytes": vrsize,
+                  "dtb_bytes": vdsize,
+                  "dtb_sha256": H(vdt),
+                  "dtb_fdt_blobs": fdt,
+                  "embedded_avb_digest": vh["vendor_boot"]["digest"],
+              },
+              "dtbo": {
+                  "bytes": len(dtbo),
+                  "sha256": H(dtbo),
+                  "table_bytes": table_size,
+                  "entry_count": entry_count,
+                  "page_size": dt_page,
+                  "embedded_avb_digest": dh["dtbo"]["digest"],
+              },
+              "vbmeta": {
+                  "bytes": len(vbmeta),
+                  "sha256": H(vbmeta),
+                  "required_libavb": ti["required_libavb"],
+                  "algorithm_type": ti["algorithm_type"],
+                  "signature_verifies": ti["signature_verifies"],
+                  "signed_digest": ti["signed_digest"],
+                  "public_key_sha256": ti["public_key_sha256"],
+                  "direct_hashes": {
+                      n: d["digest"]
+                      for n, d in th.items()
+                  },
+                  "direct_hashes_verify": True,
+                  "chain_partitions": sorted(chains),
+                  "hashtree_partitions": trees,
+              },
+          }
+
+          (OUT / "STOCK-ROM-AUDIT.json").write_text(
+              json.dumps(result, indent=2, sort_keys=True) + "\n"
+          )
+
+          summary = f"""VEUX Workflow 18 - Exact Stock ROM Read-Only Audit
+          ==================================================
+          RESULT: PASS_READ_ONLY_REPRODUCED_FROM_FASTBOOT_ROM
+
+          Source ROM: {os.environ['ROM_VERSION']}
+          Source package: {os.environ['ROM_FILE']}
+          Package MD5 gate: {os.environ['ROM_MD5']}
+
+          boot.img:        {len(boot)} bytes  SHA-256 {H(boot)}
+          vendor_boot.img: {len(vendor)} bytes  SHA-256 {H(vendor)}
+          dtbo.img:        {len(dtbo)} bytes  SHA-256 {H(dtbo)}
+          vbmeta.img:      {len(vbmeta)} bytes  SHA-256 {H(vbmeta)}
+
+          Boot header: v{header_version}, {header_size} bytes, 4096 alignment
+          Stock kernel: {kernel_size} bytes, SHA-256 {H(kernel)}
+          Stock ramdisk: {ramdisk_size} bytes, LZ4 legacy, SHA-256 {H(ramdisk)}
+          Boot embedded AVB hash: PASS
+
+          vendor_boot: v{vhv}, page size {page}
+          vendor DTB: {vdsize} bytes, SHA-256 {H(vdt)}, FDT blobs {len(fdt)}
+          vendor_boot embedded AVB hash: PASS
+
+          DTBO table: {entry_count} entries, {table_size} bytes
+          dtbo embedded AVB hash: PASS
+
+          Top-level vbmeta: SHA256_RSA2048
+          Authentication hash: PASS
+          RSA signature against embedded public key: PASS
+          Direct hash descriptors boot/dtbo/vendor_boot: PASS
+          Chain: vbmeta_system
+          Hashtrees: mi_ext, odm, vendor
+
+          REPRODUCIBILITY: the four images extracted by GitHub are byte-identical
+          to the four original images previously extracted from this exact ROM.
+
+          No stock image was modified. No repack. No device operation. No flash.
+          """
+
+          (OUT / "WORKFLOW18-SUMMARY.txt").write_text(
+              "\n".join(
+                  line.rstrip()
+                  for line in summary.splitlines()
+              ) + "\n"
+          )
+
+          print(
+              (OUT / "WORKFLOW18-SUMMARY.txt").read_text()
+          )
+          PY
+
+          python3 "$WORK/audit.py" "$STOCK" "$AUDIT"
+
+      - name: Create and verify artifact manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          {
+            echo "VEUX Workflow 18 artifact"
+            echo "Source: $ROM_FILE"
+            echo "Version: $ROM_VERSION"
+            echo "Expected source MD5: $ROM_MD5"
+            echo
+            echo "Contains the four exact stock images plus read-only audit records."
+            echo "The multi-gigabyte source ROM archive is intentionally not uploaded."
+          } > "$AUDIT/ARTIFACT-MANIFEST.txt"
+
+          (
+            cd "$OUTPUT"
+
+            find . \
+              -type f \
+              ! -name SHA256SUMS \
+              ! -name SHA256SUMS.verify.txt \
+              -printf '%P\n' \
+              | LC_ALL=C sort \
+              | while IFS= read -r f; do
+                  sha256sum "$f"
+                done \
+              > SHA256SUMS
+
+            sha256sum -c SHA256SUMS \
+              | tee SHA256SUMS.verify.txt
+          )
+
+          grep -qx \
+            'RESULT: PASS_READ_ONLY_REPRODUCED_FROM_FASTBOOT_ROM' \
+            "$AUDIT/WORKFLOW18-SUMMARY.txt"
+
+      - name: Collect failure diagnostics
+        if: failure()
+        shell: bash
+        run: |
+          set +e
+
+          mkdir -p "$AUDIT"
+
+          {
+            echo "VEUX Workflow 18: FAILURE"
+            echo "No device operation was performed."
+            echo "Nothing was flashed."
+            df -h /
+          } > "$AUDIT/FAILURE-SUMMARY.txt"
+
+          find "$WORK" \
+            -maxdepth 6 \
+            -type f \
+            -printf '%s %p\n' \
+            > "$AUDIT/FAILURE-FILE-TREE.txt" \
+            2>/dev/null || true
+
+      - name: Upload Workflow 18 PASS artifact
+        if: success()
+        uses: actions/upload-artifact@v7
+        with:
+          name: veux-os1.0.12.0-workflow18-stock-rom-audit-${{ github.run_number }}
+          path: ${{ env.OUTPUT }}
+          if-no-files-found: error
+          include-hidden-files: true
+          retention-days: 30
+          compression-level: 6
+
+      - name: Upload Workflow 18 failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: veux-os1.0.12.0-workflow18-failure-${{ github.run_number }}
+          path: ${{ env.WORK }}
+          if-no-files-found: warn
+          include-hidden-files: true
+          retention-days: 30
+          compression-level: 0
