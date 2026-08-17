@@ -1,0 +1,978 @@
+name: 21R - VEUX Final Installer Runtime Simulation
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  W21_ARTIFACT_NAME: "veux-5.4.274-resukisu-susfs-2.2-workflow21-exact-w19-final-flashable-1"
+
+  FINAL_ZIP_NAME: "VEUX_5.4.274_ReSukiSU_SUSFS_2.2_EXACT_W19_BOOT_FLASHABLE.zip"
+  FINAL_ZIP_BYTES: "75516120"
+  FINAL_ZIP_SHA256: "b6f9c22582cf90aca3bd40d946f44f465f3b4324d377cabdd9a23668113fe4f2"
+
+  ANYKERNEL_SHA256: "9a90d5e60eb143c82cdec097118c1076e72115250e297bc371d6b1793efd3be0"
+  AK3_CORE_SHA256: "f7a51cfe2e093016a34a76e16de6c9885c2d1992c3482fcabc668680e1f0f6bb"
+  BUSYBOX_SHA256: "66436dc1e97d22886ed2d35bd69a9cb82bb0fdba4e4267c5184cee1d39a2f5f4"
+
+  CUSTOM_BOOT_BYTES: "134217728"
+  CUSTOM_BOOT_SHA256: "2baffafce260348c247674c5e8176408d45dc75b35ccbf7ca5834cbb4679398e"
+  STOCK_BOOT_BYTES: "134217728"
+  STOCK_BOOT_SHA256: "ac6522e4eed55782dd2ae61362e9d345d01a1f229c87333818511d5537fa79c5"
+  ROLLBACK_GZIP_SHA256: "9a1532ccfc57b465256bba97863f927b80823fa8812a4d13e4f4c8bf9af0c78b"
+
+jobs:
+  audit:
+    name: Execute exact final anykernel.sh against fake boot partitions
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    env:
+      WORK: ${{ github.workspace }}/workflow21R
+      INPUT: ${{ github.workspace }}/workflow21R/input
+      PACKAGE: ${{ github.workspace }}/workflow21R/package
+      HARNESS: ${{ github.workspace }}/workflow21R/harness
+      OUTPUT: ${{ github.workspace }}/workflow21R/output
+
+    steps:
+      - name: Prepare read-only simulation workspace
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -rf "$WORK"
+
+          mkdir -p \
+            "$INPUT" \
+            "$PACKAGE" \
+            "$HARNESS/bin" \
+            "$OUTPUT"
+
+          cat > "$OUTPUT/SCOPE.txt" <<'EOF'
+          VEUX Workflow 21R
+          =================
+
+          PURPOSE:
+          Execute the exact final Workflow-21 anykernel.sh against fake regular
+          files placed at the same /dev/block/by-name/boot_a and boot_b paths
+          that the final installer resolves at runtime.
+
+          TESTS:
+          - successful direct write to slot _a
+          - successful direct write to slot _b
+          - fail-closed on non-stock starting boot
+          - fail-closed on locked bootloader evidence
+          - fail-closed on invalid slot suffix
+          - injected post-write corruption to force the REAL rollback function
+            and verify exact stock restoration
+
+          IMPORTANT:
+          The fake boot targets are ordinary files on the ephemeral GitHub VM.
+          No phone is connected.
+          No physical Android partition is accessed.
+          No real device is flashed.
+          vendor_boot, dtbo and top-level vbmeta are not created or touched.
+          EOF
+
+      - name: Download exact Workflow 21 artifact
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          ALL="$WORK/artifacts.ndjson"
+          : > "$ALL"
+
+          page=1
+
+          while :; do
+            PAGE_JSON="$WORK/artifacts-page-${page}.json"
+
+            curl \
+              --fail \
+              --silent \
+              --show-error \
+              --retry 3 \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts?per_page=100&page=${page}" \
+              -o "$PAGE_JSON"
+
+            COUNT="$(jq '.artifacts | length' "$PAGE_JSON")"
+            jq -c '.artifacts[]' "$PAGE_JSON" >> "$ALL"
+
+            if [ "$COUNT" -lt 100 ]; then
+              break
+            fi
+
+            page=$((page + 1))
+
+            [ "$page" -le 20 ] || {
+              echo "ERROR: artifact pagination safety limit"
+              exit 1
+            }
+          done
+
+          MATCHES="$(
+            jq -s \
+              --arg NAME "$W21_ARTIFACT_NAME" \
+              '[.[] | select(.name == $NAME and .expired == false)] | sort_by(.created_at)' \
+              "$ALL"
+          )"
+
+          COUNT="$(jq 'length' <<< "$MATCHES")"
+
+          [ "$COUNT" -ge 1 ] || {
+            echo "ERROR: Workflow-21 artifact not found"
+            exit 1
+          }
+
+          SELECTED="$(jq '.[-1]' <<< "$MATCHES")"
+          URL="$(jq -r '.archive_download_url' <<< "$SELECTED")"
+
+          jq . <<< "$SELECTED" \
+            > "$OUTPUT/W21-ARTIFACT-METADATA.json"
+
+          curl \
+            --fail \
+            --location \
+            --silent \
+            --show-error \
+            --retry 3 \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "$URL" \
+            -o "$INPUT/w21-artifact.zip"
+
+          unzip -t "$INPUT/w21-artifact.zip" \
+            > "$OUTPUT/W21-OUTER-ZIP-CRC.txt"
+
+          unzip -q \
+            "$INPUT/w21-artifact.zip" \
+            -d "$INPUT/w21"
+
+      - name: Verify exact final Workflow 21 artifact and ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          (
+            cd "$INPUT/w21"
+
+            sha256sum -c SHA256SUMS \
+              > "$OUTPUT/W21-SHA256SUMS.verify.txt"
+          )
+
+          grep -Fxq \
+            'RESULT: PASS_FINAL_FLASHABLE_PACKAGE_BUILT_NOT_FLASHED' \
+            "$INPUT/w21/WORKFLOW21-SUMMARY.txt"
+
+          FINAL_ZIP="$INPUT/w21/$FINAL_ZIP_NAME"
+
+          test "$(stat -c '%s' "$FINAL_ZIP")" = "$FINAL_ZIP_BYTES"
+
+          test \
+            "$(sha256sum "$FINAL_ZIP" | awk '{print $1}')" \
+            = "$FINAL_ZIP_SHA256"
+
+          unzip -t "$FINAL_ZIP" \
+            > "$OUTPUT/FINAL-ZIP-CRC.txt"
+
+          unzip -q \
+            "$FINAL_ZIP" \
+            -d "$PACKAGE"
+
+          (
+            cd "$PACKAGE"
+
+            sha256sum -c PACKAGE-SHA256SUMS \
+              > "$OUTPUT/FINAL-PACKAGE-SHA256SUMS.verify.txt"
+          )
+
+          test \
+            "$(sha256sum "$PACKAGE/anykernel.sh" | awk '{print $1}')" \
+            = "$ANYKERNEL_SHA256"
+
+          test \
+            "$(sha256sum "$PACKAGE/tools/ak3-core.sh" | awk '{print $1}')" \
+            = "$AK3_CORE_SHA256"
+
+          test \
+            "$(sha256sum "$PACKAGE/tools/busybox" | awk '{print $1}')" \
+            = "$BUSYBOX_SHA256"
+
+          test \
+            "$(stat -c '%s' "$PACKAGE/boot.img")" \
+            = "$CUSTOM_BOOT_BYTES"
+
+          test \
+            "$(sha256sum "$PACKAGE/boot.img" | awk '{print $1}')" \
+            = "$CUSTOM_BOOT_SHA256"
+
+          test \
+            "$(sha256sum "$PACKAGE/rollback_stock_boot.img.gz" | awk '{print $1}')" \
+            = "$ROLLBACK_GZIP_SHA256"
+
+          gzip -t "$PACKAGE/rollback_stock_boot.img.gz"
+
+          ROLLBACK_BYTES="$(
+            gzip -dc "$PACKAGE/rollback_stock_boot.img.gz" \
+              | wc -c \
+              | tr -d ' '
+          )"
+
+          ROLLBACK_SHA="$(
+            gzip -dc "$PACKAGE/rollback_stock_boot.img.gz" \
+              | sha256sum \
+              | awk '{print $1}'
+          )"
+
+          test "$ROLLBACK_BYTES" = "$STOCK_BOOT_BYTES"
+          test "$ROLLBACK_SHA" = "$STOCK_BOOT_SHA256"
+
+          jq -e \
+            '
+              .result == "FINAL_FLASHABLE_PACKAGE_BUILT_NOT_FLASHED"
+              and .package_strategy.runtime_repack == false
+              and .package_strategy.staging_guard_present == false
+              and .package_strategy.vendor_boot_modified == false
+              and .package_strategy.dtbo_modified == false
+              and .package_strategy.top_level_vbmeta_modified == false
+              and .package_strategy.flashed == false
+            ' \
+            "$PACKAGE/PROVENANCE.json" \
+            > /dev/null
+
+          (
+            cd "$PACKAGE"
+            find . -type f -print0 \
+              | LC_ALL=C sort -z \
+              | xargs -0 sha256sum \
+              > "$OUTPUT/PACKAGE-BEFORE-SIMULATION.sha256"
+          )
+
+          {
+            echo "WORKFLOW21_INPUT_GATE=PASS"
+            echo "FINAL_ZIP_BYTES=$FINAL_ZIP_BYTES"
+            echo "FINAL_ZIP_SHA256=$FINAL_ZIP_SHA256"
+            echo "ANYKERNEL_SHA256=$ANYKERNEL_SHA256"
+            echo "CUSTOM_BOOT_SHA256=$CUSTOM_BOOT_SHA256"
+            echo "ROLLBACK_STOCK_BOOT_SHA256=$ROLLBACK_SHA"
+          } > "$OUTPUT/W21-INPUT-GATE.txt"
+
+      - name: Verify final installer still has only direct-boot write logic
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          AK="$PACKAGE/anykernel.sh"
+
+          bash -n "$AK"
+
+          grep -Fq 'device.name1=veux' "$AK"
+          grep -Fq 'supported.versions=13' "$AK"
+          grep -Fq 'supported.patchlevels=2024-12 - 2024-12' "$AK"
+          grep -Fq 'supported.vendorpatchlevels=2024-12 - 2024-12' "$AK"
+
+          grep -Fq 'ro.boot.slot_suffix' "$AK"
+          grep -Fq 'ro.boot.flash.locked' "$AK"
+          grep -Fq 'ro.boot.vbmeta.device_state' "$AK"
+
+          grep -Fq "$STOCK_BOOT_SHA256" "$AK"
+          grep -Fq "$CUSTOM_BOOT_SHA256" "$AK"
+
+          grep -Fq 'dd if="$PAYLOAD" of="$TARGET" bs=1048576' "$AK"
+          grep -Fq 'restore_stock()' "$AK"
+          grep -Fq 'gzip -dc "$ROLLBACK_GZ"' "$AK"
+          grep -Fq 'sha256sum "$TARGET"' "$AK"
+
+          if grep -Eq '^[[:space:]]*split_boot;' "$AK"; then
+            echo "ERROR: split_boot found"
+            exit 1
+          fi
+
+          if grep -Eq '^[[:space:]]*flash_boot;' "$AK"; then
+            echo "ERROR: flash_boot found"
+            exit 1
+          fi
+
+          if grep -Eq '^[[:space:]]*[^#].*magiskboot' "$AK"; then
+            echo "ERROR: executable runtime magiskboot invocation found"
+            exit 1
+          fi
+
+          {
+            echo "FINAL_INSTALLER_DIRECT_WRITE_CONTRACT=PASS"
+            echo "RUNTIME_REPACK=NO"
+            echo "RUNTIME_MAGISKBOOT=NO"
+            echo "DIRECT_FULL_BOOT_WRITE=YES"
+            echo "EXACT_PREWRITE_STOCK_HASH=YES"
+            echo "EXACT_POSTWRITE_CUSTOM_HASH=YES"
+            echo "ROLLBACK_FUNCTION=YES"
+          } > "$OUTPUT/FINAL-INSTALLER-CONTRACT.txt"
+
+      - name: Install ARM execution and fault-injection support
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          sudo apt-get update -qq
+
+          sudo DEBIAN_FRONTEND=noninteractive \
+            apt-get install -y \
+            qemu-user-static \
+            binfmt-support \
+            inotify-tools
+
+          sudo mount -t binfmt_misc binfmt_misc /proc/sys/fs/binfmt_misc \
+            2>/dev/null || true
+
+          sudo update-binfmts --enable qemu-arm \
+            >/dev/null 2>&1 || true
+
+          QEMU_ARM="$(command -v qemu-arm-static)"
+
+          test -x "$QEMU_ARM"
+
+          echo "QEMU_ARM=$QEMU_ARM" \
+            >> "$GITHUB_ENV"
+
+          file "$PACKAGE/tools/busybox" \
+            > "$OUTPUT/BUSYBOX-FILE-TYPE.txt"
+
+          grep -Fq \
+            'ELF 32-bit LSB executable, ARM' \
+            "$OUTPUT/BUSYBOX-FILE-TYPE.txt"
+
+          "$PACKAGE/tools/busybox" echo DIRECT_BINFMT_OK \
+            > "$OUTPUT/BUSYBOX-BINFMT-SMOKE.txt"
+
+          grep -Fxq \
+            'DIRECT_BINFMT_OK' \
+            "$OUTPUT/BUSYBOX-BINFMT-SMOKE.txt"
+
+          "$QEMU_ARM" \
+            "$PACKAGE/tools/busybox" \
+            echo QEMU_ARM_OK \
+            > "$OUTPUT/BUSYBOX-QEMU-SMOKE.txt"
+
+          grep -Fxq \
+            'QEMU_ARM_OK' \
+            "$OUTPUT/BUSYBOX-QEMU-SMOKE.txt"
+
+      - name: Build exact runtime simulation harness
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          gzip -dc \
+            "$PACKAGE/rollback_stock_boot.img.gz" \
+            > "$HARNESS/stock_boot.img"
+
+          test \
+            "$(stat -c '%s' "$HARNESS/stock_boot.img")" \
+            = "$STOCK_BOOT_BYTES"
+
+          test \
+            "$(sha256sum "$HARNESS/stock_boot.img" | awk '{print $1}')" \
+            = "$STOCK_BOOT_SHA256"
+
+          cat > "$HARNESS/bin/getprop" <<'EOF'
+          #!/bin/sh
+          case "${1:-}" in
+            ro.boot.slot_suffix)
+              printf '%s\n' "${FAKE_SLOT:-}"
+              ;;
+            ro.boot.flash.locked)
+              printf '%s\n' "${FAKE_FLASH_LOCKED:-}"
+              ;;
+            ro.boot.vbmeta.device_state)
+              printf '%s\n' "${FAKE_VBMETA_STATE:-}"
+              ;;
+            *)
+              exit 0
+              ;;
+          esac
+          EOF
+
+          chmod 755 "$HARNESS/bin/getprop"
+
+          env \
+            PATH="$HARNESS/bin:$PATH" \
+            FAKE_SLOT="_a" \
+            FAKE_FLASH_LOCKED="0" \
+            FAKE_VBMETA_STATE="locked" \
+            "$QEMU_ARM" \
+            "$PACKAGE/tools/busybox" \
+            sh -c \
+            'test "$(getprop ro.boot.slot_suffix)" = "_a" && test "$(getprop ro.boot.flash.locked)" = "0"' \
+            > "$OUTPUT/GETPROP-HARNESS-SMOKE.txt"
+
+          echo "GETPROP_HARNESS=PASS" \
+            >> "$OUTPUT/GETPROP-HARNESS-SMOKE.txt"
+
+      - name: Execute exact final installer against fake boot partitions
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          TARGET_DIR="/dev/block/by-name"
+          TARGET_A="$TARGET_DIR/boot_a"
+          TARGET_B="$TARGET_DIR/boot_b"
+
+          CREATED_BLOCK_DIR=0
+          CREATED_BYNAME_DIR=0
+
+          if [ ! -d /dev/block ]; then
+            sudo mkdir /dev/block
+            CREATED_BLOCK_DIR=1
+          fi
+
+          if [ ! -d "$TARGET_DIR" ]; then
+            sudo mkdir -p "$TARGET_DIR"
+            CREATED_BYNAME_DIR=1
+          fi
+
+          if [ -e "$TARGET_A" ] || [ -e "$TARGET_B" ]; then
+            echo "ERROR: runner unexpectedly has boot_a/boot_b nodes"
+            exit 1
+          fi
+
+          sudo touch "$TARGET_A" "$TARGET_B"
+          sudo chown "$(id -u):$(id -g)" "$TARGET_A" "$TARGET_B"
+
+          cleanup() {
+            sudo rm -f "$TARGET_A" "$TARGET_B" 2>/dev/null || true
+
+            if [ "$CREATED_BYNAME_DIR" = "1" ]; then
+              sudo rmdir "$TARGET_DIR" 2>/dev/null || true
+            fi
+
+            if [ "$CREATED_BLOCK_DIR" = "1" ]; then
+              sudo rmdir /dev/block 2>/dev/null || true
+            fi
+          }
+
+          trap cleanup EXIT
+
+          hash_file() {
+            sha256sum "$1" | awk '{print $1}'
+          }
+
+          reset_stock() {
+            cp "$HARNESS/stock_boot.img" "$TARGET_A"
+            cp "$HARNESS/stock_boot.img" "$TARGET_B"
+
+            test "$(stat -c '%s' "$TARGET_A")" = "$STOCK_BOOT_BYTES"
+            test "$(stat -c '%s' "$TARGET_B")" = "$STOCK_BOOT_BYTES"
+            test "$(hash_file "$TARGET_A")" = "$STOCK_BOOT_SHA256"
+            test "$(hash_file "$TARGET_B")" = "$STOCK_BOOT_SHA256"
+          }
+
+          run_installer() {
+            local LOG="$1"
+            local SLOT="$2"
+            local FLASH_LOCKED="$3"
+            local VBMETA_STATE="$4"
+
+            set +e
+
+            (
+              cd "$PACKAGE"
+
+              env \
+                AKHOME="$PACKAGE" \
+                OUTFD=1 \
+                PATH="$HARNESS/bin:$PATH" \
+                FAKE_SLOT="$SLOT" \
+                FAKE_FLASH_LOCKED="$FLASH_LOCKED" \
+                FAKE_VBMETA_STATE="$VBMETA_STATE" \
+                "$QEMU_ARM" \
+                "$PACKAGE/tools/busybox" \
+                sh anykernel.sh
+            ) > "$LOG" 2>&1
+
+            local RC=$?
+
+            set -e
+
+            echo "$RC"
+          }
+
+          # ------------------------------------------------------------
+          # CASE 1: slot _a, unlocked proven by ro.boot.flash.locked=0
+          # ------------------------------------------------------------
+          reset_stock
+
+          RC="$(
+            run_installer \
+              "$OUTPUT/CASE1-SUCCESS-A.log" \
+              "_a" \
+              "0" \
+              "locked"
+          )"
+
+          test "$RC" = "0"
+          test "$(hash_file "$TARGET_A")" = "$CUSTOM_BOOT_SHA256"
+          test "$(hash_file "$TARGET_B")" = "$STOCK_BOOT_SHA256"
+
+          grep -Fq \
+            'Exact Workflow-19 boot payload written and readback verified.' \
+            "$OUTPUT/CASE1-SUCCESS-A.log"
+
+          cat > "$OUTPUT/CASE1-SUCCESS-A.txt" <<EOF
+          RESULT=PASS
+          EXIT_CODE=$RC
+          SLOT=_a
+          UNLOCK_EVIDENCE=ro.boot.flash.locked=0
+          BOOT_A_SHA256=$(hash_file "$TARGET_A")
+          BOOT_B_SHA256=$(hash_file "$TARGET_B")
+          EXPECT_BOOT_A=$CUSTOM_BOOT_SHA256
+          EXPECT_BOOT_B=$STOCK_BOOT_SHA256
+          EOF
+
+          # ------------------------------------------------------------
+          # CASE 2: slot _b, unlocked proven by vbmeta.device_state
+          # ------------------------------------------------------------
+          reset_stock
+
+          RC="$(
+            run_installer \
+              "$OUTPUT/CASE2-SUCCESS-B.log" \
+              "_b" \
+              "1" \
+              "unlocked"
+          )"
+
+          test "$RC" = "0"
+          test "$(hash_file "$TARGET_A")" = "$STOCK_BOOT_SHA256"
+          test "$(hash_file "$TARGET_B")" = "$CUSTOM_BOOT_SHA256"
+
+          grep -Fq \
+            'Exact Workflow-19 boot payload written and readback verified.' \
+            "$OUTPUT/CASE2-SUCCESS-B.log"
+
+          cat > "$OUTPUT/CASE2-SUCCESS-B.txt" <<EOF
+          RESULT=PASS
+          EXIT_CODE=$RC
+          SLOT=_b
+          UNLOCK_EVIDENCE=ro.boot.vbmeta.device_state=unlocked
+          BOOT_A_SHA256=$(hash_file "$TARGET_A")
+          BOOT_B_SHA256=$(hash_file "$TARGET_B")
+          EXPECT_BOOT_A=$STOCK_BOOT_SHA256
+          EXPECT_BOOT_B=$CUSTOM_BOOT_SHA256
+          EOF
+
+          # ------------------------------------------------------------
+          # CASE 3: active boot is NOT the exact audited stock image
+          # ------------------------------------------------------------
+          reset_stock
+
+          python3 - "$TARGET_A" <<'PY'
+          import os
+          import sys
+          from pathlib import Path
+
+          path = Path(sys.argv[1])
+
+          with path.open("r+b") as handle:
+              handle.seek(4096)
+              value = handle.read(1)
+              if len(value) != 1:
+                  raise SystemExit("cannot mutate fake boot")
+              handle.seek(4096)
+              handle.write(bytes([value[0] ^ 0x01]))
+              handle.flush()
+              os.fsync(handle.fileno())
+          PY
+
+          BAD_BEFORE="$(hash_file "$TARGET_A")"
+          test "$BAD_BEFORE" != "$STOCK_BOOT_SHA256"
+          test "$BAD_BEFORE" != "$CUSTOM_BOOT_SHA256"
+
+          RC="$(
+            run_installer \
+              "$OUTPUT/CASE3-WRONG-STOCK.log" \
+              "_a" \
+              "0" \
+              "unlocked"
+          )"
+
+          test "$RC" != "0"
+          BAD_AFTER="$(hash_file "$TARGET_A")"
+          test "$BAD_AFTER" = "$BAD_BEFORE"
+          test "$(hash_file "$TARGET_B")" = "$STOCK_BOOT_SHA256"
+
+          grep -Fq \
+            'Active boot is not the exact audited Workflow-18 stock boot.' \
+            "$OUTPUT/CASE3-WRONG-STOCK.log"
+
+          cat > "$OUTPUT/CASE3-WRONG-STOCK.txt" <<EOF
+          RESULT=PASS_FAIL_CLOSED
+          EXIT_CODE=$RC
+          BEFORE_SHA256=$BAD_BEFORE
+          AFTER_SHA256=$BAD_AFTER
+          TARGET_UNCHANGED=YES
+          EOF
+
+          # ------------------------------------------------------------
+          # CASE 4: bootloader evidence is locked / not unlocked
+          # ------------------------------------------------------------
+          reset_stock
+
+          BEFORE_A="$(hash_file "$TARGET_A")"
+
+          RC="$(
+            run_installer \
+              "$OUTPUT/CASE4-LOCKED.log" \
+              "_a" \
+              "1" \
+              "locked"
+          )"
+
+          test "$RC" != "0"
+          test "$(hash_file "$TARGET_A")" = "$BEFORE_A"
+          test "$(hash_file "$TARGET_A")" = "$STOCK_BOOT_SHA256"
+          test "$(hash_file "$TARGET_B")" = "$STOCK_BOOT_SHA256"
+
+          grep -Fq \
+            'Positive bootloader-unlocked evidence was not found.' \
+            "$OUTPUT/CASE4-LOCKED.log"
+
+          cat > "$OUTPUT/CASE4-LOCKED.txt" <<EOF
+          RESULT=PASS_FAIL_CLOSED
+          EXIT_CODE=$RC
+          FLASH_LOCKED=1
+          VBMETA_DEVICE_STATE=locked
+          BOOT_A_SHA256=$(hash_file "$TARGET_A")
+          TARGET_UNCHANGED=YES
+          EOF
+
+          # ------------------------------------------------------------
+          # CASE 5: invalid slot suffix
+          # ------------------------------------------------------------
+          reset_stock
+
+          BEFORE_A="$(hash_file "$TARGET_A")"
+          BEFORE_B="$(hash_file "$TARGET_B")"
+
+          RC="$(
+            run_installer \
+              "$OUTPUT/CASE5-INVALID-SLOT.log" \
+              "_c" \
+              "0" \
+              "unlocked"
+          )"
+
+          test "$RC" != "0"
+          test "$(hash_file "$TARGET_A")" = "$BEFORE_A"
+          test "$(hash_file "$TARGET_B")" = "$BEFORE_B"
+
+          grep -Fq \
+            'Could not determine a valid active A/B slot. Aborting.' \
+            "$OUTPUT/CASE5-INVALID-SLOT.log"
+
+          cat > "$OUTPUT/CASE5-INVALID-SLOT.txt" <<EOF
+          RESULT=PASS_FAIL_CLOSED
+          EXIT_CODE=$RC
+          FAKE_SLOT=_c
+          BOOT_A_SHA256=$(hash_file "$TARGET_A")
+          BOOT_B_SHA256=$(hash_file "$TARGET_B")
+          TARGETS_UNCHANGED=YES
+          EOF
+
+          # ------------------------------------------------------------
+          # CASE 6: real post-write readback failure -> real rollback path
+          # ------------------------------------------------------------
+          reset_stock
+
+          (
+            inotifywait \
+              -q \
+              -e close_write \
+              "$TARGET_A" \
+              > "$OUTPUT/CASE6-INOTIFY.txt"
+
+            python3 - "$TARGET_A" <<'PY'
+          import os
+          import sys
+          from pathlib import Path
+
+          path = Path(sys.argv[1])
+          offset = 120 * 1024 * 1024
+
+          with path.open("r+b") as handle:
+              handle.seek(offset)
+              value = handle.read(1)
+              if len(value) != 1:
+                  raise SystemExit("cannot inject readback corruption")
+              handle.seek(offset)
+              handle.write(bytes([value[0] ^ 0x5A]))
+              handle.flush()
+              os.fsync(handle.fileno())
+          PY
+          ) &
+
+          WATCHER_PID=$!
+
+          RC="$(
+            run_installer \
+              "$OUTPUT/CASE6-ROLLBACK.log" \
+              "_a" \
+              "0" \
+              "unlocked"
+          )"
+
+          wait "$WATCHER_PID"
+
+          test "$RC" != "0"
+          test "$(hash_file "$TARGET_A")" = "$STOCK_BOOT_SHA256"
+          test "$(hash_file "$TARGET_B")" = "$STOCK_BOOT_SHA256"
+
+          grep -Fq \
+            'Attempting exact stock boot rollback...' \
+            "$OUTPUT/CASE6-ROLLBACK.log"
+
+          grep -Fq \
+            'Custom boot readback SHA-256 mismatch.' \
+            "$OUTPUT/CASE6-ROLLBACK.log"
+
+          grep -Fq \
+            'Exact stock boot was restored and verified.' \
+            "$OUTPUT/CASE6-ROLLBACK.log"
+
+          cat > "$OUTPUT/CASE6-ROLLBACK.txt" <<EOF
+          RESULT=PASS_REAL_ROLLBACK_PATH
+          EXIT_CODE=$RC
+          FAULT=POST_WRITE_BYTE_CORRUPTION_AT_120_MiB
+          FINAL_BOOT_A_SHA256=$(hash_file "$TARGET_A")
+          EXPECT_FINAL_BOOT_A=$STOCK_BOOT_SHA256
+          ROLLBACK_RESTORED_EXACT_STOCK=YES
+          EOF
+
+          cat > "$OUTPUT/RUNTIME-TEST-SUMMARY.txt" <<EOF
+          VEUX WORKFLOW 21R RUNTIME TEST SUMMARY
+          ======================================
+
+          CASE 1 - successful slot _a write:
+          PASS
+
+          CASE 2 - successful slot _b write:
+          PASS
+
+          CASE 3 - wrong starting boot:
+          PASS_FAIL_CLOSED
+
+          CASE 4 - locked bootloader evidence:
+          PASS_FAIL_CLOSED
+
+          CASE 5 - invalid slot suffix:
+          PASS_FAIL_CLOSED
+
+          CASE 6 - injected post-write corruption:
+          PASS_REAL_ROLLBACK_PATH
+
+          Exact custom write SHA-256:
+          $CUSTOM_BOOT_SHA256
+
+          Exact rollback stock SHA-256:
+          $STOCK_BOOT_SHA256
+
+          NO PHONE ACCESSED.
+          NO REAL ANDROID PARTITION ACCESSED.
+          NOTHING FLASHED TO A DEVICE.
+          EOF
+
+      - name: Prove final package bytes were not mutated by simulation
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          (
+            cd "$PACKAGE"
+            find . -type f -print0 \
+              | LC_ALL=C sort -z \
+              | xargs -0 sha256sum \
+              > "$OUTPUT/PACKAGE-AFTER-SIMULATION.sha256"
+          )
+
+          cmp -s \
+            "$OUTPUT/PACKAGE-BEFORE-SIMULATION.sha256" \
+            "$OUTPUT/PACKAGE-AFTER-SIMULATION.sha256"
+
+          test \
+            "$(sha256sum "$PACKAGE/anykernel.sh" | awk '{print $1}')" \
+            = "$ANYKERNEL_SHA256"
+
+          test \
+            "$(sha256sum "$PACKAGE/boot.img" | awk '{print $1}')" \
+            = "$CUSTOM_BOOT_SHA256"
+
+          test \
+            "$(sha256sum "$PACKAGE/rollback_stock_boot.img.gz" | awk '{print $1}')" \
+            = "$ROLLBACK_GZIP_SHA256"
+
+          {
+            echo "PACKAGE_MUTATION_AUDIT=PASS"
+            echo "ALL_FINAL_PACKAGE_FILES_BYTE_IDENTICAL_BEFORE_AFTER=YES"
+            echo "ANYKERNEL_SHA256=$ANYKERNEL_SHA256"
+            echo "CUSTOM_BOOT_SHA256=$CUSTOM_BOOT_SHA256"
+            echo "ROLLBACK_GZIP_SHA256=$ROLLBACK_GZIP_SHA256"
+          } > "$OUTPUT/PACKAGE-MUTATION-AUDIT.txt"
+
+      - name: Create Workflow 21R decision report
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cat > "$OUTPUT/WORKFLOW21R-SUMMARY.txt" <<EOF
+          VEUX Workflow 21R - Final Installer Runtime Simulation
+          =======================================================
+
+          RESULT: PASS_FINAL_INSTALLER_RUNTIME_SIMULATION
+
+          EXACT INPUT
+          -----------
+          Workflow-21 artifact:
+          $W21_ARTIFACT_NAME
+
+          Final flashable ZIP:
+          $FINAL_ZIP_NAME
+
+          Final ZIP bytes:
+          $FINAL_ZIP_BYTES
+
+          Final ZIP SHA-256:
+          $FINAL_ZIP_SHA256
+
+          Exact final anykernel.sh:
+          $ANYKERNEL_SHA256
+
+          Exact custom Workflow-19 boot:
+          $CUSTOM_BOOT_SHA256
+
+          Exact Workflow-18 stock rollback:
+          $STOCK_BOOT_SHA256
+
+          WHAT WAS EXECUTED
+          -----------------
+          The exact final anykernel.sh was executed by the packaged ARM BusyBox
+          shell under qemu-arm against fake ordinary files at:
+
+          /dev/block/by-name/boot_a
+          /dev/block/by-name/boot_b
+
+          The exact packaged BusyBox was used for sha256sum, dd, gzip and sync.
+          The exact packaged ak3-core.sh supplied abort/ui_print.
+
+          RUNTIME TESTS
+          -------------
+          1. slot _a + ro.boot.flash.locked=0:
+             PASS - exact custom boot written and read back.
+
+          2. slot _b + ro.boot.vbmeta.device_state=unlocked:
+             PASS - exact custom boot written and read back.
+
+          3. active boot does not equal audited stock SHA-256:
+             PASS_FAIL_CLOSED - no write.
+
+          4. flash.locked=1 and vbmeta.device_state=locked:
+             PASS_FAIL_CLOSED - no write.
+
+          5. invalid slot suffix _c:
+             PASS_FAIL_CLOSED - no write.
+
+          6. post-write corruption injected before readback:
+             PASS - readback mismatch detected;
+             real restore_stock() path executed;
+             exact Workflow-18 stock boot restored and hash-verified.
+
+          PACKAGE INTEGRITY AFTER SIMULATION
+          ----------------------------------
+          Every final package file remained byte-identical.
+
+          NO RUNTIME BOOT REPACK.
+          NO RUNTIME MAGISKBOOT.
+          NO vendor_boot OPERATION.
+          NO dtbo OPERATION.
+          NO top-level vbmeta OPERATION.
+
+          SAFETY BOUNDARY
+          ---------------
+          This is the strongest non-device runtime validation performed so far.
+
+          It verifies installer control flow and exact write/rollback bytes on an
+          emulated target, but it still does NOT prove that the physical VEUX
+          device will successfully boot the custom kernel.
+
+          NO PHONE WAS ACCESSED.
+          NOTHING WAS FLASHED TO A REAL DEVICE.
+          EOF
+
+          grep -Fxq \
+            'RESULT: PASS_FINAL_INSTALLER_RUNTIME_SIMULATION' \
+            "$OUTPUT/WORKFLOW21R-SUMMARY.txt"
+
+      - name: Create complete output checksums
+        if: always()
+        shell: bash
+        run: |
+          set +e
+
+          mkdir -p "$OUTPUT"
+
+          (
+            cd "$OUTPUT"
+
+            find . \
+              -maxdepth 1 \
+              -type f \
+              ! -name SHA256SUMS \
+              ! -name SHA256SUMS.verify.txt \
+              -printf '%f\n' \
+              | LC_ALL=C sort \
+              | while IFS= read -r FILE; do
+                  sha256sum "$FILE"
+                done \
+              > SHA256SUMS
+
+            sha256sum -c SHA256SUMS \
+              > SHA256SUMS.verify.txt
+          )
+
+      - name: Collect failure diagnostics
+        if: failure()
+        shell: bash
+        run: |
+          set +e
+
+          mkdir -p "$OUTPUT"
+
+          {
+            echo "WORKFLOW21R_STATUS=REQUIRES_REVIEW"
+            echo "Finished: $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+            echo
+            echo "A simulation gate failed."
+            echo "This is not automatically a kernel failure."
+            echo "Inspect the complete audit artifact before proceeding."
+            echo
+            echo "NO PHONE WAS ACCESSED."
+            echo "NOTHING WAS FLASHED TO A REAL DEVICE."
+          } > "$OUTPUT/FAILURE-SUMMARY.txt"
+
+      - name: Upload Workflow 21R runtime audit artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: veux-5.4.274-workflow21R-final-installer-runtime-simulation-${{ github.run_number }}
+          path: ${{ env.OUTPUT }}
+          if-no-files-found: error
+          include-hidden-files: true
+          retention-days: 30
+          compression-level: 6
