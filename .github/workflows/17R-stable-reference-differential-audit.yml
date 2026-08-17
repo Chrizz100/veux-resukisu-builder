@@ -578,9 +578,14 @@ jobs:
             > "$GITHUB_WORKSPACE/audit-output/reference-kernel-strings.txt" \
             || true
 
+          # IMPORTANT:
+          # The kernel contains both the generic printk format string
+          # "Linux version %s (%s)" and the actual compiled version string.
+          # Select the real 5.4.x compiled version, not merely the first
+          # string beginning with "Linux version ".
           LINUX_VERSION_LINE="$(
             strings -a "$ANA/kernel.raw" \
-              | grep -m1 '^Linux version ' \
+              | grep -m1 -E '^Linux version 5\.4\.[0-9]+' \
               || true
           )"
 
@@ -635,12 +640,12 @@ jobs:
           } > "$GITHUB_WORKSPACE/audit-output/reference-kernel-image.txt"
 
           if [ -z "$LINUX_VERSION_LINE" ]; then
-            echo "Could not recover Linux version string from released Image."
+            echo "Could not recover compiled Linux 5.4.x version string from released Image."
             exit 1
           fi
 
           echo "$LINUX_VERSION_LINE" \
-            | grep -Fq 'Linux version 5.4.'
+            | grep -Eq '^Linux version 5\.4\.[0-9]+'
 
           cat "$GITHUB_WORKSPACE/audit-output/reference-kernel-image.txt"
 
@@ -690,7 +695,6 @@ jobs:
                   if 40 <= total <= 8 * 1024 * 1024 and off + total <= len(data):
                       blob = data[off:off + total]
 
-                      # Basic FDT structural header sanity.
                       if len(blob) >= 40:
                           version = struct.unpack(">I", blob[20:24])[0]
                           last_comp = struct.unpack(">I", blob[24:28])[0]
@@ -753,6 +757,11 @@ jobs:
               echo "- dtb.img"
               echo "- dtbo.img"
               echo "- Image.gz-dtb"
+              echo
+              echo "The published VEUX reference ZIP contains only the kernel"
+              echo "Image as device payload. Its AnyKernel script obtains the"
+              echo "vendor_boot DTB at flash time via split_boot and can patch"
+              echo "that extracted DTB before rebuilding vendor_boot."
               echo
               echo "This is an observation, not an audit failure."
             } >> "$OUT"
@@ -891,10 +900,11 @@ jobs:
             echo "PACKAGING BEHAVIOR"
             echo "------------------"
             echo "Reference installer:"
-            echo "  - handles boot"
-            echo "  - handles vendor_boot"
-            echo "  - performs VEUX-specific DTB/HAL adaptation"
-            echo "  - contains explicit dtbo erase/neutralization logic"
+            echo "  - writes boot"
+            echo "  - splits existing vendor_boot"
+            echo "  - conditionally patches the DTB extracted from vendor_boot"
+            echo "  - rebuilds/writes vendor_boot"
+            echo "  - explicitly zeros dtbo"
             echo
             echo "Current frozen project strategy:"
             echo "  - kernel-only boot modification"
@@ -930,21 +940,27 @@ jobs:
           - Its ZIP integrity was verified.
           - Its actual package contents were inventoried.
           - Its released kernel Image was inspected.
-          - Valid FDT blobs were searched and decoded where present.
+          - Valid standalone FDT blobs were searched.
           - The exact release builder source was inspected.
           - The exact VEUX AnyKernel source was inspected.
-          - Packaged AnyKernel scripts were byte-compared against the pinned source.
+          - Packaged AnyKernel scripts were byte-compared against pinned source.
           - Reference partition behavior was audited.
           - Reference outputs were compared against the frozen Workflow-17 kernel.
 
-          IMPORTANT DIFFERENCE:
-          The reference VEUX AnyKernel path is not boot-only.
+          IMPORTANT REFERENCE PACKAGE OBSERVATION:
+          The published ZIP contains Image but does not contain a standalone:
+          - dtb
+          - dtb.img
+          - dtbo.img
 
-          It explicitly contains:
-          - boot handling
-          - vendor_boot handling
-          - VEUX-specific DTB/HAL adaptation
-          - dtbo partition handling
+          The reference installer is nevertheless NOT boot-only.
+
+          It explicitly:
+          - writes boot
+          - splits the existing vendor_boot
+          - conditionally patches the DTB extracted from vendor_boot
+          - rebuilds and writes vendor_boot
+          - explicitly zeros the dtbo partition
 
           IMPORTANT LIMITATION:
           The reference build is for Based AOSP Android 16.
@@ -958,10 +974,10 @@ jobs:
           DO NOT flash as a result of this audit alone.
 
           NEXT ENGINEERING QUESTION:
-          Determine which of the reference Device Tree / vendor_boot behaviors
-          are genuinely required by the frozen 5.4.274 kernel on the exact
-          Stock HyperOS boot chain, using the already captured stock boot,
-          vendor_boot and dtbo evidence.
+          Determine whether any of the reference vendor_boot / DTB / dtbo
+          behavior is genuinely required by the frozen 5.4.274 kernel on the
+          exact Stock HyperOS boot chain, using the already verified stock
+          boot, vendor_boot, dtbo and vbmeta evidence.
 
           NO FLASHING WAS PERFORMED BY THIS WORKFLOW.
           EOF
@@ -999,6 +1015,7 @@ jobs:
             -maxdepth 1 \
             -type f \
             ! -name 'SHA256SUMS' \
+            ! -name 'SHA256SUMS.verify.txt' \
             -printf '%f\n' \
             | LC_ALL=C sort \
             | while IFS= read -r FILE; do
