@@ -1,0 +1,922 @@
+name: 21RF - VEUX Final Runtime Audit Closure
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  W21R_ARTIFACT_NAME: "veux-5.4.274-workflow21R-final-installer-runtime-simulation-2"
+
+  FINAL_ZIP_SHA256: "b6f9c22582cf90aca3bd40d946f44f465f3b4324d377cabdd9a23668113fe4f2"
+  ANYKERNEL_SHA256: "9a90d5e60eb143c82cdec097118c1076e72115250e297bc371d6b1793efd3be0"
+  CUSTOM_BOOT_SHA256: "2baffafce260348c247674c5e8176408d45dc75b35ccbf7ca5834cbb4679398e"
+  STOCK_BOOT_SHA256: "ac6522e4eed55782dd2ae61362e9d345d01a1f229c87333818511d5537fa79c5"
+
+  EMPTY_SHA256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+
+jobs:
+  finalize:
+    name: Finalize existing 21R evidence without rerunning simulation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+
+    env:
+      WORK: ${{ github.workspace }}/workflow21RF
+      INPUT: ${{ github.workspace }}/workflow21RF/input
+      AUDIT: ${{ github.workspace }}/workflow21RF/input/21r
+      OUTPUT: ${{ github.workspace }}/workflow21RF/output
+
+    steps:
+      - name: Prepare closure workspace
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -rf "$WORK"
+
+          mkdir -p \
+            "$INPUT" \
+            "$AUDIT" \
+            "$OUTPUT"
+
+          cat > "$OUTPUT/SCOPE.txt" <<'EOF'
+          VEUX Workflow 21RF
+          ==================
+
+          PURPOSE:
+          Canonically close the already-completed Workflow-21R runtime
+          simulation WITHOUT executing the installer again.
+
+          This workflow only reads the existing Workflow-21R run-2 artifact.
+
+          It requires:
+          - all six runtime cases already produced by 21R
+          - success on slot _a
+          - success on slot _b
+          - fail-closed on wrong stock boot
+          - fail-closed on locked bootloader evidence
+          - fail-closed on invalid slot
+          - successful exact stock rollback after injected post-write corruption
+          - all 17 original final-package files unchanged after simulation
+          - exactly two additional AnyKernel3 runtime scratch files
+          - both additional files empty
+          - no other added, removed, or changed package file
+
+          NO SIMULATION IS RERUN.
+          NO INSTALLER IS EXECUTED.
+          NO PHONE IS ACCESSED.
+          NOTHING IS FLASHED.
+          EOF
+
+      - name: Download exact existing Workflow 21R run-2 artifact
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          ALL="$WORK/artifacts.ndjson"
+          : > "$ALL"
+
+          page=1
+
+          while :; do
+            PAGE_JSON="$WORK/artifacts-page-${page}.json"
+
+            curl \
+              --fail \
+              --silent \
+              --show-error \
+              --retry 3 \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts?per_page=100&page=${page}" \
+              -o "$PAGE_JSON"
+
+            COUNT="$(jq '.artifacts | length' "$PAGE_JSON")"
+
+            jq -c '.artifacts[]' "$PAGE_JSON" >> "$ALL"
+
+            if [ "$COUNT" -lt 100 ]; then
+              break
+            fi
+
+            page=$((page + 1))
+
+            [ "$page" -le 20 ] || {
+              echo "ERROR: artifact pagination safety limit"
+              exit 1
+            }
+          done
+
+          MATCHES="$(
+            jq -s \
+              --arg NAME "$W21R_ARTIFACT_NAME" \
+              '[.[] | select(.name == $NAME and .expired == false)] | sort_by(.created_at)' \
+              "$ALL"
+          )"
+
+          COUNT="$(jq 'length' <<< "$MATCHES")"
+
+          [ "$COUNT" -ge 1 ] || {
+            echo "ERROR: exact Workflow-21R run-2 artifact not found"
+            exit 1
+          }
+
+          SELECTED="$(jq '.[-1]' <<< "$MATCHES")"
+          URL="$(jq -r '.archive_download_url' <<< "$SELECTED")"
+
+          jq . <<< "$SELECTED" \
+            > "$OUTPUT/W21R-ARTIFACT-METADATA.json"
+
+          curl \
+            --fail \
+            --location \
+            --silent \
+            --show-error \
+            --retry 3 \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "$URL" \
+            -o "$INPUT/w21r-run2.zip"
+
+          unzip -t "$INPUT/w21r-run2.zip" \
+            > "$OUTPUT/W21R-ZIP-CRC.txt"
+
+          unzip -q \
+            "$INPUT/w21r-run2.zip" \
+            -d "$AUDIT"
+
+          {
+            echo "ARTIFACT_NAME=$W21R_ARTIFACT_NAME"
+            echo "DOWNLOAD_BYTES=$(stat -c '%s' "$INPUT/w21r-run2.zip")"
+            echo "DOWNLOAD_SHA256=$(sha256sum "$INPUT/w21r-run2.zip" | awk '{print $1}')"
+            echo "ZIP_CRC=PASS"
+          } > "$OUTPUT/W21R-INPUT.txt"
+
+      - name: Independently verify complete 21R audit checksum set
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test -f "$AUDIT/SHA256SUMS"
+
+          COUNT="$(
+            grep -cve '^[[:space:]]*$' \
+              "$AUDIT/SHA256SUMS"
+          )"
+
+          test "$COUNT" = "28"
+
+          (
+            cd "$AUDIT"
+
+            sha256sum -c SHA256SUMS \
+              > "$OUTPUT/W21R-SHA256SUMS.verify.txt"
+          )
+
+          OK_COUNT="$(
+            grep -c ': OK$' \
+              "$OUTPUT/W21R-SHA256SUMS.verify.txt"
+          )"
+
+          test "$OK_COUNT" = "28"
+
+          {
+            echo "W21R_INTERNAL_CHECKSUMS=PASS"
+            echo "CHECKED=28/28"
+          } > "$OUTPUT/W21R-CHECKSUM-GATE.txt"
+
+      - name: Verify canonical Workflow 21 identity carried into 21R
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          grep -Fq \
+            "FINAL_ZIP_SHA256=$FINAL_ZIP_SHA256" \
+            "$AUDIT/W21-INPUT-GATE.txt"
+
+          grep -Fq \
+            "ANYKERNEL_SHA256=$ANYKERNEL_SHA256" \
+            "$AUDIT/W21-INPUT-GATE.txt"
+
+          grep -Fq \
+            "CUSTOM_BOOT_SHA256=$CUSTOM_BOOT_SHA256" \
+            "$AUDIT/W21-INPUT-GATE.txt"
+
+          grep -Fq \
+            "ROLLBACK_STOCK_BOOT_SHA256=$STOCK_BOOT_SHA256" \
+            "$AUDIT/W21-INPUT-GATE.txt"
+
+          grep -Fq \
+            'FINAL_INSTALLER_DIRECT_WRITE_CONTRACT=PASS' \
+            "$AUDIT/FINAL-INSTALLER-CONTRACT.txt"
+
+          grep -Fq 'RUNTIME_REPACK=NO' \
+            "$AUDIT/FINAL-INSTALLER-CONTRACT.txt"
+
+          grep -Fq 'RUNTIME_MAGISKBOOT=NO' \
+            "$AUDIT/FINAL-INSTALLER-CONTRACT.txt"
+
+          grep -Fq 'DIRECT_FULL_BOOT_WRITE=YES' \
+            "$AUDIT/FINAL-INSTALLER-CONTRACT.txt"
+
+          grep -Fq 'EXACT_PREWRITE_STOCK_HASH=YES' \
+            "$AUDIT/FINAL-INSTALLER-CONTRACT.txt"
+
+          grep -Fq 'EXACT_POSTWRITE_CUSTOM_HASH=YES' \
+            "$AUDIT/FINAL-INSTALLER-CONTRACT.txt"
+
+          grep -Fq 'ROLLBACK_FUNCTION=YES' \
+            "$AUDIT/FINAL-INSTALLER-CONTRACT.txt"
+
+          {
+            echo "W21_IDENTITY_AND_CONTRACT=PASS"
+            echo "FINAL_ZIP_SHA256=$FINAL_ZIP_SHA256"
+            echo "ANYKERNEL_SHA256=$ANYKERNEL_SHA256"
+            echo "CUSTOM_BOOT_SHA256=$CUSTOM_BOOT_SHA256"
+            echo "STOCK_BOOT_SHA256=$STOCK_BOOT_SHA256"
+          } > "$OUTPUT/W21-IDENTITY-GATE.txt"
+
+      - name: Verify all six completed runtime cases
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Case 1: valid slot _a.
+          grep -Fxq 'RESULT=PASS' \
+            "$AUDIT/CASE1-SUCCESS-A.txt"
+
+          grep -Fxq 'EXIT_CODE=0' \
+            "$AUDIT/CASE1-SUCCESS-A.txt"
+
+          grep -Fxq 'SLOT=_a' \
+            "$AUDIT/CASE1-SUCCESS-A.txt"
+
+          grep -Fxq \
+            "BOOT_A_SHA256=$CUSTOM_BOOT_SHA256" \
+            "$AUDIT/CASE1-SUCCESS-A.txt"
+
+          grep -Fxq \
+            "BOOT_B_SHA256=$STOCK_BOOT_SHA256" \
+            "$AUDIT/CASE1-SUCCESS-A.txt"
+
+          grep -Fq \
+            'Exact Workflow-19 boot payload written and readback verified.' \
+            "$AUDIT/CASE1-SUCCESS-A.log"
+
+          # Case 2: valid slot _b.
+          grep -Fxq 'RESULT=PASS' \
+            "$AUDIT/CASE2-SUCCESS-B.txt"
+
+          grep -Fxq 'EXIT_CODE=0' \
+            "$AUDIT/CASE2-SUCCESS-B.txt"
+
+          grep -Fxq 'SLOT=_b' \
+            "$AUDIT/CASE2-SUCCESS-B.txt"
+
+          grep -Fxq \
+            "BOOT_A_SHA256=$STOCK_BOOT_SHA256" \
+            "$AUDIT/CASE2-SUCCESS-B.txt"
+
+          grep -Fxq \
+            "BOOT_B_SHA256=$CUSTOM_BOOT_SHA256" \
+            "$AUDIT/CASE2-SUCCESS-B.txt"
+
+          grep -Fq \
+            'Exact Workflow-19 boot payload written and readback verified.' \
+            "$AUDIT/CASE2-SUCCESS-B.log"
+
+          # Case 3: non-stock starting boot.
+          grep -Fxq 'RESULT=PASS_FAIL_CLOSED' \
+            "$AUDIT/CASE3-WRONG-STOCK.txt"
+
+          grep -Fxq 'EXIT_CODE=1' \
+            "$AUDIT/CASE3-WRONG-STOCK.txt"
+
+          grep -Fxq 'TARGET_UNCHANGED=YES' \
+            "$AUDIT/CASE3-WRONG-STOCK.txt"
+
+          BEFORE3="$(
+            sed -n 's/^BEFORE_SHA256=//p' \
+              "$AUDIT/CASE3-WRONG-STOCK.txt"
+          )"
+
+          AFTER3="$(
+            sed -n 's/^AFTER_SHA256=//p' \
+              "$AUDIT/CASE3-WRONG-STOCK.txt"
+          )"
+
+          test -n "$BEFORE3"
+          test "$BEFORE3" = "$AFTER3"
+          test "$BEFORE3" != "$STOCK_BOOT_SHA256"
+          test "$BEFORE3" != "$CUSTOM_BOOT_SHA256"
+
+          grep -Fq \
+            'Active boot is not the exact audited Workflow-18 stock boot.' \
+            "$AUDIT/CASE3-WRONG-STOCK.log"
+
+          # Case 4: locked bootloader evidence.
+          grep -Fxq 'RESULT=PASS_FAIL_CLOSED' \
+            "$AUDIT/CASE4-LOCKED.txt"
+
+          grep -Fxq 'EXIT_CODE=1' \
+            "$AUDIT/CASE4-LOCKED.txt"
+
+          grep -Fxq 'FLASH_LOCKED=1' \
+            "$AUDIT/CASE4-LOCKED.txt"
+
+          grep -Fxq 'VBMETA_DEVICE_STATE=locked' \
+            "$AUDIT/CASE4-LOCKED.txt"
+
+          grep -Fxq \
+            "BOOT_A_SHA256=$STOCK_BOOT_SHA256" \
+            "$AUDIT/CASE4-LOCKED.txt"
+
+          grep -Fxq 'TARGET_UNCHANGED=YES' \
+            "$AUDIT/CASE4-LOCKED.txt"
+
+          grep -Fq \
+            'Positive bootloader-unlocked evidence was not found.' \
+            "$AUDIT/CASE4-LOCKED.log"
+
+          # Case 5: invalid slot rejected by ak3-core before later custom gate.
+          grep -Fxq 'RESULT=PASS_FAIL_CLOSED' \
+            "$AUDIT/CASE5-INVALID-SLOT.txt"
+
+          grep -Fxq 'EXIT_CODE=1' \
+            "$AUDIT/CASE5-INVALID-SLOT.txt"
+
+          grep -Fxq 'FAKE_SLOT=_c' \
+            "$AUDIT/CASE5-INVALID-SLOT.txt"
+
+          grep -Fxq \
+            'REJECTION_GATE=ANYKERNEL3_AK3_CORE_EARLY_SLOT_GATE' \
+            "$AUDIT/CASE5-INVALID-SLOT.txt"
+
+          grep -Fxq \
+            "BOOT_A_BEFORE_SHA256=$STOCK_BOOT_SHA256" \
+            "$AUDIT/CASE5-INVALID-SLOT.txt"
+
+          grep -Fxq \
+            "BOOT_A_AFTER_SHA256=$STOCK_BOOT_SHA256" \
+            "$AUDIT/CASE5-INVALID-SLOT.txt"
+
+          grep -Fxq \
+            "BOOT_B_BEFORE_SHA256=$STOCK_BOOT_SHA256" \
+            "$AUDIT/CASE5-INVALID-SLOT.txt"
+
+          grep -Fxq \
+            "BOOT_B_AFTER_SHA256=$STOCK_BOOT_SHA256" \
+            "$AUDIT/CASE5-INVALID-SLOT.txt"
+
+          grep -Fxq 'TARGETS_UNCHANGED=YES' \
+            "$AUDIT/CASE5-INVALID-SLOT.txt"
+
+          grep -Fq \
+            'Unable to determine boot partition. Aborting...' \
+            "$AUDIT/CASE5-INVALID-SLOT.log"
+
+          # Case 6: real rollback after injected post-write corruption.
+          grep -Fxq 'RESULT=PASS_REAL_ROLLBACK_PATH' \
+            "$AUDIT/CASE6-ROLLBACK.txt"
+
+          grep -Fxq 'EXIT_CODE=1' \
+            "$AUDIT/CASE6-ROLLBACK.txt"
+
+          grep -Fxq \
+            'FAULT=POST_WRITE_BYTE_CORRUPTION_AT_120_MiB' \
+            "$AUDIT/CASE6-ROLLBACK.txt"
+
+          grep -Fxq \
+            "FINAL_BOOT_A_SHA256=$STOCK_BOOT_SHA256" \
+            "$AUDIT/CASE6-ROLLBACK.txt"
+
+          grep -Fxq \
+            "FINAL_BOOT_B_SHA256=$STOCK_BOOT_SHA256" \
+            "$AUDIT/CASE6-ROLLBACK.txt"
+
+          grep -Fxq \
+            'ROLLBACK_RESTORED_EXACT_STOCK=YES' \
+            "$AUDIT/CASE6-ROLLBACK.txt"
+
+          grep -Fq \
+            'Custom boot readback SHA-256 mismatch.' \
+            "$AUDIT/CASE6-ROLLBACK.log"
+
+          grep -Fq \
+            'Attempting exact stock boot rollback...' \
+            "$AUDIT/CASE6-ROLLBACK.log"
+
+          grep -Fq \
+            'Exact stock boot was restored and verified.' \
+            "$AUDIT/CASE6-ROLLBACK.log"
+
+          grep -Fq \
+            'CASE 6 - injected post-write corruption:' \
+            "$AUDIT/RUNTIME-TEST-SUMMARY.txt"
+
+          grep -Fq \
+            'PASS_REAL_ROLLBACK_PATH' \
+            "$AUDIT/RUNTIME-TEST-SUMMARY.txt"
+
+          {
+            echo "RUNTIME_CASES=PASS"
+            echo "CASE1_SLOT_A=PASS"
+            echo "CASE2_SLOT_B=PASS"
+            echo "CASE3_WRONG_STOCK=PASS_FAIL_CLOSED"
+            echo "CASE4_LOCKED=PASS_FAIL_CLOSED"
+            echo "CASE5_INVALID_SLOT=PASS_FAIL_CLOSED"
+            echo "CASE6_REAL_ROLLBACK=PASS"
+          } > "$OUTPUT/RUNTIME-CASES-GATE.txt"
+
+      - name: Resolve the final 21R false-red exactly
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - \
+            "$AUDIT/PACKAGE-BEFORE-SIMULATION.sha256" \
+            "$AUDIT/PACKAGE-AFTER-SIMULATION.sha256" \
+            "$OUTPUT/PACKAGE-MUTATION-CLOSURE.json" \
+            "$OUTPUT/PACKAGE-MUTATION-CLOSURE.txt" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          before_path = Path(sys.argv[1])
+          after_path = Path(sys.argv[2])
+          json_out = Path(sys.argv[3])
+          text_out = Path(sys.argv[4])
+
+          EMPTY = (
+              "e3b0c44298fc1c149afbf4c8996fb924"
+              "27ae41e4649b934ca495991b7852b855"
+          )
+
+          expected_extras = {
+              "./current": EMPTY,
+              "./boot-files/current": EMPTY,
+          }
+
+          def parse(path):
+              result = {}
+
+              for line in path.read_text(
+                  encoding="utf-8"
+              ).splitlines():
+                  if not line.strip():
+                      continue
+
+                  digest, name = line.split(None, 1)
+                  name = name.strip()
+
+                  if name in result:
+                      raise SystemExit(
+                          f"ERROR: duplicate path in {path.name}: {name}"
+                      )
+
+                  result[name] = digest
+
+              return result
+
+          before = parse(before_path)
+          after = parse(after_path)
+
+          if len(before) != 17:
+              raise SystemExit(
+                  f"ERROR: expected 17 original files, got {len(before)}"
+              )
+
+          if len(after) != 19:
+              raise SystemExit(
+                  f"ERROR: expected 19 post-simulation files, got {len(after)}"
+              )
+
+          removed = sorted(
+              set(before) - set(after)
+          )
+
+          added = sorted(
+              set(after) - set(before)
+          )
+
+          changed = sorted(
+              name
+              for name in set(before) & set(after)
+              if before[name] != after[name]
+          )
+
+          unchanged = sorted(
+              name
+              for name in set(before) & set(after)
+              if before[name] == after[name]
+          )
+
+          if removed:
+              raise SystemExit(
+                  f"ERROR: original package files removed: {removed}"
+              )
+
+          if changed:
+              raise SystemExit(
+                  f"ERROR: original package files changed: {changed}"
+              )
+
+          if len(unchanged) != 17:
+              raise SystemExit(
+                  f"ERROR: expected 17 unchanged originals, got {len(unchanged)}"
+              )
+
+          if set(added) != set(expected_extras):
+              raise SystemExit(
+                  f"ERROR: unexpected added runtime files: {added}"
+              )
+
+          for name, expected_digest in expected_extras.items():
+              actual = after.get(name)
+
+              if actual != expected_digest:
+                  raise SystemExit(
+                      f"ERROR: runtime scratch file is not empty: "
+                      f"{name}: {actual}"
+                  )
+
+          critical = {
+              "./anykernel.sh":
+                  "9a90d5e60eb143c82cdec097118c1076"
+                  "e72115250e297bc371d6b1793efd3be0",
+
+              "./boot.img":
+                  "2baffafce260348c247674c5e8176408"
+                  "d45dc75b35ccbf7ca5834cbb4679398e",
+
+              "./rollback_stock_boot.img.gz":
+                  "9a1532ccfc57b465256bba97863f927b"
+                  "80823fa8812a4d13e4f4c8bf9af0c78b",
+
+              "./tools/ak3-core.sh":
+                  "f7a51cfe2e093016a34a76e16de6c988"
+                  "5c2d1992c3482fcabc668680e1f0f6bb",
+
+              "./tools/busybox":
+                  "66436dc1e97d22886ed2d35bd69a9cb8"
+                  "2bb0fdba4e4267c5184cee1d39a2f5f4",
+          }
+
+          for name, expected_digest in critical.items():
+              if before.get(name) != expected_digest:
+                  raise SystemExit(
+                      f"ERROR: unexpected pre-simulation identity: {name}"
+                  )
+
+              if after.get(name) != expected_digest:
+                  raise SystemExit(
+                      f"ERROR: critical file changed after simulation: {name}"
+                  )
+
+          result = {
+              "result":
+                  "PASS_FALSE_RED_RESOLVED",
+
+              "before_file_count":
+                  len(before),
+
+              "after_file_count":
+                  len(after),
+
+              "original_files_unchanged":
+                  len(unchanged),
+
+              "removed":
+                  removed,
+
+              "changed":
+                  changed,
+
+              "added_runtime_scratch_files":
+                  {
+                      name: after[name]
+                      for name in sorted(added)
+                  },
+
+              "added_files_are_exactly_expected":
+                  True,
+
+              "added_files_are_empty":
+                  True,
+
+              "critical_files_unchanged":
+                  True,
+
+              "classification":
+                  (
+                      "HARNESS_FALSE_RED_ONLY: "
+                      "the original comparison rejected two "
+                      "empty AnyKernel3 runtime scratch files"
+                  ),
+          }
+
+          json_out.write_text(
+              json.dumps(
+                  result,
+                  indent=2,
+                  sort_keys=True,
+              ) + "\n",
+              encoding="utf-8",
+          )
+
+          report = f"""WORKFLOW-21R PACKAGE MUTATION CLOSURE
+          =====================================
+          RESULT: PASS_FALSE_RED_RESOLVED
+
+          Original package files before simulation:
+          {len(before)}
+
+          Files after simulation:
+          {len(after)}
+
+          Original files unchanged:
+          {len(unchanged)}/17
+
+          Original files removed:
+          {removed}
+
+          Original files changed:
+          {changed}
+
+          Runtime scratch files added:
+          {added}
+
+          ./current SHA-256:
+          {after['./current']}
+
+          ./boot-files/current SHA-256:
+          {after['./boot-files/current']}
+
+          Both added files are empty:
+          YES
+
+          Unexpected additions:
+          NONE
+
+          Classification:
+          HARNESS_FALSE_RED_ONLY
+
+          The final Workflow-21 package itself was not mutated.
+          """
+
+          text_out.write_text(
+              "\n".join(
+                  line.strip()
+                  for line in report.splitlines()
+              ).strip() + "\n",
+              encoding="utf-8",
+          )
+          PY
+
+          jq -e \
+            '
+              .result == "PASS_FALSE_RED_RESOLVED"
+              and .before_file_count == 17
+              and .after_file_count == 19
+              and .original_files_unchanged == 17
+              and (.removed | length) == 0
+              and (.changed | length) == 0
+              and .added_files_are_exactly_expected == true
+              and .added_files_are_empty == true
+              and .critical_files_unchanged == true
+            ' \
+            "$OUTPUT/PACKAGE-MUTATION-CLOSURE.json" \
+            > /dev/null
+
+      - name: Classify the original red status without hiding it
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test -f "$AUDIT/FAILURE-SUMMARY.txt"
+
+          grep -Fq \
+            'WORKFLOW21R_STATUS=REQUIRES_REVIEW' \
+            "$AUDIT/FAILURE-SUMMARY.txt"
+
+          grep -Fq \
+            'A simulation gate failed.' \
+            "$AUDIT/FAILURE-SUMMARY.txt"
+
+          grep -Fq \
+            'NO PHONE WAS ACCESSED.' \
+            "$AUDIT/FAILURE-SUMMARY.txt"
+
+          grep -Fq \
+            'NOTHING WAS FLASHED TO A REAL DEVICE.' \
+            "$AUDIT/FAILURE-SUMMARY.txt"
+
+          {
+            echo "ORIGINAL_21R_UI_STATUS=RED"
+            echo "ORIGINAL_FAILURE_FILE=PRESENT"
+            echo "RUNTIME_CASES_COMPLETED=6/6"
+            echo "RUNTIME_CASES_PASSED=6/6"
+            echo "FINAL_PACKAGE_ORIGINAL_FILES_UNCHANGED=17/17"
+            echo "ONLY_ADDITIONS=./current,./boot-files/current"
+            echo "ADDITIONS_EMPTY=YES"
+            echo "FINAL_CLASSIFICATION=HARNESS_FALSE_RED_ONLY"
+          } > "$OUTPUT/ORIGINAL-RED-CLASSIFICATION.txt"
+
+      - name: Create canonical 21RF closure report
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cat > "$OUTPUT/WORKFLOW21RF-SUMMARY.txt" <<EOF
+          VEUX Workflow 21RF - Final Runtime Audit Closure
+          =================================================
+
+          RESULT: PASS_FINAL_RUNTIME_AUDIT_CLOSED
+
+          SOURCE EVIDENCE
+          ---------------
+          Existing Workflow-21R artifact:
+          $W21R_ARTIFACT_NAME
+
+          This closure did NOT rerun the installer or the simulation.
+
+          FINAL WORKFLOW-21 IDENTITY
+          --------------------------
+          Final flashable ZIP SHA-256:
+          $FINAL_ZIP_SHA256
+
+          anykernel.sh SHA-256:
+          $ANYKERNEL_SHA256
+
+          Custom Workflow-19 boot SHA-256:
+          $CUSTOM_BOOT_SHA256
+
+          Exact stock rollback SHA-256:
+          $STOCK_BOOT_SHA256
+
+          RUNTIME RESULTS FROM EXISTING 21R
+          ----------------------------------
+          Case 1 - slot _a direct write:
+          PASS
+
+          Case 2 - slot _b direct write:
+          PASS
+
+          Case 3 - wrong starting boot:
+          PASS_FAIL_CLOSED
+
+          Case 4 - locked bootloader evidence:
+          PASS_FAIL_CLOSED
+
+          Case 5 - invalid slot:
+          PASS_FAIL_CLOSED
+          Rejected early by AnyKernel3 ak3-core.
+          Both fake boot targets remained exact stock.
+
+          Case 6 - injected post-write corruption:
+          PASS_REAL_ROLLBACK_PATH
+          Custom readback mismatch detected.
+          Exact stock rollback executed.
+          Exact stock SHA-256 restored and verified.
+
+          ORIGINAL 21R RED STATUS
+          -----------------------
+          The original final comparison expected the entire post-simulation
+          filesystem list to equal the pre-simulation list.
+
+          AnyKernel3 created exactly two additional runtime scratch files:
+
+          ./current
+          ./boot-files/current
+
+          Both files are empty and therefore have SHA-256:
+
+          $EMPTY_SHA256
+
+          Original final-package files:
+          17
+
+          Original files unchanged after simulation:
+          17/17
+
+          Original files removed:
+          0
+
+          Original files changed:
+          0
+
+          Unexpected added files:
+          0
+
+          Classification:
+          HARNESS_FALSE_RED_ONLY
+
+          TECHNICAL CLOSURE
+          -----------------
+          Final installer runtime control flow:
+          PASS
+
+          Direct exact custom boot write:
+          PASS
+
+          Full SHA-256 readback:
+          PASS
+
+          Wrong-stock fail-closed:
+          PASS
+
+          Locked-bootloader fail-closed:
+          PASS
+
+          Invalid-slot fail-closed:
+          PASS
+
+          Real rollback path after readback corruption:
+          PASS
+
+          Final package mutation audit:
+          PASS
+
+          No runtime boot repack:
+          CONFIRMED
+
+          No runtime magiskboot:
+          CONFIRMED
+
+          SAFETY BOUNDARY
+          ---------------
+          This closes the non-device installer/runtime audit.
+
+          It still does not prove that the physical VEUX device will boot the
+          custom kernel. That can only be established by a controlled device
+          boot test.
+
+          NO PHONE WAS ACCESSED BY THIS WORKFLOW.
+          NO INSTALLER WAS EXECUTED BY THIS WORKFLOW.
+          NOTHING WAS FLASHED.
+          EOF
+
+          grep -Fxq \
+            'RESULT: PASS_FINAL_RUNTIME_AUDIT_CLOSED' \
+            "$OUTPUT/WORKFLOW21RF-SUMMARY.txt"
+
+      - name: Create complete closure checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          (
+            cd "$OUTPUT"
+
+            find . \
+              -maxdepth 1 \
+              -type f \
+              ! -name SHA256SUMS \
+              ! -name SHA256SUMS.verify.txt \
+              -printf '%f\n' \
+              | LC_ALL=C sort \
+              | while IFS= read -r FILE; do
+                  sha256sum "$FILE"
+                done \
+              > SHA256SUMS
+
+            sha256sum -c SHA256SUMS \
+              > SHA256SUMS.verify.txt
+          )
+
+      - name: Collect closure failure diagnostics
+        if: failure()
+        shell: bash
+        run: |
+          set +e
+
+          mkdir -p "$OUTPUT"
+
+          {
+            echo "WORKFLOW21RF_STATUS=REQUIRES_REVIEW"
+            echo "Finished: $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+            echo
+            echo "The existing Workflow-21R evidence did not satisfy a closure gate."
+            echo "No simulation was rerun."
+            echo "No installer was executed."
+            echo "No phone was accessed."
+            echo "Nothing was flashed."
+          } > "$OUTPUT/FAILURE-SUMMARY.txt"
+
+      - name: Upload canonical Workflow 21RF closure artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: veux-5.4.274-workflow21RF-final-runtime-audit-closure-${{ github.run_number }}
+          path: ${{ env.OUTPUT }}
+          if-no-files-found: error
+          include-hidden-files: true
+          retention-days: 30
+          compression-level: 6
