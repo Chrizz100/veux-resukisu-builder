@@ -1,0 +1,1581 @@
+name: 21 - VEUX Exact W19 Final Flashable
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  W20P_ARTIFACT_NAME: "veux-5.4.274-workflow20P-exact-w19-boot-payload-audit-1"
+
+  W20P_STAGING_NAME: "DO_NOT_FLASH_VEUX_5.4.274_EXACT_W19_BOOT_PAYLOAD_WORKFLOW20P.zip"
+  W20P_STAGING_BYTES: "75516057"
+  W20P_STAGING_SHA256: "acd9e33b76cf5a2aa6d2bea25b8ede462773cc7a2671866d39abf7f78379c48b"
+
+  W20P_ANYKERNEL_SHA256: "9a90d5e60eb143c82cdec097118c1076e72115250e297bc371d6b1793efd3be0"
+
+  CUSTOM_BOOT_BYTES: "134217728"
+  CUSTOM_BOOT_SHA256: "2baffafce260348c247674c5e8176408d45dc75b35ccbf7ca5834cbb4679398e"
+
+  STOCK_BOOT_BYTES: "134217728"
+  STOCK_BOOT_SHA256: "ac6522e4eed55782dd2ae61362e9d345d01a1f229c87333818511d5537fa79c5"
+
+  ROLLBACK_GZIP_SHA256: "9a1532ccfc57b465256bba97863f927b80823fa8812a4d13e4f4c8bf9af0c78b"
+
+  W17_IMAGE_SHA256: "e036175ada602df3bcb443da7c390e8cd4b0e900c26fbfa313725db02855ec96"
+  W19_AVB_DIGEST: "8b6af8a52796027ece9afb816e2354e0a9548808226749400fe8de86e0fdf397"
+
+  STOCK_VENDOR_BOOT_SHA256: "583e1f4c0e09c2267cda88bd48a8b4f56cf5c5e034fbda7b25bd65aa86385425"
+  STOCK_DTBO_SHA256: "e9f3bae2c5417ff297162f1e7d2652ee98b347488fdf091d61daa986fbfb7690"
+  STOCK_VBMETA_SHA256: "62a5b1a94c2247c786e8148b9d9d0aea943b57b1034b3fd82d9cac9a85fcde97"
+
+  FINAL_ZIP_NAME: "VEUX_5.4.274_ReSukiSU_SUSFS_2.2_EXACT_W19_BOOT_FLASHABLE.zip"
+
+jobs:
+  release:
+    name: Derive and audit final exact-W19 flashable
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    env:
+      WORK: ${{ github.workspace }}/workflow21
+      INPUT: ${{ github.workspace }}/workflow21/input
+      STAGING: ${{ github.workspace }}/workflow21/staging
+      FINAL: ${{ github.workspace }}/workflow21/final
+      OUTPUT: ${{ github.workspace }}/workflow21/output
+
+    steps:
+      - name: Prepare release workspace
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -rf "$WORK"
+
+          mkdir -p \
+            "$INPUT" \
+            "$STAGING" \
+            "$FINAL" \
+            "$OUTPUT"
+
+          cat > "$OUTPUT/SCOPE.txt" <<'EOF'
+          VEUX Workflow 21
+          =================
+
+          PURPOSE:
+          Derive the final exact-Workflow-19 direct-boot installer strictly
+          from the independently audited Workflow-20P staging artifact.
+
+          WORKFLOW 21 ITSELF DOES NOT:
+          - access a phone
+          - access a boot partition
+          - flash anything
+          - repack boot.img
+          - run magiskboot against boot.img
+          - modify vendor_boot
+          - modify dtbo
+          - modify top-level vbmeta
+
+          The generated final ZIP IS a real device-writing installer.
+
+          It must therefore be independently inspected after this workflow
+          before any decision to flash it.
+          EOF
+
+      - name: Download exact Workflow 20P artifact
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          ALL="$WORK/artifacts.ndjson"
+          : > "$ALL"
+
+          page=1
+
+          while :; do
+            PAGE_JSON="$WORK/artifacts-page-${page}.json"
+
+            curl \
+              --fail \
+              --silent \
+              --show-error \
+              --retry 3 \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts?per_page=100&page=${page}" \
+              -o "$PAGE_JSON"
+
+            COUNT="$(jq '.artifacts | length' "$PAGE_JSON")"
+
+            jq -c '.artifacts[]' "$PAGE_JSON" >> "$ALL"
+
+            if [ "$COUNT" -lt 100 ]; then
+              break
+            fi
+
+            page=$((page + 1))
+
+            [ "$page" -le 20 ] || {
+              echo "ERROR: artifact pagination safety limit"
+              exit 1
+            }
+          done
+
+          MATCHES="$(
+            jq -s \
+              --arg NAME "$W20P_ARTIFACT_NAME" \
+              '[.[] | select(.name == $NAME and .expired == false)] | sort_by(.created_at)' \
+              "$ALL"
+          )"
+
+          COUNT="$(jq 'length' <<< "$MATCHES")"
+
+          [ "$COUNT" -ge 1 ] || {
+            echo "ERROR: Workflow-20P artifact not found"
+            exit 1
+          }
+
+          SELECTED="$(jq '.[-1]' <<< "$MATCHES")"
+          URL="$(jq -r '.archive_download_url' <<< "$SELECTED")"
+
+          jq . <<< "$SELECTED" \
+            > "$OUTPUT/W20P-ARTIFACT-METADATA.json"
+
+          curl \
+            --fail \
+            --location \
+            --silent \
+            --show-error \
+            --retry 3 \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "$URL" \
+            -o "$INPUT/w20p-artifact.zip"
+
+          unzip -t "$INPUT/w20p-artifact.zip" \
+            > "$OUTPUT/W20P-OUTER-ZIP-CRC.txt"
+
+          unzip -q \
+            "$INPUT/w20p-artifact.zip" \
+            -d "$INPUT/w20p"
+
+      - name: Verify complete Workflow 20P audit artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          (
+            cd "$INPUT/w20p"
+
+            sha256sum -c SHA256SUMS \
+              > "$OUTPUT/W20P-SHA256SUMS.verify.txt"
+          )
+
+          grep -Fxq \
+            'RESULT: PASS_EXACT_W19_BOOT_PAYLOAD_STAGING' \
+            "$INPUT/w20p/WORKFLOW20P-SUMMARY.txt"
+
+          grep -Fq \
+            'PASS_W20R2_STALE_AVB_REPRODUCED' \
+            "$INPUT/w20p/W20R2-INDEPENDENT-DIFFERENTIAL.txt"
+
+          grep -Fq \
+            'RESULT: PASS_EXACT_W19_DIRECT_PAYLOAD' \
+            "$INPUT/w20p/DIRECT-PAYLOAD-STRUCTURE.txt"
+
+          grep -Fq \
+            'DIRECT_WRITE_INSTALLER_CONTRACT=PASS' \
+            "$INPUT/w20p/DIRECT-WRITE-INSTALLER-CONTRACT.txt"
+
+          grep -Fq \
+            'RESULT: PASS_DIRECT_WRITE_AND_ROLLBACK_MODEL' \
+            "$INPUT/w20p/DIRECT-WRITE-MODEL.txt"
+
+          STAGING_ZIP="$INPUT/w20p/$W20P_STAGING_NAME"
+
+          test \
+            "$(stat -c '%s' "$STAGING_ZIP")" \
+            = "$W20P_STAGING_BYTES"
+
+          test \
+            "$(sha256sum "$STAGING_ZIP" | awk '{print $1}')" \
+            = "$W20P_STAGING_SHA256"
+
+          {
+            echo "WORKFLOW20P_AUDIT=PASS"
+            echo "STAGING_BYTES=$W20P_STAGING_BYTES"
+            echo "STAGING_SHA256=$W20P_STAGING_SHA256"
+          } > "$OUTPUT/W20P-CANONICAL-GATE.txt"
+
+      - name: Extract and independently verify W20P staging package
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          unzip -t \
+            "$INPUT/w20p/$W20P_STAGING_NAME" \
+            > "$OUTPUT/W20P-STAGING-CRC.txt"
+
+          unzip -q \
+            "$INPUT/w20p/$W20P_STAGING_NAME" \
+            -d "$STAGING"
+
+          (
+            cd "$STAGING"
+
+            sha256sum -c PACKAGE-SHA256SUMS \
+              > "$OUTPUT/W20P-PACKAGE-SHA256SUMS.verify.txt"
+          )
+
+          test -f "$STAGING/WORKFLOW20P_DO_NOT_FLASH"
+
+          test \
+            "$(sha256sum "$STAGING/anykernel.sh" | awk '{print $1}')" \
+            = "$W20P_ANYKERNEL_SHA256"
+
+          test \
+            "$(stat -c '%s' "$STAGING/boot.img")" \
+            = "$CUSTOM_BOOT_BYTES"
+
+          test \
+            "$(sha256sum "$STAGING/boot.img" | awk '{print $1}')" \
+            = "$CUSTOM_BOOT_SHA256"
+
+          test \
+            "$(sha256sum "$STAGING/rollback_stock_boot.img.gz" | awk '{print $1}')" \
+            = "$ROLLBACK_GZIP_SHA256"
+
+          gzip -t "$STAGING/rollback_stock_boot.img.gz"
+
+          ROLLBACK_BYTES="$(
+            gzip -dc "$STAGING/rollback_stock_boot.img.gz" \
+              | wc -c \
+              | tr -d ' '
+          )"
+
+          ROLLBACK_SHA="$(
+            gzip -dc "$STAGING/rollback_stock_boot.img.gz" \
+              | sha256sum \
+              | awk '{print $1}'
+          )"
+
+          test "$ROLLBACK_BYTES" = "$STOCK_BOOT_BYTES"
+          test "$ROLLBACK_SHA" = "$STOCK_BOOT_SHA256"
+
+          {
+            echo "W20P_STAGING_CONTENT=PASS"
+            echo "CUSTOM_BOOT_SHA256=$CUSTOM_BOOT_SHA256"
+            echo "ROLLBACK_STOCK_BOOT_SHA256=$ROLLBACK_SHA"
+            echo "ANYKERNEL_SHA256=$W20P_ANYKERNEL_SHA256"
+          } > "$OUTPUT/W20P-STAGING-CONTENT-GATE.txt"
+
+      - name: Independently verify W19 payload Boot v3 and embedded AVB
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - \
+            "$STAGING/boot.img" \
+            "$OUTPUT/PAYLOAD-INDEPENDENT-AVB-AUDIT.json" \
+            "$OUTPUT/PAYLOAD-INDEPENDENT-AVB-AUDIT.txt" <<'PY'
+          import hashlib
+          import json
+          import struct
+          import sys
+          from pathlib import Path
+
+          image = Path(sys.argv[1]).read_bytes()
+          json_out = Path(sys.argv[2])
+          text_out = Path(sys.argv[3])
+
+          def sha(data):
+              return hashlib.sha256(data).hexdigest()
+
+          def align(value, size=4096):
+              return (value + size - 1) // size * size
+
+          def need(condition, message):
+              if not condition:
+                  raise SystemExit("ERROR: " + message)
+
+          need(len(image) == 134217728, "boot partition size")
+          need(
+              sha(image)
+              == "2baffafce260348c247674c5e8176408d45dc75b35ccbf7ca5834cbb4679398e",
+              "custom boot SHA-256",
+          )
+
+          need(image[:8] == b"ANDROID!", "Android boot magic")
+
+          kernel_size, ramdisk_size, os_raw, header_size = struct.unpack_from(
+              "<4I",
+              image,
+              8,
+          )
+
+          header_version = struct.unpack_from("<I", image, 40)[0]
+
+          need(header_version == 3, "boot header version")
+          need(header_size == 1580, "boot header size")
+          need(kernel_size == 29839872, "kernel size")
+          need(ramdisk_size == 22061278, "ramdisk size")
+
+          ramdisk_offset = 4096 + align(kernel_size)
+
+          kernel = image[4096:4096 + kernel_size]
+          ramdisk = image[
+              ramdisk_offset:
+              ramdisk_offset + ramdisk_size
+          ]
+
+          need(
+              sha(kernel)
+              == "e036175ada602df3bcb443da7c390e8cd4b0e900c26fbfa313725db02855ec96",
+              "W17 kernel identity",
+          )
+
+          need(
+              sha(ramdisk)
+              == "0bc8b54373b5501818e8b252517419786db207771047b6def7ec9bc89beb607a",
+              "stock compressed ramdisk identity",
+          )
+
+          footer = image[-64:]
+
+          need(footer[:4] == b"AVBf", "AVB footer magic")
+
+          major, minor = struct.unpack_from(">II", footer, 4)
+
+          original, vbmeta_offset, vbmeta_size = struct.unpack_from(
+              ">QQQ",
+              footer,
+              12,
+          )
+
+          need((major, minor) == (1, 0), "AVB footer version")
+          need(original == 51912704, "AVB original image size")
+          need(vbmeta_offset == 51912704, "AVB vbmeta offset")
+          need(vbmeta_size == 896, "embedded vbmeta size")
+
+          vb = image[vbmeta_offset:vbmeta_offset + vbmeta_size]
+
+          need(vb[:4] == b"AVB0", "embedded vbmeta magic")
+
+          auth_size, aux_size = struct.unpack_from(">QQ", vb, 12)
+          algorithm_type = struct.unpack_from(">I", vb, 28)[0]
+
+          need(algorithm_type == 0, "embedded vbmeta algorithm NONE")
+
+          values = struct.unpack_from(">QQQQQQQQQQQ", vb, 32)
+
+          descriptor_offset = values[8]
+          descriptor_size = values[9]
+
+          pos = 256 + auth_size + descriptor_offset
+          end = pos + descriptor_size
+
+          found = []
+
+          while pos < end:
+              tag, following = struct.unpack_from(">QQ", vb, pos)
+              raw = vb[pos:pos + 16 + following]
+
+              need(
+                  len(raw) == 16 + following,
+                  "truncated AVB descriptor",
+              )
+
+              if tag == 2:
+                  hash_image_size = struct.unpack_from(">Q", raw, 16)[0]
+
+                  algorithm = (
+                      raw[24:56]
+                      .split(b"\0", 1)[0]
+                      .decode("ascii", "replace")
+                  )
+
+                  name_len, salt_len, digest_len, flags = struct.unpack_from(
+                      ">IIII",
+                      raw,
+                      56,
+                  )
+
+                  q = 132
+
+                  partition = raw[q:q + name_len].decode(
+                      "ascii",
+                      "replace",
+                  )
+
+                  q += name_len
+
+                  salt = raw[q:q + salt_len]
+                  q += salt_len
+
+                  digest = raw[q:q + digest_len]
+
+                  if partition == "boot":
+                      calculated = hashlib.sha256(
+                          salt + image[:hash_image_size]
+                      ).digest()
+
+                      found.append({
+                          "image_size": hash_image_size,
+                          "algorithm": algorithm,
+                          "flags": flags,
+                          "digest": digest.hex(),
+                          "calculated": calculated.hex(),
+                          "verifies": digest == calculated,
+                      })
+
+              pos += 16 + following
+
+          need(len(found) == 1, "exactly one boot hash descriptor")
+
+          descriptor = found[0]
+
+          need(descriptor["image_size"] == 51912704, "hash image_size")
+
+          need(
+              descriptor["digest"]
+              == "8b6af8a52796027ece9afb816e2354e0a9548808226749400fe8de86e0fdf397",
+              "embedded AVB digest",
+          )
+
+          need(descriptor["verifies"] is True, "embedded AVB verification")
+
+          result = {
+              "result": "PASS_EXACT_W19_PAYLOAD",
+              "boot_bytes": len(image),
+              "boot_sha256": sha(image),
+              "header_version": header_version,
+              "header_size": header_size,
+              "kernel_bytes": kernel_size,
+              "kernel_sha256": sha(kernel),
+              "ramdisk_bytes": ramdisk_size,
+              "ramdisk_offset": ramdisk_offset,
+              "ramdisk_sha256": sha(ramdisk),
+              "embedded_avb": {
+                  "footer_version": f"{major}.{minor}",
+                  "original_image_size": original,
+                  "vbmeta_offset": vbmeta_offset,
+                  "vbmeta_size": vbmeta_size,
+                  "algorithm_type": algorithm_type,
+                  **descriptor,
+              },
+          }
+
+          json_out.write_text(
+              json.dumps(result, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+
+          report = f"""EXACT W19 PAYLOAD INDEPENDENT AUDIT
+          =======================================
+          RESULT: PASS_EXACT_W19_PAYLOAD
+
+          Boot bytes:
+          {len(image)}
+
+          Boot SHA-256:
+          {sha(image)}
+
+          Header:
+          version={header_version}
+          header_size={header_size}
+
+          Kernel:
+          bytes={kernel_size}
+          SHA-256={sha(kernel)}
+
+          Ramdisk:
+          bytes={ramdisk_size}
+          offset={ramdisk_offset}
+          SHA-256={sha(ramdisk)}
+
+          Embedded AVB:
+          footer={major}.{minor}
+          original_image_size={original}
+          vbmeta_offset={vbmeta_offset}
+          vbmeta_size={vbmeta_size}
+          hash_image_size={descriptor['image_size']}
+          digest={descriptor['digest']}
+          calculated={descriptor['calculated']}
+          verifies={descriptor['verifies']}
+          """
+
+          text_out.write_text(
+              "\n".join(
+                  line.strip()
+                  for line in report.splitlines()
+              ).strip() + "\n",
+              encoding="utf-8",
+          )
+          PY
+
+      - name: Derive Workflow 21 strictly from Workflow 20P
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cp -a "$STAGING/." "$FINAL/"
+
+          rm -f "$FINAL/WORKFLOW20P_DO_NOT_FLASH"
+
+          test ! -e "$FINAL/WORKFLOW20P_DO_NOT_FLASH"
+
+          python3 - \
+            "$FINAL/PROVENANCE.json" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          path = Path(sys.argv[1])
+
+          data = json.loads(path.read_text(encoding="utf-8"))
+
+          data["result"] = "FINAL_FLASHABLE_PACKAGE_BUILT_NOT_FLASHED"
+
+          strategy = data.setdefault("package_strategy", {})
+
+          strategy["staging_guard_present"] = False
+          strategy["flashable"] = True
+          strategy["runtime_repack"] = False
+          strategy["vendor_boot_modified"] = False
+          strategy["dtbo_modified"] = False
+          strategy["top_level_vbmeta_modified"] = False
+          strategy["flashed"] = False
+
+          data["workflow21"] = {
+              "derived_from_workflow20p": True,
+              "derivation": (
+                  "remove staging marker; update metadata; "
+                  "regenerate package checksum manifest"
+              ),
+              "anykernel_script_modified": False,
+              "custom_boot_modified": False,
+              "rollback_boot_modified": False,
+              "device_operation": False,
+              "flashed": False,
+          }
+
+          path.write_text(
+              json.dumps(
+                  data,
+                  indent=2,
+                  sort_keys=True,
+              ) + "\n",
+              encoding="utf-8",
+          )
+          PY
+
+          cat > "$FINAL/VEUX-PACKAGE-MANIFEST.txt" <<EOF
+          VEUX 5.4.274 ReSukiSU SUSFS 2.2
+          =================================
+          WORKFLOW: 21
+          STATUS: FINAL_FLASHABLE_PACKAGE_BUILT_NOT_FLASHED
+
+          Strategy:
+          exact prebuilt Workflow-19 boot payload
+          NO runtime boot repack
+
+          Custom boot payload:
+          bytes: $CUSTOM_BOOT_BYTES
+          SHA-256: $CUSTOM_BOOT_SHA256
+
+          Exact Workflow-17 kernel contained in payload:
+          $W17_IMAGE_SHA256
+
+          Embedded boot AVB digest:
+          $W19_AVB_DIGEST
+
+          Exact stock rollback boot:
+          bytes: $STOCK_BOOT_BYTES
+          SHA-256: $STOCK_BOOT_SHA256
+
+          Installer pre-write requirements:
+          - AnyKernel3 device check must accept veux
+          - Android version must be 13
+          - Android security patch must be 2024-12
+          - vendor security patch must be 2024-12
+          - slot suffix must be _a or _b
+          - positive bootloader-unlocked evidence required
+          - active boot partition must hash exactly to audited stock boot
+          - custom payload hash must match before write
+          - rollback payload hash must match before write
+
+          Write behavior:
+          - exact 128 MiB Workflow-19 boot payload written directly
+          - no split_boot
+          - no flash_boot
+          - no runtime magiskboot
+          - full readback SHA-256 required
+          - exact stock rollback attempted on write/readback failure
+          - rollback SHA-256 verified
+
+          Explicitly untouched:
+          vendor_boot:
+          $STOCK_VENDOR_BOOT_SHA256
+
+          dtbo:
+          $STOCK_DTBO_SHA256
+
+          top-level vbmeta:
+          $STOCK_VBMETA_SHA256
+
+          Workflow-20P staging guard:
+          REMOVED
+
+          anykernel.sh:
+          BYTE-IDENTICAL TO AUDITED WORKFLOW 20P
+
+          IMPORTANT:
+          This ZIP is capable of writing the active-slot boot partition.
+
+          Workflow 21 generated it but did NOT run it.
+          No phone was accessed.
+          Nothing was flashed by GitHub Actions.
+          EOF
+
+          (
+            cd "$FINAL"
+
+            rm -f PACKAGE-SHA256SUMS
+
+            find . \
+              -type f \
+              ! -name PACKAGE-SHA256SUMS \
+              -print0 \
+              | LC_ALL=C sort -z \
+              | xargs -0 sha256sum \
+              > PACKAGE-SHA256SUMS
+
+            sha256sum -c PACKAGE-SHA256SUMS \
+              > "$OUTPUT/FINAL-PACKAGE-SHA256SUMS.verify.txt"
+          )
+
+      - name: Prove exact Workflow20P to Workflow21 delta
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - \
+            "$STAGING" \
+            "$FINAL" \
+            "$OUTPUT/W20P-TO-W21-DELTA.json" \
+            "$OUTPUT/W20P-TO-W21-DELTA.txt" <<'PY'
+          import hashlib
+          import json
+          import sys
+          from pathlib import Path
+
+          old = Path(sys.argv[1])
+          new = Path(sys.argv[2])
+          json_out = Path(sys.argv[3])
+          text_out = Path(sys.argv[4])
+
+          def sha(path):
+              return hashlib.sha256(path.read_bytes()).hexdigest()
+
+          old_files = {
+              p.relative_to(old).as_posix(): p
+              for p in old.rglob("*")
+              if p.is_file()
+          }
+
+          new_files = {
+              p.relative_to(new).as_posix(): p
+              for p in new.rglob("*")
+              if p.is_file()
+          }
+
+          removed = sorted(
+              set(old_files) - set(new_files)
+          )
+
+          added = sorted(
+              set(new_files) - set(old_files)
+          )
+
+          common = sorted(
+              set(old_files) & set(new_files)
+          )
+
+          changed = []
+          identical = []
+
+          for name in common:
+              if sha(old_files[name]) == sha(new_files[name]):
+                  identical.append(name)
+              else:
+                  changed.append(name)
+
+          expected_removed = [
+              "WORKFLOW20P_DO_NOT_FLASH",
+          ]
+
+          expected_changed = sorted([
+              "PACKAGE-SHA256SUMS",
+              "PROVENANCE.json",
+              "VEUX-PACKAGE-MANIFEST.txt",
+          ])
+
+          if removed != expected_removed:
+              raise SystemExit(
+                  f"ERROR: unexpected removed files: {removed}"
+              )
+
+          if added:
+              raise SystemExit(
+                  f"ERROR: unexpected added files: {added}"
+              )
+
+          if changed != expected_changed:
+              raise SystemExit(
+                  f"ERROR: unexpected changed files: {changed}"
+              )
+
+          if len(identical) != 14:
+              raise SystemExit(
+                  f"ERROR: expected 14 byte-identical files, got {len(identical)}"
+              )
+
+          required_identical = {
+              "anykernel.sh",
+              "boot.img",
+              "rollback_stock_boot.img.gz",
+              "META-INF/com/google/android/update-binary",
+              "META-INF/com/google/android/updater-script",
+              "tools/ak3-core.sh",
+              "tools/busybox",
+              "tools/magiskboot",
+          }
+
+          if not required_identical.issubset(identical):
+              raise SystemExit(
+                  "ERROR: critical installer/payload file changed"
+              )
+
+          result = {
+              "result": "PASS_EXACT_EXPECTED_DELTA",
+              "removed": removed,
+              "added": added,
+              "changed": changed,
+              "byte_identical_count": len(identical),
+              "byte_identical": identical,
+          }
+
+          json_out.write_text(
+              json.dumps(
+                  result,
+                  indent=2,
+                  sort_keys=True,
+              ) + "\n",
+              encoding="utf-8",
+          )
+
+          report = f"""WORKFLOW 20P -> 21 DELTA
+          ==========================
+          RESULT: PASS_EXACT_EXPECTED_DELTA
+
+          Removed:
+          {removed}
+
+          Added:
+          {added}
+
+          Changed:
+          {changed}
+
+          Byte-identical surviving files:
+          {len(identical)}/17
+
+          Critical unchanged files:
+          anykernel.sh
+          boot.img
+          rollback_stock_boot.img.gz
+          update-binary
+          updater-script
+          ak3-core.sh
+          busybox
+          magiskboot
+          """
+
+          text_out.write_text(
+              "\n".join(
+                  line.strip()
+                  for line in report.splitlines()
+              ).strip() + "\n",
+              encoding="utf-8",
+          )
+          PY
+
+      - name: Audit final installer write barriers
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          AK="$FINAL/anykernel.sh"
+          UB="$FINAL/META-INF/com/google/android/update-binary"
+
+          test \
+            "$(sha256sum "$AK" | awk '{print $1}')" \
+            = "$W20P_ANYKERNEL_SHA256"
+
+          grep -Fq 'do.devicecheck=1' "$AK"
+          grep -Fq 'device.name1=veux' "$AK"
+
+          grep -Fq 'supported.versions=13' "$AK"
+          grep -Fq 'supported.patchlevels=2024-12 - 2024-12' "$AK"
+          grep -Fq 'supported.vendorpatchlevels=2024-12 - 2024-12' "$AK"
+
+          grep -Fq 'ro.boot.slot_suffix' "$AK"
+          grep -Fq 'ro.boot.flash.locked' "$AK"
+          grep -Fq 'ro.boot.vbmeta.device_state' "$AK"
+
+          grep -Fq "$STOCK_BOOT_SHA256" "$AK"
+          grep -Fq "$CUSTOM_BOOT_SHA256" "$AK"
+
+          grep -Fq 'sha256sum "$TARGET"' "$AK"
+          grep -Fq 'restore_stock()' "$AK"
+          grep -Fq 'dd if="$PAYLOAD" of="$TARGET" bs=1048576' "$AK"
+          grep -Fq 'gzip -dc "$ROLLBACK_GZ"' "$AK"
+
+          if grep -Eq '^[[:space:]]*split_boot;' "$AK"; then
+            echo "ERROR: split_boot found"
+            exit 1
+          fi
+
+          if grep -Eq '^[[:space:]]*flash_boot;' "$AK"; then
+            echo "ERROR: flash_boot found"
+            exit 1
+          fi
+
+          if grep -Eq '^[[:space:]]*[^#].*magiskboot' "$AK"; then
+            echo "ERROR: runtime magiskboot invocation found"
+            exit 1
+          fi
+
+          grep -Fq 'do_devicecheck;' "$UB"
+          grep -Fq 'do_versioncheck;' "$UB"
+          grep -Fq 'do_levelcheck;' "$UB"
+          grep -Fq 'do_vendorlevelcheck;' "$UB"
+          grep -Fq 'ash anykernel.sh;' "$UB"
+
+          python3 - "$UB" <<'PY'
+          import sys
+          from pathlib import Path
+
+          text = Path(sys.argv[1]).read_text(
+              encoding="utf-8",
+              errors="replace",
+          )
+
+          checks = [
+              "do_devicecheck;",
+              "do_versioncheck;",
+              "do_levelcheck;",
+              "do_vendorlevelcheck;",
+              "ash anykernel.sh;",
+          ]
+
+          positions = [
+              text.find(item)
+              for item in checks
+          ]
+
+          if any(value < 0 for value in positions):
+              raise SystemExit(
+                  "ERROR: update-binary gate missing"
+              )
+
+          if positions != sorted(positions):
+              raise SystemExit(
+                  "ERROR: AnyKernel3 prerequisite order changed"
+              )
+          PY
+
+          bash -n "$AK"
+
+          {
+            echo "FINAL_INSTALLER_STATIC_AUDIT=PASS"
+            echo "ANYKERNEL_SHA256=$W20P_ANYKERNEL_SHA256"
+            echo "ANYKERNEL_SCRIPT_CHANGED_FROM_W20P=NO"
+            echo "DEVICE_CHECK_BEFORE_INSTALL=YES"
+            echo "ANDROID_13_CHECK_BEFORE_INSTALL=YES"
+            echo "SECURITY_PATCH_CHECK_BEFORE_INSTALL=YES"
+            echo "VENDOR_PATCH_CHECK_BEFORE_INSTALL=YES"
+            echo "A_B_SLOT_GATE=YES"
+            echo "POSITIVE_UNLOCK_GATE=YES"
+            echo "EXACT_STOCK_PREWRITE_SHA_GATE=YES"
+            echo "EXACT_CUSTOM_PAYLOAD_SHA_GATE=YES"
+            echo "EXACT_ROLLBACK_SHA_GATE=YES"
+            echo "DIRECT_WRITE=YES"
+            echo "FULL_READBACK_SHA_GATE=YES"
+            echo "ROLLBACK_PATH=YES"
+            echo "RUNTIME_REPACK=NO"
+            echo "RUNTIME_MAGISKBOOT=NO"
+          } > "$OUTPUT/FINAL-INSTALLER-STATIC-AUDIT.txt"
+
+      - name: Verify final payload and rollback are still exact
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test \
+            "$(stat -c '%s' "$FINAL/boot.img")" \
+            = "$CUSTOM_BOOT_BYTES"
+
+          test \
+            "$(sha256sum "$FINAL/boot.img" | awk '{print $1}')" \
+            = "$CUSTOM_BOOT_SHA256"
+
+          test \
+            "$(sha256sum "$FINAL/rollback_stock_boot.img.gz" | awk '{print $1}')" \
+            = "$ROLLBACK_GZIP_SHA256"
+
+          gzip -t "$FINAL/rollback_stock_boot.img.gz"
+
+          ROLLBACK_SHA="$(
+            gzip -dc "$FINAL/rollback_stock_boot.img.gz" \
+              | sha256sum \
+              | awk '{print $1}'
+          )"
+
+          ROLLBACK_BYTES="$(
+            gzip -dc "$FINAL/rollback_stock_boot.img.gz" \
+              | wc -c \
+              | tr -d ' '
+          )"
+
+          test "$ROLLBACK_SHA" = "$STOCK_BOOT_SHA256"
+          test "$ROLLBACK_BYTES" = "$STOCK_BOOT_BYTES"
+
+          {
+            echo "FINAL_PAYLOAD_GATE=PASS"
+            echo "CUSTOM_BOOT_BYTES=$CUSTOM_BOOT_BYTES"
+            echo "CUSTOM_BOOT_SHA256=$CUSTOM_BOOT_SHA256"
+            echo "ROLLBACK_BOOT_BYTES=$ROLLBACK_BYTES"
+            echo "ROLLBACK_BOOT_SHA256=$ROLLBACK_SHA"
+          } > "$OUTPUT/FINAL-PAYLOAD-GATE.txt"
+
+      - name: Build deterministic final ZIP twice
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - \
+            "$FINAL" \
+            "$OUTPUT/final-A.zip" \
+            "$OUTPUT/final-B.zip" <<'PY'
+          import stat
+          import sys
+          import zipfile
+          from pathlib import Path
+
+          root = Path(sys.argv[1])
+
+          outputs = [
+              Path(sys.argv[2]),
+              Path(sys.argv[3]),
+          ]
+
+          files = sorted(
+              path
+              for path in root.rglob("*")
+              if path.is_file()
+          )
+
+          for output in outputs:
+              with zipfile.ZipFile(
+                  output,
+                  "w",
+                  compression=zipfile.ZIP_DEFLATED,
+                  compresslevel=9,
+                  strict_timestamps=True,
+              ) as archive:
+
+                  for path in files:
+                      relative = (
+                          path.relative_to(root)
+                          .as_posix()
+                      )
+
+                      info = zipfile.ZipInfo(
+                          relative,
+                          date_time=(
+                              2024,
+                              1,
+                              1,
+                              0,
+                              0,
+                              0,
+                          ),
+                      )
+
+                      mode = stat.S_IMODE(
+                          path.stat().st_mode
+                      )
+
+                      info.create_system = 3
+                      info.external_attr = mode << 16
+                      info.compress_type = zipfile.ZIP_DEFLATED
+
+                      archive.writestr(
+                          info,
+                          path.read_bytes(),
+                          compress_type=zipfile.ZIP_DEFLATED,
+                          compresslevel=9,
+                      )
+          PY
+
+          A_SHA="$(
+            sha256sum "$OUTPUT/final-A.zip" \
+              | awk '{print $1}'
+          )"
+
+          B_SHA="$(
+            sha256sum "$OUTPUT/final-B.zip" \
+              | awk '{print $1}'
+          )"
+
+          test "$A_SHA" = "$B_SHA"
+
+          cmp -s \
+            "$OUTPUT/final-A.zip" \
+            "$OUTPUT/final-B.zip"
+
+          mv \
+            "$OUTPUT/final-A.zip" \
+            "$OUTPUT/$FINAL_ZIP_NAME"
+
+          rm -f "$OUTPUT/final-B.zip"
+
+          {
+            echo "FINAL_ZIP_REPRODUCIBILITY=PASS"
+            echo "BYTE_IDENTICAL_TWO_BUILDS=YES"
+            echo "ZIP_BYTES=$(stat -c '%s' "$OUTPUT/$FINAL_ZIP_NAME")"
+            echo "ZIP_SHA256=$(sha256sum "$OUTPUT/$FINAL_ZIP_NAME" | awk '{print $1}')"
+          } > "$OUTPUT/FINAL-ZIP-REPRODUCIBILITY.txt"
+
+      - name: Independently inspect final flashable ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          unzip -t \
+            "$OUTPUT/$FINAL_ZIP_NAME" \
+            > "$OUTPUT/FINAL-ZIP-CRC.txt"
+
+          python3 - \
+            "$OUTPUT/$FINAL_ZIP_NAME" \
+            "$OUTPUT/FINAL-ZIP-INDEPENDENT-AUDIT.json" \
+            "$OUTPUT/FINAL-ZIP-INDEPENDENT-AUDIT.txt" <<'PY'
+          import gzip
+          import hashlib
+          import io
+          import json
+          import sys
+          import zipfile
+          from pathlib import Path
+
+          path = Path(sys.argv[1])
+          json_out = Path(sys.argv[2])
+          text_out = Path(sys.argv[3])
+
+          custom_sha = (
+              "2baffafce260348c247674c5e8176408d45dc75b35ccbf7ca5834cbb4679398e"
+          )
+
+          stock_sha = (
+              "ac6522e4eed55782dd2ae61362e9d345d01a1f229c87333818511d5537fa79c5"
+          )
+
+          anykernel_sha = (
+              "9a90d5e60eb143c82cdec097118c1076e72115250e297bc371d6b1793efd3be0"
+          )
+
+          with zipfile.ZipFile(path) as archive:
+              names = archive.namelist()
+
+              if len(names) != 17:
+                  raise SystemExit(
+                      f"ERROR: expected 17 entries, found {len(names)}"
+                  )
+
+              if len(names) != len(set(names)):
+                  raise SystemExit(
+                      "ERROR: duplicate ZIP entry"
+                  )
+
+              bad = archive.testzip()
+
+              if bad is not None:
+                  raise SystemExit(
+                      f"ERROR: CRC failure: {bad}"
+                  )
+
+              if "WORKFLOW20P_DO_NOT_FLASH" in names:
+                  raise SystemExit(
+                      "ERROR: staging guard still present"
+                  )
+
+              expected = {
+                  "LICENSE",
+                  "META-INF/com/google/android/update-binary",
+                  "META-INF/com/google/android/updater-script",
+                  "PACKAGE-SHA256SUMS",
+                  "PROVENANCE.json",
+                  "VEUX-PACKAGE-MANIFEST.txt",
+                  "anykernel.sh",
+                  "boot.img",
+                  "rollback_stock_boot.img.gz",
+                  "tools/ak3-core.sh",
+                  "tools/busybox",
+                  "tools/fec",
+                  "tools/httools_static",
+                  "tools/lptools_static",
+                  "tools/magiskboot",
+                  "tools/magiskpolicy",
+                  "tools/snapshotupdater_static",
+              }
+
+              if set(names) != expected:
+                  raise SystemExit(
+                      "ERROR: final package entry set mismatch"
+                  )
+
+              boot = archive.read("boot.img")
+
+              if len(boot) != 134217728:
+                  raise SystemExit(
+                      "ERROR: custom boot size"
+                  )
+
+              if hashlib.sha256(boot).hexdigest() != custom_sha:
+                  raise SystemExit(
+                      "ERROR: custom boot SHA-256"
+                  )
+
+              rollback_gz = archive.read(
+                  "rollback_stock_boot.img.gz"
+              )
+
+              rollback = gzip.decompress(
+                  rollback_gz
+              )
+
+              if len(rollback) != 134217728:
+                  raise SystemExit(
+                      "ERROR: rollback boot size"
+                  )
+
+              if hashlib.sha256(rollback).hexdigest() != stock_sha:
+                  raise SystemExit(
+                      "ERROR: rollback stock SHA-256"
+                  )
+
+              anykernel = archive.read(
+                  "anykernel.sh"
+              )
+
+              if hashlib.sha256(anykernel).hexdigest() != anykernel_sha:
+                  raise SystemExit(
+                      "ERROR: anykernel.sh differs from audited W20P"
+                  )
+
+              script = anykernel.decode(
+                  "utf-8",
+                  "replace",
+              )
+
+              forbidden_commands = [
+                  "split_boot;",
+                  "flash_boot;",
+              ]
+
+              for command in forbidden_commands:
+                  if command in script:
+                      raise SystemExit(
+                          f"ERROR: forbidden runtime command: {command}"
+                      )
+
+              executable_magiskboot = [
+                  line
+                  for line in script.splitlines()
+                  if (
+                      "magiskboot" in line
+                      and not line.lstrip().startswith("#")
+                  )
+              ]
+
+              if executable_magiskboot:
+                  raise SystemExit(
+                      "ERROR: runtime magiskboot invocation"
+                  )
+
+              required_text = [
+                  'device.name1=veux',
+                  'supported.versions=13',
+                  'supported.patchlevels=2024-12 - 2024-12',
+                  'supported.vendorpatchlevels=2024-12 - 2024-12',
+                  'ro.boot.slot_suffix',
+                  'ro.boot.flash.locked',
+                  'ro.boot.vbmeta.device_state',
+                  stock_sha,
+                  custom_sha,
+                  'sha256sum "$TARGET"',
+                  'dd if="$PAYLOAD" of="$TARGET" bs=1048576',
+                  'restore_stock()',
+                  'gzip -dc "$ROLLBACK_GZ"',
+              ]
+
+              for value in required_text:
+                  if value not in script:
+                      raise SystemExit(
+                          f"ERROR: required installer gate missing: {value}"
+                      )
+
+              sums = archive.read(
+                  "PACKAGE-SHA256SUMS"
+              ).decode().splitlines()
+
+              if len(sums) != 16:
+                  raise SystemExit(
+                      f"ERROR: expected 16 internal hashes, got {len(sums)}"
+                  )
+
+              checked = 0
+
+              for line in sums:
+                  digest, filename = line.split(
+                      None,
+                      1,
+                  )
+
+                  filename = filename.strip()
+
+                  if filename.startswith("./"):
+                      filename = filename[2:]
+
+                  if filename not in names:
+                      raise SystemExit(
+                          f"ERROR: checksum target absent: {filename}"
+                      )
+
+                  actual = hashlib.sha256(
+                      archive.read(filename)
+                  ).hexdigest()
+
+                  if actual != digest:
+                      raise SystemExit(
+                          f"ERROR: checksum mismatch: {filename}"
+                      )
+
+                  checked += 1
+
+              provenance = json.loads(
+                  archive.read(
+                      "PROVENANCE.json"
+                  )
+              )
+
+              if provenance.get("result") != (
+                  "FINAL_FLASHABLE_PACKAGE_BUILT_NOT_FLASHED"
+              ):
+                  raise SystemExit(
+                      "ERROR: final provenance state"
+                  )
+
+              strategy = provenance.get(
+                  "package_strategy",
+                  {}
+              )
+
+              if strategy.get("runtime_repack") is not False:
+                  raise SystemExit(
+                      "ERROR: runtime_repack provenance"
+                  )
+
+              if strategy.get("staging_guard_present") is not False:
+                  raise SystemExit(
+                      "ERROR: staging guard provenance"
+                  )
+
+              if strategy.get("flashed") is not False:
+                  raise SystemExit(
+                      "ERROR: provenance claims flash"
+                  )
+
+          result = {
+              "result": "PASS_FINAL_FLASHABLE_ZIP",
+              "zip_bytes": path.stat().st_size,
+              "zip_sha256": hashlib.sha256(
+                  path.read_bytes()
+              ).hexdigest(),
+              "entries": 17,
+              "crc": "PASS",
+              "internal_hashes": f"{checked}/16",
+              "custom_boot_bytes": len(boot),
+              "custom_boot_sha256": hashlib.sha256(
+                  boot
+              ).hexdigest(),
+              "rollback_boot_bytes": len(rollback),
+              "rollback_boot_sha256": hashlib.sha256(
+                  rollback
+              ).hexdigest(),
+              "anykernel_sha256": hashlib.sha256(
+                  anykernel
+              ).hexdigest(),
+              "runtime_repack": False,
+              "runtime_magiskboot": False,
+              "vendor_boot_payload": False,
+              "dtbo_payload": False,
+              "vbmeta_payload": False,
+              "workflow_executed_installer": False,
+              "flashed": False,
+          }
+
+          json_out.write_text(
+              json.dumps(
+                  result,
+                  indent=2,
+                  sort_keys=True,
+              ) + "\n",
+              encoding="utf-8",
+          )
+
+          report = f"""FINAL FLASHABLE ZIP INDEPENDENT AUDIT
+          =====================================
+          RESULT: PASS_FINAL_FLASHABLE_ZIP
+
+          ZIP bytes:
+          {result['zip_bytes']}
+
+          ZIP SHA-256:
+          {result['zip_sha256']}
+
+          ZIP entries:
+          17
+
+          ZIP CRC:
+          PASS
+
+          Internal hashes:
+          {checked}/16
+
+          Custom boot:
+          bytes={len(boot)}
+          SHA-256={result['custom_boot_sha256']}
+
+          Rollback stock boot:
+          bytes={len(rollback)}
+          SHA-256={result['rollback_boot_sha256']}
+
+          anykernel.sh:
+          SHA-256={result['anykernel_sha256']}
+          byte-identical to Workflow 20P: YES
+
+          Runtime boot repack:
+          NO
+
+          Runtime magiskboot:
+          NO
+
+          vendor_boot payload/write:
+          NO
+
+          dtbo payload/write:
+          NO
+
+          top-level vbmeta payload/write:
+          NO
+
+          This GitHub workflow did not execute the installer.
+          No device was accessed.
+          Nothing was flashed.
+          """
+
+          text_out.write_text(
+              "\n".join(
+                  line.strip()
+                  for line in report.splitlines()
+              ).strip() + "\n",
+              encoding="utf-8",
+          )
+          PY
+
+      - name: Create Workflow 21 release report
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ZIP="$OUTPUT/$FINAL_ZIP_NAME"
+          ZIP_BYTES="$(stat -c '%s' "$ZIP")"
+          ZIP_SHA="$(sha256sum "$ZIP" | awk '{print $1}')"
+
+          cat > "$OUTPUT/WORKFLOW21-SUMMARY.txt" <<EOF
+          VEUX Workflow 21 - Exact W19 Final Flashable
+          =================================================
+
+          RESULT: PASS_FINAL_FLASHABLE_PACKAGE_BUILT_NOT_FLASHED
+
+          DERIVATION
+          ----------
+          Exact source artifact:
+          $W20P_ARTIFACT_NAME
+
+          Exact Workflow-20P staging ZIP:
+          $W20P_STAGING_SHA256
+
+          Workflow-20P -> Workflow-21 delta:
+          - removed WORKFLOW20P_DO_NOT_FLASH
+          - updated PROVENANCE.json
+          - updated VEUX-PACKAGE-MANIFEST.txt
+          - regenerated PACKAGE-SHA256SUMS
+          - every other surviving file byte-identical
+
+          CRITICAL BYTES UNCHANGED FROM WORKFLOW 20P
+          ------------------------------------------
+          anykernel.sh:
+          $W20P_ANYKERNEL_SHA256
+
+          exact Workflow-19 boot payload:
+          $CUSTOM_BOOT_SHA256
+
+          exact compressed Workflow-18 stock rollback:
+          $ROLLBACK_GZIP_SHA256
+
+          decompressed rollback:
+          $STOCK_BOOT_SHA256
+
+          FINAL ZIP
+          ---------
+          $FINAL_ZIP_NAME
+
+          Bytes:
+          $ZIP_BYTES
+
+          SHA-256:
+          $ZIP_SHA
+
+          Final ZIP CRC:
+          PASS
+
+          Final internal checksum set:
+          PASS
+
+          Direct W19 boot payload:
+          PASS
+
+          Embedded W19 AVB:
+          PASS
+
+          Installer static barriers:
+          PASS
+
+          Deterministic ZIP A/B:
+          PASS
+
+          RUNTIME DESIGN
+          --------------
+          No split_boot.
+          No flash_boot.
+          No runtime magiskboot.
+          No boot repack.
+
+          Before writing boot, the installer requires:
+          - VEUX via AnyKernel3 device check
+          - Android 13
+          - Android security patch 2024-12
+          - vendor security patch 2024-12
+          - valid _a or _b slot
+          - positive bootloader-unlocked evidence
+          - exact audited stock boot SHA-256
+          - exact custom W19 payload SHA-256
+          - exact stock rollback SHA-256
+
+          After writing:
+          - entire target boot partition is SHA-256 read back
+          - exact W19 SHA-256 is required
+
+          If custom write/readback fails:
+          - exact stock boot rollback is attempted
+          - rollback SHA-256 is verified
+
+          UNTOUCHED BY THE INSTALLER
+          --------------------------
+          vendor_boot
+          dtbo
+          top-level vbmeta
+
+          IMPORTANT
+          ---------
+          This is now a REAL device-writing ZIP.
+
+          GitHub Actions did not flash it.
+          It has not yet been boot-tested on the phone.
+
+          Do not treat this report alone as proof of successful device boot.
+          EOF
+
+          grep -Fxq \
+            'RESULT: PASS_FINAL_FLASHABLE_PACKAGE_BUILT_NOT_FLASHED' \
+            "$OUTPUT/WORKFLOW21-SUMMARY.txt"
+
+      - name: Create final output checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          (
+            cd "$OUTPUT"
+
+            find . \
+              -maxdepth 1 \
+              -type f \
+              ! -name SHA256SUMS \
+              ! -name SHA256SUMS.verify.txt \
+              -printf '%f\n' \
+              | LC_ALL=C sort \
+              | while IFS= read -r FILE; do
+                  sha256sum "$FILE"
+                done \
+              > SHA256SUMS
+
+            sha256sum -c SHA256SUMS \
+              > SHA256SUMS.verify.txt
+          )
+
+      - name: Collect failure diagnostics
+        if: failure()
+        shell: bash
+        run: |
+          set +e
+
+          mkdir -p "$OUTPUT"
+
+          {
+            echo "WORKFLOW21_STATUS=REQUIRES_REVIEW"
+            echo "Finished: $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+            echo
+            echo "No device operation was performed by GitHub Actions."
+            echo "Nothing was flashed."
+          } > "$OUTPUT/FAILURE-SUMMARY.txt"
+
+      - name: Upload final Workflow 21 artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: veux-5.4.274-resukisu-susfs-2.2-workflow21-exact-w19-final-flashable-${{ github.run_number }}
+          path: ${{ env.OUTPUT }}
+          if-no-files-found: error
+          include-hidden-files: true
+          retention-days: 30
+          compression-level: 0
