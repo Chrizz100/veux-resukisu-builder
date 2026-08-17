@@ -20,8 +20,10 @@ env:
 
   CUSTOM_BOOT_BYTES: "134217728"
   CUSTOM_BOOT_SHA256: "2baffafce260348c247674c5e8176408d45dc75b35ccbf7ca5834cbb4679398e"
+
   STOCK_BOOT_BYTES: "134217728"
   STOCK_BOOT_SHA256: "ac6522e4eed55782dd2ae61362e9d345d01a1f229c87333818511d5537fa79c5"
+
   ROLLBACK_GZIP_SHA256: "9a1532ccfc57b465256bba97863f927b80823fa8812a4d13e4f4c8bf9af0c78b"
 
 jobs:
@@ -68,6 +70,11 @@ jobs:
           - fail-closed on invalid slot suffix
           - injected post-write corruption to force the REAL rollback function
             and verify exact stock restoration
+
+          CASE-5 NOTE:
+          AnyKernel3 ak3-core may reject an invalid slot before the later
+          VEUX-specific slot barrier executes. Both rejection points are valid
+          only if neither fake boot target changes.
 
           IMPORTANT:
           The fake boot targets are ordinary files on the ephemeral GitHub VM.
@@ -251,7 +258,10 @@ jobs:
 
           (
             cd "$PACKAGE"
-            find . -type f -print0 \
+
+            find . \
+              -type f \
+              -print0 \
               | LC_ALL=C sort -z \
               | xargs -0 sha256sum \
               > "$OUTPUT/PACKAGE-BEFORE-SIMULATION.sha256"
@@ -287,22 +297,34 @@ jobs:
           grep -Fq "$STOCK_BOOT_SHA256" "$AK"
           grep -Fq "$CUSTOM_BOOT_SHA256" "$AK"
 
-          grep -Fq 'dd if="$PAYLOAD" of="$TARGET" bs=1048576' "$AK"
+          grep -Fq \
+            'dd if="$PAYLOAD" of="$TARGET" bs=1048576' \
+            "$AK"
+
           grep -Fq 'restore_stock()' "$AK"
           grep -Fq 'gzip -dc "$ROLLBACK_GZ"' "$AK"
           grep -Fq 'sha256sum "$TARGET"' "$AK"
 
-          if grep -Eq '^[[:space:]]*split_boot;' "$AK"; then
+          if grep -Eq \
+            '^[[:space:]]*split_boot;' \
+            "$AK"
+          then
             echo "ERROR: split_boot found"
             exit 1
           fi
 
-          if grep -Eq '^[[:space:]]*flash_boot;' "$AK"; then
+          if grep -Eq \
+            '^[[:space:]]*flash_boot;' \
+            "$AK"
+          then
             echo "ERROR: flash_boot found"
             exit 1
           fi
 
-          if grep -Eq '^[[:space:]]*[^#].*magiskboot' "$AK"; then
+          if grep -Eq \
+            '^[[:space:]]*[^#].*magiskboot' \
+            "$AK"
+          then
             echo "ERROR: executable runtime magiskboot invocation found"
             exit 1
           fi
@@ -330,10 +352,14 @@ jobs:
             binfmt-support \
             inotify-tools
 
-          sudo mount -t binfmt_misc binfmt_misc /proc/sys/fs/binfmt_misc \
+          sudo mount \
+            -t binfmt_misc \
+            binfmt_misc \
+            /proc/sys/fs/binfmt_misc \
             2>/dev/null || true
 
-          sudo update-binfmts --enable qemu-arm \
+          sudo update-binfmts \
+            --enable qemu-arm \
             >/dev/null 2>&1 || true
 
           QEMU_ARM="$(command -v qemu-arm-static)"
@@ -350,7 +376,8 @@ jobs:
             'ELF 32-bit LSB executable, ARM' \
             "$OUTPUT/BUSYBOX-FILE-TYPE.txt"
 
-          "$PACKAGE/tools/busybox" echo DIRECT_BINFMT_OK \
+          "$PACKAGE/tools/busybox" \
+            echo DIRECT_BINFMT_OK \
             > "$OUTPUT/BUSYBOX-BINFMT-SMOKE.txt"
 
           grep -Fxq \
@@ -385,6 +412,7 @@ jobs:
 
           cat > "$HARNESS/bin/getprop" <<'EOF'
           #!/bin/sh
+
           case "${1:-}" in
             ro.boot.slot_suffix)
               printf '%s\n' "${FAKE_SLOT:-}"
@@ -411,11 +439,10 @@ jobs:
             "$QEMU_ARM" \
             "$PACKAGE/tools/busybox" \
             sh -c \
-            'test "$(getprop ro.boot.slot_suffix)" = "_a" && test "$(getprop ro.boot.flash.locked)" = "0"' \
-            > "$OUTPUT/GETPROP-HARNESS-SMOKE.txt"
+            'test "$(getprop ro.boot.slot_suffix)" = "_a" && test "$(getprop ro.boot.flash.locked)" = "0"'
 
           echo "GETPROP_HARNESS=PASS" \
-            >> "$OUTPUT/GETPROP-HARNESS-SMOKE.txt"
+            > "$OUTPUT/GETPROP-HARNESS-SMOKE.txt"
 
       - name: Execute exact final installer against fake boot partitions
         shell: bash
@@ -445,34 +472,62 @@ jobs:
           fi
 
           sudo touch "$TARGET_A" "$TARGET_B"
-          sudo chown "$(id -u):$(id -g)" "$TARGET_A" "$TARGET_B"
+
+          sudo chown \
+            "$(id -u):$(id -g)" \
+            "$TARGET_A" \
+            "$TARGET_B"
 
           cleanup() {
-            sudo rm -f "$TARGET_A" "$TARGET_B" 2>/dev/null || true
+            sudo rm -f \
+              "$TARGET_A" \
+              "$TARGET_B" \
+              2>/dev/null || true
 
             if [ "$CREATED_BYNAME_DIR" = "1" ]; then
-              sudo rmdir "$TARGET_DIR" 2>/dev/null || true
+              sudo rmdir \
+                "$TARGET_DIR" \
+                2>/dev/null || true
             fi
 
             if [ "$CREATED_BLOCK_DIR" = "1" ]; then
-              sudo rmdir /dev/block 2>/dev/null || true
+              sudo rmdir \
+                /dev/block \
+                2>/dev/null || true
             fi
           }
 
           trap cleanup EXIT
 
           hash_file() {
-            sha256sum "$1" | awk '{print $1}'
+            sha256sum "$1" \
+              | awk '{print $1}'
           }
 
           reset_stock() {
-            cp "$HARNESS/stock_boot.img" "$TARGET_A"
-            cp "$HARNESS/stock_boot.img" "$TARGET_B"
+            cp \
+              "$HARNESS/stock_boot.img" \
+              "$TARGET_A"
 
-            test "$(stat -c '%s' "$TARGET_A")" = "$STOCK_BOOT_BYTES"
-            test "$(stat -c '%s' "$TARGET_B")" = "$STOCK_BOOT_BYTES"
-            test "$(hash_file "$TARGET_A")" = "$STOCK_BOOT_SHA256"
-            test "$(hash_file "$TARGET_B")" = "$STOCK_BOOT_SHA256"
+            cp \
+              "$HARNESS/stock_boot.img" \
+              "$TARGET_B"
+
+            test \
+              "$(stat -c '%s' "$TARGET_A")" \
+              = "$STOCK_BOOT_BYTES"
+
+            test \
+              "$(stat -c '%s' "$TARGET_B")" \
+              = "$STOCK_BOOT_BYTES"
+
+            test \
+              "$(hash_file "$TARGET_A")" \
+              = "$STOCK_BOOT_SHA256"
+
+            test \
+              "$(hash_file "$TARGET_B")" \
+              = "$STOCK_BOOT_SHA256"
           }
 
           run_installer() {
@@ -505,9 +560,12 @@ jobs:
             echo "$RC"
           }
 
-          # ------------------------------------------------------------
-          # CASE 1: slot _a, unlocked proven by ro.boot.flash.locked=0
-          # ------------------------------------------------------------
+          # ============================================================
+          # CASE 1
+          # Valid slot _a
+          # Unlock evidence: flash.locked=0
+          # ============================================================
+
           reset_stock
 
           RC="$(
@@ -519,8 +577,14 @@ jobs:
           )"
 
           test "$RC" = "0"
-          test "$(hash_file "$TARGET_A")" = "$CUSTOM_BOOT_SHA256"
-          test "$(hash_file "$TARGET_B")" = "$STOCK_BOOT_SHA256"
+
+          test \
+            "$(hash_file "$TARGET_A")" \
+            = "$CUSTOM_BOOT_SHA256"
+
+          test \
+            "$(hash_file "$TARGET_B")" \
+            = "$STOCK_BOOT_SHA256"
 
           grep -Fq \
             'Exact Workflow-19 boot payload written and readback verified.' \
@@ -537,9 +601,12 @@ jobs:
           EXPECT_BOOT_B=$STOCK_BOOT_SHA256
           EOF
 
-          # ------------------------------------------------------------
-          # CASE 2: slot _b, unlocked proven by vbmeta.device_state
-          # ------------------------------------------------------------
+          # ============================================================
+          # CASE 2
+          # Valid slot _b
+          # Unlock evidence: vbmeta.device_state=unlocked
+          # ============================================================
+
           reset_stock
 
           RC="$(
@@ -551,8 +618,14 @@ jobs:
           )"
 
           test "$RC" = "0"
-          test "$(hash_file "$TARGET_A")" = "$STOCK_BOOT_SHA256"
-          test "$(hash_file "$TARGET_B")" = "$CUSTOM_BOOT_SHA256"
+
+          test \
+            "$(hash_file "$TARGET_A")" \
+            = "$STOCK_BOOT_SHA256"
+
+          test \
+            "$(hash_file "$TARGET_B")" \
+            = "$CUSTOM_BOOT_SHA256"
 
           grep -Fq \
             'Exact Workflow-19 boot payload written and readback verified.' \
@@ -569,9 +642,11 @@ jobs:
           EXPECT_BOOT_B=$CUSTOM_BOOT_SHA256
           EOF
 
-          # ------------------------------------------------------------
-          # CASE 3: active boot is NOT the exact audited stock image
-          # ------------------------------------------------------------
+          # ============================================================
+          # CASE 3
+          # Wrong starting boot must fail before write
+          # ============================================================
+
           reset_stock
 
           python3 - "$TARGET_A" <<'PY'
@@ -583,18 +658,39 @@ jobs:
 
           with path.open("r+b") as handle:
               handle.seek(4096)
+
               value = handle.read(1)
+
               if len(value) != 1:
-                  raise SystemExit("cannot mutate fake boot")
+                  raise SystemExit(
+                      "cannot mutate fake boot"
+                  )
+
               handle.seek(4096)
-              handle.write(bytes([value[0] ^ 0x01]))
+
+              handle.write(
+                  bytes([
+                      value[0] ^ 0x01
+                  ])
+              )
+
               handle.flush()
-              os.fsync(handle.fileno())
+              os.fsync(
+                  handle.fileno()
+              )
           PY
 
-          BAD_BEFORE="$(hash_file "$TARGET_A")"
-          test "$BAD_BEFORE" != "$STOCK_BOOT_SHA256"
-          test "$BAD_BEFORE" != "$CUSTOM_BOOT_SHA256"
+          BAD_BEFORE="$(
+            hash_file "$TARGET_A"
+          )"
+
+          test \
+            "$BAD_BEFORE" \
+            != "$STOCK_BOOT_SHA256"
+
+          test \
+            "$BAD_BEFORE" \
+            != "$CUSTOM_BOOT_SHA256"
 
           RC="$(
             run_installer \
@@ -605,9 +701,16 @@ jobs:
           )"
 
           test "$RC" != "0"
-          BAD_AFTER="$(hash_file "$TARGET_A")"
+
+          BAD_AFTER="$(
+            hash_file "$TARGET_A"
+          )"
+
           test "$BAD_AFTER" = "$BAD_BEFORE"
-          test "$(hash_file "$TARGET_B")" = "$STOCK_BOOT_SHA256"
+
+          test \
+            "$(hash_file "$TARGET_B")" \
+            = "$STOCK_BOOT_SHA256"
 
           grep -Fq \
             'Active boot is not the exact audited Workflow-18 stock boot.' \
@@ -621,12 +724,16 @@ jobs:
           TARGET_UNCHANGED=YES
           EOF
 
-          # ------------------------------------------------------------
-          # CASE 4: bootloader evidence is locked / not unlocked
-          # ------------------------------------------------------------
+          # ============================================================
+          # CASE 4
+          # Locked evidence must fail before write
+          # ============================================================
+
           reset_stock
 
-          BEFORE_A="$(hash_file "$TARGET_A")"
+          BEFORE_A="$(
+            hash_file "$TARGET_A"
+          )"
 
           RC="$(
             run_installer \
@@ -637,9 +744,18 @@ jobs:
           )"
 
           test "$RC" != "0"
-          test "$(hash_file "$TARGET_A")" = "$BEFORE_A"
-          test "$(hash_file "$TARGET_A")" = "$STOCK_BOOT_SHA256"
-          test "$(hash_file "$TARGET_B")" = "$STOCK_BOOT_SHA256"
+
+          test \
+            "$(hash_file "$TARGET_A")" \
+            = "$BEFORE_A"
+
+          test \
+            "$(hash_file "$TARGET_A")" \
+            = "$STOCK_BOOT_SHA256"
+
+          test \
+            "$(hash_file "$TARGET_B")" \
+            = "$STOCK_BOOT_SHA256"
 
           grep -Fq \
             'Positive bootloader-unlocked evidence was not found.' \
@@ -654,13 +770,26 @@ jobs:
           TARGET_UNCHANGED=YES
           EOF
 
-          # ------------------------------------------------------------
-          # CASE 5: invalid slot suffix
-          # ------------------------------------------------------------
+          # ============================================================
+          # CASE 5
+          # Invalid slot.
+          #
+          # IMPORTANT:
+          # ak3-core may reject this while it is being sourced, before
+          # the later VEUX-specific slot check is reached.
+          #
+          # Both paths are accepted only if neither target changes.
+          # ============================================================
+
           reset_stock
 
-          BEFORE_A="$(hash_file "$TARGET_A")"
-          BEFORE_B="$(hash_file "$TARGET_B")"
+          BEFORE_A="$(
+            hash_file "$TARGET_A"
+          )"
+
+          BEFORE_B="$(
+            hash_file "$TARGET_B"
+          )"
 
           RC="$(
             run_installer \
@@ -671,25 +800,65 @@ jobs:
           )"
 
           test "$RC" != "0"
-          test "$(hash_file "$TARGET_A")" = "$BEFORE_A"
-          test "$(hash_file "$TARGET_B")" = "$BEFORE_B"
 
-          grep -Fq \
+          AFTER_A="$(
+            hash_file "$TARGET_A"
+          )"
+
+          AFTER_B="$(
+            hash_file "$TARGET_B"
+          )"
+
+          test "$AFTER_A" = "$BEFORE_A"
+          test "$AFTER_B" = "$BEFORE_B"
+
+          test "$AFTER_A" = "$STOCK_BOOT_SHA256"
+          test "$AFTER_B" = "$STOCK_BOOT_SHA256"
+
+          CASE5_GATE=""
+
+          if grep -Fq \
             'Could not determine a valid active A/B slot. Aborting.' \
             "$OUTPUT/CASE5-INVALID-SLOT.log"
+          then
+            CASE5_GATE="VEUX_CUSTOM_SLOT_GATE"
+
+          elif grep -Fq \
+            'Unable to determine boot partition. Aborting...' \
+            "$OUTPUT/CASE5-INVALID-SLOT.log"
+          then
+            CASE5_GATE="ANYKERNEL3_AK3_CORE_EARLY_SLOT_GATE"
+
+          else
+            echo "ERROR: invalid slot failed for an unexpected reason"
+            cat "$OUTPUT/CASE5-INVALID-SLOT.log"
+            exit 1
+          fi
 
           cat > "$OUTPUT/CASE5-INVALID-SLOT.txt" <<EOF
           RESULT=PASS_FAIL_CLOSED
           EXIT_CODE=$RC
           FAKE_SLOT=_c
-          BOOT_A_SHA256=$(hash_file "$TARGET_A")
-          BOOT_B_SHA256=$(hash_file "$TARGET_B")
+          REJECTION_GATE=$CASE5_GATE
+          BOOT_A_BEFORE_SHA256=$BEFORE_A
+          BOOT_A_AFTER_SHA256=$AFTER_A
+          BOOT_B_BEFORE_SHA256=$BEFORE_B
+          BOOT_B_AFTER_SHA256=$AFTER_B
           TARGETS_UNCHANGED=YES
           EOF
 
-          # ------------------------------------------------------------
-          # CASE 6: real post-write readback failure -> real rollback path
-          # ------------------------------------------------------------
+          # ============================================================
+          # CASE 6
+          # Inject post-write corruption before full SHA-256 readback.
+          #
+          # Expected:
+          # - custom write initially succeeds
+          # - corruption changes target
+          # - final SHA-256 detects mismatch
+          # - REAL restore_stock() executes
+          # - exact Workflow-18 stock boot is restored
+          # ============================================================
+
           reset_stock
 
           (
@@ -705,17 +874,36 @@ jobs:
           from pathlib import Path
 
           path = Path(sys.argv[1])
-          offset = 120 * 1024 * 1024
+
+          offset = (
+              120
+              * 1024
+              * 1024
+          )
 
           with path.open("r+b") as handle:
               handle.seek(offset)
+
               value = handle.read(1)
+
               if len(value) != 1:
-                  raise SystemExit("cannot inject readback corruption")
+                  raise SystemExit(
+                      "cannot inject readback corruption"
+                  )
+
               handle.seek(offset)
-              handle.write(bytes([value[0] ^ 0x5A]))
+
+              handle.write(
+                  bytes([
+                      value[0] ^ 0x5A
+                  ])
+              )
+
               handle.flush()
-              os.fsync(handle.fileno())
+
+              os.fsync(
+                  handle.fileno()
+              )
           PY
           ) &
 
@@ -732,8 +920,14 @@ jobs:
           wait "$WATCHER_PID"
 
           test "$RC" != "0"
-          test "$(hash_file "$TARGET_A")" = "$STOCK_BOOT_SHA256"
-          test "$(hash_file "$TARGET_B")" = "$STOCK_BOOT_SHA256"
+
+          test \
+            "$(hash_file "$TARGET_A")" \
+            = "$STOCK_BOOT_SHA256"
+
+          test \
+            "$(hash_file "$TARGET_B")" \
+            = "$STOCK_BOOT_SHA256"
 
           grep -Fq \
             'Attempting exact stock boot rollback...' \
@@ -752,7 +946,9 @@ jobs:
           EXIT_CODE=$RC
           FAULT=POST_WRITE_BYTE_CORRUPTION_AT_120_MiB
           FINAL_BOOT_A_SHA256=$(hash_file "$TARGET_A")
+          FINAL_BOOT_B_SHA256=$(hash_file "$TARGET_B")
           EXPECT_FINAL_BOOT_A=$STOCK_BOOT_SHA256
+          EXPECT_FINAL_BOOT_B=$STOCK_BOOT_SHA256
           ROLLBACK_RESTORED_EXACT_STOCK=YES
           EOF
 
@@ -774,6 +970,8 @@ jobs:
 
           CASE 5 - invalid slot suffix:
           PASS_FAIL_CLOSED
+          rejection gate:
+          $CASE5_GATE
 
           CASE 6 - injected post-write corruption:
           PASS_REAL_ROLLBACK_PATH
@@ -796,7 +994,10 @@ jobs:
 
           (
             cd "$PACKAGE"
-            find . -type f -print0 \
+
+            find . \
+              -type f \
+              -print0 \
               | LC_ALL=C sort -z \
               | xargs -0 sha256sum \
               > "$OUTPUT/PACKAGE-AFTER-SIMULATION.sha256"
@@ -830,6 +1031,38 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
+          grep -Fq \
+            'RESULT=PASS' \
+            "$OUTPUT/CASE1-SUCCESS-A.txt"
+
+          grep -Fq \
+            'RESULT=PASS' \
+            "$OUTPUT/CASE2-SUCCESS-B.txt"
+
+          grep -Fq \
+            'RESULT=PASS_FAIL_CLOSED' \
+            "$OUTPUT/CASE3-WRONG-STOCK.txt"
+
+          grep -Fq \
+            'RESULT=PASS_FAIL_CLOSED' \
+            "$OUTPUT/CASE4-LOCKED.txt"
+
+          grep -Fq \
+            'RESULT=PASS_FAIL_CLOSED' \
+            "$OUTPUT/CASE5-INVALID-SLOT.txt"
+
+          grep -Fq \
+            'TARGETS_UNCHANGED=YES' \
+            "$OUTPUT/CASE5-INVALID-SLOT.txt"
+
+          grep -Fq \
+            'RESULT=PASS_REAL_ROLLBACK_PATH' \
+            "$OUTPUT/CASE6-ROLLBACK.txt"
+
+          grep -Fq \
+            'ROLLBACK_RESTORED_EXACT_STOCK=YES' \
+            "$OUTPUT/CASE6-ROLLBACK.txt"
 
           cat > "$OUTPUT/WORKFLOW21R-SUMMARY.txt" <<EOF
           VEUX Workflow 21R - Final Installer Runtime Simulation
@@ -869,7 +1102,8 @@ jobs:
           /dev/block/by-name/boot_b
 
           The exact packaged BusyBox was used for sha256sum, dd, gzip and sync.
-          The exact packaged ak3-core.sh supplied abort/ui_print.
+          The exact packaged ak3-core.sh supplied abort/ui_print and its normal
+          early target-partition detection logic.
 
           RUNTIME TESTS
           -------------
@@ -887,6 +1121,9 @@ jobs:
 
           5. invalid slot suffix _c:
              PASS_FAIL_CLOSED - no write.
+             Either ak3-core early partition detection or the later VEUX
+             slot barrier may reject the invalid slot.
+             Both fake boot targets must remain exact stock.
 
           6. post-write corruption injected before readback:
              PASS - readback mismatch detected;
