@@ -9,40 +9,35 @@ permissions:
 env:
   ROM_VERSION: "OS1.0.12.0.TKCMIXM"
   ROM_FILE: "veux_global_images_OS1.0.12.0.TKCMIXM_20241205.0000.00_13.0_global_cda1240a45.tgz"
-  ROM_URL: "https://bigota.d.miui.com/OS1.0.12.0.TKCMIXM/veux_global_images_OS1.0.12.0.TKCMIXM_20241205.0000.00_13.0_global_cda1240a45.tgz"
   ROM_MD5: "cda1240a451dd4f75776878b52f0cea3"
+
+  HUGEOTA_URL: "https://hugeota.d.miui.com/OS1.0.12.0.TKCMIXM/veux_global_images_OS1.0.12.0.TKCMIXM_20241205.0000.00_13.0_global_cda1240a45.tgz"
+  BIGOTA_URL: "https://bigota.d.miui.com/OS1.0.12.0.TKCMIXM/veux_global_images_OS1.0.12.0.TKCMIXM_20241205.0000.00_13.0_global_cda1240a45.tgz"
+  AFH_FID: "5649633102268470957"
 
   BOOT_BYTES: "134217728"
   BOOT_SHA: "ac6522e4eed55782dd2ae61362e9d345d01a1f229c87333818511d5537fa79c5"
-
   VENDOR_BOOT_BYTES: "100663296"
   VENDOR_BOOT_SHA: "583e1f4c0e09c2267cda88bd48a8b4f56cf5c5e034fbda7b25bd65aa86385425"
-
   DTBO_BYTES: "8388608"
   DTBO_SHA: "e9f3bae2c5417ff297162f1e7d2652ee98b347488fdf091d61daa986fbfb7690"
-
   VBMETA_BYTES: "8192"
   VBMETA_SHA: "62a5b1a94c2247c786e8148b9d9d0aea943b57b1034b3fd82d9cac9a85fcde97"
 
   STOCK_KERNEL_BYTES: "45480448"
   STOCK_KERNEL_SHA: "6e513b3652aa1de599c26b6aaeefef12dac569daf8648bbb67de99932782c50b"
-
   RAMDISK_BYTES: "22061278"
   RAMDISK_SHA: "0bc8b54373b5501818e8b252517419786db207771047b6def7ec9bc89beb607a"
 
   BOOT_AVB_DIGEST: "fc6d91cd4ce2e89703c59e6a35c60e3efd984cfb54a29760e4a3105c42399d8a"
-
   VENDOR_BOOT_AVB_DIGEST: "370f9c242bd161bd36effc3e7b56f208e21700a9a4e848b004f68595df2190c6"
-
   DTBO_AVB_DIGEST: "a49a514a35a1ee60c19716407eb70f8bf5f9a8fec7aa8394c00c370f7ca0c6d9"
 
   VENDOR_DTB_BYTES: "651045"
   VENDOR_DTB_SHA: "10b7b848141bff201e1953d44128a3de92272a4fdc1afbf90b4e60682830ff46"
 
   VBMETA_SIGNED_DIGEST: "4ba69147c283e7a43aec1c5f951901f9060057e21bae4e2c3df17400698bdb4c"
-
   VBMETA_KEY_SHA: "c5d3c71bc70d58e3e0409ca9d9b34c0dbac1d2f09a5de948a4b8f090f1926965"
-
   STOCK_FINGERPRINT: "qti/veux/veux:13/TKQ1.221114.001/V816.0.12.0.TKCMIXM:user/release-keys"
 
 jobs:
@@ -63,16 +58,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
           rm -rf "$WORK"
+          mkdir -p "$DOWNLOAD" "$EXTRACT" "$STOCK" "$AUDIT"
 
-          mkdir -p \
-            "$DOWNLOAD" \
-            "$EXTRACT" \
-            "$STOCK" \
-            "$AUDIT"
-
-          # Free runner space. None of these components are needed here.
           sudo rm -rf \
             /usr/local/lib/android \
             /usr/share/dotnet \
@@ -81,65 +69,229 @@ jobs:
             2>/dev/null || true
 
           df -h / | tee "$AUDIT/DISK-BEFORE.txt"
-
-          free_kb="$(
-            df -Pk / \
-              | awk 'NR==2 {print $4}'
-          )"
-
-          if [ "$free_kb" -lt 9000000 ]; then
+          free_kb="$(df -Pk / | awk 'NR==2 {print $4}')"
+          [ "$free_kb" -ge 9000000 ] || {
             echo "ERROR: less than 9 GB free disk space"
-            echo "Available KB: $free_kb"
             exit 1
-          fi
+          }
 
       - name: Install download dependencies
         shell: bash
         run: |
           set -euo pipefail
-
           sudo apt-get update
-
-          sudo apt-get install -y \
-            --no-install-recommends \
+          sudo apt-get install -y --no-install-recommends \
             aria2 \
             ca-certificates \
             curl
 
-          aria2c --version \
-            | head -n 3 \
-            | tee "$AUDIT/ARIA2-VERSION.txt"
+          aria2c --version | head -n 3 | tee "$AUDIT/ARIA2-VERSION.txt"
+          curl --version | head -n 2 | tee "$AUDIT/CURL-VERSION.txt"
 
-          curl --version \
-            | head -n 2 \
-            | tee "$AUDIT/CURL-VERSION.txt"
-
-      - name: Probe exact fastboot ROM source
+      - name: Resolve independent ROM mirrors
         shell: bash
         run: |
           set -euo pipefail
 
-          {
-            echo "ROM_VERSION=$ROM_VERSION"
-            echo "ROM_FILE=$ROM_FILE"
-            echo "ROM_URL=$ROM_URL"
-            echo "EXPECTED_MD5=$ROM_MD5"
-            echo
-          } > "$AUDIT/FASTBOOT-ROM-SOURCE.txt"
+          candidates="$AUDIT/ROM-CANDIDATES.txt"
+          : > "$candidates"
 
-          # HEAD is informational only. The later MD5 gate is authoritative.
+          printf '%s\n' "$HUGEOTA_URL" >> "$candidates"
+          printf '%s\n' "$BIGOTA_URL" >> "$candidates"
+
+          # AndroidFileHost independently hosts the exact same filename/MD5.
+          # Its direct download URLs are generated dynamically, so resolve them
+          # at run time. Failure here is non-fatal because Xiaomi mirrors remain.
+          set +e
           curl \
+            --fail \
             --silent \
             --show-error \
             --location \
-            --head \
-            --connect-timeout 20 \
-            --max-time 60 \
-            "$ROM_URL" \
-            > "$AUDIT/ROM-HEADERS.txt" \
-            || true
+            --max-time 30 \
+            --user-agent 'Mozilla/5.0' \
+            --header 'Content-Type: application/x-www-form-urlencoded' \
+            --data "submit=submit&action=getdownloadmirrors&fid=$AFH_FID" \
+            'https://androidfilehost.com/libs/otf/mirrors.otf.php' \
+            -o "$AUDIT/AFH-MIRRORS.json"
+          afh_rc=$?
+          set -e
 
-          cat "$AUDIT/ROM-HEADERS.txt" || true
+          if [ "$afh_rc" -eq 0 ]; then
+            python3 - \
+              "$AUDIT/AFH-MIRRORS.json" \
+              "$candidates" <<'PY'
+          import json
+          import sys
+
+          source, output = sys.argv[1:3]
+
+          try:
+              data = json.load(open(source, "r", encoding="utf-8"))
+          except Exception as exc:
+              print(f"AFH mirror JSON ignored: {exc}")
+              raise SystemExit(0)
+
+          urls = []
+
+          def walk(value):
+              if isinstance(value, dict):
+                  for k, v in value.items():
+                      if k.lower() == "url" and isinstance(v, str):
+                          if v.startswith(("https://", "http://")):
+                              urls.append(v.replace("\\/", "/"))
+                      walk(v)
+              elif isinstance(value, list):
+                  for item in value:
+                      walk(item)
+
+          walk(data)
+
+          with open(output, "a", encoding="utf-8") as f:
+              for url in urls:
+                  f.write(url + "\n")
+
+          print(f"Resolved {len(urls)} AndroidFileHost mirror URL(s).")
+          PY
+          else
+            echo "AndroidFileHost mirror resolver unavailable; continuing."
+          fi
+
+          awk 'NF && !seen[$0]++' "$candidates" \
+            > "$AUDIT/ROM-CANDIDATES.unique.txt"
+
+          mv "$AUDIT/ROM-CANDIDATES.unique.txt" "$candidates"
+
+          count="$(wc -l < "$candidates" | tr -d ' ')"
+          [ "$count" -ge 2 ] || {
+            echo "ERROR: fewer than two ROM candidates"
+            exit 1
+          }
+
+          {
+            echo "ROM_VERSION=$ROM_VERSION"
+            echo "ROM_FILE=$ROM_FILE"
+            echo "EXPECTED_MD5=$ROM_MD5"
+            echo "CANDIDATES=$count"
+          } | tee "$AUDIT/ROM-SOURCE-PLAN.txt"
+
+          # Do not print signed AFH query strings into the public log.
+          nl -ba "$candidates" \
+            | sed -E 's#(https?://[^/? ]+).*#\1 ...#' \
+            | tee "$AUDIT/ROM-CANDIDATE-HOSTS.txt"
+
+      - name: Benchmark mirrors and select fastest
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          candidates="$AUDIT/ROM-CANDIDATES.txt"
+          results="$AUDIT/ROM-BENCHMARK.tsv"
+          : > "$results"
+
+          index=0
+          while IFS= read -r url; do
+            [ -n "$url" ] || continue
+            index=$((index + 1))
+
+            host="$(
+              python3 - "$url" <<'PY'
+          import sys
+          from urllib.parse import urlparse
+          print(urlparse(sys.argv[1]).netloc)
+          PY
+            )"
+
+            probe="$DOWNLOAD/probe-$index.bin"
+            rm -f "$probe"
+
+            start="$(date +%s%N)"
+
+            set +e
+            timeout \
+              --signal=TERM \
+              --kill-after=5s \
+              22s \
+              curl \
+                --fail \
+                --location \
+                --silent \
+                --show-error \
+                --connect-timeout 8 \
+                --max-time 20 \
+                --range 0-50331647 \
+                --output "$probe" \
+                "$url" \
+              > "$AUDIT/probe-$index.stdout" \
+              2> "$AUDIT/probe-$index.stderr"
+            rc=$?
+            set -e
+
+            end="$(date +%s%N)"
+            elapsed_ns=$((end - start))
+            elapsed_ms=$((elapsed_ns / 1000000))
+            [ "$elapsed_ms" -gt 0 ] || elapsed_ms=1
+
+            if [ -f "$probe" ]; then
+              bytes="$(stat -c '%s' "$probe")"
+            else
+              bytes=0
+            fi
+
+            bps=$((bytes * 1000 / elapsed_ms))
+
+            printf '%s\t%s\t%s\t%s\t%s\n' \
+              "$index" "$host" "$bytes" "$elapsed_ms" "$bps" \
+              >> "$results"
+
+            rm -f "$probe"
+          done < "$candidates"
+
+          cat "$results"
+
+          best_index="$(
+            sort -t $'\t' -k5,5nr "$results" \
+              | awk 'NR==1 {print $1}'
+          )"
+
+          best_bps="$(
+            sort -t $'\t' -k5,5nr "$results" \
+              | awk 'NR==1 {print $5}'
+          )"
+
+          [ -n "$best_index" ] || {
+            echo "ERROR: no usable mirror benchmark result"
+            exit 1
+          }
+
+          # Fail early instead of spending another two hours on an unusable CDN.
+          [ "$best_bps" -ge 1000000 ] || {
+            echo "ERROR: all ROM mirrors are too slow from this runner."
+            echo "Fastest probe: $best_bps bytes/s"
+            echo "Aborting early instead of wasting ~2 hours."
+            exit 1
+          }
+
+          selected="$(
+            sed -n "${best_index}p" "$candidates"
+          )"
+
+          printf '%s\n' "$selected" \
+            > "$AUDIT/SELECTED-ROM-URL.txt"
+
+          selected_host="$(
+            python3 - "$selected" <<'PY'
+          import sys
+          from urllib.parse import urlparse
+          print(urlparse(sys.argv[1]).netloc)
+          PY
+          )"
+
+          {
+            echo "SELECTED_INDEX=$best_index"
+            echo "SELECTED_HOST=$selected_host"
+            echo "PROBE_BYTES_PER_SECOND=$best_bps"
+          } | tee "$AUDIT/SELECTED-ROM-MIRROR.txt"
 
       - name: Download and authenticate exact fastboot ROM
         shell: bash
@@ -147,20 +299,14 @@ jobs:
           set -euo pipefail
 
           file="$DOWNLOAD/$ROM_FILE"
+          selected="$(cat "$AUDIT/SELECTED-ROM-URL.txt")"
 
-          rm -f \
-            "$file" \
-            "$file.aria2"
-
-          echo "Trying accelerated resumable aria2 download..."
-          echo "Maximum aria2 wall time: 45 minutes."
-
-          set +e
+          rm -f "$file" "$file.aria2"
 
           timeout \
             --signal=TERM \
             --kill-after=30s \
-            45m \
+            75m \
             aria2c \
               --dir="$DOWNLOAD" \
               --out="$ROM_FILE" \
@@ -168,127 +314,54 @@ jobs:
               --allow-overwrite=true \
               --auto-file-renaming=false \
               --file-allocation=none \
-              --max-connection-per-server=8 \
-              --split=8 \
-              --min-split-size=16M \
+              --max-connection-per-server=16 \
+              --split=16 \
+              --min-split-size=8M \
               --piece-length=4M \
-              --connect-timeout=30 \
+              --connect-timeout=20 \
               --timeout=30 \
-              --max-tries=10 \
+              --max-tries=15 \
               --retry-wait=3 \
-              --lowest-speed-limit=32K \
+              --lowest-speed-limit=64K \
               --summary-interval=30 \
               --console-log-level=notice \
-              --download-result=full \
-              "$ROM_URL" \
+              "$selected" \
             2>&1 \
-            | tee "$AUDIT/ARIA2-DOWNLOAD.log"
-
-          aria_rc="${PIPESTATUS[0]}"
-
-          set -e
-
-          if [ "$aria_rc" -eq 124 ] \
-            || [ "$aria_rc" -eq 137 ]; then
-
-            {
-              echo
-              echo "ERROR: accelerated ROM download exceeded 45 minutes."
-              echo "The source/CDN is still too slow for a reproducible"
-              echo "GitHub Actions workflow."
-              echo
-              echo "No slow single-stream fallback will be attempted after"
-              echo "a download timeout because that would only consume the"
-              echo "remaining runner time."
-            } | tee "$AUDIT/DOWNLOAD-FAILURE.txt"
-
-            exit 1
-          fi
-
-          if [ "$aria_rc" -ne 0 ]; then
-            echo
-            echo "aria2 returned $aria_rc before its timeout."
-            echo "Trying one resumable curl fallback..."
-
-            rm -f \
-              "$file" \
-              "$file.aria2"
-
-            timeout \
-              --signal=TERM \
-              --kill-after=30s \
-              60m \
-              curl \
-                --fail \
-                --location \
-                --retry 8 \
-                --retry-delay 5 \
-                --retry-all-errors \
-                --connect-timeout 30 \
-                --speed-time 120 \
-                --speed-limit 32768 \
-                --continue-at - \
-                --output "$file" \
-                "$ROM_URL" \
-              2>&1 \
-              | tee "$AUDIT/CURL-FALLBACK.log"
-          fi
+            | tee "$AUDIT/ROM-DOWNLOAD.log"
 
           [ -f "$file" ] || {
-            echo "ERROR: ROM archive was not downloaded"
+            echo "ERROR: ROM archive missing after download"
             exit 1
           }
 
-          bytes="$(
-            stat -c '%s' "$file"
-          )"
+          bytes="$(stat -c '%s' "$file")"
+          actual_md5="$(md5sum "$file" | awk '{print $1}')"
 
-          echo "Downloaded bytes: $bytes"
-
-          echo "Calculating exact ROM MD5..."
-
-          actual_md5="$(
-            md5sum "$file" \
-              | awk '{print $1}'
-          )"
-
-          if [ "$actual_md5" != "$ROM_MD5" ]; then
+          [ "$actual_md5" = "$ROM_MD5" ] || {
             echo "ERROR: ROM MD5 mismatch"
             echo "Expected: $ROM_MD5"
             echo "Actual:   $actual_md5"
             exit 1
-          fi
+          }
 
-          echo "MD5 PASS."
-
-          echo "Calculating SHA-256 for reproducibility record..."
-
-          actual_sha="$(
-            sha256sum "$file" \
-              | awk '{print $1}'
-          )"
+          actual_sha="$(sha256sum "$file" | awk '{print $1}')"
 
           {
             echo "ROM_VERSION=$ROM_VERSION"
             echo "ROM_FILE=$ROM_FILE"
-            echo "ROM_URL=$ROM_URL"
             echo "ROM_BYTES=$bytes"
             echo "ROM_MD5=$actual_md5"
             echo "ROM_SHA256=$actual_sha"
-          } | tee -a "$AUDIT/FASTBOOT-ROM-SOURCE.txt"
+          } | tee "$AUDIT/FASTBOOT-ROM-SOURCE.txt"
 
-          df -h / \
-            | tee "$AUDIT/DISK-AFTER-DOWNLOAD.txt"
-
-      - name: Locate exact image members
+      - name: Locate and extract only required stock images
         shell: bash
         run: |
           set -euo pipefail
 
           file="$DOWNLOAD/$ROM_FILE"
 
-          tar -tzf "$file" \
-            > "$AUDIT/ROM-TAR-FILELIST.txt"
+          tar -tzf "$file" > "$AUDIT/ROM-TAR-FILELIST.txt"
 
           python3 - \
             "$AUDIT/ROM-TAR-FILELIST.txt" \
@@ -312,24 +385,16 @@ jobs:
               encoding="utf-8",
               errors="replace",
           ).splitlines():
-
               name = raw.strip()
-
               if not name:
                   continue
 
               base = name.rsplit("/", 1)[-1]
 
-              if (
-                  base in targets
-                  and "/images/" in "/" + name
-              ):
+              if base in targets and "/images/" in "/" + name:
                   found.setdefault(base, []).append(name)
 
-          missing = sorted(
-              targets - set(found)
-          )
-
+          missing = sorted(targets - set(found))
           if missing:
               raise SystemExit(
                   f"Missing expected ROM images: {missing}"
@@ -340,7 +405,6 @@ jobs:
               for key, value in found.items()
               if len(value) != 1
           }
-
           if ambiguous:
               raise SystemExit(
                   f"Ambiguous ROM image paths: {ambiguous}"
@@ -357,35 +421,15 @@ jobs:
               "\n".join(ordered) + "\n",
               encoding="utf-8",
           )
-
-          print("\n".join(ordered))
           PY
-
-      - name: Extract only boot vendor_boot dtbo and vbmeta
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          file="$DOWNLOAD/$ROM_FILE"
 
           mapfile -t members \
             < "$AUDIT/SELECTED-ROM-MEMBERS.txt"
 
-          [ "${#members[@]}" -eq 4 ] || {
-            echo "ERROR: expected exactly four selected ROM members"
-            exit 1
-          }
-
-          tar \
-            -xzf "$file" \
-            -C "$EXTRACT" \
-            "${members[@]}"
+          tar -xzf "$file" -C "$EXTRACT" "${members[@]}"
 
           for member in "${members[@]}"; do
-            base="$(
-              basename "$member"
-            )"
-
+            base="$(basename "$member")"
             src="$EXTRACT/$member"
 
             [ -f "$src" ] || {
@@ -407,20 +451,14 @@ jobs:
                 cp "$src" "$STOCK/stock_vbmeta.img"
                 ;;
               *)
-                echo "ERROR: unexpected extracted image: $base"
+                echo "ERROR: unexpected image: $base"
                 exit 1
                 ;;
             esac
           done
 
           rm -rf "$EXTRACT"
-
-          # The multi-gigabyte archive is no longer needed after the
-          # four exact source images have been extracted and authenticated.
           rm -f "$file" "$file.aria2"
-
-          df -h / \
-            | tee "$AUDIT/DISK-AFTER-EXTRACTION.txt"
 
       - name: Require byte-identical stock images
         shell: bash
@@ -433,61 +471,35 @@ jobs:
             local expected_sha="$3"
             local label="$4"
 
-            local actual_bytes
-            local actual_sha
+            local actual_bytes actual_sha
+            actual_bytes="$(stat -c '%s' "$file")"
+            actual_sha="$(sha256sum "$file" | awk '{print $1}')"
 
-            actual_bytes="$(
-              stat -c '%s' "$file"
-            )"
-
-            actual_sha="$(
-              sha256sum "$file" \
-                | awk '{print $1}'
-            )"
-
-            if [ "$actual_bytes" != "$expected_bytes" ]; then
+            [ "$actual_bytes" = "$expected_bytes" ] || {
               echo "ERROR: $label size mismatch"
-              echo "Expected: $expected_bytes"
-              echo "Actual:   $actual_bytes"
               exit 1
-            fi
+            }
 
-            if [ "$actual_sha" != "$expected_sha" ]; then
+            [ "$actual_sha" = "$expected_sha" ] || {
               echo "ERROR: $label SHA-256 mismatch"
               echo "Expected: $expected_sha"
               echo "Actual:   $actual_sha"
               exit 1
-            fi
+            }
 
             echo "${label}_BYTES=$actual_bytes"
             echo "${label}_SHA256=$actual_sha"
           }
 
           {
-            check \
-              "$STOCK/stock_boot.img" \
-              "$BOOT_BYTES" \
-              "$BOOT_SHA" \
-              BOOT
-
-            check \
-              "$STOCK/stock_vendor_boot.img" \
-              "$VENDOR_BOOT_BYTES" \
-              "$VENDOR_BOOT_SHA" \
-              VENDOR_BOOT
-
-            check \
-              "$STOCK/stock_dtbo.img" \
-              "$DTBO_BYTES" \
-              "$DTBO_SHA" \
-              DTBO
-
-            check \
-              "$STOCK/stock_vbmeta.img" \
-              "$VBMETA_BYTES" \
-              "$VBMETA_SHA" \
-              VBMETA
-
+            check "$STOCK/stock_boot.img" \
+              "$BOOT_BYTES" "$BOOT_SHA" BOOT
+            check "$STOCK/stock_vendor_boot.img" \
+              "$VENDOR_BOOT_BYTES" "$VENDOR_BOOT_SHA" VENDOR_BOOT
+            check "$STOCK/stock_dtbo.img" \
+              "$DTBO_BYTES" "$DTBO_SHA" DTBO
+            check "$STOCK/stock_vbmeta.img" \
+              "$VBMETA_BYTES" "$VBMETA_SHA" VBMETA
           } | tee "$AUDIT/PARTITION-HASH-AUDIT.txt"
 
       - name: Deep read-only boot and AVB audit
@@ -503,1559 +515,643 @@ jobs:
           import sys
           from pathlib import Path
 
-          STOCK = Path(sys.argv[1])
-          OUT = Path(sys.argv[2])
+          root = Path(sys.argv[1])
+          out = Path(sys.argv[2])
 
-          boot = (
-              STOCK / "stock_boot.img"
-          ).read_bytes()
+          boot = (root / "stock_boot.img").read_bytes()
+          vendor = (root / "stock_vendor_boot.img").read_bytes()
+          dtbo = (root / "stock_dtbo.img").read_bytes()
+          vbmeta = (root / "stock_vbmeta.img").read_bytes()
 
-          vendor = (
-              STOCK / "stock_vendor_boot.img"
-          ).read_bytes()
-
-          dtbo = (
-              STOCK / "stock_dtbo.img"
-          ).read_bytes()
-
-          vbmeta = (
-              STOCK / "stock_vbmeta.img"
-          ).read_bytes()
-
-          def sha(data):
+          def h(data):
               return hashlib.sha256(data).hexdigest()
 
-          def align(value, alignment):
-              return (
-                  value + alignment - 1
-              ) // alignment * alignment
+          def align(value, size):
+              return (value + size - 1) // size * size
 
-          def need(condition, message):
-              if not condition:
-                  raise SystemExit(
-                      "ERROR: " + message
-                  )
+          def need(value, message):
+              if not value:
+                  raise SystemExit("ERROR: " + message)
 
-          def parse_footer(image):
-              footer = image[-64:]
-
+          def avb_footer(image):
+              f = image[-64:]
+              need(f[:4] == b"AVBf", "AVB footer missing")
+              major, minor = struct.unpack_from(">II", f, 4)
+              original, offset, size = struct.unpack_from(">QQQ", f, 12)
               need(
-                  footer[:4] == b"AVBf",
-                  "AVB footer missing",
-              )
-
-              major, minor = struct.unpack_from(
-                  ">II",
-                  footer,
-                  4,
-              )
-
-              original, offset, size = (
-                  struct.unpack_from(
-                      ">QQQ",
-                      footer,
-                      12,
-                  )
-              )
-
-              need(
-                  offset + size
-                  <= len(image) - 64,
+                  offset + size <= len(image) - 64,
                   "invalid AVB footer geometry",
               )
-
               return {
                   "version": f"{major}.{minor}",
                   "original_size": original,
                   "offset": offset,
                   "size": size,
-                  "vbmeta": image[
-                      offset:offset + size
-                  ],
+                  "vbmeta": image[offset:offset + size],
               }
 
           def parse_vbmeta(data):
-              need(
-                  data[:4] == b"AVB0",
-                  "AVB0 magic missing",
-              )
+              need(data[:4] == b"AVB0", "AVB0 magic missing")
 
-              req_major, req_minor = (
-                  struct.unpack_from(
-                      ">II",
-                      data,
-                      4,
-                  )
-              )
-
-              auth_size, aux_size = (
-                  struct.unpack_from(
-                      ">QQ",
-                      data,
-                      12,
-                  )
-              )
-
-              algorithm_type = (
-                  struct.unpack_from(
-                      ">I",
-                      data,
-                      28,
-                  )[0]
-              )
-
-              values = struct.unpack_from(
-                  ">QQQQQQQQQQQ",
-                  data,
-                  32,
-              )
+              req_major, req_minor = struct.unpack_from(">II", data, 4)
+              auth_size, aux_size = struct.unpack_from(">QQ", data, 12)
+              algorithm = struct.unpack_from(">I", data, 28)[0]
 
               (
                   hash_offset,
                   hash_size,
                   signature_offset,
                   signature_size,
-                  public_key_offset,
-                  public_key_size,
-                  public_key_metadata_offset,
-                  public_key_metadata_size,
+                  key_offset,
+                  key_size,
+                  key_meta_offset,
+                  key_meta_size,
                   descriptors_offset,
                   descriptors_size,
                   rollback_index,
-              ) = values
+              ) = struct.unpack_from(">QQQQQQQQQQQ", data, 32)
 
-              flags, rollback_location = (
-                  struct.unpack_from(
-                      ">II",
-                      data,
-                      120,
-                  )
-              )
-
-              release = (
-                  data[128:176]
-                  .split(b"\0", 1)[0]
-                  .decode(
-                      "ascii",
-                      "replace",
-                  )
-              )
+              flags, rollback_location = struct.unpack_from(">II", data, 120)
 
               auth_start = 256
-              aux_start = 256 + auth_size
+              aux_start = auth_start + auth_size
 
               need(
-                  aux_start + aux_size
-                  <= len(data),
+                  aux_start + aux_size <= len(data),
                   "vbmeta blocks exceed image",
               )
 
-              signed_digest = None
-              hash_verifies = True
+              digest = None
+              hash_ok = True
+              signature_ok = True
+              key_sha = None
 
               if hash_size:
-                  need(
-                      hash_size == 32,
-                      "unexpected vbmeta hash size",
-                  )
-
-                  signed_digest = hashlib.sha256(
-                      data[:256]
-                      + data[
-                          aux_start:
-                          aux_start + aux_size
-                      ]
+                  need(hash_size == 32, "unexpected vbmeta hash size")
+                  digest = hashlib.sha256(
+                      data[:256] + data[aux_start:aux_start + aux_size]
                   ).digest()
 
-                  stored_digest = data[
+                  stored = data[
                       auth_start + hash_offset:
-                      auth_start
-                      + hash_offset
-                      + hash_size
+                      auth_start + hash_offset + hash_size
                   ]
+                  hash_ok = digest == stored
 
-                  hash_verifies = (
-                      signed_digest
-                      == stored_digest
-                  )
-
-              signature_verifies = True
-              public_key_sha = None
-
-              if algorithm_type == 1:
+              if algorithm == 1:
                   need(
                       hash_size == 32
                       and signature_size == 256
-                      and public_key_size == 520,
-                      "unexpected RSA2048 geometry",
+                      and key_size == 520,
+                      "unexpected SHA256_RSA2048 geometry",
                   )
 
                   signature = data[
                       auth_start + signature_offset:
-                      auth_start
-                      + signature_offset
-                      + signature_size
+                      auth_start + signature_offset + signature_size
                   ]
 
-                  public_key = data[
-                      aux_start + public_key_offset:
-                      aux_start
-                      + public_key_offset
-                      + public_key_size
+                  key = data[
+                      aux_start + key_offset:
+                      aux_start + key_offset + key_size
                   ]
+                  key_sha = h(key)
 
-                  public_key_sha = sha(
-                      public_key
-                  )
-
-                  bits = struct.unpack_from(
-                      ">I",
-                      public_key,
-                      0,
-                  )[0]
-
-                  need(
-                      bits == 2048,
-                      "unexpected RSA key size",
-                  )
-
-                  modulus_bytes = bits // 8
-
-                  modulus = int.from_bytes(
-                      public_key[
-                          8:
-                          8 + modulus_bytes
-                      ],
-                      "big",
-                  )
+                  bits = struct.unpack_from(">I", key, 0)[0]
+                  need(bits == 2048, "unexpected RSA key size")
+                  nbytes = bits // 8
+                  modulus = int.from_bytes(key[8:8 + nbytes], "big")
 
                   decoded = pow(
-                      int.from_bytes(
-                          signature,
-                          "big",
-                      ),
+                      int.from_bytes(signature, "big"),
                       65537,
                       modulus,
-                  ).to_bytes(
-                      modulus_bytes,
-                      "big",
-                  )
+                  ).to_bytes(nbytes, "big")
 
-                  digest_info = bytes.fromhex(
+                  der = bytes.fromhex(
                       "3031300d060960864801650304020105000420"
                   )
-
                   expected = (
                       b"\x00\x01"
-                      + b"\xff"
-                      * (
-                          modulus_bytes
-                          - 3
-                          - len(digest_info)
-                          - 32
-                      )
+                      + b"\xff" * (nbytes - 3 - len(der) - 32)
                       + b"\x00"
-                      + digest_info
-                      + signed_digest
+                      + der
+                      + digest
                   )
+                  signature_ok = decoded == expected
 
-                  signature_verifies = (
-                      decoded == expected
-                  )
-
-              elif algorithm_type == 0:
+              elif algorithm == 0:
                   need(
                       auth_size == 0
                       and hash_size == 0
                       and signature_size == 0,
                       "unexpected unsigned vbmeta auth block",
                   )
-
               else:
                   raise SystemExit(
-                      "ERROR: unsupported AVB "
-                      f"algorithm type "
-                      f"{algorithm_type}"
+                      f"ERROR: unsupported AVB algorithm {algorithm}"
                   )
 
               descriptors = []
               properties = {}
 
-              pos = (
-                  aux_start
-                  + descriptors_offset
-              )
-
-              end = (
-                  pos
-                  + descriptors_size
-              )
-
+              pos = aux_start + descriptors_offset
+              end = pos + descriptors_size
               need(
-                  end
-                  <= aux_start + aux_size,
+                  end <= aux_start + aux_size,
                   "descriptors outside auxiliary block",
               )
 
               while pos < end:
-                  tag, following = (
-                      struct.unpack_from(
-                          ">QQ",
-                          data,
-                          pos,
-                      )
-                  )
-
-                  descriptor = data[
-                      pos:
-                      pos + 16 + following
-                  ]
-
+                  tag, following = struct.unpack_from(">QQ", data, pos)
+                  d = data[pos:pos + 16 + following]
                   need(
-                      len(descriptor)
-                      == 16 + following,
-                      "truncated descriptor",
+                      len(d) == 16 + following,
+                      "truncated AVB descriptor",
                   )
 
                   if tag == 0:
-                      key_len, value_len = (
-                          struct.unpack_from(
-                              ">QQ",
-                              descriptor,
-                              16,
-                          )
-                      )
-
-                      cursor = 32
-
-                      key = descriptor[
-                          cursor:
-                          cursor + key_len
-                      ].decode(
+                      key_len, value_len = struct.unpack_from(">QQ", d, 16)
+                      q = 32
+                      key = d[q:q + key_len].decode("utf-8", "replace")
+                      q += key_len
+                      if q < len(d) and d[q] == 0:
+                          q += 1
+                      value = d[q:q + value_len].decode(
                           "utf-8",
                           "replace",
                       )
-
-                      cursor += key_len
-
-                      if (
-                          cursor < len(descriptor)
-                          and descriptor[cursor] == 0
-                      ):
-                          cursor += 1
-
-                      value = descriptor[
-                          cursor:
-                          cursor + value_len
-                      ].decode(
-                          "utf-8",
-                          "replace",
-                      )
-
-                      properties.setdefault(
-                          key,
-                          [],
-                      ).append(value)
+                      properties.setdefault(key, []).append(value)
 
                   elif tag == 1:
-                      (
-                          partition_name_len,
-                          salt_len,
-                          root_digest_len,
-                          descriptor_flags,
-                      ) = struct.unpack_from(
-                          ">IIII",
-                          descriptor,
-                          104,
+                      name_len, salt_len, root_len, dflags = (
+                          struct.unpack_from(">IIII", d, 104)
                       )
-
-                      hash_algorithm = (
-                          descriptor[72:104]
-                          .split(b"\0", 1)[0]
-                          .decode()
-                      )
-
-                      cursor = 180
-
-                      partition = descriptor[
-                          cursor:
-                          cursor
-                          + partition_name_len
-                      ].decode()
-
+                      alg = d[72:104].split(b"\0", 1)[0].decode()
+                      q = 180
+                      name = d[q:q + name_len].decode()
                       descriptors.append({
                           "type": "hashtree",
-                          "partition": partition,
-                          "algorithm": hash_algorithm,
-                          "flags": descriptor_flags,
+                          "partition": name,
+                          "algorithm": alg,
+                          "flags": dflags,
                       })
 
                   elif tag == 2:
-                      image_size = (
-                          struct.unpack_from(
-                              ">Q",
-                              descriptor,
-                              16,
-                          )[0]
+                      image_size = struct.unpack_from(">Q", d, 16)[0]
+                      alg = d[24:56].split(b"\0", 1)[0].decode()
+                      name_len, salt_len, digest_len, dflags = (
+                          struct.unpack_from(">IIII", d, 56)
                       )
-
-                      hash_algorithm = (
-                          descriptor[24:56]
-                          .split(b"\0", 1)[0]
-                          .decode()
-                      )
-
-                      (
-                          partition_name_len,
-                          salt_len,
-                          digest_len,
-                          descriptor_flags,
-                      ) = struct.unpack_from(
-                          ">IIII",
-                          descriptor,
-                          56,
-                      )
-
-                      cursor = 132
-
-                      partition = descriptor[
-                          cursor:
-                          cursor
-                          + partition_name_len
-                      ].decode()
-
-                      cursor += (
-                          partition_name_len
-                      )
-
-                      salt = descriptor[
-                          cursor:
-                          cursor + salt_len
-                      ]
-
-                      cursor += salt_len
-
-                      digest = descriptor[
-                          cursor:
-                          cursor + digest_len
-                      ]
-
+                      q = 132
+                      name = d[q:q + name_len].decode()
+                      q += name_len
+                      salt = d[q:q + salt_len]
+                      q += salt_len
+                      digest_value = d[q:q + digest_len]
                       descriptors.append({
                           "type": "hash",
-                          "partition": partition,
+                          "partition": name,
                           "image_size": image_size,
-                          "algorithm": hash_algorithm,
+                          "algorithm": alg,
                           "salt": salt.hex(),
-                          "digest": digest.hex(),
-                          "flags": descriptor_flags,
+                          "digest": digest_value.hex(),
+                          "flags": dflags,
                       })
 
                   elif tag == 4:
-                      (
-                          rollback_index_location,
-                          partition_name_len,
-                          public_key_len,
-                      ) = struct.unpack_from(
-                          ">III",
-                          descriptor,
-                          16,
+                      rollback_loc, name_len, public_key_len = (
+                          struct.unpack_from(">III", d, 16)
                       )
-
-                      cursor = 92
-
-                      partition = descriptor[
-                          cursor:
-                          cursor
-                          + partition_name_len
-                      ].decode()
-
-                      cursor += (
-                          partition_name_len
-                      )
-
-                      chain_key = descriptor[
-                          cursor:
-                          cursor
-                          + public_key_len
-                      ]
-
+                      q = 92
+                      name = d[q:q + name_len].decode()
+                      q += name_len
+                      chain_key = d[q:q + public_key_len]
                       descriptors.append({
                           "type": "chain",
-                          "partition": partition,
-                          "rollback_index_location":
-                              rollback_index_location,
-                          "public_key_sha256":
-                              sha(chain_key),
+                          "partition": name,
+                          "rollback_index_location": rollback_loc,
+                          "public_key_sha256": h(chain_key),
                       })
 
-                  pos += (
-                      16 + following
-                  )
+                  pos += 16 + following
 
-              need(
-                  pos == end,
-                  "descriptor parse did not "
-                  "end exactly",
-              )
+              need(pos == end, "descriptor parse did not end exactly")
 
               return {
-                  "required_libavb":
-                      f"{req_major}.{req_minor}",
-                  "algorithm_type":
-                      algorithm_type,
-                  "auth_bytes":
-                      auth_size,
-                  "aux_bytes":
-                      aux_size,
-                  "hash_verifies":
-                      hash_verifies,
-                  "signature_verifies":
-                      signature_verifies,
-                  "signed_digest":
-                      (
-                          signed_digest.hex()
-                          if signed_digest
-                          else None
-                      ),
-                  "public_key_sha256":
-                      public_key_sha,
-                  "rollback_index":
-                      rollback_index,
-                  "flags":
-                      flags,
-                  "rollback_index_location":
-                      rollback_location,
-                  "release_string":
-                      release,
-                  "descriptors":
-                      descriptors,
-                  "properties":
-                      properties,
+                  "required_libavb": f"{req_major}.{req_minor}",
+                  "algorithm_type": algorithm,
+                  "hash_verifies": hash_ok,
+                  "signature_verifies": signature_ok,
+                  "signed_digest": digest.hex() if digest else None,
+                  "public_key_sha256": key_sha,
+                  "rollback_index": rollback_index,
+                  "flags": flags,
+                  "rollback_index_location": rollback_location,
+                  "descriptors": descriptors,
+                  "properties": properties,
               }
 
           def hash_descriptors(info):
               return {
-                  descriptor["partition"]:
-                      descriptor
-                  for descriptor
-                  in info["descriptors"]
-                  if descriptor["type"]
-                  == "hash"
+                  d["partition"]: d
+                  for d in info["descriptors"]
+                  if d["type"] == "hash"
               }
 
-          def verify_hash_descriptor(
-              image,
-              descriptor,
-          ):
+          def verify_descriptor(image, descriptor):
               need(
-                  descriptor["algorithm"]
-                  == "sha256",
+                  descriptor["algorithm"] == "sha256",
                   "non-sha256 hash descriptor",
               )
-
-              size = descriptor[
-                  "image_size"
-              ]
-
-              need(
-                  size <= len(image),
-                  "hash descriptor size "
-                  "exceeds partition",
-              )
-
+              size = descriptor["image_size"]
+              need(size <= len(image), "descriptor size exceeds image")
               calculated = hashlib.sha256(
-                  bytes.fromhex(
-                      descriptor["salt"]
-                  )
-                  + image[:size]
+                  bytes.fromhex(descriptor["salt"]) + image[:size]
               ).hexdigest()
-
-              return (
-                  calculated
-                  == descriptor["digest"]
-              )
-
-          # --------------------------------------------------
-          # boot.img
-          # --------------------------------------------------
+              return calculated == descriptor["digest"]
 
           need(
-              boot[:8] == b"ANDROID!",
-              "boot magic",
+              len(boot) == int(os.environ["BOOT_BYTES"])
+              and h(boot) == os.environ["BOOT_SHA"],
+              "boot identity",
+          )
+          need(
+              len(vendor) == int(os.environ["VENDOR_BOOT_BYTES"])
+              and h(vendor) == os.environ["VENDOR_BOOT_SHA"],
+              "vendor_boot identity",
+          )
+          need(
+              len(dtbo) == int(os.environ["DTBO_BYTES"])
+              and h(dtbo) == os.environ["DTBO_SHA"],
+              "dtbo identity",
+          )
+          need(
+              len(vbmeta) == int(os.environ["VBMETA_BYTES"])
+              and h(vbmeta) == os.environ["VBMETA_SHA"],
+              "vbmeta identity",
           )
 
-          (
-              kernel_size,
-              ramdisk_size,
-              os_version_raw,
-              header_size,
-          ) = struct.unpack_from(
-              "<4I",
-              boot,
-              8,
+          need(boot[:8] == b"ANDROID!", "boot magic")
+          kernel_size, ramdisk_size, os_raw, header_size = (
+              struct.unpack_from("<4I", boot, 8)
+          )
+          header_version = struct.unpack_from("<I", boot, 40)[0]
+          reserved = struct.unpack_from("<4I", boot, 24)
+
+          need(
+              header_version == 3
+              and header_size == 1580
+              and reserved == (0, 0, 0, 0),
+              "boot v3 header",
           )
 
-          header_version = (
-              struct.unpack_from(
-                  "<I",
-                  boot,
-                  40,
-              )[0]
-          )
+          ramdisk_offset = 4096 + align(kernel_size, 4096)
+          payload_end = ramdisk_offset + align(ramdisk_size, 4096)
 
-          reserved = struct.unpack_from(
-              "<4I",
-              boot,
-              24,
-          )
-
-          ramdisk_offset = (
-              4096
-              + align(
-                  kernel_size,
-                  4096,
-              )
-          )
-
-          payload_end = (
-              ramdisk_offset
-              + align(
-                  ramdisk_size,
-                  4096,
-              )
-          )
-
-          kernel = boot[
-              4096:
-              4096 + kernel_size
-          ]
-
+          kernel = boot[4096:4096 + kernel_size]
           ramdisk = boot[
               ramdisk_offset:
-              ramdisk_offset
-              + ramdisk_size
+              ramdisk_offset + ramdisk_size
           ]
 
-          (
-              text_offset,
-              arm_image_size,
-              arm_flags,
-          ) = struct.unpack_from(
+          need(
+              kernel_size == int(os.environ["STOCK_KERNEL_BYTES"])
+              and h(kernel) == os.environ["STOCK_KERNEL_SHA"],
+              "stock kernel identity",
+          )
+          need(
+              ramdisk_size == int(os.environ["RAMDISK_BYTES"])
+              and h(ramdisk) == os.environ["RAMDISK_SHA"],
+              "stock ramdisk identity",
+          )
+          need(
+              ramdisk[:4] == bytes.fromhex("02214c18"),
+              "ramdisk is not LZ4 legacy",
+          )
+
+          text_offset, arm_size, arm_flags = struct.unpack_from(
               "<QQQ",
               kernel,
               8,
           )
-
-          (
-              arm_magic,
-              arm_res5,
-          ) = struct.unpack_from(
-              "<II",
-              kernel,
-              56,
-          )
-
-          boot_footer = parse_footer(
-              boot
-          )
-
-          boot_vbmeta = parse_vbmeta(
-              boot_footer["vbmeta"]
-          )
-
-          boot_hashes = (
-              hash_descriptors(
-                  boot_vbmeta
-              )
-          )
+          arm_magic, arm_res5 = struct.unpack_from("<II", kernel, 56)
 
           need(
-              set(boot_hashes)
-              == {"boot"},
-              "boot embedded descriptor set",
+              text_offset == 0x80000
+              and arm_flags == 0xA
+              and arm_magic == 0x644D5241
+              and arm_res5 == 0x40,
+              "ARM64 Image header mismatch",
           )
 
+          bf = avb_footer(boot)
+          bi = parse_vbmeta(bf["vbmeta"])
+          bh = hash_descriptors(bi)
+
           need(
-              verify_hash_descriptor(
-                  boot,
-                  boot_hashes["boot"],
-              ),
+              bf["original_size"] == payload_end,
+              "boot AVB footer geometry",
+          )
+          need(
+              set(bh) == {"boot"}
+              and verify_descriptor(boot, bh["boot"]),
               "boot embedded AVB hash",
           )
-
-          # --------------------------------------------------
-          # vendor_boot.img
-          # --------------------------------------------------
-
           need(
-              vendor[:8] == b"VNDRBOOT",
-              "vendor_boot magic",
+              bh["boot"]["digest"] == os.environ["BOOT_AVB_DIGEST"],
+              "boot AVB digest identity",
           )
 
-          (
-              vendor_header_version,
-              vendor_page_size,
-              kernel_addr,
-              ramdisk_addr,
-              vendor_ramdisk_size,
-          ) = struct.unpack_from(
+          need(vendor[:8] == b"VNDRBOOT", "vendor_boot magic")
+          vhv, page, kaddr, raddr, vrsize = struct.unpack_from(
               "<IIIII",
               vendor,
               8,
           )
+          tags = struct.unpack_from("<I", vendor, 2076)[0]
+          vhsize = struct.unpack_from("<I", vendor, 2096)[0]
+          vdsize = struct.unpack_from("<I", vendor, 2100)[0]
+          vdaddr = struct.unpack_from("<Q", vendor, 2104)[0]
 
-          tags_addr = struct.unpack_from(
-              "<I",
-              vendor,
-              2076,
-          )[0]
-
-          vendor_header_size = (
-              struct.unpack_from(
-                  "<I",
-                  vendor,
-                  2096,
-              )[0]
+          need(
+              vhv == 3
+              and vhsize == 2112
+              and page == 4096
+              and kaddr == 32768
+              and raddr == 16777216
+              and tags == 256
+              and vdaddr == 0x1F00000,
+              "vendor_boot v3 geometry",
           )
 
-          vendor_dtb_size = (
-              struct.unpack_from(
-                  "<I",
-                  vendor,
-                  2100,
-              )[0]
+          vrd_offset = align(vhsize, page)
+          vdt_offset = vrd_offset + align(vrsize, page)
+          vdt = vendor[vdt_offset:vdt_offset + vdsize]
+
+          need(
+              vdsize == int(os.environ["VENDOR_DTB_BYTES"])
+              and h(vdt) == os.environ["VENDOR_DTB_SHA"],
+              "vendor DTB identity",
           )
 
-          vendor_dtb_addr = (
-              struct.unpack_from(
-                  "<Q",
-                  vendor,
-                  2104,
-              )[0]
-          )
+          fdt_count = 0
+          pos = 0
 
-          vendor_ramdisk_offset = (
-              align(
-                  vendor_header_size,
-                  vendor_page_size,
-              )
-          )
-
-          vendor_dtb_offset = (
-              vendor_ramdisk_offset
-              + align(
-                  vendor_ramdisk_size,
-                  vendor_page_size,
-              )
-          )
-
-          vendor_dtb = vendor[
-              vendor_dtb_offset:
-              vendor_dtb_offset
-              + vendor_dtb_size
-          ]
-
-          vendor_fdt_blobs = []
-
-          cursor = 0
-
-          while cursor < len(vendor_dtb):
+          while pos < len(vdt):
               need(
-                  vendor_dtb[
-                      cursor:
-                      cursor + 4
-                  ]
-                  == b"\xd0\r\xfe\xed",
-                  "vendor DTB contains "
-                  f"non-FDT at offset "
-                  f"{cursor}",
+                  vdt[pos:pos + 4] == b"\xd0\r\xfe\xed",
+                  f"vendor DTB non-FDT at {pos}",
               )
-
-              fdt_size = (
-                  struct.unpack_from(
-                      ">I",
-                      vendor_dtb,
-                      cursor + 4,
-                  )[0]
-              )
-
+              size = struct.unpack_from(">I", vdt, pos + 4)[0]
               need(
-                  fdt_size >= 40
-                  and cursor + fdt_size
-                  <= len(vendor_dtb),
+                  size >= 40 and pos + size <= len(vdt),
                   "invalid vendor FDT size",
               )
+              fdt_count += 1
+              pos += size
 
-              vendor_fdt_blobs.append({
-                  "offset": cursor,
-                  "bytes": fdt_size,
-              })
+          need(fdt_count == 3, "vendor DTB FDT count")
 
-              cursor += fdt_size
-
-          vendor_footer = (
-              parse_footer(vendor)
-          )
-
-          vendor_vbmeta = (
-              parse_vbmeta(
-                  vendor_footer[
-                      "vbmeta"
-                  ]
-              )
-          )
-
-          vendor_hashes = (
-              hash_descriptors(
-                  vendor_vbmeta
-              )
-          )
+          vf = avb_footer(vendor)
+          vi = parse_vbmeta(vf["vbmeta"])
+          vh = hash_descriptors(vi)
 
           need(
-              set(vendor_hashes)
-              == {"vendor_boot"},
-              "vendor_boot embedded "
-              "descriptor set",
-          )
-
-          need(
-              verify_hash_descriptor(
-                  vendor,
-                  vendor_hashes[
-                      "vendor_boot"
-                  ],
-              ),
+              set(vh) == {"vendor_boot"}
+              and verify_descriptor(vendor, vh["vendor_boot"]),
               "vendor_boot embedded AVB hash",
           )
-
-          # --------------------------------------------------
-          # dtbo.img
-          # --------------------------------------------------
+          need(
+              vh["vendor_boot"]["digest"]
+              == os.environ["VENDOR_BOOT_AVB_DIGEST"],
+              "vendor_boot AVB digest identity",
+          )
 
           (
-              dtbo_magic,
-              dtbo_table_size,
-              dtbo_header_size,
-              dtbo_entry_size,
-              dtbo_entry_count,
-              dtbo_entries_offset,
-              dtbo_page_size,
-              dtbo_version,
-          ) = struct.unpack_from(
-              ">8I",
-              dtbo,
-              0,
-          )
-
-          for index in range(
-              dtbo_entry_count
-          ):
-              offset = (
-                  dtbo_entries_offset
-                  + index
-                  * dtbo_entry_size
-              )
-
-              size, start = (
-                  struct.unpack_from(
-                      ">II",
-                      dtbo,
-                      offset,
-                  )
-              )
-
-              need(
-                  start + size
-                  <= dtbo_table_size,
-                  "DTBO entry "
-                  f"{index} outside table",
-              )
-
-              need(
-                  dtbo[
-                      start:
-                      start + 4
-                  ]
-                  == b"\xd0\r\xfe\xed",
-                  "DTBO entry "
-                  f"{index} not FDT",
-              )
-
-          dtbo_footer = (
-              parse_footer(dtbo)
-          )
-
-          dtbo_vbmeta = (
-              parse_vbmeta(
-                  dtbo_footer[
-                      "vbmeta"
-                  ]
-              )
-          )
-
-          dtbo_hashes = (
-              hash_descriptors(
-                  dtbo_vbmeta
-              )
-          )
+              dt_magic,
+              table_size,
+              dt_header_size,
+              entry_size,
+              entry_count,
+              entries_offset,
+              dt_page,
+              dt_version,
+          ) = struct.unpack_from(">8I", dtbo, 0)
 
           need(
-              set(dtbo_hashes)
-              == {"dtbo"},
-              "dtbo embedded descriptor set",
+              dt_magic == 0xD7B7AB1E
+              and table_size == 2760081
+              and dt_header_size == 32
+              and entry_size == 32
+              and entry_count == 16
+              and entries_offset == 32
+              and dt_page == 4096
+              and dt_version == 0,
+              "DTBO table geometry",
           )
 
+          for i in range(entry_count):
+              offset = entries_offset + i * entry_size
+              size, start = struct.unpack_from(">II", dtbo, offset)
+              need(
+                  start + size <= table_size,
+                  f"DTBO entry {i} outside table",
+              )
+              need(
+                  dtbo[start:start + 4] == b"\xd0\r\xfe\xed",
+                  f"DTBO entry {i} is not FDT",
+              )
+
+          df = avb_footer(dtbo)
+          di = parse_vbmeta(df["vbmeta"])
+          dh = hash_descriptors(di)
+
           need(
-              verify_hash_descriptor(
-                  dtbo,
-                  dtbo_hashes["dtbo"],
-              ),
+              set(dh) == {"dtbo"}
+              and verify_descriptor(dtbo, dh["dtbo"]),
               "dtbo embedded AVB hash",
           )
-
-          # --------------------------------------------------
-          # top-level vbmeta.img
-          # --------------------------------------------------
-
-          top = parse_vbmeta(
-              vbmeta
+          need(
+              dh["dtbo"]["digest"] == os.environ["DTBO_AVB_DIGEST"],
+              "dtbo AVB digest identity",
           )
 
-          top_hashes = (
-              hash_descriptors(top)
-          )
+          top = parse_vbmeta(vbmeta)
+          top_hashes = hash_descriptors(top)
 
           need(
-              top["algorithm_type"] == 1,
-              "top-level vbmeta algorithm",
+              top["algorithm_type"] == 1
+              and top["hash_verifies"]
+              and top["signature_verifies"],
+              "top-level vbmeta signature verification",
           )
-
           need(
-              top["hash_verifies"],
-              "top-level vbmeta "
-              "authentication hash",
+              top["signed_digest"] == os.environ["VBMETA_SIGNED_DIGEST"],
+              "top-level signed digest identity",
           )
-
           need(
-              top["signature_verifies"],
-              "top-level vbmeta RSA signature",
+              top["public_key_sha256"] == os.environ["VBMETA_KEY_SHA"],
+              "top-level public key identity",
           )
-
           need(
-              set(top_hashes)
-              == {
-                  "boot",
-                  "dtbo",
-                  "vendor_boot",
-              },
-              "top-level hash descriptor set",
+              set(top_hashes) == {"boot", "dtbo", "vendor_boot"},
+              "top-level direct hash set",
           )
 
-          source_images = {
+          images = {
               "boot": boot,
               "dtbo": dtbo,
               "vendor_boot": vendor,
           }
 
-          for partition, descriptor in (
-              top_hashes.items()
-          ):
+          for name, descriptor in top_hashes.items():
               need(
-                  verify_hash_descriptor(
-                      source_images[
-                          partition
-                      ],
-                      descriptor,
-                  ),
-                  "top-level "
-                  f"{partition} hash",
+                  verify_descriptor(images[name], descriptor),
+                  f"top-level {name} hash verification",
               )
+
+          need(
+              top_hashes["boot"]["digest"]
+              == os.environ["BOOT_AVB_DIGEST"],
+              "top-level boot digest",
+          )
+          need(
+              top_hashes["dtbo"]["digest"]
+              == os.environ["DTBO_AVB_DIGEST"],
+              "top-level dtbo digest",
+          )
+          need(
+              top_hashes["vendor_boot"]["digest"]
+              == os.environ["VENDOR_BOOT_AVB_DIGEST"],
+              "top-level vendor_boot digest",
+          )
 
           chains = {
-              descriptor["partition"]:
-                  descriptor
-              for descriptor
-              in top["descriptors"]
-              if descriptor["type"]
-              == "chain"
+              d["partition"]: d
+              for d in top["descriptors"]
+              if d["type"] == "chain"
           }
 
-          hashtrees = sorted(
-              descriptor["partition"]
-              for descriptor
-              in top["descriptors"]
-              if descriptor["type"]
-              == "hashtree"
-          )
-
-          # --------------------------------------------------
-          # Exact identity gates
-          # --------------------------------------------------
-
-          need(
-              len(boot)
-              == int(
-                  os.environ[
-                      "BOOT_BYTES"
-                  ]
-              )
-              and sha(boot)
-              == os.environ[
-                  "BOOT_SHA"
-              ],
-              "boot identity",
+          trees = sorted(
+              d["partition"]
+              for d in top["descriptors"]
+              if d["type"] == "hashtree"
           )
 
           need(
-              len(vendor)
-              == int(
-                  os.environ[
-                      "VENDOR_BOOT_BYTES"
-                  ]
-              )
-              and sha(vendor)
-              == os.environ[
-                  "VENDOR_BOOT_SHA"
-              ],
-              "vendor_boot identity",
-          )
-
-          need(
-              len(dtbo)
-              == int(
-                  os.environ[
-                      "DTBO_BYTES"
-                  ]
-              )
-              and sha(dtbo)
-              == os.environ[
-                  "DTBO_SHA"
-              ],
-              "dtbo identity",
-          )
-
-          need(
-              len(vbmeta)
-              == int(
-                  os.environ[
-                      "VBMETA_BYTES"
-                  ]
-              )
-              and sha(vbmeta)
-              == os.environ[
-                  "VBMETA_SHA"
-              ],
-              "vbmeta identity",
-          )
-
-          need(
-              header_version == 3
-              and header_size == 1580
-              and reserved
-              == (0, 0, 0, 0),
-              "boot v3 header",
-          )
-
-          need(
-              kernel_size
-              == int(
-                  os.environ[
-                      "STOCK_KERNEL_BYTES"
-                  ]
-              )
-              and sha(kernel)
-              == os.environ[
-                  "STOCK_KERNEL_SHA"
-              ],
-              "stock kernel identity",
-          )
-
-          need(
-              ramdisk_size
-              == int(
-                  os.environ[
-                      "RAMDISK_BYTES"
-                  ]
-              )
-              and sha(ramdisk)
-              == os.environ[
-                  "RAMDISK_SHA"
-              ],
-              "stock ramdisk identity",
-          )
-
-          need(
-              ramdisk[:4]
-              == bytes.fromhex(
-                  "02214c18"
-              ),
-              "ramdisk is not LZ4 legacy",
-          )
-
-          need(
-              text_offset == 0x80000
-              and arm_flags == 0xA
-              and arm_magic
-              == 0x644D5241
-              and arm_res5 == 0x40,
-              "ARM64 header",
-          )
-
-          need(
-              boot_footer[
-                  "original_size"
-              ]
-              == payload_end,
-              "boot AVB footer geometry",
-          )
-
-          need(
-              boot_hashes[
-                  "boot"
-              ]["digest"]
-              == os.environ[
-                  "BOOT_AVB_DIGEST"
-              ],
-              "boot AVB digest identity",
-          )
-
-          need(
-              vendor_header_version
-              == 3
-              and vendor_header_size
-              == 2112
-              and vendor_page_size
-              == 4096,
-              "vendor_boot v3 header",
-          )
-
-          need(
-              kernel_addr == 32768
-              and ramdisk_addr
-              == 16777216
-              and tags_addr == 256
-              and vendor_dtb_addr
-              == 0x1F00000,
-              "vendor_boot addresses",
-          )
-
-          need(
-              vendor_dtb_size
-              == int(
-                  os.environ[
-                      "VENDOR_DTB_BYTES"
-                  ]
-              )
-              and sha(vendor_dtb)
-              == os.environ[
-                  "VENDOR_DTB_SHA"
-              ]
-              and len(
-                  vendor_fdt_blobs
-              ) == 3,
-              "vendor DTB identity",
-          )
-
-          need(
-              vendor_hashes[
-                  "vendor_boot"
-              ]["digest"]
-              == os.environ[
-                  "VENDOR_BOOT_AVB_DIGEST"
-              ],
-              "vendor_boot AVB identity",
-          )
-
-          need(
-              dtbo_magic
-              == 0xD7B7AB1E
-              and dtbo_table_size
-              == 2760081,
-              "DTBO table identity",
-          )
-
-          need(
-              dtbo_header_size == 32
-              and dtbo_entry_size == 32
-              and dtbo_entry_count == 16
-              and dtbo_entries_offset
-              == 32
-              and dtbo_page_size
-              == 4096
-              and dtbo_version == 0,
-              "DTBO geometry",
-          )
-
-          need(
-              dtbo_hashes[
-                  "dtbo"
-              ]["digest"]
-              == os.environ[
-                  "DTBO_AVB_DIGEST"
-              ],
-              "dtbo AVB identity",
-          )
-
-          need(
-              top["signed_digest"]
-              == os.environ[
-                  "VBMETA_SIGNED_DIGEST"
-              ],
-              "vbmeta signed digest",
-          )
-
-          need(
-              top[
-                  "public_key_sha256"
-              ]
-              == os.environ[
-                  "VBMETA_KEY_SHA"
-              ],
-              "vbmeta public key",
-          )
-
-          need(
-              sorted(chains)
-              == ["vbmeta_system"]
-              and chains[
-                  "vbmeta_system"
-              ][
+              sorted(chains) == ["vbmeta_system"]
+              and chains["vbmeta_system"][
                   "rollback_index_location"
               ] == 2,
               "vbmeta chain",
           )
-
           need(
-              hashtrees
-              == [
-                  "mi_ext",
-                  "odm",
-                  "vendor",
-              ],
+              trees == ["mi_ext", "odm", "vendor"],
               "vbmeta hashtrees",
           )
-
           need(
-              top_hashes[
-                  "boot"
-              ]["digest"]
-              == os.environ[
-                  "BOOT_AVB_DIGEST"
-              ],
-              "top-level boot digest",
-          )
-
-          need(
-              top_hashes[
-                  "dtbo"
-              ]["digest"]
-              == os.environ[
-                  "DTBO_AVB_DIGEST"
-              ],
-              "top-level dtbo digest",
-          )
-
-          need(
-              top_hashes[
-                  "vendor_boot"
-              ]["digest"]
-              == os.environ[
-                  "VENDOR_BOOT_AVB_DIGEST"
-              ],
-              "top-level vendor_boot digest",
-          )
-
-          need(
-              os.environ[
-                  "STOCK_FINGERPRINT"
-              ]
-              in top[
-                  "properties"
-              ].get(
+              os.environ["STOCK_FINGERPRINT"]
+              in top["properties"].get(
                   "com.android.build.boot.fingerprint",
                   [],
               ),
-              "boot fingerprint",
+              "stock boot fingerprint",
           )
-
           need(
               "2024-12-01"
-              in top[
-                  "properties"
-              ].get(
+              in top["properties"].get(
                   "com.android.build.boot.security_patch",
                   [],
               ),
-              "security patch",
-          )
-
-          major = (
-              os_version_raw >> 25
-          ) & 0x7F
-
-          minor = (
-              os_version_raw >> 18
-          ) & 0x7F
-
-          patch = (
-              os_version_raw >> 11
-          ) & 0x7F
-
-          year = (
-              (
-                  os_version_raw >> 4
-              )
-              & 0x7F
-          ) + 2000
-
-          month = (
-              os_version_raw
-              & 0xF
+              "stock boot security patch",
           )
 
           result = {
-              "result":
-                  "PASS_READ_ONLY_REPRODUCED_FROM_FASTBOOT_ROM",
-
+              "result": "PASS_READ_ONLY_REPRODUCED_FROM_FASTBOOT_ROM",
               "source": {
-                  "version":
-                      os.environ[
-                          "ROM_VERSION"
-                      ],
-                  "file":
-                      os.environ[
-                          "ROM_FILE"
-                      ],
-                  "md5":
-                      os.environ[
-                          "ROM_MD5"
-                      ],
+                  "version": os.environ["ROM_VERSION"],
+                  "file": os.environ["ROM_FILE"],
+                  "md5": os.environ["ROM_MD5"],
               },
-
               "boot": {
-                  "bytes":
-                      len(boot),
-                  "sha256":
-                      sha(boot),
-                  "header_version":
-                      header_version,
-                  "header_size":
-                      header_size,
-                  "kernel_bytes":
-                      kernel_size,
-                  "kernel_sha256":
-                      sha(kernel),
-                  "ramdisk_bytes":
-                      ramdisk_size,
-                  "ramdisk_sha256":
-                      sha(ramdisk),
-                  "ramdisk_format":
-                      "lz4_legacy",
-                  "ramdisk_offset":
-                      ramdisk_offset,
-                  "payload_end":
-                      payload_end,
-                  "os_version":
-                      f"{major}.{minor}.{patch}",
-                  "security_patch":
-                      f"{year:04d}-{month:02d}",
-                  "arm64": {
-                      "text_offset":
-                          text_offset,
-                      "image_size":
-                          arm_image_size,
-                      "flags":
-                          arm_flags,
-                      "magic":
-                          (
-                              "0x"
-                              f"{arm_magic:08x}"
-                          ),
-                      "res5":
-                          arm_res5,
-                  },
-                  "embedded_avb_digest":
-                      boot_hashes[
-                          "boot"
-                      ]["digest"],
+                  "bytes": len(boot),
+                  "sha256": h(boot),
+                  "header_version": header_version,
+                  "kernel_bytes": kernel_size,
+                  "kernel_sha256": h(kernel),
+                  "ramdisk_bytes": ramdisk_size,
+                  "ramdisk_sha256": h(ramdisk),
+                  "ramdisk_format": "lz4_legacy",
+                  "arm64_text_offset": text_offset,
+                  "arm64_image_size": arm_size,
+                  "embedded_avb_digest": bh["boot"]["digest"],
               },
-
               "vendor_boot": {
-                  "bytes":
-                      len(vendor),
-                  "sha256":
-                      sha(vendor),
-                  "header_version":
-                      vendor_header_version,
-                  "header_size":
-                      vendor_header_size,
-                  "page_size":
-                      vendor_page_size,
-                  "vendor_ramdisk_bytes":
-                      vendor_ramdisk_size,
-                  "dtb_bytes":
-                      vendor_dtb_size,
-                  "dtb_sha256":
-                      sha(vendor_dtb),
-                  "dtb_fdt_blobs":
-                      vendor_fdt_blobs,
-                  "embedded_avb_digest":
-                      vendor_hashes[
-                          "vendor_boot"
-                      ]["digest"],
+                  "bytes": len(vendor),
+                  "sha256": h(vendor),
+                  "header_version": vhv,
+                  "dtb_bytes": vdsize,
+                  "dtb_sha256": h(vdt),
+                  "dtb_fdt_count": fdt_count,
+                  "embedded_avb_digest": vh["vendor_boot"]["digest"],
               },
-
               "dtbo": {
-                  "bytes":
-                      len(dtbo),
-                  "sha256":
-                      sha(dtbo),
-                  "table_bytes":
-                      dtbo_table_size,
-                  "entry_count":
-                      dtbo_entry_count,
-                  "page_size":
-                      dtbo_page_size,
-                  "embedded_avb_digest":
-                      dtbo_hashes[
-                          "dtbo"
-                      ]["digest"],
+                  "bytes": len(dtbo),
+                  "sha256": h(dtbo),
+                  "entry_count": entry_count,
+                  "embedded_avb_digest": dh["dtbo"]["digest"],
               },
-
               "vbmeta": {
-                  "bytes":
-                      len(vbmeta),
-                  "sha256":
-                      sha(vbmeta),
-                  "required_libavb":
-                      top[
-                          "required_libavb"
-                      ],
-                  "algorithm_type":
-                      top[
-                          "algorithm_type"
-                      ],
-                  "signature_verifies":
-                      top[
-                          "signature_verifies"
-                      ],
-                  "signed_digest":
-                      top[
-                          "signed_digest"
-                      ],
-                  "public_key_sha256":
-                      top[
-                          "public_key_sha256"
-                      ],
-                  "direct_hashes": {
-                      name:
-                          descriptor[
-                              "digest"
-                          ]
-                      for name, descriptor
-                      in top_hashes.items()
-                  },
-                  "direct_hashes_verify":
-                      True,
-                  "chain_partitions":
-                      sorted(chains),
-                  "hashtree_partitions":
-                      hashtrees,
+                  "bytes": len(vbmeta),
+                  "sha256": h(vbmeta),
+                  "signature_verifies": top["signature_verifies"],
+                  "direct_hashes_verify": True,
+                  "chain_partitions": sorted(chains),
+                  "hashtree_partitions": trees,
               },
           }
 
-          (
-              OUT
-              / "STOCK-ROM-AUDIT.json"
-          ).write_text(
-              json.dumps(
-                  result,
-                  indent=2,
-                  sort_keys=True,
-              )
-              + "\n",
+          (out / "STOCK-ROM-AUDIT.json").write_text(
+              json.dumps(result, indent=2, sort_keys=True) + "\n",
               encoding="utf-8",
           )
 
-          summary = f"""
-          VEUX Workflow 18 - Exact Stock ROM Read-Only Audit
+          summary = f"""VEUX Workflow 18 - Exact Stock ROM Read-Only Audit
           ==================================================
           RESULT: PASS_READ_ONLY_REPRODUCED_FROM_FASTBOOT_ROM
 
           Source ROM: {os.environ['ROM_VERSION']}
           Source package: {os.environ['ROM_FILE']}
-          Package MD5 gate: {os.environ['ROM_MD5']}
+          Source MD5: {os.environ['ROM_MD5']}
 
-          boot.img:
-          {len(boot)} bytes
-          SHA-256 {sha(boot)}
+          boot.img: {len(boot)} bytes
+          SHA-256: {h(boot)}
 
-          vendor_boot.img:
-          {len(vendor)} bytes
-          SHA-256 {sha(vendor)}
+          vendor_boot.img: {len(vendor)} bytes
+          SHA-256: {h(vendor)}
 
-          dtbo.img:
-          {len(dtbo)} bytes
-          SHA-256 {sha(dtbo)}
+          dtbo.img: {len(dtbo)} bytes
+          SHA-256: {h(dtbo)}
 
-          vbmeta.img:
-          {len(vbmeta)} bytes
-          SHA-256 {sha(vbmeta)}
+          vbmeta.img: {len(vbmeta)} bytes
+          SHA-256: {h(vbmeta)}
 
-          Boot header:
-          v{header_version}
-          header size {header_size}
-          alignment 4096
+          Boot v3 / ARM64 / LZ4 ramdisk: PASS
+          Embedded boot AVB hash: PASS
+          vendor_boot v3 / 3 FDT blobs: PASS
+          Embedded vendor_boot AVB hash: PASS
+          DTBO table / 16 entries: PASS
+          Embedded dtbo AVB hash: PASS
+          Top-level SHA256_RSA2048 vbmeta signature: PASS
+          Direct boot/dtbo/vendor_boot hashes: PASS
+          Chain vbmeta_system: PASS
+          Hashtrees mi_ext/odm/vendor: PASS
 
-          Stock kernel:
-          {kernel_size} bytes
-          SHA-256 {sha(kernel)}
+          The four images extracted by GitHub are byte-identical to the
+          previously verified originals from this exact ROM.
 
-          Stock ramdisk:
-          {ramdisk_size} bytes
-          LZ4 legacy
-          SHA-256 {sha(ramdisk)}
-
-          Boot embedded AVB hash: PASS
-
-          vendor_boot:
-          v{vendor_header_version}
-          page size {vendor_page_size}
-
-          vendor DTB:
-          {vendor_dtb_size} bytes
-          SHA-256 {sha(vendor_dtb)}
-          FDT blobs {len(vendor_fdt_blobs)}
-
-          vendor_boot embedded AVB hash: PASS
-
-          DTBO table:
-          {dtbo_entry_count} entries
-          {dtbo_table_size} bytes
-
-          dtbo embedded AVB hash: PASS
-
-          Top-level vbmeta:
-          SHA256_RSA2048
-
-          Authentication hash: PASS
-          RSA signature against embedded public key: PASS
-          Direct hash descriptors boot/dtbo/vendor_boot: PASS
-
-          Chain:
-          vbmeta_system
-
-          Hashtrees:
-          mi_ext
-          odm
-          vendor
-
-          REPRODUCIBILITY:
-          The four images extracted by GitHub are byte-identical
-          to the four original images previously extracted from
-          this exact ROM.
-
-          No stock image was modified.
+          No image modified.
           No repack.
           No device operation.
           No flash.
@@ -2063,14 +1159,10 @@ jobs:
 
           cleaned = "\n".join(
               line.strip()
-              for line
-              in summary.splitlines()
+              for line in summary.splitlines()
           ).strip() + "\n"
 
-          (
-              OUT
-              / "WORKFLOW18-SUMMARY.txt"
-          ).write_text(
+          (out / "WORKFLOW18-SUMMARY.txt").write_text(
               cleaned,
               encoding="utf-8",
           )
@@ -2078,10 +1170,7 @@ jobs:
           print(cleaned)
           PY
 
-          python3 \
-            "$WORK/audit.py" \
-            "$STOCK" \
-            "$AUDIT"
+          python3 "$WORK/audit.py" "$STOCK" "$AUDIT"
 
       - name: Create and verify artifact manifest
         shell: bash
@@ -2092,24 +1181,12 @@ jobs:
             echo "VEUX Workflow 18 artifact"
             echo "========================="
             echo
-            echo "Source ROM:"
-            echo "$ROM_FILE"
+            echo "Source ROM: $ROM_VERSION"
+            echo "Source package: $ROM_FILE"
+            echo "Source MD5: $ROM_MD5"
             echo
-            echo "Version:"
-            echo "$ROM_VERSION"
-            echo
-            echo "Expected source MD5:"
-            echo "$ROM_MD5"
-            echo
-            echo "Contains:"
-            echo "- exact stock boot.img"
-            echo "- exact stock vendor_boot.img"
-            echo "- exact stock dtbo.img"
-            echo "- exact stock vbmeta.img"
-            echo "- complete read-only audit records"
-            echo
-            echo "The multi-gigabyte source ROM archive is intentionally"
-            echo "not included in the final artifact."
+            echo "Contains exact stock images plus read-only audit records."
+            echo "The multi-gigabyte ROM archive itself is intentionally omitted."
           } > "$AUDIT/ARTIFACT-MANIFEST.txt"
 
           (
@@ -2126,13 +1203,11 @@ jobs:
                 done \
               > SHA256SUMS
 
-            sha256sum \
-              -c SHA256SUMS \
+            sha256sum -c SHA256SUMS \
               | tee SHA256SUMS.verify.txt
           )
 
-          grep \
-            -qx \
+          grep -qx \
             'RESULT: PASS_READ_ONLY_REPRODUCED_FROM_FASTBOOT_ROM' \
             "$AUDIT/WORKFLOW18-SUMMARY.txt"
 
@@ -2146,9 +1221,7 @@ jobs:
 
           {
             echo "VEUX Workflow 18: FAILURE"
-            echo
-            echo "Finished:"
-            date -u '+%Y-%m-%dT%H:%M:%SZ'
+            echo "Finished: $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
             echo
             echo "No device operation was performed."
             echo "Nothing was flashed."
