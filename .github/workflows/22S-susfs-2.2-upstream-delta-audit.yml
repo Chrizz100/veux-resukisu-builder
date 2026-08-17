@@ -1,0 +1,838 @@
+name: 22S - SUSFS 2.2 Upstream Delta Audit
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  REFERENCE_REPO: "https://github.com/JackA1ltman/NonGKI_Kernel_Build_2nd.git"
+  REFERENCE_COMMIT: "90d9f91d43ecaaee044e79c75a01d6a512508eb3"
+  REFERENCE_PATCH: "Patches/Patch/susfs_patch_to_5.4.patch"
+  REFERENCE_PATCH_SHA256: "21233ce9a0a02590d977cd193aa493b23df7008e73fed402901e033a303b9631"
+
+  SUSFS_REPO: "https://gitlab.com/simonpunk/susfs4ksu.git"
+  SUSFS_BRANCH: "gki-android12-5.10"
+
+jobs:
+  audit:
+    name: Read-only SUSFS 2.2 upstream differential
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+
+    env:
+      WORK: ${{ github.workspace }}/workflow22S
+      REF: ${{ github.workspace }}/workflow22S/reference
+      UPSTREAM: ${{ github.workspace }}/workflow22S/upstream
+      OUT: ${{ github.workspace }}/workflow22S/output
+
+    steps:
+      - name: Prepare audit workspace
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -rf "$WORK"
+          mkdir -p "$WORK" "$OUT"
+
+          cat > "$OUT/SCOPE.txt" <<'EOF'
+          VEUX Workflow 22S
+          =================
+
+          PURPOSE:
+          Read-only SUSFS 2.2 upstream delta audit.
+
+          Compare the exact SUSFS 5.4 backport reference previously used
+          for the VEUX kernel against the current official SUSFS 2.2
+          gki-android12-5.10 upstream branch.
+
+          This workflow does NOT:
+          - modify the VEUX kernel
+          - rebuild the VEUX kernel
+          - change ReSukiSU
+          - change the final Workflow-21 package
+          - create a flashable image
+          - access a phone
+          - flash anything
+
+          Special attention:
+          - OPEN_REDIRECT
+          - RCU / SRCU synchronization
+          - possible UAF fixes
+          - memory leak fixes
+          - deadlock fixes
+          - SUS_MAP changes
+          - SELinux-related SUSFS changes
+          - other kernel-side changes after the SUSFS v2.2.0 bump
+          EOF
+
+      - name: Checkout exact historical 5.4 SUSFS reference
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git clone \
+            --filter=blob:none \
+            --no-checkout \
+            "$REFERENCE_REPO" \
+            "$REF"
+
+          git -C "$REF" fetch \
+            --depth=1 \
+            origin \
+            "$REFERENCE_COMMIT"
+
+          git -C "$REF" checkout \
+            --detach \
+            "$REFERENCE_COMMIT"
+
+          ACTUAL_COMMIT="$(
+            git -C "$REF" rev-parse HEAD
+          )"
+
+          test "$ACTUAL_COMMIT" = "$REFERENCE_COMMIT"
+
+          test -f "$REF/$REFERENCE_PATCH"
+
+          ACTUAL_PATCH_SHA="$(
+            sha256sum "$REF/$REFERENCE_PATCH" |
+            awk '{print $1}'
+          )"
+
+          test "$ACTUAL_PATCH_SHA" = "$REFERENCE_PATCH_SHA256"
+
+          {
+            echo "REFERENCE_REPO=$REFERENCE_REPO"
+            echo "REFERENCE_COMMIT=$ACTUAL_COMMIT"
+            echo "REFERENCE_PATCH=$REFERENCE_PATCH"
+            echo "REFERENCE_PATCH_SHA256=$ACTUAL_PATCH_SHA"
+            echo "REFERENCE_GATE=PASS"
+          } > "$OUT/REFERENCE-GATE.txt"
+
+      - name: Checkout current official SUSFS 2.2 upstream
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git clone \
+            --single-branch \
+            --branch "$SUSFS_BRANCH" \
+            "$SUSFS_REPO" \
+            "$UPSTREAM"
+
+          HEAD_SHA="$(
+            git -C "$UPSTREAM" rev-parse HEAD
+          )"
+
+          HEAD_SHORT="$(
+            git -C "$UPSTREAM" rev-parse --short=12 HEAD
+          )"
+
+          HEAD_DATE="$(
+            git -C "$UPSTREAM" show \
+              -s \
+              --format='%cI' \
+              HEAD
+          )"
+
+          HEAD_SUBJECT="$(
+            git -C "$UPSTREAM" show \
+              -s \
+              --format='%s' \
+              HEAD
+          )"
+
+          {
+            echo "SUSFS_REPO=$SUSFS_REPO"
+            echo "SUSFS_BRANCH=$SUSFS_BRANCH"
+            echo "UPSTREAM_HEAD=$HEAD_SHA"
+            echo "UPSTREAM_HEAD_SHORT=$HEAD_SHORT"
+            echo "UPSTREAM_HEAD_DATE=$HEAD_DATE"
+            echo "UPSTREAM_HEAD_SUBJECT=$HEAD_SUBJECT"
+          } > "$OUT/UPSTREAM-HEAD.txt"
+
+      - name: Locate SUSFS v2.2.0 baseline commit
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          V22_COMMIT="$(
+            git -C "$UPSTREAM" log \
+              --format='%H' \
+              --grep='Bump version to v2\.2\.0' \
+              -n 1
+          )"
+
+          test -n "$V22_COMMIT"
+
+          V22_DATE="$(
+            git -C "$UPSTREAM" show \
+              -s \
+              --format='%cI' \
+              "$V22_COMMIT"
+          )"
+
+          V22_SUBJECT="$(
+            git -C "$UPSTREAM" show \
+              -s \
+              --format='%s' \
+              "$V22_COMMIT"
+          )"
+
+          {
+            echo "SUSFS_V2_2_BASE_COMMIT=$V22_COMMIT"
+            echo "SUSFS_V2_2_BASE_DATE=$V22_DATE"
+            echo "SUSFS_V2_2_BASE_SUBJECT=$V22_SUBJECT"
+          } > "$OUT/SUSFS-V2.2-BASELINE.txt"
+
+          echo "$V22_COMMIT" > "$WORK/v22.commit"
+
+      - name: Inventory every upstream commit after v2.2.0 baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          V22_COMMIT="$(cat "$WORK/v22.commit")"
+
+          git -C "$UPSTREAM" log \
+            --reverse \
+            --date=iso-strict \
+            --format='%H%x09%ad%x09%s' \
+            "${V22_COMMIT}..HEAD" \
+            > "$OUT/UPSTREAM-COMMITS-SINCE-V2.2.txt"
+
+          COMMIT_COUNT="$(
+            wc -l < "$OUT/UPSTREAM-COMMITS-SINCE-V2.2.txt"
+          )"
+
+          echo \
+            "UPSTREAM_COMMITS_AFTER_V2_2=$COMMIT_COUNT" \
+            > "$OUT/UPSTREAM-DELTA-COUNT.txt"
+
+          git -C "$UPSTREAM" diff \
+            --stat \
+            "$V22_COMMIT..HEAD" \
+            -- kernel_patches \
+            > "$OUT/UPSTREAM-SINCE-V2.2.stat.txt"
+
+          git -C "$UPSTREAM" diff \
+            "$V22_COMMIT..HEAD" \
+            -- kernel_patches \
+            > "$OUT/UPSTREAM-SINCE-V2.2.diff"
+
+      - name: Record recent kernel-side fix commits
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          {
+            echo "=== OPEN_REDIRECT / UAF ==="
+            git -C "$UPSTREAM" log \
+              --all \
+              --date=iso-strict \
+              --format='%H %ad %s' \
+              --grep='OPEN_REDIRECT' \
+              -i \
+              -n 30 || true
+
+            echo
+            echo "=== UAF ==="
+            git -C "$UPSTREAM" log \
+              --all \
+              --date=iso-strict \
+              --format='%H %ad %s' \
+              --grep='UAF' \
+              -i \
+              -n 30 || true
+
+            echo
+            echo "=== memory leak ==="
+            git -C "$UPSTREAM" log \
+              --all \
+              --date=iso-strict \
+              --format='%H %ad %s' \
+              --grep='memory leak' \
+              -i \
+              -n 30 || true
+
+            echo
+            echo "=== deadlock ==="
+            git -C "$UPSTREAM" log \
+              --all \
+              --date=iso-strict \
+              --format='%H %ad %s' \
+              --grep='deadlock' \
+              -i \
+              -n 30 || true
+
+            echo
+            echo "=== SUS_MAP ==="
+            git -C "$UPSTREAM" log \
+              --all \
+              --date=iso-strict \
+              --format='%H %ad %s' \
+              --grep='SUS_MAP' \
+              -i \
+              -n 30 || true
+
+            echo
+            echo "=== SELinux ==="
+            git -C "$UPSTREAM" log \
+              --all \
+              --date=iso-strict \
+              --format='%H %ad %s' \
+              --grep='selinux' \
+              -i \
+              -n 30 || true
+          } > "$OUT/RECENT-KERNEL-FIX-COMMITS.txt"
+
+      - name: Locate current OPEN_REDIRECT synchronization implementation
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          {
+            echo "CURRENT OFFICIAL UPSTREAM"
+            echo "========================="
+            echo
+
+            echo "synchronize_srcu references:"
+            grep -RIn \
+              --exclude-dir=.git \
+              'synchronize_srcu' \
+              "$UPSTREAM/kernel_patches" \
+              || true
+
+            echo
+            echo "synchronize_rcu references:"
+            grep -RIn \
+              --exclude-dir=.git \
+              'synchronize_rcu' \
+              "$UPSTREAM/kernel_patches" \
+              || true
+
+            echo
+            echo "susfs_srcu_open_redirect references:"
+            grep -RIn \
+              --exclude-dir=.git \
+              'susfs_srcu_open_redirect' \
+              "$UPSTREAM/kernel_patches" \
+              || true
+
+            echo
+            echo "OPEN_REDIRECT references:"
+            grep -RIn \
+              --exclude-dir=.git \
+              'OPEN_REDIRECT' \
+              "$UPSTREAM/kernel_patches" \
+              || true
+          } > "$OUT/CURRENT-UPSTREAM-OPEN-REDIRECT.txt"
+
+      - name: Inspect exact historical 5.4 reference patch
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          PATCH="$REF/$REFERENCE_PATCH"
+
+          {
+            echo "EXACT HISTORICAL 5.4 REFERENCE PATCH"
+            echo "===================================="
+            echo
+
+            echo "Patch SHA-256:"
+            sha256sum "$PATCH"
+
+            echo
+            echo "synchronize_srcu references:"
+            grep -n \
+              'synchronize_srcu' \
+              "$PATCH" \
+              || true
+
+            echo
+            echo "synchronize_rcu references:"
+            grep -n \
+              'synchronize_rcu' \
+              "$PATCH" \
+              || true
+
+            echo
+            echo "susfs_srcu_open_redirect references:"
+            grep -n \
+              'susfs_srcu_open_redirect' \
+              "$PATCH" \
+              || true
+
+            echo
+            echo "OPEN_REDIRECT references:"
+            grep -n \
+              'OPEN_REDIRECT' \
+              "$PATCH" \
+              || true
+          } > "$OUT/HISTORICAL-5.4-OPEN-REDIRECT.txt"
+
+      - name: Extract OPEN_REDIRECT context from both generations
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          PATCH="$REF/$REFERENCE_PATCH"
+
+          python3 - \
+            "$PATCH" \
+            "$UPSTREAM/kernel_patches" \
+            "$OUT" <<'PY'
+          import pathlib
+          import re
+          import sys
+
+          old_patch = pathlib.Path(sys.argv[1])
+          upstream_root = pathlib.Path(sys.argv[2])
+          out = pathlib.Path(sys.argv[3])
+
+          patterns = [
+              "OPEN_REDIRECT",
+              "open_redirect",
+              "synchronize_srcu",
+              "synchronize_rcu",
+              "susfs_srcu_open_redirect",
+          ]
+
+          def collect_file(path):
+              try:
+                  text = path.read_text(
+                      encoding="utf-8",
+                      errors="replace",
+                  )
+              except Exception:
+                  return []
+
+              lines = text.splitlines()
+              hits = []
+
+              for idx, line in enumerate(lines):
+                  if any(
+                      p.lower() in line.lower()
+                      for p in patterns
+                  ):
+                      start = max(0, idx - 4)
+                      end = min(len(lines), idx + 5)
+
+                      hits.append(
+                          (
+                              idx + 1,
+                              "\n".join(
+                                  f"{i + 1:6d}: {lines[i]}"
+                                  for i in range(start, end)
+                              ),
+                          )
+                      )
+
+              return hits
+
+          old_hits = collect_file(old_patch)
+
+          with (
+              out / "HISTORICAL-5.4-OPEN-REDIRECT-CONTEXT.txt"
+          ).open("w", encoding="utf-8") as f:
+              for line_no, context in old_hits:
+                  f.write(
+                      f"=== {old_patch.name}:{line_no} ===\n"
+                  )
+                  f.write(context)
+                  f.write("\n\n")
+
+          with (
+              out / "CURRENT-UPSTREAM-OPEN-REDIRECT-CONTEXT.txt"
+          ).open("w", encoding="utf-8") as f:
+              for path in sorted(
+                  p
+                  for p in upstream_root.rglob("*")
+                  if p.is_file()
+              ):
+                  hits = collect_file(path)
+
+                  for line_no, context in hits:
+                      rel = path.relative_to(upstream_root)
+
+                      f.write(
+                          f"=== {rel}:{line_no} ===\n"
+                      )
+                      f.write(context)
+                      f.write("\n\n")
+          PY
+
+      - name: Detect whether the fresh SRCU fix is absent from our historical backport
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          PATCH="$REF/$REFERENCE_PATCH"
+
+          OLD_HAS_SRCU=0
+          OLD_HAS_GLOBAL_RCU=0
+          NEW_HAS_SRCU=0
+          NEW_HAS_OPEN_REDIRECT_SRCU=0
+
+          if grep -q \
+            'synchronize_srcu' \
+            "$PATCH"; then
+            OLD_HAS_SRCU=1
+          fi
+
+          if grep -q \
+            'synchronize_rcu' \
+            "$PATCH"; then
+            OLD_HAS_GLOBAL_RCU=1
+          fi
+
+          if grep -Rqs \
+            --exclude-dir=.git \
+            'synchronize_srcu' \
+            "$UPSTREAM/kernel_patches"; then
+            NEW_HAS_SRCU=1
+          fi
+
+          if grep -Rqs \
+            --exclude-dir=.git \
+            'susfs_srcu_open_redirect' \
+            "$UPSTREAM/kernel_patches"; then
+            NEW_HAS_OPEN_REDIRECT_SRCU=1
+          fi
+
+          {
+            echo "HISTORICAL_5_4_HAS_SYNCHRONIZE_SRCU=$OLD_HAS_SRCU"
+            echo "HISTORICAL_5_4_HAS_SYNCHRONIZE_RCU=$OLD_HAS_GLOBAL_RCU"
+            echo "CURRENT_UPSTREAM_HAS_SYNCHRONIZE_SRCU=$NEW_HAS_SRCU"
+            echo "CURRENT_UPSTREAM_HAS_OPEN_REDIRECT_SRCU=$NEW_HAS_OPEN_REDIRECT_SRCU"
+          } > "$OUT/SRCU-COMPARISON.txt"
+
+          if \
+            [ "$OLD_HAS_SRCU" -eq 0 ] && \
+            [ "$NEW_HAS_SRCU" -eq 1 ] && \
+            [ "$NEW_HAS_OPEN_REDIRECT_SRCU" -eq 1 ]; then
+
+            echo \
+              "SRCU_OPEN_REDIRECT_DELTA=DETECTED" \
+              >> "$OUT/SRCU-COMPARISON.txt"
+          else
+            echo \
+              "SRCU_OPEN_REDIRECT_DELTA=REQUIRES_MANUAL_CLASSIFICATION" \
+              >> "$OUT/SRCU-COMPARISON.txt"
+          fi
+
+      - name: Find exact upstream OPEN_REDIRECT UAF fix
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          FIX_COMMIT="$(
+            git -C "$UPSTREAM" log \
+              --format='%H' \
+              --grep='OPEN_REDIRECT: Fix potential UAF bug' \
+              -i \
+              -n 1
+          )"
+
+          if [ -n "$FIX_COMMIT" ]; then
+            {
+              echo "OPEN_REDIRECT_UAF_FIX_FOUND=YES"
+              echo "FIX_COMMIT=$FIX_COMMIT"
+              echo "FIX_DATE=$(
+                git -C "$UPSTREAM" show \
+                  -s \
+                  --format='%cI' \
+                  "$FIX_COMMIT"
+              )"
+              echo "FIX_SUBJECT=$(
+                git -C "$UPSTREAM" show \
+                  -s \
+                  --format='%s' \
+                  "$FIX_COMMIT"
+              )"
+            } > "$OUT/OPEN-REDIRECT-UAF-FIX.txt"
+
+            git -C "$UPSTREAM" show \
+              --stat \
+              --oneline \
+              "$FIX_COMMIT" \
+              >> "$OUT/OPEN-REDIRECT-UAF-FIX.txt"
+
+            git -C "$UPSTREAM" show \
+              --format=fuller \
+              "$FIX_COMMIT" \
+              -- kernel_patches \
+              > "$OUT/OPEN-REDIRECT-UAF-FIX.diff"
+          else
+            {
+              echo "OPEN_REDIRECT_UAF_FIX_FOUND=NO"
+            } > "$OUT/OPEN-REDIRECT-UAF-FIX.txt"
+          fi
+
+      - name: Produce machine-readable audit summary
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          REF_SHA="$(
+            sha256sum "$REF/$REFERENCE_PATCH" |
+            awk '{print $1}'
+          )"
+
+          UPSTREAM_HEAD="$(
+            git -C "$UPSTREAM" rev-parse HEAD
+          )"
+
+          V22_COMMIT="$(
+            cat "$WORK/v22.commit"
+          )"
+
+          DELTA_COUNT="$(
+            wc -l < "$OUT/UPSTREAM-COMMITS-SINCE-V2.2.txt"
+          )"
+
+          SRCU_DELTA="$(
+            sed -n \
+              's/^SRCU_OPEN_REDIRECT_DELTA=//p' \
+              "$OUT/SRCU-COMPARISON.txt"
+          )"
+
+          UAF_FOUND="$(
+            sed -n \
+              's/^OPEN_REDIRECT_UAF_FIX_FOUND=//p' \
+              "$OUT/OPEN-REDIRECT-UAF-FIX.txt"
+          )"
+
+          python3 - \
+            "$OUT/RESULT.json" \
+            "$REF_SHA" \
+            "$UPSTREAM_HEAD" \
+            "$V22_COMMIT" \
+            "$DELTA_COUNT" \
+            "$SRCU_DELTA" \
+            "$UAF_FOUND" <<'PY'
+          import json
+          import sys
+
+          (
+              output,
+              reference_sha,
+              upstream_head,
+              v22_commit,
+              delta_count,
+              srcu_delta,
+              uaf_found,
+          ) = sys.argv[1:]
+
+          result = {
+              "result": "PASS_READ_ONLY_AUDIT",
+              "reference_patch_sha256": reference_sha,
+              "upstream_branch": "gki-android12-5.10",
+              "upstream_head": upstream_head,
+              "susfs_v2_2_baseline_commit": v22_commit,
+              "commits_after_v2_2_baseline": int(delta_count),
+              "open_redirect_srcu_delta": srcu_delta,
+              "open_redirect_uaf_fix_found": (
+                  uaf_found == "YES"
+              ),
+              "kernel_modified": False,
+              "kernel_built": False,
+              "flashable_created": False,
+              "device_accessed": False,
+              "flashed": False,
+              "next_action": (
+                  "Human review of upstream kernel-side delta; "
+                  "only then decide whether a minimal Linux-5.4 "
+                  "backport is required."
+              ),
+          }
+
+          with open(output, "w", encoding="utf-8") as f:
+              json.dump(
+                  result,
+                  f,
+                  indent=2,
+                  sort_keys=True,
+              )
+              f.write("\n")
+          PY
+
+      - name: Create human-readable final report
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          UPSTREAM_HEAD="$(
+            git -C "$UPSTREAM" rev-parse HEAD
+          )"
+
+          UPSTREAM_DATE="$(
+            git -C "$UPSTREAM" show \
+              -s \
+              --format='%cI' \
+              HEAD
+          )"
+
+          UPSTREAM_SUBJECT="$(
+            git -C "$UPSTREAM" show \
+              -s \
+              --format='%s' \
+              HEAD
+          )"
+
+          V22_COMMIT="$(cat "$WORK/v22.commit")"
+
+          DELTA_COUNT="$(
+            wc -l < "$OUT/UPSTREAM-COMMITS-SINCE-V2.2.txt"
+          )"
+
+          SRCU_DELTA="$(
+            sed -n \
+              's/^SRCU_OPEN_REDIRECT_DELTA=//p' \
+              "$OUT/SRCU-COMPARISON.txt"
+          )"
+
+          UAF_FOUND="$(
+            sed -n \
+              's/^OPEN_REDIRECT_UAF_FIX_FOUND=//p' \
+              "$OUT/OPEN-REDIRECT-UAF-FIX.txt"
+          )"
+
+          cat > "$OUT/WORKFLOW22S-SUMMARY.txt" <<EOF
+          VEUX Workflow 22S - SUSFS 2.2 Upstream Delta Audit
+          ==================================================
+
+          RESULT: PASS_READ_ONLY_AUDIT
+
+          HISTORICAL VEUX SUSFS REFERENCE
+          --------------------------------
+          Reference builder commit:
+          $REFERENCE_COMMIT
+
+          Exact historical 5.4 patch:
+          $REFERENCE_PATCH
+
+          Historical patch SHA-256:
+          $REFERENCE_PATCH_SHA256
+
+          CURRENT OFFICIAL SUSFS UPSTREAM
+          --------------------------------
+          Branch:
+          $SUSFS_BRANCH
+
+          Current HEAD:
+          $UPSTREAM_HEAD
+
+          HEAD date:
+          $UPSTREAM_DATE
+
+          HEAD subject:
+          $UPSTREAM_SUBJECT
+
+          SUSFS v2.2.0 baseline commit:
+          $V22_COMMIT
+
+          Commits after v2.2.0 baseline:
+          $DELTA_COUNT
+
+          OPEN_REDIRECT / SRCU
+          --------------------
+          Current upstream UAF fix found:
+          $UAF_FOUND
+
+          Historical-vs-current SRCU classification:
+          $SRCU_DELTA
+
+          IMPORTANT
+          ---------
+          This audit intentionally does NOT apply current GKI 5.10
+          patches directly to Linux 5.4.
+
+          The complete upstream delta has been saved for review.
+
+          A new VEUX kernel must only be produced if a specific
+          upstream fix is confirmed applicable to the current
+          Linux-5.4 ReSukiSU/SUSFS implementation.
+
+          VEUX kernel modified:
+          NO
+
+          ReSukiSU modified:
+          NO
+
+          Final Workflow-21 package modified:
+          NO
+
+          Kernel rebuilt:
+          NO
+
+          Flashable generated:
+          NO
+
+          Phone accessed:
+          NO
+
+          Nothing flashed:
+          YES
+          EOF
+
+          grep -Fxq \
+            'RESULT: PASS_READ_ONLY_AUDIT' \
+            "$OUT/WORKFLOW22S-SUMMARY.txt"
+
+      - name: Create complete artifact checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          (
+            cd "$OUT"
+
+            find . \
+              -maxdepth 1 \
+              -type f \
+              ! -name SHA256SUMS \
+              ! -name SHA256SUMS.verify.txt \
+              -printf '%f\n' \
+              | LC_ALL=C sort \
+              | while IFS= read -r FILE; do
+                  sha256sum "$FILE"
+                done \
+              > SHA256SUMS
+
+            sha256sum -c SHA256SUMS \
+              > SHA256SUMS.verify.txt
+          )
+
+      - name: Collect failure diagnostics
+        if: failure()
+        shell: bash
+        run: |
+          set +e
+
+          mkdir -p "$OUT"
+
+          {
+            echo "WORKFLOW22S_STATUS=REQUIRES_REVIEW"
+            echo "Finished: $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+            echo
+            echo "A read-only SUSFS upstream audit gate failed."
+            echo "The VEUX kernel was not modified."
+            echo "No kernel was built."
+            echo "No flashable was generated."
+            echo "No phone was accessed."
+            echo "Nothing was flashed."
+          } > "$OUT/FAILURE-SUMMARY.txt"
+
+      - name: Upload Workflow 22S audit artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: veux-5.4.274-workflow22S-susfs-2.2-upstream-delta-audit-${{ github.run_number }}
+          path: ${{ env.OUT }}
+          if-no-files-found: error
+          include-hidden-files: true
+          retention-days: 30
+          compression-level: 6
