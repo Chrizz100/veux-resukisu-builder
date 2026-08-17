@@ -1193,12 +1193,40 @@ jobs:
               for raw in sums.splitlines():
                   if not raw.strip():
                       continue
+
                   expected, name = raw.split("  ", 1)
-                  actual = hashlib.sha256(z.read(name)).hexdigest()
+
+                  # sha256sum generated the manifest from paths rooted at ".",
+                  # so entries are intentionally written as "./Image", etc.
+                  # ZIP member names are stored without that leading "./".
+                  # Normalize only this exact harmless prefix before lookup.
+                  zip_name = (
+                      name[2:]
+                      if name.startswith("./")
+                      else name
+                  )
+
+                  if not zip_name:
+                      raise SystemExit(
+                          f"Invalid empty checksum path: {name!r}"
+                      )
+
+                  if zip_name not in name_set:
+                      raise SystemExit(
+                          "Checksum references a ZIP member that does "
+                          f"not exist: {name!r} -> {zip_name!r}"
+                      )
+
+                  actual = hashlib.sha256(
+                      z.read(zip_name)
+                  ).hexdigest()
+
                   if actual != expected:
                       raise SystemExit(
-                          f"Internal package checksum mismatch: {name}"
+                          "Internal package checksum mismatch: "
+                          f"{name}"
                       )
+
                   verified += 1
 
               for executable in (
