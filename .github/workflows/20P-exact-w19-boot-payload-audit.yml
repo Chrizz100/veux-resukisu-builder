@@ -1,0 +1,1631 @@
+name: 20P - VEUX Exact W19 Boot Payload Audit
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  W17_ARTIFACT_NAME: "veux-5.4.274-resukisu-susfs-2.2-final-release-candidate-1"
+  W18_ARTIFACT_NAME: "veux-os1.0.12.0-workflow18-stock-rom-audit-3"
+  W19_ARTIFACT_NAME: "veux-5.4.274-workflow19-boot-v3-dryrun-repack-avb-audit-1"
+  W20R2_ARTIFACT_NAME: "veux-5.4.274-workflow20R2-anykernel3-runtime-differential-1"
+
+  W17_IMAGE_BYTES: "29839872"
+  W17_IMAGE_SHA256: "e036175ada602df3bcb443da7c390e8cd4b0e900c26fbfa313725db02855ec96"
+  W17_CANDIDATE_TREE: "5d25b7e0124d7fb695f3f07b45928fcb5780d0e8"
+  W17_RESUKISU_COMMIT: "faccf4c5edc7be37776216e7d43dd3dca0239331"
+
+  STOCK_BOOT_BYTES: "134217728"
+  STOCK_BOOT_SHA256: "ac6522e4eed55782dd2ae61362e9d345d01a1f229c87333818511d5537fa79c5"
+  STOCK_VENDOR_BOOT_SHA256: "583e1f4c0e09c2267cda88bd48a8b4f56cf5c5e034fbda7b25bd65aa86385425"
+  STOCK_DTBO_SHA256: "e9f3bae2c5417ff297162f1e7d2652ee98b347488fdf091d61daa986fbfb7690"
+  STOCK_VBMETA_SHA256: "62a5b1a94c2247c786e8148b9d9d0aea943b57b1034b3fd82d9cac9a85fcde97"
+
+  W19_BOOT_SHA256: "2baffafce260348c247674c5e8176408d45dc75b35ccbf7ca5834cbb4679398e"
+  W19_AVB_DIGEST: "8b6af8a52796027ece9afb816e2354e0a9548808226749400fe8de86e0fdf397"
+  W19_PAYLOAD_END: "51912704"
+
+  W20R2_MAGISKBOOT_SHA256: "bd355dc513524105216ce89f5bdbf286629473b315d7f702fa2f183715ef06ec"
+  STOCK_BOOT_AVB_DIGEST: "fc6d91cd4ce2e89703c59e6a35c60e3efd984cfb54a29760e4a3105c42399d8a"
+
+  AK3_REPO: "https://github.com/osm0sis/AnyKernel3.git"
+  AK3_COMMIT: "e4b1bb25ca2aabcfd57f694a5998d87130701b71"
+  AK3_CORE_BLOB: "d9692acdb3501a7ccb60576ecce435e7a30156dc"
+  UPDATE_BINARY_BLOB: "8c7006e7e3f6ef10f8f4117b291d6df204ef285e"
+  MAGISKBOOT_BLOB: "56207debdf74b28059672c9ae39cc51897c7ca02"
+
+jobs:
+  audit:
+    name: Exact W19 direct-boot payload staging audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    env:
+      WORK: ${{ github.workspace }}/workflow20P
+      INPUTS: ${{ github.workspace }}/workflow20P/inputs
+      W17: ${{ github.workspace }}/workflow20P/inputs/w17
+      W18: ${{ github.workspace }}/workflow20P/inputs/w18
+      W19: ${{ github.workspace }}/workflow20P/inputs/w19
+      W20R2: ${{ github.workspace }}/workflow20P/inputs/w20r2
+      AK3: ${{ github.workspace }}/workflow20P/anykernel3
+      PACKAGE: ${{ github.workspace }}/workflow20P/package
+      OUTPUT: ${{ github.workspace }}/workflow20P/output
+      STAGING_NAME: "DO_NOT_FLASH_VEUX_5.4.274_EXACT_W19_BOOT_PAYLOAD_WORKFLOW20P.zip"
+
+    steps:
+      - name: Prepare audit workspace
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -rf "$WORK"
+
+          mkdir -p \
+            "$INPUTS" \
+            "$W17" \
+            "$W18" \
+            "$W19" \
+            "$W20R2" \
+            "$PACKAGE" \
+            "$OUTPUT"
+
+          cat > "$OUTPUT/SCOPE.txt" <<'EOF'
+          VEUX Workflow 20P
+          =================
+
+          PURPOSE:
+          Build a DO_NOT_FLASH staging package that writes the exact,
+          already-audited Workflow-19 boot image directly.
+
+          THERE IS NO RUNTIME BOOT REPACK.
+
+          The package contains:
+          - exact Workflow-19 custom boot.img
+          - compressed exact Workflow-18 stock boot rollback image
+          - frozen AnyKernel3 shell/runtime tools
+          - a hard Workflow-20P staging guard
+
+          The future final installer is designed to:
+          - require veux
+          - require an A/B slot suffix
+          - require positive bootloader-unlocked evidence
+          - require the currently installed boot partition to be the exact
+            Workflow-18 stock boot
+          - require the payload hashes before writing
+          - write the exact Workflow-19 boot image directly
+          - read back and verify the exact Workflow-19 SHA-256
+          - attempt an exact stock rollback if write/readback verification fails
+
+          THIS WORKFLOW DOES NOT ACCESS A PHONE AND DOES NOT FLASH ANYTHING.
+          EOF
+
+      - name: Download canonical W17 W18 W19 and W20R2 artifacts
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          ALL="$WORK/artifacts.ndjson"
+          : > "$ALL"
+
+          page=1
+
+          while :; do
+            PAGE_JSON="$WORK/artifacts-page-${page}.json"
+
+            curl \
+              --fail \
+              --silent \
+              --show-error \
+              --retry 3 \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts?per_page=100&page=${page}" \
+              -o "$PAGE_JSON"
+
+            COUNT="$(jq '.artifacts | length' "$PAGE_JSON")"
+            jq -c '.artifacts[]' "$PAGE_JSON" >> "$ALL"
+
+            if [ "$COUNT" -lt 100 ]; then
+              break
+            fi
+
+            page=$((page + 1))
+
+            [ "$page" -le 20 ] || {
+              echo "ERROR: artifact pagination safety limit"
+              exit 1
+            }
+          done
+
+          download_artifact() {
+            local NAME="$1"
+            local DEST="$2"
+            local META="$3"
+
+            MATCHES="$(
+              jq -s \
+                --arg NAME "$NAME" \
+                '[.[] | select(.name == $NAME and .expired == false)] | sort_by(.created_at)' \
+                "$ALL"
+            )"
+
+            COUNT="$(jq 'length' <<< "$MATCHES")"
+
+            [ "$COUNT" -ge 1 ] || {
+              echo "ERROR: artifact not found: $NAME"
+              exit 1
+            }
+
+            SELECTED="$(jq '.[-1]' <<< "$MATCHES")"
+            URL="$(jq -r '.archive_download_url' <<< "$SELECTED")"
+
+            jq . <<< "$SELECTED" > "$META"
+
+            curl \
+              --fail \
+              --location \
+              --silent \
+              --show-error \
+              --retry 3 \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "$URL" \
+              -o "$DEST"
+
+            unzip -t "$DEST" > "${DEST}.ziptest.txt"
+          }
+
+          download_artifact \
+            "$W17_ARTIFACT_NAME" \
+            "$INPUTS/w17.zip" \
+            "$OUTPUT/W17-ARTIFACT-METADATA.json"
+
+          download_artifact \
+            "$W18_ARTIFACT_NAME" \
+            "$INPUTS/w18.zip" \
+            "$OUTPUT/W18-ARTIFACT-METADATA.json"
+
+          download_artifact \
+            "$W19_ARTIFACT_NAME" \
+            "$INPUTS/w19.zip" \
+            "$OUTPUT/W19-ARTIFACT-METADATA.json"
+
+          download_artifact \
+            "$W20R2_ARTIFACT_NAME" \
+            "$INPUTS/w20r2.zip" \
+            "$OUTPUT/W20R2-ARTIFACT-METADATA.json"
+
+      - name: Verify exact Workflow 17 kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          unzip -q "$INPUTS/w17.zip" -d "$W17"
+
+          (
+            cd "$W17"
+            sha256sum -c SHA256SUMS > "$OUTPUT/W17-SHA256SUMS.verify.txt"
+          )
+
+          test "$(stat -c '%s' "$W17/Image")" = "$W17_IMAGE_BYTES"
+          test "$(sha256sum "$W17/Image" | awk '{print $1}')" = "$W17_IMAGE_SHA256"
+
+          grep -Fxq 'RESULT: PASS' "$W17/RELEASE-MANIFEST.txt"
+          grep -Fq "Candidate tree: $W17_CANDIDATE_TREE" "$W17/RELEASE-MANIFEST.txt"
+          grep -Fq "ReSukiSU commit: $W17_RESUKISU_COMMIT" "$W17/RELEASE-MANIFEST.txt"
+
+          {
+            echo "WORKFLOW17=PASS"
+            echo "IMAGE_BYTES=$W17_IMAGE_BYTES"
+            echo "IMAGE_SHA256=$W17_IMAGE_SHA256"
+            echo "CANDIDATE_TREE=$W17_CANDIDATE_TREE"
+            echo "RESUKISU_COMMIT=$W17_RESUKISU_COMMIT"
+          } > "$OUTPUT/W17-GATE.txt"
+
+      - name: Verify exact Workflow 18 stock images
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          unzip -q "$INPUTS/w18.zip" -d "$W18"
+
+          (
+            cd "$W18"
+            sha256sum -c SHA256SUMS > "$OUTPUT/W18-SHA256SUMS.verify.txt"
+          )
+
+          grep -Fxq \
+            'RESULT: PASS_READ_ONLY_REPRODUCED_FROM_FASTBOOT_ROM' \
+            "$W18/audit/WORKFLOW18-SUMMARY.txt"
+
+          test "$(stat -c '%s' "$W18/stock_images/stock_boot.img")" = "$STOCK_BOOT_BYTES"
+          test "$(sha256sum "$W18/stock_images/stock_boot.img" | awk '{print $1}')" = "$STOCK_BOOT_SHA256"
+          test "$(sha256sum "$W18/stock_images/stock_vendor_boot.img" | awk '{print $1}')" = "$STOCK_VENDOR_BOOT_SHA256"
+          test "$(sha256sum "$W18/stock_images/stock_dtbo.img" | awk '{print $1}')" = "$STOCK_DTBO_SHA256"
+          test "$(sha256sum "$W18/stock_images/stock_vbmeta.img" | awk '{print $1}')" = "$STOCK_VBMETA_SHA256"
+
+          jq -e \
+            --arg BOOT "$STOCK_BOOT_SHA256" \
+            --arg VENDOR "$STOCK_VENDOR_BOOT_SHA256" \
+            --arg DTBO "$STOCK_DTBO_SHA256" \
+            --arg VBMETA "$STOCK_VBMETA_SHA256" \
+            '
+              .result == "PASS_READ_ONLY_REPRODUCED_FROM_FASTBOOT_ROM"
+              and .boot.sha256 == $BOOT
+              and .vendor_boot.sha256 == $VENDOR
+              and .dtbo.sha256 == $DTBO
+              and .vbmeta.sha256 == $VBMETA
+              and .vbmeta.signature_verifies == true
+              and .vbmeta.direct_hashes_verify == true
+            ' \
+            "$W18/audit/STOCK-ROM-AUDIT.json" \
+            > /dev/null
+
+          {
+            echo "WORKFLOW18=PASS"
+            echo "STOCK_BOOT_SHA256=$STOCK_BOOT_SHA256"
+            echo "STOCK_VENDOR_BOOT_SHA256=$STOCK_VENDOR_BOOT_SHA256"
+            echo "STOCK_DTBO_SHA256=$STOCK_DTBO_SHA256"
+            echo "STOCK_VBMETA_SHA256=$STOCK_VBMETA_SHA256"
+          } > "$OUTPUT/W18-GATE.txt"
+
+      - name: Verify exact Workflow 19 custom boot
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          unzip -q "$INPUTS/w19.zip" -d "$W19"
+
+          (
+            cd "$W19"
+            sha256sum -c SHA256SUMS > "$OUTPUT/W19-SHA256SUMS.verify.txt"
+          )
+
+          grep -Fxq \
+            'RESULT: PASS_DRYRUN_REPRODUCED_FROM_W17_W18' \
+            "$W19/WORKFLOW19-DRYRUN-REPACK-AUDIT.txt"
+
+          CUSTOM="$W19/DO_NOT_FLASH_workflow19_dryrun_boot.img"
+
+          test "$(stat -c '%s' "$CUSTOM")" = "$STOCK_BOOT_BYTES"
+          test "$(sha256sum "$CUSTOM" | awk '{print $1}')" = "$W19_BOOT_SHA256"
+
+          jq -e \
+            --arg SHA "$W19_BOOT_SHA256" \
+            --arg DIGEST "$W19_AVB_DIGEST" \
+            --arg IMAGE "$W17_IMAGE_SHA256" \
+            '
+              .result == "PASS_DRYRUN_REPRODUCED_FROM_W17_W18"
+              and .dryrun_boot.sha256 == $SHA
+              and .w17_image.sha256 == $IMAGE
+              and .embedded_boot_avb.dryrun_digest_hex == $DIGEST
+              and .embedded_boot_avb.dryrun_digest_verifies == true
+              and .top_level_stock_vbmeta.stock_boot_descriptor_verifies_stock_boot == true
+              and .top_level_stock_vbmeta.stock_boot_descriptor_verifies_dryrun_boot == false
+              and .top_level_stock_vbmeta.expected_mismatch_for_modified_boot == true
+              and .safety.flashed == false
+              and .safety.vendor_boot_modified == false
+              and .safety.dtbo_modified == false
+              and .safety.top_level_vbmeta_modified == false
+            ' \
+            "$W19/WORKFLOW19-STRUCTURE.json" \
+            > /dev/null
+
+          {
+            echo "WORKFLOW19=PASS"
+            echo "CUSTOM_BOOT_BYTES=$STOCK_BOOT_BYTES"
+            echo "CUSTOM_BOOT_SHA256=$W19_BOOT_SHA256"
+            echo "EMBEDDED_AVB_DIGEST=$W19_AVB_DIGEST"
+            echo "TOP_LEVEL_STOCK_VBMETA_CUSTOM_BOOT_MISMATCH=EXPECTED"
+          } > "$OUTPUT/W19-GATE.txt"
+
+      - name: Independently reproduce the W20R2 stale-AVB finding
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          unzip -q "$INPUTS/w20r2.zip" -d "$W20R2"
+
+          (
+            cd "$W20R2"
+            sha256sum -c SHA256SUMS > "$OUTPUT/W20R2-SHA256SUMS.verify.txt"
+          )
+
+          BAD="$W20R2/DO_NOT_FLASH_MAGISKBOOT_EMULATED_BOOT.img"
+          GOOD="$W19/DO_NOT_FLASH_workflow19_dryrun_boot.img"
+
+          test "$(stat -c '%s' "$BAD")" = "$STOCK_BOOT_BYTES"
+          test "$(sha256sum "$BAD" | awk '{print $1}')" = "$W20R2_MAGISKBOOT_SHA256"
+
+          python3 - \
+            "$GOOD" \
+            "$BAD" \
+            "$OUTPUT/W20R2-INDEPENDENT-DIFFERENTIAL.json" \
+            "$OUTPUT/W20R2-INDEPENDENT-DIFFERENTIAL.txt" <<'PY'
+          import hashlib
+          import json
+          import struct
+          import sys
+          from pathlib import Path
+
+          good = Path(sys.argv[1]).read_bytes()
+          bad = Path(sys.argv[2]).read_bytes()
+          json_out = Path(sys.argv[3])
+          text_out = Path(sys.argv[4])
+
+          def sha(data):
+              return hashlib.sha256(data).hexdigest()
+
+          def need(condition, message):
+              if not condition:
+                  raise SystemExit("ERROR: " + message)
+
+          def boot_descriptor(data):
+              footer = data[-64:]
+              need(footer[:4] == b"AVBf", "footer magic")
+
+              major, minor = struct.unpack_from(">II", footer, 4)
+              original, vbmeta_offset, vbmeta_size = struct.unpack_from(">QQQ", footer, 12)
+
+              vb = data[vbmeta_offset:vbmeta_offset + vbmeta_size]
+              need(vb[:4] == b"AVB0", "vbmeta magic")
+
+              auth_size, _ = struct.unpack_from(">QQ", vb, 12)
+              values = struct.unpack_from(">QQQQQQQQQQQ", vb, 32)
+              descriptors_offset = values[8]
+              descriptors_size = values[9]
+
+              pos = 256 + auth_size + descriptors_offset
+              end = pos + descriptors_size
+
+              while pos < end:
+                  tag, following = struct.unpack_from(">QQ", vb, pos)
+                  raw = vb[pos:pos + 16 + following]
+
+                  if tag == 2:
+                      image_size = struct.unpack_from(">Q", raw, 16)[0]
+                      algorithm = raw[24:56].split(b"\0", 1)[0].decode("ascii", "replace")
+                      name_len, salt_len, digest_len, flags = struct.unpack_from(">IIII", raw, 56)
+                      q = 132
+                      partition = raw[q:q + name_len].decode("ascii", "replace")
+                      q += name_len
+                      salt = raw[q:q + salt_len]
+                      q += salt_len
+                      digest = raw[q:q + digest_len]
+
+                      if partition == "boot":
+                          calculated = hashlib.sha256(salt + data[:image_size]).digest()
+                          return {
+                              "footer_version": f"{major}.{minor}",
+                              "original_image_size": original,
+                              "vbmeta_offset": vbmeta_offset,
+                              "vbmeta_size": vbmeta_size,
+                              "image_size": image_size,
+                              "algorithm": algorithm,
+                              "flags": flags,
+                              "digest": digest.hex(),
+                              "calculated": calculated.hex(),
+                              "verifies": digest == calculated,
+                          }
+
+                  pos += 16 + following
+
+              raise SystemExit("ERROR: boot hash descriptor not found")
+
+          need(len(good) == len(bad) == 134217728, "partition lengths")
+
+          differences = [
+              index
+              for index, (left, right) in enumerate(zip(good, bad))
+              if left != right
+          ]
+
+          ranges = []
+
+          if differences:
+              start = previous = differences[0]
+
+              for value in differences[1:]:
+                  if value == previous + 1:
+                      previous = value
+                      continue
+
+                  ranges.append([start, previous])
+                  start = previous = value
+
+              ranges.append([start, previous])
+
+          good_avb = boot_descriptor(good)
+          bad_avb = boot_descriptor(bad)
+
+          need(sha(good) == "2baffafce260348c247674c5e8176408d45dc75b35ccbf7ca5834cbb4679398e", "W19 identity")
+          need(sha(bad) == "bd355dc513524105216ce89f5bdbf286629473b315d7f702fa2f183715ef06ec", "W20R2 identity")
+          need(len(differences) == 35, f"expected 35 differing bytes, got {len(differences)}")
+          need(ranges == [[51912980, 51912982], [51913128, 51913159]], f"unexpected diff ranges: {ranges}")
+
+          need(good_avb["image_size"] == 51912704, "W19 AVB image_size")
+          need(good_avb["digest"] == "8b6af8a52796027ece9afb816e2354e0a9548808226749400fe8de86e0fdf397", "W19 AVB digest")
+          need(good_avb["verifies"] is True, "W19 AVB verification")
+
+          need(bad_avb["image_size"] == 67551232, "magiskboot stale AVB image_size")
+          need(bad_avb["digest"] == "fc6d91cd4ce2e89703c59e6a35c60e3efd984cfb54a29760e4a3105c42399d8a", "magiskboot stale AVB digest")
+          need(bad_avb["verifies"] is False, "magiskboot stale AVB must fail verification")
+
+          result = {
+              "result": "PASS_W20R2_STALE_AVB_REPRODUCED",
+              "workflow19_sha256": sha(good),
+              "magiskboot_sha256": sha(bad),
+              "different_bytes": len(differences),
+              "difference_ranges": ranges,
+              "workflow19_avb": good_avb,
+              "magiskboot_avb": bad_avb,
+          }
+
+          json_out.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+          text = f"""W20R2 INDEPENDENT DIFFERENTIAL
+          =================================
+          RESULT: PASS_W20R2_STALE_AVB_REPRODUCED
+
+          Workflow-19 SHA-256:
+          {sha(good)}
+
+          magiskboot runtime SHA-256:
+          {sha(bad)}
+
+          Different bytes: {len(differences)}
+          Difference ranges: {ranges}
+
+          Workflow-19 embedded boot descriptor:
+          image_size={good_avb['image_size']}
+          digest={good_avb['digest']}
+          verifies={good_avb['verifies']}
+
+          magiskboot embedded boot descriptor:
+          image_size={bad_avb['image_size']}
+          digest={bad_avb['digest']}
+          calculated={bad_avb['calculated']}
+          verifies={bad_avb['verifies']}
+
+          INTERPRETATION:
+          The magiskboot result kept the stock descriptor image_size and stock
+          digest even though the footer/vbmeta moved to the new payload end.
+          Therefore the runtime-repack path is intentionally abandoned.
+          """
+
+          text_out.write_text(
+              "\n".join(line.strip() for line in text.splitlines()).strip() + "\n",
+              encoding="utf-8",
+          )
+          PY
+
+      - name: Deep-audit W19 direct payload against W17 and W18
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - \
+            "$W17/Image" \
+            "$W18/stock_images/stock_boot.img" \
+            "$W19/DO_NOT_FLASH_workflow19_dryrun_boot.img" \
+            "$OUTPUT/DIRECT-PAYLOAD-STRUCTURE.json" \
+            "$OUTPUT/DIRECT-PAYLOAD-STRUCTURE.txt" <<'PY'
+          import hashlib
+          import json
+          import struct
+          import sys
+          from pathlib import Path
+
+          image = Path(sys.argv[1]).read_bytes()
+          stock = Path(sys.argv[2]).read_bytes()
+          custom = Path(sys.argv[3]).read_bytes()
+          json_out = Path(sys.argv[4])
+          text_out = Path(sys.argv[5])
+
+          def sha(data):
+              return hashlib.sha256(data).hexdigest()
+
+          def align(value, size=4096):
+              return (value + size - 1) // size * size
+
+          def need(condition, message):
+              if not condition:
+                  raise SystemExit("ERROR: " + message)
+
+          def boot_parts(data):
+              need(data[:8] == b"ANDROID!", "Android boot magic")
+              kernel_size, ramdisk_size, os_raw, header_size = struct.unpack_from("<4I", data, 8)
+              header_version = struct.unpack_from("<I", data, 40)[0]
+              kernel_offset = 4096
+              ramdisk_offset = kernel_offset + align(kernel_size)
+              kernel = data[kernel_offset:kernel_offset + kernel_size]
+              ramdisk = data[ramdisk_offset:ramdisk_offset + ramdisk_size]
+              return {
+                  "kernel_size": kernel_size,
+                  "ramdisk_size": ramdisk_size,
+                  "header_size": header_size,
+                  "header_version": header_version,
+                  "kernel_offset": kernel_offset,
+                  "ramdisk_offset": ramdisk_offset,
+                  "kernel": kernel,
+                  "ramdisk": ramdisk,
+                  "os_raw": os_raw,
+              }
+
+          def boot_avb(data):
+              footer = data[-64:]
+              need(footer[:4] == b"AVBf", "AVB footer magic")
+              major, minor = struct.unpack_from(">II", footer, 4)
+              original, offset, size = struct.unpack_from(">QQQ", footer, 12)
+              vb = data[offset:offset + size]
+              need(vb[:4] == b"AVB0", "AVB0 magic")
+              auth_size, _ = struct.unpack_from(">QQ", vb, 12)
+              algorithm_type = struct.unpack_from(">I", vb, 28)[0]
+              values = struct.unpack_from(">QQQQQQQQQQQ", vb, 32)
+              pos = 256 + auth_size + values[8]
+              end = pos + values[9]
+
+              while pos < end:
+                  tag, following = struct.unpack_from(">QQ", vb, pos)
+                  raw = vb[pos:pos + 16 + following]
+
+                  if tag == 2:
+                      image_size = struct.unpack_from(">Q", raw, 16)[0]
+                      algorithm = raw[24:56].split(b"\0", 1)[0].decode("ascii", "replace")
+                      name_len, salt_len, digest_len, flags = struct.unpack_from(">IIII", raw, 56)
+                      q = 132
+                      partition = raw[q:q + name_len].decode("ascii", "replace")
+                      q += name_len
+                      salt = raw[q:q + salt_len]
+                      q += salt_len
+                      digest = raw[q:q + digest_len]
+
+                      if partition == "boot":
+                          calculated = hashlib.sha256(salt + data[:image_size]).digest()
+                          return {
+                              "footer_version": f"{major}.{minor}",
+                              "original_image_size": original,
+                              "vbmeta_offset": offset,
+                              "vbmeta_size": size,
+                              "algorithm_type": algorithm_type,
+                              "image_size": image_size,
+                              "hash_algorithm": algorithm,
+                              "flags": flags,
+                              "digest": digest.hex(),
+                              "calculated": calculated.hex(),
+                              "verifies": digest == calculated,
+                          }
+
+                  pos += 16 + following
+
+              raise SystemExit("ERROR: boot descriptor not found")
+
+          need(len(image) == 29839872, "W17 Image size")
+          need(sha(image) == "e036175ada602df3bcb443da7c390e8cd4b0e900c26fbfa313725db02855ec96", "W17 Image identity")
+          need(len(stock) == len(custom) == 134217728, "boot partition size")
+          need(sha(stock) == "ac6522e4eed55782dd2ae61362e9d345d01a1f229c87333818511d5537fa79c5", "stock boot identity")
+          need(sha(custom) == "2baffafce260348c247674c5e8176408d45dc75b35ccbf7ca5834cbb4679398e", "custom boot identity")
+
+          stock_parts = boot_parts(stock)
+          custom_parts = boot_parts(custom)
+          custom_avb = boot_avb(custom)
+
+          need(stock_parts["header_version"] == 3, "stock header v3")
+          need(custom_parts["header_version"] == 3, "custom header v3")
+          need(custom_parts["header_size"] == 1580, "custom header size")
+          need(custom_parts["kernel"] == image, "custom kernel is not exact W17 Image")
+          need(custom_parts["ramdisk"] == stock_parts["ramdisk"], "compressed stock ramdisk changed")
+          need(custom_avb["image_size"] == 51912704, "custom embedded AVB image_size")
+          need(custom_avb["digest"] == "8b6af8a52796027ece9afb816e2354e0a9548808226749400fe8de86e0fdf397", "custom embedded AVB digest")
+          need(custom_avb["verifies"] is True, "custom embedded AVB verification")
+
+          result = {
+              "result": "PASS_EXACT_W19_DIRECT_PAYLOAD",
+              "w17_image": {
+                  "bytes": len(image),
+                  "sha256": sha(image),
+              },
+              "stock_boot": {
+                  "bytes": len(stock),
+                  "sha256": sha(stock),
+                  "header_version": stock_parts["header_version"],
+                  "ramdisk_sha256": sha(stock_parts["ramdisk"]),
+              },
+              "custom_boot": {
+                  "bytes": len(custom),
+                  "sha256": sha(custom),
+                  "header_version": custom_parts["header_version"],
+                  "header_size": custom_parts["header_size"],
+                  "kernel_size": custom_parts["kernel_size"],
+                  "ramdisk_size": custom_parts["ramdisk_size"],
+                  "ramdisk_offset": custom_parts["ramdisk_offset"],
+                  "kernel_exact_w17": custom_parts["kernel"] == image,
+                  "compressed_ramdisk_exact_stock": custom_parts["ramdisk"] == stock_parts["ramdisk"],
+                  "ramdisk_sha256": sha(custom_parts["ramdisk"]),
+                  "embedded_avb": custom_avb,
+              },
+          }
+
+          json_out.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+          text = f"""EXACT W19 DIRECT PAYLOAD AUDIT
+          ===============================
+          RESULT: PASS_EXACT_W19_DIRECT_PAYLOAD
+
+          W17 Image:
+          bytes={len(image)}
+          sha256={sha(image)}
+
+          Stock boot:
+          bytes={len(stock)}
+          sha256={sha(stock)}
+          header_version={stock_parts['header_version']}
+          compressed_ramdisk_sha256={sha(stock_parts['ramdisk'])}
+
+          Direct custom boot payload:
+          bytes={len(custom)}
+          sha256={sha(custom)}
+          header_version={custom_parts['header_version']}
+          header_size={custom_parts['header_size']}
+          kernel_size={custom_parts['kernel_size']}
+          ramdisk_size={custom_parts['ramdisk_size']}
+          ramdisk_offset={custom_parts['ramdisk_offset']}
+          exact_W17_kernel={custom_parts['kernel'] == image}
+          exact_stock_compressed_ramdisk={custom_parts['ramdisk'] == stock_parts['ramdisk']}
+
+          Embedded AVB:
+          image_size={custom_avb['image_size']}
+          digest={custom_avb['digest']}
+          calculated={custom_avb['calculated']}
+          verifies={custom_avb['verifies']}
+          """
+
+          text_out.write_text(
+              "\n".join(line.strip() for line in text.splitlines()).strip() + "\n",
+              encoding="utf-8",
+          )
+          PY
+
+      - name: Fetch exact frozen AnyKernel3 runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git clone \
+            --quiet \
+            --filter=blob:none \
+            --no-checkout \
+            "$AK3_REPO" \
+            "$AK3"
+
+          git -C "$AK3" fetch \
+            --quiet \
+            origin \
+            "$AK3_COMMIT"
+
+          git -C "$AK3" checkout \
+            --quiet \
+            --detach \
+            "$AK3_COMMIT"
+
+          test "$(git -C "$AK3" rev-parse HEAD)" = "$AK3_COMMIT"
+          test "$(git -C "$AK3" rev-parse HEAD:tools/ak3-core.sh)" = "$AK3_CORE_BLOB"
+          test "$(git -C "$AK3" rev-parse HEAD:META-INF/com/google/android/update-binary)" = "$UPDATE_BINARY_BLOB"
+          test "$(git -C "$AK3" rev-parse HEAD:tools/magiskboot)" = "$MAGISKBOOT_BLOB"
+
+          {
+            echo "ANYKERNEL3_COMMIT=$AK3_COMMIT"
+            echo "AK3_CORE_BLOB=$AK3_CORE_BLOB"
+            echo "UPDATE_BINARY_BLOB=$UPDATE_BINARY_BLOB"
+            echo "MAGISKBOOT_BLOB=$MAGISKBOOT_BLOB"
+          } > "$OUTPUT/ANYKERNEL3-PIN.txt"
+
+      - name: Assemble direct-payload staging package
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p \
+            "$PACKAGE/META-INF/com/google/android" \
+            "$PACKAGE/tools"
+
+          cp \
+            "$W19/DO_NOT_FLASH_workflow19_dryrun_boot.img" \
+            "$PACKAGE/boot.img"
+
+          python3 - \
+            "$W18/stock_images/stock_boot.img" \
+            "$PACKAGE/rollback_stock_boot.img.gz" <<'PY'
+          import gzip
+          import sys
+          from pathlib import Path
+
+          source = Path(sys.argv[1])
+          target = Path(sys.argv[2])
+
+          with target.open("wb") as raw:
+              with gzip.GzipFile(
+                  filename="",
+                  mode="wb",
+                  fileobj=raw,
+                  compresslevel=9,
+                  mtime=0,
+              ) as gz:
+                  gz.write(source.read_bytes())
+          PY
+
+          cp "$AK3/LICENSE" "$PACKAGE/LICENSE"
+          cp "$AK3/META-INF/com/google/android/update-binary" "$PACKAGE/META-INF/com/google/android/update-binary"
+          cp "$AK3/META-INF/com/google/android/updater-script" "$PACKAGE/META-INF/com/google/android/updater-script"
+
+          for TOOL in \
+            ak3-core.sh \
+            busybox \
+            fec \
+            httools_static \
+            lptools_static \
+            magiskboot \
+            magiskpolicy \
+            snapshotupdater_static
+          do
+            cp "$AK3/tools/$TOOL" "$PACKAGE/tools/$TOOL"
+          done
+
+          chmod 755 \
+            "$PACKAGE/META-INF/com/google/android/update-binary" \
+            "$PACKAGE/tools/ak3-core.sh" \
+            "$PACKAGE/tools/busybox" \
+            "$PACKAGE/tools/fec" \
+            "$PACKAGE/tools/httools_static" \
+            "$PACKAGE/tools/lptools_static" \
+            "$PACKAGE/tools/magiskboot" \
+            "$PACKAGE/tools/magiskpolicy" \
+            "$PACKAGE/tools/snapshotupdater_static"
+
+          cat > "$PACKAGE/WORKFLOW20P_DO_NOT_FLASH" <<'EOF'
+          WORKFLOW 20P STAGING GUARD
+          DO NOT FLASH.
+
+          The anykernel.sh script exits before loading ak3-core while this
+          marker is present. A final Workflow-21 package may only be derived
+          after this staging artifact has passed independent review.
+          EOF
+
+          cat > "$PACKAGE/anykernel.sh" <<'EOF'
+          ### AnyKernel3 Ramdisk Mod Script
+          ## VEUX exact Workflow-19 direct boot payload
+
+          properties() { '
+          kernel.string=VEUX 5.4.274 ReSukiSU SUSFS 2.2 Exact W19 Boot
+          do.devicecheck=1
+          do.modules=0
+          do.systemless=0
+          do.cleanup=1
+          do.cleanuponabort=1
+          device.name1=veux
+          device.name2=
+          device.name3=
+          device.name4=
+          device.name5=
+          supported.versions=13
+          supported.patchlevels=2024-12 - 2024-12
+          supported.vendorpatchlevels=2024-12 - 2024-12
+          '; }
+
+          # Hard staging barrier. This runs before ak3-core is sourced.
+          if [ -f WORKFLOW20P_DO_NOT_FLASH ] || \
+             { [ -n "${AKHOME:-}" ] && [ -f "$AKHOME/WORKFLOW20P_DO_NOT_FLASH" ]; }; then
+            echo "Workflow 20P staging package only. DO NOT FLASH." >&2
+            exit 1
+          fi
+
+          BLOCK=boot;
+          IS_SLOT_DEVICE=1;
+          SLOT_SELECT=active;
+          PATCH_VBMETA_FLAG=0;
+          NO_VBMETA_PARTITION_PATCH=1;
+          NO_MAGISK_CHECK=1;
+
+          . tools/ak3-core.sh;
+
+          BB="$AKHOME/tools/busybox";
+          PAYLOAD="$AKHOME/boot.img";
+          ROLLBACK_GZ="$AKHOME/rollback_stock_boot.img.gz";
+
+          EXPECT_STOCK_SHA="ac6522e4eed55782dd2ae61362e9d345d01a1f229c87333818511d5537fa79c5";
+          EXPECT_CUSTOM_SHA="2baffafce260348c247674c5e8176408d45dc75b35ccbf7ca5834cbb4679398e";
+          EXPECT_BYTES="134217728";
+
+          [ -x "$BB" ] || abort "Missing packaged busybox. Aborting.";
+          [ -f "$PAYLOAD" ] || abort "Missing exact Workflow-19 boot payload. Aborting.";
+          [ -f "$ROLLBACK_GZ" ] || abort "Missing compressed stock rollback image. Aborting.";
+
+          PAYLOAD_BYTES="$($BB wc -c < "$PAYLOAD" | $BB tr -d ' ')";
+          [ "$PAYLOAD_BYTES" = "$EXPECT_BYTES" ] || abort \
+            "Unexpected custom boot payload size: $PAYLOAD_BYTES" \
+            "Expected: $EXPECT_BYTES";
+
+          PAYLOAD_LINE="$($BB sha256sum "$PAYLOAD")" || abort "Cannot hash custom boot payload.";
+          set -- $PAYLOAD_LINE;
+          PAYLOAD_SHA="$1";
+
+          [ "$PAYLOAD_SHA" = "$EXPECT_CUSTOM_SHA" ] || abort \
+            "Custom boot payload SHA-256 mismatch.";
+
+          ROLLBACK_LINE="$($BB gzip -dc "$ROLLBACK_GZ" | $BB sha256sum)" || abort \
+            "Cannot verify compressed stock rollback payload.";
+          set -- $ROLLBACK_LINE;
+          ROLLBACK_SHA="$1";
+
+          [ "$ROLLBACK_SHA" = "$EXPECT_STOCK_SHA" ] || abort \
+            "Stock rollback payload SHA-256 mismatch.";
+
+          SLOT="$(getprop ro.boot.slot_suffix 2>/dev/null || true)";
+
+          case "$SLOT" in
+            _a|_b) ;;
+            *) abort "Could not determine a valid active A/B slot. Aborting." ;;
+          esac;
+
+          TARGET="/dev/block/by-name/boot${SLOT}";
+
+          if [ ! -e "$TARGET" ]; then
+            TARGET="/dev/block/bootdevice/by-name/boot${SLOT}";
+          fi;
+
+          [ -e "$TARGET" ] || abort \
+            "Active-slot boot block device not found. Aborting.";
+
+          FLASH_LOCKED="$(getprop ro.boot.flash.locked 2>/dev/null || true)";
+          VBMETA_STATE="$(getprop ro.boot.vbmeta.device_state 2>/dev/null || true)";
+
+          if [ "$FLASH_LOCKED" != "0" ] && [ "$VBMETA_STATE" != "unlocked" ]; then
+            abort \
+              "Positive bootloader-unlocked evidence was not found." \
+              "ro.boot.flash.locked=$FLASH_LOCKED" \
+              "ro.boot.vbmeta.device_state=$VBMETA_STATE";
+          fi;
+
+          CURRENT_LINE="$($BB sha256sum "$TARGET" 2>/dev/null)" || abort \
+            "Cannot hash active stock boot partition. Aborting.";
+          set -- $CURRENT_LINE;
+          CURRENT_SHA="$1";
+
+          [ "$CURRENT_SHA" = "$EXPECT_STOCK_SHA" ] || abort \
+            "Active boot is not the exact audited Workflow-18 stock boot." \
+            "Current SHA-256: $CURRENT_SHA" \
+            "Expected SHA-256: $EXPECT_STOCK_SHA";
+
+          restore_stock() {
+            ui_print "Attempting exact stock boot rollback...";
+
+            $BB gzip -dc "$ROLLBACK_GZ" \
+              | $BB dd of="$TARGET" bs=1048576 \
+              || return 1;
+
+            $BB sync;
+
+            RESTORE_LINE="$($BB sha256sum "$TARGET" 2>/dev/null)" || return 1;
+            set -- $RESTORE_LINE;
+            RESTORE_SHA="$1";
+
+            [ "$RESTORE_SHA" = "$EXPECT_STOCK_SHA" ];
+          }
+
+          ui_print \
+            " " \
+            "VEUX exact Workflow-19 direct boot payload" \
+            "Target: boot${SLOT}" \
+            "Stock pre-write SHA-256 verified.";
+
+          if ! $BB dd if="$PAYLOAD" of="$TARGET" bs=1048576; then
+            $BB sync;
+
+            if restore_stock; then
+              abort \
+                "Custom boot write failed." \
+                "Exact stock boot was restored and verified.";
+            else
+              abort \
+                "Custom boot write failed AND automatic stock rollback could not be verified.";
+            fi;
+          fi;
+
+          $BB sync;
+
+          WRITTEN_LINE="$($BB sha256sum "$TARGET" 2>/dev/null)" || {
+            if restore_stock; then
+              abort \
+                "Could not hash written custom boot." \
+                "Exact stock boot was restored and verified.";
+            else
+              abort \
+                "Could not hash written custom boot and rollback could not be verified.";
+            fi;
+          };
+
+          set -- $WRITTEN_LINE;
+          WRITTEN_SHA="$1";
+
+          if [ "$WRITTEN_SHA" != "$EXPECT_CUSTOM_SHA" ]; then
+            if restore_stock; then
+              abort \
+                "Custom boot readback SHA-256 mismatch." \
+                "Exact stock boot was restored and verified.";
+            else
+              abort \
+                "Custom boot readback SHA-256 mismatch and rollback could not be verified.";
+            fi;
+          fi;
+
+          ui_print \
+            "Exact Workflow-19 boot payload written and readback verified.";
+          EOF
+
+          chmod 755 "$PACKAGE/anykernel.sh"
+
+          cat > "$PACKAGE/PROVENANCE.json" <<EOF
+          {
+            "result": "STAGING_ONLY",
+            "workflow17": {
+              "artifact": "$W17_ARTIFACT_NAME",
+              "image_sha256": "$W17_IMAGE_SHA256",
+              "candidate_tree": "$W17_CANDIDATE_TREE",
+              "resukisu_commit": "$W17_RESUKISU_COMMIT"
+            },
+            "workflow18": {
+              "artifact": "$W18_ARTIFACT_NAME",
+              "stock_boot_sha256": "$STOCK_BOOT_SHA256",
+              "vendor_boot_sha256": "$STOCK_VENDOR_BOOT_SHA256",
+              "dtbo_sha256": "$STOCK_DTBO_SHA256",
+              "vbmeta_sha256": "$STOCK_VBMETA_SHA256"
+            },
+            "workflow19": {
+              "artifact": "$W19_ARTIFACT_NAME",
+              "direct_boot_payload_sha256": "$W19_BOOT_SHA256",
+              "embedded_boot_avb_digest": "$W19_AVB_DIGEST",
+              "embedded_boot_avb_image_size": $W19_PAYLOAD_END
+            },
+            "abandoned_runtime_repack": {
+              "evidence_artifact": "$W20R2_ARTIFACT_NAME",
+              "magiskboot_partition_sha256": "$W20R2_MAGISKBOOT_SHA256",
+              "different_bytes_vs_workflow19": 35,
+              "stale_descriptor_image_size": 67551232,
+              "stale_descriptor_digest": "$STOCK_BOOT_AVB_DIGEST",
+              "runtime_repack_used_by_this_package": false
+            },
+            "package_strategy": {
+              "boot_payload": "exact Workflow-19 128 MiB boot image",
+              "runtime_repack": false,
+              "vendor_boot_modified": false,
+              "dtbo_modified": false,
+              "top_level_vbmeta_modified": false,
+              "rollback_payload": "gzip-compressed exact Workflow-18 stock boot",
+              "staging_guard_present": true,
+              "flashed": false
+            }
+          }
+          EOF
+
+          cat > "$PACKAGE/VEUX-PACKAGE-MANIFEST.txt" <<EOF
+          VEUX 5.4.274 ReSukiSU SUSFS 2.2
+          =================================
+          WORKFLOW: 20P
+          STATUS: DO_NOT_FLASH_STAGING
+
+          Strategy:
+          exact prebuilt Workflow-19 boot payload
+          NO runtime boot repack
+
+          Custom boot payload:
+          bytes: $STOCK_BOOT_BYTES
+          SHA-256: $W19_BOOT_SHA256
+
+          Embedded custom boot AVB digest:
+          $W19_AVB_DIGEST
+
+          Exact W17 kernel inside payload:
+          $W17_IMAGE_SHA256
+
+          Exact stock boot rollback identity:
+          $STOCK_BOOT_SHA256
+
+          Explicitly untouched:
+          vendor_boot: $STOCK_VENDOR_BOOT_SHA256
+          dtbo: $STOCK_DTBO_SHA256
+          top-level vbmeta: $STOCK_VBMETA_SHA256
+
+          W20R2 runtime-repack result is intentionally NOT used:
+          $W20R2_MAGISKBOOT_SHA256
+
+          Reason:
+          35-byte embedded AVB descriptor differential.
+          The runtime result retained the stale stock image_size and stock digest.
+
+          Staging safety:
+          WORKFLOW20P_DO_NOT_FLASH is present.
+          anykernel.sh exits before sourcing ak3-core while the marker exists.
+          EOF
+
+      - name: Verify rollback gzip and package payload identities
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test "$(stat -c '%s' "$PACKAGE/boot.img")" = "$STOCK_BOOT_BYTES"
+          test "$(sha256sum "$PACKAGE/boot.img" | awk '{print $1}')" = "$W19_BOOT_SHA256"
+
+          gzip -t "$PACKAGE/rollback_stock_boot.img.gz"
+
+          ROLLBACK_SHA="$(gzip -dc "$PACKAGE/rollback_stock_boot.img.gz" | sha256sum | awk '{print $1}')"
+          ROLLBACK_BYTES="$(gzip -dc "$PACKAGE/rollback_stock_boot.img.gz" | wc -c | tr -d ' ')"
+
+          test "$ROLLBACK_SHA" = "$STOCK_BOOT_SHA256"
+          test "$ROLLBACK_BYTES" = "$STOCK_BOOT_BYTES"
+
+          {
+            echo "DIRECT_CUSTOM_BOOT_SHA256=$W19_BOOT_SHA256"
+            echo "DIRECT_CUSTOM_BOOT_BYTES=$STOCK_BOOT_BYTES"
+            echo "ROLLBACK_STOCK_BOOT_SHA256=$ROLLBACK_SHA"
+            echo "ROLLBACK_STOCK_BOOT_BYTES=$ROLLBACK_BYTES"
+            echo "ROLLBACK_GZIP_SHA256=$(sha256sum "$PACKAGE/rollback_stock_boot.img.gz" | awk '{print $1}')"
+            echo "RESULT=PASS"
+          } > "$OUTPUT/PAYLOAD-IDENTITIES.txt"
+
+      - name: Audit direct-write installer contract
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          AK="$PACKAGE/anykernel.sh"
+
+          grep -Fq 'device.name1=veux' "$AK"
+          grep -Fq 'IS_SLOT_DEVICE=1;' "$AK"
+          grep -Fq 'SLOT_SELECT=active;' "$AK"
+          grep -Fq 'PATCH_VBMETA_FLAG=0;' "$AK"
+          grep -Fq 'NO_VBMETA_PARTITION_PATCH=1;' "$AK"
+          grep -Fq 'NO_MAGISK_CHECK=1;' "$AK"
+
+          grep -Fq 'WORKFLOW20P_DO_NOT_FLASH' "$AK"
+          grep -Fq 'ro.boot.slot_suffix' "$AK"
+          grep -Fq 'ro.boot.flash.locked' "$AK"
+          grep -Fq 'ro.boot.vbmeta.device_state' "$AK"
+
+          grep -Fq "$STOCK_BOOT_SHA256" "$AK"
+          grep -Fq "$W19_BOOT_SHA256" "$AK"
+
+          grep -Fq 'sha256sum "$TARGET"' "$AK"
+          grep -Fq 'dd if="$PAYLOAD" of="$TARGET" bs=1048576' "$AK"
+          grep -Fq 'gzip -dc "$ROLLBACK_GZ"' "$AK"
+          grep -Fq 'restore_stock()' "$AK"
+
+          if grep -Eq '^[[:space:]]*split_boot;' "$AK"; then
+            echo "ERROR: split_boot is forbidden in direct-payload installer"
+            exit 1
+          fi
+
+          if grep -Eq '^[[:space:]]*flash_boot;' "$AK"; then
+            echo "ERROR: flash_boot is forbidden in direct-payload installer"
+            exit 1
+          fi
+
+          if grep -Eq '^[[:space:]]*[^#].*magiskboot' "$AK"; then
+            echo "ERROR: runtime magiskboot invocation found"
+            exit 1
+          fi
+
+          GUARD_LINE="$(grep -n -m1 'if \[ -f WORKFLOW20P_DO_NOT_FLASH' "$AK" | cut -d: -f1)"
+          CORE_LINE="$(grep -n -m1 '^\. tools/ak3-core.sh;' "$AK" | cut -d: -f1)"
+          DD_LINE="$(grep -n -m1 'dd if=\"\$PAYLOAD\" of=\"\$TARGET\"' "$AK" | cut -d: -f1)"
+
+          test -n "$GUARD_LINE"
+          test -n "$CORE_LINE"
+          test -n "$DD_LINE"
+          test "$GUARD_LINE" -lt "$CORE_LINE"
+          test "$CORE_LINE" -lt "$DD_LINE"
+
+          {
+            echo "DIRECT_WRITE_INSTALLER_CONTRACT=PASS"
+            echo "STAGING_GUARD_BEFORE_AK3_CORE=YES"
+            echo "DEVICE=veux"
+            echo "ACTIVE_SLOT_REQUIRED=YES"
+            echo "POSITIVE_UNLOCK_EVIDENCE_REQUIRED=YES"
+            echo "EXACT_STOCK_PREWRITE_SHA_REQUIRED=YES"
+            echo "EXACT_CUSTOM_PAYLOAD_SHA_REQUIRED=YES"
+            echo "DIRECT_DD_WRITE=YES"
+            echo "CUSTOM_READBACK_SHA_REQUIRED=YES"
+            echo "AUTOMATIC_EXACT_STOCK_ROLLBACK_PATH=YES"
+            echo "RUNTIME_REPACK=NO"
+            echo "SPLIT_BOOT=NO"
+            echo "FLASH_BOOT=NO"
+            echo "RUNTIME_MAGISKBOOT=NO"
+            echo "VENDOR_BOOT_OPERATION=NO"
+            echo "DTBO_OPERATION=NO"
+            echo "TOP_LEVEL_VBMETA_OPERATION=NO"
+          } > "$OUTPUT/DIRECT-WRITE-INSTALLER-CONTRACT.txt"
+
+      - name: Model direct write and rollback on a fake boot partition
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - \
+            "$W18/stock_images/stock_boot.img" \
+            "$PACKAGE/boot.img" \
+            "$PACKAGE/rollback_stock_boot.img.gz" \
+            "$OUTPUT/DIRECT-WRITE-MODEL.json" \
+            "$OUTPUT/DIRECT-WRITE-MODEL.txt" <<'PY'
+          import gzip
+          import hashlib
+          import json
+          import sys
+          from pathlib import Path
+
+          stock = Path(sys.argv[1]).read_bytes()
+          custom = Path(sys.argv[2]).read_bytes()
+          rollback_gz = Path(sys.argv[3])
+          json_out = Path(sys.argv[4])
+          text_out = Path(sys.argv[5])
+
+          def sha(data):
+              return hashlib.sha256(data).hexdigest()
+
+          def need(condition, message):
+              if not condition:
+                  raise SystemExit("ERROR: " + message)
+
+          with gzip.open(rollback_gz, "rb") as handle:
+              rollback = handle.read()
+
+          need(len(stock) == len(custom) == len(rollback) == 134217728, "partition sizes")
+          need(sha(stock) == "ac6522e4eed55782dd2ae61362e9d345d01a1f229c87333818511d5537fa79c5", "stock identity")
+          need(sha(custom) == "2baffafce260348c247674c5e8176408d45dc75b35ccbf7ca5834cbb4679398e", "custom identity")
+          need(rollback == stock, "rollback payload differs from exact stock")
+
+          fake_partition = bytearray(stock)
+          prewrite = sha(fake_partition)
+
+          fake_partition[:] = custom
+          after_custom = sha(fake_partition)
+
+          fake_partition[:] = rollback
+          after_rollback = sha(fake_partition)
+
+          need(prewrite == sha(stock), "prewrite stock hash")
+          need(after_custom == sha(custom), "direct custom write hash")
+          need(after_rollback == sha(stock), "direct rollback hash")
+
+          result = {
+              "result": "PASS_DIRECT_WRITE_AND_ROLLBACK_MODEL",
+              "partition_bytes": len(stock),
+              "prewrite_stock_sha256": prewrite,
+              "after_custom_write_sha256": after_custom,
+              "after_stock_rollback_sha256": after_rollback,
+              "custom_write_exact": True,
+              "rollback_exact_stock": rollback == stock,
+              "device_accessed": False,
+              "flashed": False,
+          }
+
+          json_out.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+          text = f"""DIRECT WRITE / ROLLBACK MODEL
+          =============================
+          RESULT: PASS_DIRECT_WRITE_AND_ROLLBACK_MODEL
+
+          Fake partition bytes: {len(stock)}
+          Initial stock SHA-256: {prewrite}
+          After exact custom write: {after_custom}
+          After exact rollback: {after_rollback}
+
+          No boot repack occurred.
+          No device was accessed.
+          Nothing was flashed.
+          """
+
+          text_out.write_text(
+              "\n".join(line.strip() for line in text.splitlines()).strip() + "\n",
+              encoding="utf-8",
+          )
+          PY
+
+      - name: Create package checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          (
+            cd "$PACKAGE"
+
+            find . \
+              -type f \
+              ! -name PACKAGE-SHA256SUMS \
+              -print0 \
+              | LC_ALL=C sort -z \
+              | xargs -0 sha256sum \
+              > PACKAGE-SHA256SUMS
+
+            sha256sum -c PACKAGE-SHA256SUMS \
+              > "$OUTPUT/PACKAGE-SHA256SUMS.verify.txt"
+          )
+
+      - name: Build deterministic staging ZIP twice
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - \
+            "$PACKAGE" \
+            "$OUTPUT/build-A.zip" \
+            "$OUTPUT/build-B.zip" <<'PY'
+          import stat
+          import sys
+          import zipfile
+          from pathlib import Path
+
+          root = Path(sys.argv[1])
+          outputs = [Path(sys.argv[2]), Path(sys.argv[3])]
+          files = sorted(path for path in root.rglob("*") if path.is_file())
+
+          for output in outputs:
+              with zipfile.ZipFile(
+                  output,
+                  "w",
+                  compression=zipfile.ZIP_DEFLATED,
+                  compresslevel=9,
+                  strict_timestamps=True,
+              ) as archive:
+                  for path in files:
+                      relative = path.relative_to(root).as_posix()
+                      info = zipfile.ZipInfo(relative, date_time=(2024, 1, 1, 0, 0, 0))
+                      mode = stat.S_IMODE(path.stat().st_mode)
+                      info.create_system = 3
+                      info.external_attr = mode << 16
+                      info.compress_type = zipfile.ZIP_DEFLATED
+                      archive.writestr(
+                          info,
+                          path.read_bytes(),
+                          compress_type=zipfile.ZIP_DEFLATED,
+                          compresslevel=9,
+                      )
+          PY
+
+          A_SHA="$(sha256sum "$OUTPUT/build-A.zip" | awk '{print $1}')"
+          B_SHA="$(sha256sum "$OUTPUT/build-B.zip" | awk '{print $1}')"
+
+          test "$A_SHA" = "$B_SHA"
+          cmp -s "$OUTPUT/build-A.zip" "$OUTPUT/build-B.zip"
+
+          mv "$OUTPUT/build-A.zip" "$OUTPUT/$STAGING_NAME"
+          rm -f "$OUTPUT/build-B.zip"
+
+          {
+            echo "DETERMINISTIC_STAGING_ZIP=PASS"
+            echo "SHA256=$A_SHA"
+            echo "BYTES=$(stat -c '%s' "$OUTPUT/$STAGING_NAME")"
+            echo "BYTE_IDENTICAL_TWO_BUILDS=YES"
+          } > "$OUTPUT/STAGING-ZIP-REPRODUCIBILITY.txt"
+
+      - name: Independently inspect final staging ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ZIP="$OUTPUT/$STAGING_NAME"
+
+          unzip -t "$ZIP" > "$OUTPUT/STAGING-ZIP-CRC.txt"
+
+          python3 - "$ZIP" "$OUTPUT/STAGING-ZIP-INDEPENDENT-AUDIT.txt" <<'PY'
+          import gzip
+          import hashlib
+          import sys
+          import zipfile
+          from pathlib import Path
+
+          path = Path(sys.argv[1])
+          report_path = Path(sys.argv[2])
+
+          with zipfile.ZipFile(path) as archive:
+              names = archive.namelist()
+
+              if len(names) != 18:
+                  raise SystemExit(f"ERROR: expected 18 entries, found {len(names)}")
+
+              if len(names) != len(set(names)):
+                  raise SystemExit("ERROR: duplicate ZIP entries")
+
+              if archive.testzip() is not None:
+                  raise SystemExit("ERROR: ZIP CRC failure")
+
+              required = {
+                  "boot.img",
+                  "rollback_stock_boot.img.gz",
+                  "LICENSE",
+                  "META-INF/com/google/android/update-binary",
+                  "META-INF/com/google/android/updater-script",
+                  "PACKAGE-SHA256SUMS",
+                  "PROVENANCE.json",
+                  "VEUX-PACKAGE-MANIFEST.txt",
+                  "WORKFLOW20P_DO_NOT_FLASH",
+                  "anykernel.sh",
+                  "tools/ak3-core.sh",
+                  "tools/busybox",
+                  "tools/fec",
+                  "tools/httools_static",
+                  "tools/lptools_static",
+                  "tools/magiskboot",
+                  "tools/magiskpolicy",
+                  "tools/snapshotupdater_static",
+              }
+
+              if set(names) != required:
+                  raise SystemExit("ERROR: staging ZIP entry set mismatch")
+
+              boot = archive.read("boot.img")
+              rollback_gz = archive.read("rollback_stock_boot.img.gz")
+              anykernel = archive.read("anykernel.sh").decode("utf-8", "replace")
+
+              if len(boot) != 134217728:
+                  raise SystemExit("ERROR: custom boot payload size")
+
+              if hashlib.sha256(boot).hexdigest() != "2baffafce260348c247674c5e8176408d45dc75b35ccbf7ca5834cbb4679398e":
+                  raise SystemExit("ERROR: custom boot payload hash")
+
+              rollback = gzip.decompress(rollback_gz)
+
+              if len(rollback) != 134217728:
+                  raise SystemExit("ERROR: rollback boot size")
+
+              if hashlib.sha256(rollback).hexdigest() != "ac6522e4eed55782dd2ae61362e9d345d01a1f229c87333818511d5537fa79c5":
+                  raise SystemExit("ERROR: rollback boot hash")
+
+              if "WORKFLOW20P_DO_NOT_FLASH" not in anykernel:
+                  raise SystemExit("ERROR: staging guard missing")
+
+              for forbidden in (
+                  "split_boot;",
+                  "flash_boot;",
+              ):
+                  if forbidden in anykernel:
+                      raise SystemExit(f"ERROR: forbidden runtime repack path: {forbidden}")
+
+              executable_magiskboot_lines = [
+                  line
+                  for line in anykernel.splitlines()
+                  if "magiskboot" in line and not line.lstrip().startswith("#")
+              ]
+
+              if executable_magiskboot_lines:
+                  raise SystemExit("ERROR: runtime magiskboot invocation present")
+
+              if 'dd if="$PAYLOAD" of="$TARGET" bs=1048576' not in anykernel:
+                  raise SystemExit("ERROR: exact direct write path missing")
+
+              if "restore_stock()" not in anykernel:
+                  raise SystemExit("ERROR: rollback function missing")
+
+              if "ro.boot.flash.locked" not in anykernel or "ro.boot.vbmeta.device_state" not in anykernel:
+                  raise SystemExit("ERROR: positive unlock gate missing")
+
+              sums = archive.read("PACKAGE-SHA256SUMS").decode().splitlines()
+
+              if len(sums) != 17:
+                  raise SystemExit(f"ERROR: expected 17 package hashes, found {len(sums)}")
+
+              checked = 0
+
+              for line in sums:
+                  digest, filename = line.split(None, 1)
+                  filename = filename.strip()
+
+                  if filename.startswith("./"):
+                      filename = filename[2:]
+
+                  if filename not in names:
+                      raise SystemExit(f"ERROR: checksum target missing: {filename}")
+
+                  actual = hashlib.sha256(archive.read(filename)).hexdigest()
+
+                  if actual != digest:
+                      raise SystemExit(f"ERROR: checksum mismatch: {filename}")
+
+                  checked += 1
+
+          report = f"""STAGING ZIP INDEPENDENT AUDIT
+          =================================
+          RESULT: PASS
+          ZIP_ENTRIES=18
+          ZIP_CRC=PASS
+          INTERNAL_HASHES={checked}/17
+          CUSTOM_BOOT_BYTES=134217728
+          CUSTOM_BOOT_SHA256=2baffafce260348c247674c5e8176408d45dc75b35ccbf7ca5834cbb4679398e
+          ROLLBACK_BOOT_BYTES=134217728
+          ROLLBACK_BOOT_SHA256=ac6522e4eed55782dd2ae61362e9d345d01a1f229c87333818511d5537fa79c5
+          STAGING_GUARD=FOUND
+          DIRECT_WRITE_PATH=FOUND
+          ROLLBACK_PATH=FOUND
+          POSITIVE_UNLOCK_GATE=FOUND
+          RUNTIME_REPACK=NO
+          RUNTIME_MAGISKBOOT=NO
+          VENDOR_BOOT_PAYLOAD=NO
+          DTBO_PAYLOAD=NO
+          VBMETA_PAYLOAD=NO
+          """
+
+          report_path.write_text(
+              "\n".join(line.strip() for line in report.splitlines()).strip() + "\n",
+              encoding="utf-8",
+          )
+          PY
+
+      - name: Create Workflow 20P decision report
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ZIP="$OUTPUT/$STAGING_NAME"
+
+          cat > "$OUTPUT/WORKFLOW20P-SUMMARY.txt" <<EOF
+          VEUX Workflow 20P - Exact W19 Boot Payload Audit
+          =================================================
+
+          RESULT: PASS_EXACT_W19_BOOT_PAYLOAD_STAGING
+
+          WHY THIS PATH EXISTS
+          --------------------
+          W20R2 reproduced the real AnyKernel3/magiskboot runtime output:
+          $W20R2_MAGISKBOOT_SHA256
+
+          It differs from the valid Workflow-19 boot image in exactly 35 bytes.
+
+          Independent Workflow-20P analysis confirms the differences are:
+          - 3 bytes in the embedded AVB hash-descriptor image_size field
+          - 32 bytes in the embedded AVB hash digest
+
+          The runtime-repack image retained:
+          image_size = 67551232
+          digest = $STOCK_BOOT_AVB_DIGEST
+
+          and its embedded boot descriptor does NOT verify.
+
+          Therefore runtime boot repacking is abandoned for the final path.
+
+          DIRECT PAYLOAD
+          --------------
+          Exact Workflow-19 boot image:
+          bytes: $STOCK_BOOT_BYTES
+          SHA-256: $W19_BOOT_SHA256
+
+          Exact W17 Image inside it:
+          $W17_IMAGE_SHA256
+
+          Embedded AVB digest:
+          $W19_AVB_DIGEST
+
+          Embedded AVB descriptor verifies: YES
+          Exact stock compressed ramdisk preserved: YES
+
+          ROLLBACK
+          --------
+          Exact Workflow-18 stock boot is included gzip-compressed.
+
+          Decompressed rollback SHA-256:
+          $STOCK_BOOT_SHA256
+
+          INSTALLER DESIGN
+          ----------------
+          No split_boot.
+          No flash_boot.
+          No runtime magiskboot.
+          No boot repack.
+
+          Future final installer requires before write:
+          - VEUX device check
+          - valid _a/_b slot suffix
+          - positive bootloader-unlocked evidence
+          - exact current stock boot SHA-256
+          - exact custom payload SHA-256
+          - exact rollback payload SHA-256
+
+          It then performs a direct full-partition boot write and requires exact
+          readback SHA-256. On write/readback failure it attempts the exact
+          Workflow-18 stock boot rollback and verifies that rollback hash.
+
+          UNTOUCHED
+          ---------
+          vendor_boot: $STOCK_VENDOR_BOOT_SHA256
+          dtbo: $STOCK_DTBO_SHA256
+          top-level vbmeta: $STOCK_VBMETA_SHA256
+
+          STAGING PACKAGE
+          ---------------
+          $STAGING_NAME
+
+          bytes:
+          $(stat -c '%s' "$ZIP")
+
+          SHA-256:
+          $(sha256sum "$ZIP" | awk '{print $1}')
+
+          Deterministic two-build ZIP reproduction: PASS
+
+          SAFETY
+          ------
+          WORKFLOW20P_DO_NOT_FLASH is present.
+          anykernel.sh exits before loading ak3-core while the marker exists.
+
+          NO DEVICE OPERATION WAS PERFORMED.
+          NOTHING WAS FLASHED.
+
+          This PASS establishes package/provenance/direct-write-model validity.
+          It still does NOT prove that the phone will boot the custom kernel.
+          EOF
+
+          grep -Fxq \
+            'RESULT: PASS_EXACT_W19_BOOT_PAYLOAD_STAGING' \
+            "$OUTPUT/WORKFLOW20P-SUMMARY.txt"
+
+      - name: Create complete output checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          (
+            cd "$OUTPUT"
+
+            find . \
+              -maxdepth 1 \
+              -type f \
+              ! -name SHA256SUMS \
+              ! -name SHA256SUMS.verify.txt \
+              -printf '%f\n' \
+              | LC_ALL=C sort \
+              | while IFS= read -r FILE; do
+                  sha256sum "$FILE"
+                done \
+              > SHA256SUMS
+
+            sha256sum -c SHA256SUMS \
+              > SHA256SUMS.verify.txt
+          )
+
+      - name: Collect failure diagnostics
+        if: failure()
+        shell: bash
+        run: |
+          set +e
+
+          mkdir -p "$OUTPUT"
+
+          {
+            echo "WORKFLOW20P_STATUS=REQUIRES_REVIEW"
+            echo "Finished: $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+            echo
+            echo "No device operation was performed."
+            echo "Nothing was flashed."
+          } > "$OUTPUT/FAILURE-SUMMARY.txt"
+
+          find "$WORK" \
+            -maxdepth 7 \
+            -type f \
+            -printf '%s %p\n' \
+            > "$OUTPUT/FAILURE-FILE-TREE.txt" \
+            2>/dev/null || true
+
+      - name: Upload Workflow 20P audit artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: veux-5.4.274-workflow20P-exact-w19-boot-payload-audit-${{ github.run_number }}
+          path: ${{ env.OUTPUT }}
+          if-no-files-found: error
+          include-hidden-files: true
+          retention-days: 30
+          compression-level: 0
