@@ -1,0 +1,2100 @@
+name: 19 - VEUX Boot v3 Dry-Run Repack + AVB Audit
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  W17_ARTIFACT_NAME: "veux-5.4.274-resukisu-susfs-2.2-final-release-candidate-1"
+  W18_ARTIFACT_NAME: "veux-os1.0.12.0-workflow18-stock-rom-audit-3"
+
+  W17_IMAGE_BYTES: "29839872"
+  W17_IMAGE_SHA256: "e036175ada602df3bcb443da7c390e8cd4b0e900c26fbfa313725db02855ec96"
+  W17_DTB_SHA256: "42728a6f3d48ae35ac6be4b14ea51bc8a323e77baec2ee544827487378f99d37"
+  W17_CONFIG_SHA256: "c9831aeadf65064bf6632973b2bd6f4da905da9707718bc75ded0bd228150ca6"
+  W17_CANDIDATE_TREE: "5d25b7e0124d7fb695f3f07b45928fcb5780d0e8"
+  W17_RESUKISU_COMMIT: "faccf4c5edc7be37776216e7d43dd3dca0239331"
+
+  STOCK_BOOT_SHA256: "ac6522e4eed55782dd2ae61362e9d345d01a1f229c87333818511d5537fa79c5"
+  STOCK_VENDOR_BOOT_SHA256: "583e1f4c0e09c2267cda88bd48a8b4f56cf5c5e034fbda7b25bd65aa86385425"
+  STOCK_DTBO_SHA256: "e9f3bae2c5417ff297162f1e7d2652ee98b347488fdf091d61daa986fbfb7690"
+  STOCK_VBMETA_SHA256: "62a5b1a94c2247c786e8148b9d9d0aea943b57b1034b3fd82d9cac9a85fcde97"
+  STOCK_ROM_MD5: "cda1240a451dd4f75776878b52f0cea3"
+
+  EXPECTED_DRYRUN_SHA256: "2baffafce260348c247674c5e8176408d45dc75b35ccbf7ca5834cbb4679398e"
+  EXPECTED_DRYRUN_AVB_DIGEST: "8b6af8a52796027ece9afb816e2354e0a9548808226749400fe8de86e0fdf397"
+
+jobs:
+  audit:
+    name: Reproduce kernel-only Boot v3 dry-run
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    env:
+      WORK: ${{ github.workspace }}/workflow19
+      INPUTS: ${{ github.workspace }}/workflow19/inputs
+      W17: ${{ github.workspace }}/workflow19/inputs/w17
+      W18: ${{ github.workspace }}/workflow19/inputs/w18
+      OUTPUT: ${{ github.workspace }}/workflow19/output
+
+    steps:
+      - name: Prepare read-only audit workspace
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -rf "$WORK"
+          mkdir -p "$INPUTS" "$W17" "$W18" "$OUTPUT"
+
+          {
+            echo "VEUX Workflow 19"
+            echo "================"
+            echo
+            echo "PURPOSE: reproduce the earlier Boot-v3 dry-run from exact"
+            echo "Workflow-17 + Workflow-18 GitHub artifacts."
+            echo
+            echo "NO DEVICE OPERATION"
+            echo "NO FLASH"
+            echo "NO vendor_boot MODIFICATION"
+            echo "NO dtbo MODIFICATION"
+            echo "NO top-level vbmeta MODIFICATION"
+          } > "$OUTPUT/SCOPE.txt"
+
+      - name: Download exact Workflow 17 and Workflow 18 artifacts
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          ALL="$WORK/artifacts.ndjson"
+          : > "$ALL"
+
+          page=1
+          while :; do
+            PAGE_JSON="$WORK/artifacts-page-${page}.json"
+
+            curl \
+              --fail \
+              --silent \
+              --show-error \
+              --retry 3 \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts?per_page=100&page=${page}" \
+              -o "$PAGE_JSON"
+
+            count="$(jq '.artifacts | length' "$PAGE_JSON")"
+            jq -c '.artifacts[]' "$PAGE_JSON" >> "$ALL"
+
+            if [ "$count" -lt 100 ]; then
+              break
+            fi
+
+            page=$((page + 1))
+            [ "$page" -le 20 ] || {
+              echo "ERROR: artifact pagination safety limit reached"
+              exit 1
+            }
+          done
+
+          download_exact_artifact() {
+            local name="$1"
+            local dest="$2"
+            local meta="$3"
+
+            matches="$({
+              jq -s \
+                --arg NAME "$name" \
+                '[.[] | select(.name == $NAME and .expired == false)] | sort_by(.created_at)' \
+                "$ALL"
+            })"
+
+            count="$(jq 'length' <<< "$matches")"
+
+            [ "$count" -ge 1 ] || {
+              echo "ERROR: artifact not found: $name"
+              exit 1
+            }
+
+            selected="$(jq '.[-1]' <<< "$matches")"
+            id="$(jq -r '.id' <<< "$selected")"
+            url="$(jq -r '.archive_download_url' <<< "$selected")"
+
+            jq . <<< "$selected" > "$meta"
+
+            echo "Downloading artifact: $name"
+            echo "Artifact ID: $id"
+
+            curl \
+              --fail \
+              --location \
+              --silent \
+              --show-error \
+              --retry 3 \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "$url" \
+              -o "$dest"
+
+            unzip -t "$dest" > "${dest}.ziptest.txt"
+          }
+
+          download_exact_artifact \
+            "$W17_ARTIFACT_NAME" \
+            "$INPUTS/w17-artifact.zip" \
+            "$OUTPUT/W17-ARTIFACT-METADATA.json"
+
+          download_exact_artifact \
+            "$W18_ARTIFACT_NAME" \
+            "$INPUTS/w18-artifact.zip" \
+            "$OUTPUT/W18-ARTIFACT-METADATA.json"
+
+          {
+            echo "W17_ARTIFACT=$W17_ARTIFACT_NAME"
+            echo "W17_OUTER_ZIP_SHA256=$(sha256sum "$INPUTS/w17-artifact.zip" | awk '{print $1}')"
+            echo "W18_ARTIFACT=$W18_ARTIFACT_NAME"
+            echo "W18_OUTER_ZIP_SHA256=$(sha256sum "$INPUTS/w18-artifact.zip" | awk '{print $1}')"
+          } | tee "$OUTPUT/INPUT-ARTIFACTS.txt"
+
+      - name: Verify exact Workflow 17 final kernel artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          unzip -q "$INPUTS/w17-artifact.zip" -d "$W17"
+
+          (
+            cd "$W17"
+            sha256sum -c SHA256SUMS \
+              | tee "$OUTPUT/W17-SHA256SUMS.verify.txt"
+          )
+
+          test "$(stat -c '%s' "$W17/Image")" = "$W17_IMAGE_BYTES"
+          test "$(sha256sum "$W17/Image" | awk '{print $1}')" = "$W17_IMAGE_SHA256"
+          test "$(sha256sum "$W17/veux.dtb" | awk '{print $1}')" = "$W17_DTB_SHA256"
+          test "$(sha256sum "$W17/final.config" | awk '{print $1}')" = "$W17_CONFIG_SHA256"
+
+          grep -Fxq "RESULT: PASS" "$W17/RELEASE-MANIFEST.txt"
+          grep -Fq "Kernel release: 5.4.274~positron/5ec160dc" "$W17/RELEASE-MANIFEST.txt"
+          grep -Fq "Candidate tree: $W17_CANDIDATE_TREE" "$W17/RELEASE-MANIFEST.txt"
+          grep -Fq "ReSukiSU commit: $W17_RESUKISU_COMMIT" "$W17/RELEASE-MANIFEST.txt"
+          grep -Fq "CANDIDATE_TREE=$W17_CANDIDATE_TREE" "$W17/candidate2.txt"
+          grep -Fq "CASS_COMMIT_DO_NOT_REVERT=b9b5ddba28bf9f23ac1a2af27f574291451244fd" "$W17/candidate2.txt"
+          grep -Fxq "$W17_RESUKISU_COMMIT" "$W17/resukisu-commit.txt"
+
+          cp "$W17/RELEASE-MANIFEST.txt" "$OUTPUT/W17-RELEASE-MANIFEST.txt"
+
+          {
+            echo "WORKFLOW 17 INPUT GATE"
+            echo "======================"
+            echo "RESULT: PASS"
+            echo "Image bytes: $W17_IMAGE_BYTES"
+            echo "Image SHA-256: $W17_IMAGE_SHA256"
+            echo "Config SHA-256: $W17_CONFIG_SHA256"
+            echo "DTB SHA-256: $W17_DTB_SHA256"
+            echo "Candidate tree: $W17_CANDIDATE_TREE"
+            echo "ReSukiSU commit: $W17_RESUKISU_COMMIT"
+          } > "$OUTPUT/W17-INPUT-GATE.txt"
+
+      - name: Verify exact Workflow 18 stock-ROM artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          unzip -q "$INPUTS/w18-artifact.zip" -d "$W18"
+
+          (
+            cd "$W18"
+            sha256sum -c SHA256SUMS \
+              | tee "$OUTPUT/W18-SHA256SUMS.verify.txt"
+          )
+
+          grep -Fxq \
+            'RESULT: PASS_READ_ONLY_REPRODUCED_FROM_FASTBOOT_ROM' \
+            "$W18/audit/WORKFLOW18-SUMMARY.txt"
+
+          test "$(sha256sum "$W18/stock_images/stock_boot.img" | awk '{print $1}')" = "$STOCK_BOOT_SHA256"
+          test "$(sha256sum "$W18/stock_images/stock_vendor_boot.img" | awk '{print $1}')" = "$STOCK_VENDOR_BOOT_SHA256"
+          test "$(sha256sum "$W18/stock_images/stock_dtbo.img" | awk '{print $1}')" = "$STOCK_DTBO_SHA256"
+          test "$(sha256sum "$W18/stock_images/stock_vbmeta.img" | awk '{print $1}')" = "$STOCK_VBMETA_SHA256"
+
+          jq -e \
+            --arg MD5 "$STOCK_ROM_MD5" \
+            --arg BOOT "$STOCK_BOOT_SHA256" \
+            --arg VENDOR "$STOCK_VENDOR_BOOT_SHA256" \
+            --arg DTBO "$STOCK_DTBO_SHA256" \
+            --arg VBMETA "$STOCK_VBMETA_SHA256" \
+            '
+              .result == "PASS_READ_ONLY_REPRODUCED_FROM_FASTBOOT_ROM"
+              and .source.md5 == $MD5
+              and .boot.sha256 == $BOOT
+              and .vendor_boot.sha256 == $VENDOR
+              and .dtbo.sha256 == $DTBO
+              and .vbmeta.sha256 == $VBMETA
+              and .vbmeta.signature_verifies == true
+              and .vbmeta.direct_hashes_verify == true
+              and .vendor_boot.dtb_fdt_count == 3
+              and .dtbo.entry_count == 16
+            ' \
+            "$W18/audit/STOCK-ROM-AUDIT.json" \
+            > /dev/null
+
+          cp "$W18/audit/WORKFLOW18-SUMMARY.txt" "$OUTPUT/W18-WORKFLOW-SUMMARY.txt"
+          cp "$W18/audit/STOCK-ROM-AUDIT.json" "$OUTPUT/W18-STOCK-ROM-AUDIT.json"
+          cp "$W18/audit/FASTBOOT-ROM-SOURCE.txt" "$OUTPUT/W18-FASTBOOT-ROM-SOURCE.txt"
+
+          {
+            echo "WORKFLOW 18 INPUT GATE"
+            echo "======================"
+            echo "RESULT: PASS"
+            echo "Fastboot ROM MD5: $STOCK_ROM_MD5"
+            echo "boot SHA-256: $STOCK_BOOT_SHA256"
+            echo "vendor_boot SHA-256: $STOCK_VENDOR_BOOT_SHA256"
+            echo "dtbo SHA-256: $STOCK_DTBO_SHA256"
+            echo "vbmeta SHA-256: $STOCK_VBMETA_SHA256"
+            echo "Signed top-level vbmeta: PASS from Workflow 18"
+          } > "$OUTPUT/W18-INPUT-GATE.txt"
+
+      - name: Reproduce Boot v3 dry-run and audit AVB relationship
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cat > "$WORK/repack_audit.py" <<'PY'
+          import hashlib
+          import json
+          import struct
+          import sys
+          from pathlib import Path
+
+          stock_path = Path(sys.argv[1])
+          image_path = Path(sys.argv[2])
+          vbmeta_path = Path(sys.argv[3])
+          vendor_path = Path(sys.argv[4])
+          dtbo_path = Path(sys.argv[5])
+          out_path = Path(sys.argv[6])
+          report_dir = Path(sys.argv[7])
+          report_dir.mkdir(parents=True, exist_ok=True)
+
+          stock = stock_path.read_bytes()
+          image = image_path.read_bytes()
+          top_vbmeta = vbmeta_path.read_bytes()
+          vendor = vendor_path.read_bytes()
+          dtbo = dtbo_path.read_bytes()
+
+          EXPECTED = {
+              "stock_boot_sha": "ac6522e4eed55782dd2ae61362e9d345d01a1f229c87333818511d5537fa79c5",
+              "stock_kernel_sha": "6e513b3652aa1de599c26b6aaeefef12dac569daf8648bbb67de99932782c50b",
+              "ramdisk_sha": "0bc8b54373b5501818e8b252517419786db207771047b6def7ec9bc89beb607a",
+              "w17_image_sha": "e036175ada602df3bcb443da7c390e8cd4b0e900c26fbfa313725db02855ec96",
+              "stock_vbmeta_sha": "62a5b1a94c2247c786e8148b9d9d0aea943b57b1034b3fd82d9cac9a85fcde97",
+              "stock_vendor_sha": "583e1f4c0e09c2267cda88bd48a8b4f56cf5c5e034fbda7b25bd65aa86385425",
+              "stock_dtbo_sha": "e9f3bae2c5417ff297162f1e7d2652ee98b347488fdf091d61daa986fbfb7690",
+              "stock_boot_digest": "fc6d91cd4ce2e89703c59e6a35c60e3efd984cfb54a29760e4a3105c42399d8a",
+              "vendor_boot_digest": "370f9c242bd161bd36effc3e7b56f208e21700a9a4e848b004f68595df2190c6",
+              "dtbo_digest": "a49a514a35a1ee60c19716407eb70f8bf5f9a8fec7aa8394c00c370f7ca0c6d9",
+              "new_boot_digest": "8b6af8a52796027ece9afb816e2354e0a9548808226749400fe8de86e0fdf397",
+              "dryrun_sha": "2baffafce260348c247674c5e8176408d45dc75b35ccbf7ca5834cbb4679398e",
+          }
+
+          def sha(data):
+              return hashlib.sha256(data).hexdigest()
+
+          def align(value, size=4096):
+              return (value + size - 1) // size * size
+
+          def need(condition, message):
+              if not condition:
+                  raise SystemExit("ERROR: " + message)
+
+          def parse_footer(data):
+              raw = data[-64:]
+              need(raw[:4] == b"AVBf", "AVB footer magic")
+              major, minor = struct.unpack_from(">II", raw, 4)
+              original, offset, size = struct.unpack_from(">QQQ", raw, 12)
+              need(offset + size <= len(data) - 64, "AVB footer geometry")
+              return {
+                  "major": major,
+                  "minor": minor,
+                  "original": original,
+                  "offset": offset,
+                  "size": size,
+                  "raw": raw,
+                  "vbmeta": data[offset:offset + size],
+              }
+
+          def parse_vbmeta(vb):
+              need(vb[:4] == b"AVB0", "AVB0 magic")
+              req_major, req_minor = struct.unpack_from(">II", vb, 4)
+              auth_size, aux_size = struct.unpack_from(">QQ", vb, 12)
+              algorithm_type = struct.unpack_from(">I", vb, 28)[0]
+              values = struct.unpack_from(">QQQQQQQQQQQ", vb, 32)
+              (
+                  hash_offset,
+                  hash_size,
+                  signature_offset,
+                  signature_size,
+                  public_key_offset,
+                  public_key_size,
+                  public_key_metadata_offset,
+                  public_key_metadata_size,
+                  descriptors_offset,
+                  descriptors_size,
+                  rollback_index,
+              ) = values
+
+              flags, rollback_location = struct.unpack_from(">II", vb, 120)
+              release = vb[128:176].split(b"\0", 1)[0].decode("ascii", "replace")
+
+              aux_start = 256 + auth_size
+              pos = aux_start + descriptors_offset
+              end = pos + descriptors_size
+
+              need(
+                  end <= aux_start + aux_size,
+                  "AVB descriptors outside auxiliary block",
+              )
+
+              descriptors = []
+
+              while pos < end:
+                  tag, following = struct.unpack_from(">QQ", vb, pos)
+                  raw = vb[pos:pos + 16 + following]
+
+                  need(
+                      len(raw) == 16 + following,
+                      "truncated AVB descriptor",
+                  )
+
+                  item = {
+                      "tag": tag,
+                      "offset": pos,
+                      "following": following,
+                      "raw": raw,
+                  }
+
+                  if tag == 2:
+                      image_size = struct.unpack_from(">Q", raw, 16)[0]
+
+                      algorithm = (
+                          raw[24:56]
+                          .split(b"\0", 1)[0]
+                          .decode("ascii", "replace")
+                      )
+
+                      (
+                          name_len,
+                          salt_len,
+                          digest_len,
+                          dflags,
+                      ) = struct.unpack_from(">IIII", raw, 56)
+
+                      q = 132
+
+                      partition = raw[
+                          q:q + name_len
+                      ].decode("ascii", "replace")
+
+                      q += name_len
+
+                      salt = raw[
+                          q:q + salt_len
+                      ]
+
+                      q += salt_len
+
+                      digest = raw[
+                          q:q + digest_len
+                      ]
+
+                      item.update({
+                          "type": "hash",
+                          "image_size": image_size,
+                          "hash_algorithm": algorithm,
+                          "partition": partition,
+                          "salt": salt,
+                          "digest": digest,
+                          "digest_offset": pos + q,
+                          "digest_len": digest_len,
+                          "image_size_offset": pos + 16,
+                          "flags": dflags,
+                      })
+
+                  elif tag == 0:
+                      key_len, value_len = struct.unpack_from(
+                          ">QQ",
+                          raw,
+                          16,
+                      )
+
+                      q = 32
+
+                      key = raw[
+                          q:q + key_len
+                      ]
+
+                      q += key_len
+
+                      if q < len(raw) and raw[q] == 0:
+                          q += 1
+
+                      value = raw[
+                          q:q + value_len
+                      ]
+
+                      item.update({
+                          "type": "property",
+                          "key": key.decode(
+                              "utf-8",
+                              "replace",
+                          ),
+                          "value": value.decode(
+                              "utf-8",
+                              "replace",
+                          ),
+                      })
+
+                  else:
+                      item["type"] = "other"
+
+                  descriptors.append(item)
+
+                  pos += 16 + following
+
+              need(
+                  pos == end,
+                  "AVB descriptor parse end",
+              )
+
+              return {
+                  "required_libavb":
+                      f"{req_major}.{req_minor}",
+                  "algorithm_type":
+                      algorithm_type,
+                  "auth_size":
+                      auth_size,
+                  "aux_size":
+                      aux_size,
+                  "hash_offset":
+                      hash_offset,
+                  "hash_size":
+                      hash_size,
+                  "signature_offset":
+                      signature_offset,
+                  "signature_size":
+                      signature_size,
+                  "public_key_offset":
+                      public_key_offset,
+                  "public_key_size":
+                      public_key_size,
+                  "public_key_metadata_offset":
+                      public_key_metadata_offset,
+                  "public_key_metadata_size":
+                      public_key_metadata_size,
+                  "rollback_index":
+                      rollback_index,
+                  "flags":
+                      flags,
+                  "rollback_index_location":
+                      rollback_location,
+                  "release":
+                      release,
+                  "descriptors":
+                      descriptors,
+              }
+
+          def hash_descriptor(info, partition):
+              found = [
+                  descriptor
+                  for descriptor
+                  in info["descriptors"]
+                  if (
+                      descriptor.get("type")
+                      == "hash"
+                      and descriptor.get("partition")
+                      == partition
+                  )
+              ]
+
+              need(
+                  len(found) == 1,
+                  f"expected exactly one hash descriptor for {partition}",
+              )
+
+              return found[0]
+
+          def verify_descriptor(data, descriptor):
+              need(
+                  descriptor["hash_algorithm"]
+                  == "sha256",
+                  "unexpected hash algorithm",
+              )
+
+              need(
+                  descriptor["image_size"]
+                  <= len(data),
+                  "descriptor image_size exceeds image",
+              )
+
+              calculated = hashlib.sha256(
+                  descriptor["salt"]
+                  + data[
+                      :descriptor["image_size"]
+                  ]
+              ).digest()
+
+              return (
+                  calculated
+                  == descriptor["digest"],
+                  calculated,
+              )
+
+          need(
+              len(stock) == 134217728,
+              "stock boot size",
+          )
+
+          need(
+              sha(stock)
+              == EXPECTED["stock_boot_sha"],
+              "stock boot SHA-256",
+          )
+
+          need(
+              len(image) == 29839872,
+              "Workflow-17 Image size",
+          )
+
+          need(
+              sha(image)
+              == EXPECTED["w17_image_sha"],
+              "Workflow-17 Image SHA-256",
+          )
+
+          need(
+              len(top_vbmeta) == 8192,
+              "stock vbmeta size",
+          )
+
+          need(
+              sha(top_vbmeta)
+              == EXPECTED["stock_vbmeta_sha"],
+              "stock vbmeta SHA-256",
+          )
+
+          need(
+              len(vendor) == 100663296,
+              "stock vendor_boot size",
+          )
+
+          need(
+              sha(vendor)
+              == EXPECTED["stock_vendor_sha"],
+              "stock vendor_boot SHA-256",
+          )
+
+          need(
+              len(dtbo) == 8388608,
+              "stock dtbo size",
+          )
+
+          need(
+              sha(dtbo)
+              == EXPECTED["stock_dtbo_sha"],
+              "stock dtbo SHA-256",
+          )
+
+          need(
+              stock[:8] == b"ANDROID!",
+              "stock boot magic",
+          )
+
+          (
+              kernel_size,
+              ramdisk_size,
+              os_raw,
+              header_size,
+          ) = struct.unpack_from(
+              "<4I",
+              stock,
+              8,
+          )
+
+          reserved = struct.unpack_from(
+              "<4I",
+              stock,
+              24,
+          )
+
+          header_version = struct.unpack_from(
+              "<I",
+              stock,
+              40,
+          )[0]
+
+          need(
+              kernel_size == 45480448,
+              "stock kernel size",
+          )
+
+          need(
+              ramdisk_size == 22061278,
+              "stock ramdisk size",
+          )
+
+          need(
+              header_size == 1580,
+              "stock boot header size",
+          )
+
+          need(
+              header_version == 3,
+              "stock boot header version",
+          )
+
+          need(
+              reserved == (0, 0, 0, 0),
+              "stock boot reserved fields",
+          )
+
+          need(
+              all(
+                  value == 0
+                  for value
+                  in stock[
+                      header_size:4096
+                  ]
+              ),
+              "stock boot header padding is not zero",
+          )
+
+          stock_ramdisk_offset = (
+              4096
+              + align(kernel_size)
+          )
+
+          stock_payload_end = (
+              stock_ramdisk_offset
+              + align(ramdisk_size)
+          )
+
+          need(
+              stock_ramdisk_offset
+              == 45486080,
+              "stock ramdisk offset",
+          )
+
+          need(
+              stock_payload_end
+              == 67551232,
+              "stock aligned payload end",
+          )
+
+          stock_kernel = stock[
+              4096:
+              4096 + kernel_size
+          ]
+
+          ramdisk = stock[
+              stock_ramdisk_offset:
+              stock_ramdisk_offset
+              + ramdisk_size
+          ]
+
+          need(
+              sha(stock_kernel)
+              == EXPECTED["stock_kernel_sha"],
+              "stock kernel SHA-256",
+          )
+
+          need(
+              sha(ramdisk)
+              == EXPECTED["ramdisk_sha"],
+              "stock ramdisk SHA-256",
+          )
+
+          need(
+              ramdisk[:4]
+              == bytes.fromhex(
+                  "02214c18"
+              ),
+              "stock ramdisk is not LZ4 legacy",
+          )
+
+          (
+              stock_text_offset,
+              stock_arm_image_size,
+              stock_arm_flags,
+          ) = struct.unpack_from(
+              "<QQQ",
+              stock_kernel,
+              8,
+          )
+
+          (
+              stock_arm_magic,
+              stock_arm_res5,
+          ) = struct.unpack_from(
+              "<II",
+              stock_kernel,
+              56,
+          )
+
+          need(
+              stock_text_offset
+              == 0x80000,
+              "stock ARM64 text_offset",
+          )
+
+          need(
+              stock_arm_image_size
+              == 50966528,
+              "stock ARM64 image_size",
+          )
+
+          need(
+              stock_arm_flags == 0xA,
+              "stock ARM64 flags",
+          )
+
+          need(
+              stock_arm_magic
+              == 0x644D5241,
+              "stock ARM64 magic",
+          )
+
+          need(
+              stock_arm_res5 == 0x40,
+              "stock ARM64 res5",
+          )
+
+          (
+              new_text_offset,
+              new_arm_image_size,
+              new_arm_flags,
+          ) = struct.unpack_from(
+              "<QQQ",
+              image,
+              8,
+          )
+
+          (
+              new_arm_magic,
+              new_arm_res5,
+          ) = struct.unpack_from(
+              "<II",
+              image,
+              56,
+          )
+
+          need(
+              new_text_offset
+              == 0x80000,
+              "Workflow-17 ARM64 text_offset",
+          )
+
+          need(
+              new_arm_image_size
+              == 38821888,
+              "Workflow-17 ARM64 image_size",
+          )
+
+          need(
+              new_arm_flags == 0xA,
+              "Workflow-17 ARM64 flags",
+          )
+
+          need(
+              new_arm_magic
+              == 0x644D5241,
+              "Workflow-17 ARM64 magic",
+          )
+
+          need(
+              new_arm_res5 == 0x40,
+              "Workflow-17 ARM64 res5",
+          )
+
+          stock_footer = parse_footer(
+              stock
+          )
+
+          need(
+              stock_footer["major"] == 1
+              and stock_footer["minor"] == 0,
+              "stock AVB footer version",
+          )
+
+          need(
+              stock_footer["original"]
+              == stock_payload_end,
+              "stock AVB original_image_size",
+          )
+
+          need(
+              stock_footer["offset"]
+              == stock_payload_end,
+              "stock AVB vbmeta offset",
+          )
+
+          need(
+              stock_footer["size"] == 896,
+              "stock embedded vbmeta size",
+          )
+
+          stock_embedded = parse_vbmeta(
+              stock_footer["vbmeta"]
+          )
+
+          need(
+              stock_embedded[
+                  "algorithm_type"
+              ] == 0,
+              "stock embedded vbmeta must be algorithm NONE",
+          )
+
+          need(
+              stock_embedded["release"]
+              == "avbtool 1.2.0",
+              "stock embedded AVB release string",
+          )
+
+          stock_boot_descriptor = (
+              hash_descriptor(
+                  stock_embedded,
+                  "boot",
+              )
+          )
+
+          stock_boot_ok, _ = (
+              verify_descriptor(
+                  stock,
+                  stock_boot_descriptor,
+              )
+          )
+
+          need(
+              stock_boot_ok,
+              "stock embedded boot descriptor does not verify",
+          )
+
+          need(
+              stock_boot_descriptor[
+                  "digest"
+              ].hex()
+              == EXPECTED[
+                  "stock_boot_digest"
+              ],
+              "stock boot digest identity",
+          )
+
+          need(
+              stock_boot_descriptor[
+                  "flags"
+              ] == 0,
+              "stock boot hash flags",
+          )
+
+          new_ramdisk_offset = (
+              4096
+              + align(len(image))
+          )
+
+          new_payload_end = (
+              new_ramdisk_offset
+              + align(len(ramdisk))
+          )
+
+          need(
+              new_ramdisk_offset
+              == 29847552,
+              "new ramdisk offset",
+          )
+
+          need(
+              new_payload_end
+              == 51912704,
+              "new aligned payload end",
+          )
+
+          output = bytearray(
+              len(stock)
+          )
+
+          header = bytearray(
+              stock[:4096]
+          )
+
+          struct.pack_into(
+              "<I",
+              header,
+              8,
+              len(image),
+          )
+
+          output[:4096] = header
+
+          output[
+              4096:
+              4096 + len(image)
+          ] = image
+
+          output[
+              new_ramdisk_offset:
+              new_ramdisk_offset
+              + len(ramdisk)
+          ] = ramdisk
+
+          new_vbmeta = bytearray(
+              stock_footer["vbmeta"]
+          )
+
+          struct.pack_into(
+              ">Q",
+              new_vbmeta,
+              stock_boot_descriptor[
+                  "image_size_offset"
+              ],
+              new_payload_end,
+          )
+
+          new_digest = hashlib.sha256(
+              stock_boot_descriptor[
+                  "salt"
+              ]
+              + bytes(
+                  output[
+                      :new_payload_end
+                  ]
+              )
+          ).digest()
+
+          new_vbmeta[
+              stock_boot_descriptor[
+                  "digest_offset"
+              ]:
+              stock_boot_descriptor[
+                  "digest_offset"
+              ]
+              + stock_boot_descriptor[
+                  "digest_len"
+              ]
+          ] = new_digest
+
+          output[
+              new_payload_end:
+              new_payload_end
+              + len(new_vbmeta)
+          ] = new_vbmeta
+
+          new_footer = bytearray(
+              stock_footer["raw"]
+          )
+
+          struct.pack_into(
+              ">Q",
+              new_footer,
+              12,
+              new_payload_end,
+          )
+
+          struct.pack_into(
+              ">Q",
+              new_footer,
+              20,
+              new_payload_end,
+          )
+
+          output[-64:] = new_footer
+
+          dryrun = bytes(output)
+
+          out_path.write_bytes(
+              dryrun
+          )
+
+          need(
+              new_digest.hex()
+              == EXPECTED[
+                  "new_boot_digest"
+              ],
+              "regenerated dry-run AVB digest",
+          )
+
+          need(
+              sha(dryrun)
+              == EXPECTED[
+                  "dryrun_sha"
+              ],
+              "dry-run boot does not reproduce earlier local Workflow-19 bytes",
+          )
+
+          dry_footer = parse_footer(
+              dryrun
+          )
+
+          dry_embedded = parse_vbmeta(
+              dry_footer["vbmeta"]
+          )
+
+          dry_descriptor = (
+              hash_descriptor(
+                  dry_embedded,
+                  "boot",
+              )
+          )
+
+          (
+              dry_ok,
+              dry_calculated,
+          ) = verify_descriptor(
+              dryrun,
+              dry_descriptor,
+          )
+
+          need(
+              dry_ok,
+              "dry-run embedded AVB descriptor verification",
+          )
+
+          need(
+              dry_calculated
+              == new_digest,
+              "independent dry-run digest mismatch",
+          )
+
+          need(
+              dry_footer["original"]
+              == new_payload_end,
+              "dry-run AVB original_image_size",
+          )
+
+          need(
+              dry_footer["offset"]
+              == new_payload_end,
+              "dry-run AVB vbmeta offset",
+          )
+
+          need(
+              dry_footer["size"] == 896,
+              "dry-run embedded vbmeta size",
+          )
+
+          need(
+              dry_embedded[
+                  "algorithm_type"
+              ] == 0,
+              "dry-run embedded vbmeta algorithm",
+          )
+
+          need(
+              dry_embedded[
+                  "release"
+              ]
+              == stock_embedded[
+                  "release"
+              ],
+              "AVB release string changed",
+          )
+
+          need(
+              dry_descriptor[
+                  "image_size"
+              ]
+              == new_payload_end,
+              "dry-run hash descriptor image_size",
+          )
+
+          need(
+              dry_descriptor[
+                  "salt"
+              ]
+              == stock_boot_descriptor[
+                  "salt"
+              ],
+              "AVB salt changed",
+          )
+
+          need(
+              dry_descriptor[
+                  "flags"
+              ]
+              == stock_boot_descriptor[
+                  "flags"
+              ],
+              "AVB hash flags changed",
+          )
+
+          changed_header = [
+              index
+              for index, (
+                  before,
+                  after,
+              )
+              in enumerate(
+                  zip(
+                      stock[:4096],
+                      dryrun[:4096],
+                  )
+              )
+              if before != after
+          ]
+
+          need(
+              changed_header
+              == [9, 10, 11],
+              f"unexpected Boot-v3 header delta: {changed_header}",
+          )
+
+          need(
+              dryrun[12:4096]
+              == stock[12:4096],
+              "Boot-v3 metadata other than kernel_size changed",
+          )
+
+          need(
+              dryrun[
+                  4096:
+                  4096 + len(image)
+              ] == image,
+              "Workflow-17 Image not embedded byte-for-byte",
+          )
+
+          need(
+              dryrun[
+                  new_ramdisk_offset:
+                  new_ramdisk_offset
+                  + len(ramdisk)
+              ] == ramdisk,
+              "stock ramdisk not preserved byte-for-byte",
+          )
+
+          need(
+              all(
+                  value == 0
+                  for value
+                  in dryrun[
+                      4096 + len(image):
+                      new_ramdisk_offset
+                  ]
+              ),
+              "kernel alignment padding not zero",
+          )
+
+          need(
+              all(
+                  value == 0
+                  for value
+                  in dryrun[
+                      new_ramdisk_offset
+                      + len(ramdisk):
+                      new_payload_end
+                  ]
+              ),
+              "ramdisk alignment padding not zero",
+          )
+
+          need(
+              all(
+                  value == 0
+                  for value
+                  in dryrun[
+                      new_payload_end
+                      + 896:
+                      -64
+                  ]
+              ),
+              "unused partition area is not zero-filled",
+          )
+
+          vbmeta_changes = [
+              index
+              for index, (
+                  before,
+                  after,
+              )
+              in enumerate(
+                  zip(
+                      stock_footer[
+                          "vbmeta"
+                      ],
+                      dry_footer[
+                          "vbmeta"
+                      ],
+                  )
+              )
+              if before != after
+          ]
+
+          footer_changes = [
+              index
+              for index, (
+                  before,
+                  after,
+              )
+              in enumerate(
+                  zip(
+                      stock_footer[
+                          "raw"
+                      ],
+                      dry_footer[
+                          "raw"
+                      ],
+                  )
+              )
+              if before != after
+          ]
+
+          expected_vbmeta_changes = (
+              [276, 277, 278]
+              + list(
+                  range(
+                      424,
+                      456,
+                  )
+              )
+          )
+
+          expected_footer_changes = [
+              16,
+              17,
+              18,
+              24,
+              25,
+              26,
+          ]
+
+          need(
+              vbmeta_changes
+              == expected_vbmeta_changes,
+              f"unexpected embedded vbmeta delta: {vbmeta_changes}",
+          )
+
+          need(
+              footer_changes
+              == expected_footer_changes,
+              f"unexpected AVB footer delta: {footer_changes}",
+          )
+
+          stock_non_hash = [
+              descriptor["raw"]
+              for descriptor
+              in stock_embedded[
+                  "descriptors"
+              ]
+              if descriptor.get(
+                  "type"
+              ) != "hash"
+          ]
+
+          dry_non_hash = [
+              descriptor["raw"]
+              for descriptor
+              in dry_embedded[
+                  "descriptors"
+              ]
+              if descriptor.get(
+                  "type"
+              ) != "hash"
+          ]
+
+          need(
+              stock_non_hash
+              == dry_non_hash,
+              "non-hash embedded AVB descriptors changed",
+          )
+
+          properties = [
+              {
+                  "key":
+                      descriptor[
+                          "key"
+                      ],
+                  "value":
+                      descriptor[
+                          "value"
+                      ],
+              }
+              for descriptor
+              in stock_embedded[
+                  "descriptors"
+              ]
+              if descriptor.get(
+                  "type"
+              ) == "property"
+          ]
+
+          top = parse_vbmeta(
+              top_vbmeta
+          )
+
+          need(
+              top[
+                  "algorithm_type"
+              ] == 1,
+              "top-level stock vbmeta is not SHA256_RSA2048 algorithm type 1",
+          )
+
+          top_boot = (
+              hash_descriptor(
+                  top,
+                  "boot",
+              )
+          )
+
+          top_vendor = (
+              hash_descriptor(
+                  top,
+                  "vendor_boot",
+              )
+          )
+
+          top_dtbo = (
+              hash_descriptor(
+                  top,
+                  "dtbo",
+              )
+          )
+
+          (
+              stock_top_boot_ok,
+              _,
+          ) = verify_descriptor(
+              stock,
+              top_boot,
+          )
+
+          (
+              dry_top_boot_ok,
+              _,
+          ) = verify_descriptor(
+              dryrun,
+              top_boot,
+          )
+
+          (
+              vendor_top_ok,
+              _,
+          ) = verify_descriptor(
+              vendor,
+              top_vendor,
+          )
+
+          (
+              dtbo_top_ok,
+              _,
+          ) = verify_descriptor(
+              dtbo,
+              top_dtbo,
+          )
+
+          need(
+              stock_top_boot_ok,
+              "top-level vbmeta does not verify exact stock boot",
+          )
+
+          need(
+              not dry_top_boot_ok,
+              "unexpected: stock top-level vbmeta still verifies modified dry-run boot",
+          )
+
+          need(
+              vendor_top_ok,
+              "top-level vbmeta does not verify exact stock vendor_boot",
+          )
+
+          need(
+              dtbo_top_ok,
+              "top-level vbmeta does not verify exact stock dtbo",
+          )
+
+          need(
+              top_boot[
+                  "digest"
+              ].hex()
+              == EXPECTED[
+                  "stock_boot_digest"
+              ],
+              "top-level boot digest identity",
+          )
+
+          need(
+              top_vendor[
+                  "digest"
+              ].hex()
+              == EXPECTED[
+                  "vendor_boot_digest"
+              ],
+              "top-level vendor_boot digest identity",
+          )
+
+          need(
+              top_dtbo[
+                  "digest"
+              ].hex()
+              == EXPECTED[
+                  "dtbo_digest"
+              ],
+              "top-level dtbo digest identity",
+          )
+
+          os_major = (
+              os_raw >> 25
+          ) & 0x7F
+
+          os_minor = (
+              os_raw >> 18
+          ) & 0x7F
+
+          os_patch = (
+              os_raw >> 11
+          ) & 0x7F
+
+          patch_year = (
+              (
+                  os_raw >> 4
+              )
+              & 0x7F
+          ) + 2000
+
+          patch_month = (
+              os_raw
+              & 0xF
+          )
+
+          need(
+              (
+                  os_major,
+                  os_minor,
+                  os_patch,
+              )
+              == (
+                  11,
+                  0,
+                  0,
+              ),
+              "encoded boot OS version",
+          )
+
+          need(
+              (
+                  patch_year,
+                  patch_month,
+              )
+              == (
+                  2024,
+                  12,
+              ),
+              "encoded boot security patch",
+          )
+
+          structure = {
+              "result":
+                  "PASS_DRYRUN_REPRODUCED_FROM_W17_W18",
+
+              "stock_boot": {
+                  "bytes":
+                      len(stock),
+                  "sha256":
+                      sha(stock),
+                  "kernel_bytes":
+                      kernel_size,
+                  "kernel_sha256":
+                      sha(stock_kernel),
+                  "ramdisk_bytes":
+                      len(ramdisk),
+                  "ramdisk_sha256":
+                      sha(ramdisk),
+                  "ramdisk_offset":
+                      stock_ramdisk_offset,
+                  "payload_end":
+                      stock_payload_end,
+                  "encoded_os_version":
+                      (
+                          f"{os_major}."
+                          f"{os_minor}."
+                          f"{os_patch}"
+                      ),
+                  "encoded_security_patch":
+                      (
+                          f"{patch_year:04d}-"
+                          f"{patch_month:02d}"
+                      ),
+              },
+
+              "w17_image": {
+                  "bytes":
+                      len(image),
+                  "sha256":
+                      sha(image),
+                  "arm64_text_offset":
+                      new_text_offset,
+                  "arm64_image_size":
+                      new_arm_image_size,
+                  "arm64_flags":
+                      new_arm_flags,
+              },
+
+              "dryrun_boot": {
+                  "bytes":
+                      len(dryrun),
+                  "sha256":
+                      sha(dryrun),
+                  "kernel_bytes":
+                      len(image),
+                  "kernel_sha256":
+                      sha(image),
+                  "ramdisk_bytes":
+                      len(ramdisk),
+                  "ramdisk_sha256":
+                      sha(ramdisk),
+                  "ramdisk_offset":
+                      new_ramdisk_offset,
+                  "payload_end":
+                      new_payload_end,
+              },
+
+              "header": {
+                  "version":
+                      header_version,
+                  "header_size":
+                      header_size,
+                  "alignment":
+                      4096,
+                  "changed_byte_positions":
+                      changed_header,
+              },
+
+              "embedded_boot_avb": {
+                  "footer_version":
+                      (
+                          f"{dry_footer['major']}."
+                          f"{dry_footer['minor']}"
+                      ),
+                  "vbmeta_size":
+                      dry_footer[
+                          "size"
+                      ],
+                  "algorithm_type":
+                      dry_embedded[
+                          "algorithm_type"
+                      ],
+                  "release_string":
+                      dry_embedded[
+                          "release"
+                      ],
+                  "partition":
+                      dry_descriptor[
+                          "partition"
+                      ],
+                  "hash_algorithm":
+                      dry_descriptor[
+                          "hash_algorithm"
+                      ],
+                  "salt_hex":
+                      dry_descriptor[
+                          "salt"
+                      ].hex(),
+                  "stock_digest_hex":
+                      stock_boot_descriptor[
+                          "digest"
+                      ].hex(),
+                  "dryrun_digest_hex":
+                      dry_descriptor[
+                          "digest"
+                      ].hex(),
+                  "dryrun_digest_verifies":
+                      dry_ok,
+                  "vbmeta_changed_byte_offsets":
+                      vbmeta_changes,
+                  "footer_changed_byte_offsets":
+                      footer_changes,
+                  "properties":
+                      properties,
+              },
+
+              "top_level_stock_vbmeta": {
+                  "bytes":
+                      len(
+                          top_vbmeta
+                      ),
+                  "sha256":
+                      sha(
+                          top_vbmeta
+                      ),
+                  "algorithm_type":
+                      top[
+                          "algorithm_type"
+                      ],
+                  "stock_boot_descriptor_verifies_stock_boot":
+                      stock_top_boot_ok,
+                  "stock_boot_descriptor_verifies_dryrun_boot":
+                      dry_top_boot_ok,
+                  "expected_mismatch_for_modified_boot":
+                      not dry_top_boot_ok,
+                  "vendor_boot_descriptor_verifies_stock_vendor_boot":
+                      vendor_top_ok,
+                  "dtbo_descriptor_verifies_stock_dtbo":
+                      dtbo_top_ok,
+              },
+
+              "reproduction": {
+                  "matches_previous_local_workflow19_sha256":
+                      (
+                          sha(dryrun)
+                          == EXPECTED[
+                              "dryrun_sha"
+                          ]
+                      ),
+                  "matches_previous_local_workflow19_avb_digest":
+                      (
+                          dry_descriptor[
+                              "digest"
+                          ].hex()
+                          == EXPECTED[
+                              "new_boot_digest"
+                          ]
+                      ),
+              },
+
+              "safety": {
+                  "flashed":
+                      False,
+                  "boot_img_tested_on_device":
+                      False,
+                  "dtb_appended":
+                      False,
+                  "vendor_boot_modified":
+                      False,
+                  "dtbo_modified":
+                      False,
+                  "top_level_vbmeta_modified":
+                      False,
+              },
+          }
+
+          (
+              report_dir
+              / "WORKFLOW19-STRUCTURE.json"
+          ).write_text(
+              json.dumps(
+                  structure,
+                  indent=2,
+                  sort_keys=True,
+              )
+              + "\n",
+              encoding="utf-8",
+          )
+
+          header_report = f"""
+          BOOT V3 HEADER DELTA
+          ====================
+          Stock kernel_size: {kernel_size}
+          Dry-run kernel_size: {len(image)}
+          Changed Boot-v3 header byte positions: {changed_header}
+
+          All bytes from header offset 12 through byte 4095 are byte-identical: YES
+          Only the little-endian kernel_size field at offsets 8..11 was intentionally rewritten.
+          Header version: {header_version}
+          Header size: {header_size}
+          Encoded OS version: {os_major}.{os_minor}.{os_patch}
+          Encoded security patch: {patch_year:04d}-{patch_month:02d}
+          Cmdline preserved byte-for-byte: YES
+          """
+
+          (
+              report_dir
+              / "BOOT-HEADER-DELTA.txt"
+          ).write_text(
+              "\n".join(
+                  line.strip()
+                  for line
+                  in header_report.splitlines()
+              ).strip()
+              + "\n",
+              encoding="utf-8",
+          )
+
+          avb_report = f"""
+          EMBEDDED BOOT AVB DELTA AUDIT
+          =============================
+          Stock AVB footer version: {stock_footer['major']}.{stock_footer['minor']}
+          Stock vbmeta size: {stock_footer['size']}
+          VBMeta algorithm type: {stock_embedded['algorithm_type']}
+          VBMeta release string: {stock_embedded['release']}
+          Partition: {stock_boot_descriptor['partition']}
+          Hash algorithm: {stock_boot_descriptor['hash_algorithm']}
+          Salt: {stock_boot_descriptor['salt'].hex()}
+          Flags: {stock_boot_descriptor['flags']}
+
+          Stock payload/hash-descriptor image_size: {stock_payload_end}
+          Dry-run payload/hash-descriptor image_size: {new_payload_end}
+
+          Stock digest:
+          {stock_boot_descriptor['digest'].hex()}
+
+          Dry-run regenerated digest:
+          {dry_descriptor['digest'].hex()}
+
+          Dry-run digest verifies: YES
+          Changed embedded vbmeta byte offsets: {vbmeta_changes}
+          Changed footer byte offsets: {footer_changes}
+          Non-hash descriptors byte-identical: YES
+          AVB property descriptors byte-identical: YES
+          """
+
+          (
+              report_dir
+              / "AVB-DELTA-AUDIT.txt"
+          ).write_text(
+              "\n".join(
+                  line.strip()
+                  for line
+                  in avb_report.splitlines()
+              ).strip()
+              + "\n",
+              encoding="utf-8",
+          )
+
+          relationship_report = f"""
+          TOP-LEVEL STOCK VBMETA RELATIONSHIP
+          ===================================
+          Stock vbmeta SHA-256:
+          {sha(top_vbmeta)}
+
+          Algorithm type: {top['algorithm_type']} (SHA256_RSA2048)
+          Workflow 18 independently verified its RSA signature: REQUIRED PREREQUISITE
+
+          Direct stock descriptor checks performed again in Workflow 19:
+          stock boot -> PASS
+          stock vendor_boot -> PASS
+          stock dtbo -> PASS
+
+          Stock top-level boot descriptor against dry-run custom boot:
+          EXPECTED MISMATCH
+
+          Why:
+          The signed stock top-level vbmeta still contains the original stock boot hash
+          descriptor. Workflow 19 deliberately does not alter or resign top-level vbmeta.
+          The custom dry-run boot is internally self-consistent through its regenerated
+          embedded boot hash footer, but it is not the stock boot image described by the
+          unchanged signed top-level vbmeta.
+
+          This is expected evidence, not a repack failure.
+          It does not establish flash safety.
+
+          vendor_boot modified: NO
+          dtbo modified: NO
+          top-level vbmeta modified: NO
+          """
+
+          (
+              report_dir
+              / "TOP-LEVEL-VBMETA-RELATIONSHIP.txt"
+          ).write_text(
+              "\n".join(
+                  line.strip()
+                  for line
+                  in relationship_report.splitlines()
+              ).strip()
+              + "\n",
+              encoding="utf-8",
+          )
+
+          main_report = f"""
+          VEUX Workflow 19 - Boot v3 Dry-Run Repack + AVB Audit
+          ======================================================
+
+          RESULT: PASS_DRYRUN_REPRODUCED_FROM_W17_W18
+
+          SAFETY
+          ------
+          This image exists only for structural validation.
+          It has NOT been flashed or boot-tested on the device.
+          The filename intentionally contains DO_NOT_FLASH.
+
+          CANONICAL INPUT CHAIN
+          ---------------------
+          Workflow 17 exact final kernel Image:
+          Bytes: {len(image)}
+          SHA-256: {sha(image)}
+
+          Workflow 18 exact stock boot:
+          Bytes: {len(stock)}
+          SHA-256: {sha(stock)}
+
+          Workflow 18 exact stock vendor_boot:
+          SHA-256: {sha(vendor)}
+
+          Workflow 18 exact stock dtbo:
+          SHA-256: {sha(dtbo)}
+
+          Workflow 18 exact signed stock vbmeta:
+          SHA-256: {sha(top_vbmeta)}
+
+          STOCK BOOT V3
+          -------------
+          Header version: {header_version}
+          Header size: {header_size}
+          Fixed Boot-v3 alignment: 4096
+          Stock kernel bytes: {kernel_size}
+          Stock kernel SHA-256: {sha(stock_kernel)}
+          Stock ramdisk bytes: {len(ramdisk)}
+          Stock compressed ramdisk SHA-256: {sha(ramdisk)}
+          Stock ramdisk offset: {stock_ramdisk_offset} (0x{stock_ramdisk_offset:x})
+          Stock aligned payload end: {stock_payload_end} (0x{stock_payload_end:x})
+          Partition image bytes: {len(stock)}
+
+          DRY-RUN BOOT V3
+          ---------------
+          Dry-run image bytes: {len(dryrun)}
+          Dry-run SHA-256: {sha(dryrun)}
+          Custom kernel bytes: {len(image)}
+          Custom kernel SHA-256: {sha(image)}
+          New ramdisk offset: {new_ramdisk_offset} (0x{new_ramdisk_offset:x})
+          New aligned payload end: {new_payload_end} (0x{new_payload_end:x})
+
+          EARLIER LOCAL WORKFLOW-19 REPRODUCTION
+          --------------------------------------
+          Expected previous dry-run SHA-256:
+          {EXPECTED['dryrun_sha']}
+          Actual GitHub-chain reproduction SHA-256:
+          {sha(dryrun)}
+          BYTE-IDENTICAL RESULT: YES
+
+          Expected previous regenerated AVB digest:
+          {EXPECTED['new_boot_digest']}
+          Actual regenerated AVB digest:
+          {dry_descriptor['digest'].hex()}
+          DIGEST-IDENTICAL RESULT: YES
+
+          KERNEL / RAMDISK
+          ----------------
+          Final Workflow-17 Image copied byte-for-byte: YES
+          Stock compressed ramdisk copied byte-for-byte: YES
+          Ramdisk decompression/recompression performed: NO
+          No DTB appended to boot.img: YES
+
+          TOP-LEVEL SIGNED STOCK VBMETA
+          -----------------------------
+          Stock boot descriptor -> stock boot: PASS
+          Stock vendor_boot descriptor -> stock vendor_boot: PASS
+          Stock dtbo descriptor -> stock dtbo: PASS
+          Stock boot descriptor -> dry-run custom boot: EXPECTED MISMATCH
+
+          No top-level vbmeta modification was made.
+          No vendor_boot modification was made.
+          No dtbo modification was made.
+
+          STRUCTURAL GATES
+          ----------------
+          [PASS] exact Workflow-17 Image consumed
+          [PASS] exact Workflow-18 stock images consumed
+          [PASS] exact stock compressed ramdisk preserved
+          [PASS] Boot-v3 metadata preserved except kernel_size
+          [PASS] fixed 4096-byte alignment
+          [PASS] fixed 128 MiB boot partition geometry
+          [PASS] embedded boot AVB hash regenerated
+          [PASS] regenerated embedded AVB independently verified
+          [PASS] non-hash embedded AVB descriptors unchanged
+          [PASS] exact earlier local Workflow-19 dry-run bytes reproduced
+          [PASS] signed stock top-level AVB relationship explicitly audited
+          [PASS] no DTB appended
+          [PASS] vendor_boot untouched
+          [PASS] dtbo untouched
+          [PASS] top-level vbmeta untouched
+          [PASS] no device operation performed
+
+          IMPORTANT
+          ---------
+          PASS_DRYRUN_REPRODUCED_FROM_W17_W18 proves deterministic structural
+          reproduction of the earlier local Workflow-19 result from the canonical
+          GitHub Workflow-17 and Workflow-18 inputs.
+
+          It does NOT prove that the phone will boot the kernel.
+          It is NOT authorization to flash the dry-run image.
+          """
+
+          cleaned = "\n".join(
+              line.strip()
+              for line
+              in main_report.splitlines()
+          ).strip() + "\n"
+
+          (
+              report_dir
+              / "WORKFLOW19-DRYRUN-REPACK-AUDIT.txt"
+          ).write_text(
+              cleaned,
+              encoding="utf-8",
+          )
+
+          print(cleaned)
+          PY
+
+          python3 \
+            "$WORK/repack_audit.py" \
+            "$W18/stock_images/stock_boot.img" \
+            "$W17/Image" \
+            "$W18/stock_images/stock_vbmeta.img" \
+            "$W18/stock_images/stock_vendor_boot.img" \
+            "$W18/stock_images/stock_dtbo.img" \
+            "$OUTPUT/DO_NOT_FLASH_workflow19_dryrun_boot.img" \
+            "$OUTPUT"
+
+      - name: Require exact GitHub reproduction of prior Workflow 19 bytes
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          DRY="$OUTPUT/DO_NOT_FLASH_workflow19_dryrun_boot.img"
+
+          test "$(stat -c '%s' "$DRY")" = "134217728"
+          test "$(sha256sum "$DRY" | awk '{print $1}')" = "$EXPECTED_DRYRUN_SHA256"
+
+          jq -e \
+            --arg SHA "$EXPECTED_DRYRUN_SHA256" \
+            --arg DIGEST "$EXPECTED_DRYRUN_AVB_DIGEST" \
+            '
+              .result == "PASS_DRYRUN_REPRODUCED_FROM_W17_W18"
+              and .dryrun_boot.sha256 == $SHA
+              and .embedded_boot_avb.dryrun_digest_hex == $DIGEST
+              and .embedded_boot_avb.dryrun_digest_verifies == true
+              and .reproduction.matches_previous_local_workflow19_sha256 == true
+              and .reproduction.matches_previous_local_workflow19_avb_digest == true
+              and .top_level_stock_vbmeta.stock_boot_descriptor_verifies_stock_boot == true
+              and .top_level_stock_vbmeta.stock_boot_descriptor_verifies_dryrun_boot == false
+              and .top_level_stock_vbmeta.expected_mismatch_for_modified_boot == true
+              and .top_level_stock_vbmeta.vendor_boot_descriptor_verifies_stock_vendor_boot == true
+              and .top_level_stock_vbmeta.dtbo_descriptor_verifies_stock_dtbo == true
+              and .safety.flashed == false
+              and .safety.dtb_appended == false
+              and .safety.vendor_boot_modified == false
+              and .safety.dtbo_modified == false
+              and .safety.top_level_vbmeta_modified == false
+            ' \
+            "$OUTPUT/WORKFLOW19-STRUCTURE.json" \
+            > /dev/null
+
+          {
+            echo "WORKFLOW 19 REPRODUCTION GATE"
+            echo "============================="
+            echo "RESULT: PASS"
+            echo "Dry-run bytes: 134217728"
+            echo "Dry-run SHA-256: $EXPECTED_DRYRUN_SHA256"
+            echo "Regenerated embedded AVB digest: $EXPECTED_DRYRUN_AVB_DIGEST"
+            echo "Matches earlier independent local Workflow 19: BYTE-IDENTICAL"
+          } > "$OUTPUT/REPRODUCTION-GATE.txt"
+
+      - name: Create final manifest and verify every output file
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cat > "$OUTPUT/MANIFEST.txt" <<EOF
+          VEUX Workflow 19 - Canonical GitHub Reproduction
+          =================================================
+
+          RESULT: PASS_DRYRUN_REPRODUCED_FROM_W17_W18
+
+          Exact Workflow-17 artifact:
+          $W17_ARTIFACT_NAME
+
+          Exact Workflow-18 artifact:
+          $W18_ARTIFACT_NAME
+
+          Exact W17 Image SHA-256:
+          $W17_IMAGE_SHA256
+
+          Exact stock boot SHA-256:
+          $STOCK_BOOT_SHA256
+
+          Dry-run image:
+          DO_NOT_FLASH_workflow19_dryrun_boot.img
+
+          Dry-run SHA-256:
+          $EXPECTED_DRYRUN_SHA256
+
+          Regenerated embedded boot AVB digest:
+          $EXPECTED_DRYRUN_AVB_DIGEST
+
+          The dry-run image is byte-identical to the earlier independent local
+          Workflow-19 reconstruction.
+
+          vendor_boot modified: NO
+          dtbo modified: NO
+          top-level vbmeta modified: NO
+          DTB appended to boot: NO
+          device operation: NO
+          flashed: NO
+
+          PASS here means structural/reproducibility PASS only.
+          It does not establish device boot success.
+          EOF
+
+          (
+            cd "$OUTPUT"
+
+            find . \
+              -maxdepth 1 \
+              -type f \
+              ! -name SHA256SUMS \
+              ! -name SHA256SUMS.verify.txt \
+              -printf '%f\n' \
+              | LC_ALL=C sort \
+              | while IFS= read -r FILE; do
+                  sha256sum "$FILE"
+                done \
+              > SHA256SUMS
+
+            sha256sum -c SHA256SUMS \
+              | tee SHA256SUMS.verify.txt
+          )
+
+          grep -Fxq \
+            'RESULT: PASS_DRYRUN_REPRODUCED_FROM_W17_W18' \
+            "$OUTPUT/WORKFLOW19-DRYRUN-REPACK-AUDIT.txt"
+
+          grep -Fq \
+            'BYTE-IDENTICAL RESULT: YES' \
+            "$OUTPUT/WORKFLOW19-DRYRUN-REPACK-AUDIT.txt"
+
+      - name: Collect failure diagnostics
+        if: failure()
+        shell: bash
+        run: |
+          set +e
+
+          mkdir -p "$OUTPUT"
+
+          {
+            echo "VEUX Workflow 19: FAILURE"
+            echo "Finished: $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+            echo
+            echo "No device operation was performed."
+            echo "Nothing was flashed."
+          } > "$OUTPUT/FAILURE-SUMMARY.txt"
+
+          find "$WORK" \
+            -maxdepth 6 \
+            -type f \
+            -printf '%s %p\n' \
+            > "$OUTPUT/FAILURE-FILE-TREE.txt" \
+            2>/dev/null || true
+
+      - name: Upload Workflow 19 audit artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: veux-5.4.274-workflow19-boot-v3-dryrun-repack-avb-audit-${{ github.run_number }}
+          path: ${{ env.OUTPUT }}
+          if-no-files-found: error
+          include-hidden-files: true
+          retention-days: 30
+          compression-level: 6
