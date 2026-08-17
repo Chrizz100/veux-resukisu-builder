@@ -1,0 +1,1022 @@
+name: 17R - VEUX Stable Reference Differential Audit
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  REF_RELEASE_TAG: "1786511535"
+  REF_RELEASE_ID: "369006096"
+  REF_BUILDER_COMMIT: "6eae2b587750336507096469fee74a2173e14bf6"
+
+  REF_ASSET_NAME: "veux-aosp_a16-20260812045905-Anykernel3.zip"
+  REF_ASSET_URL: "https://github.com/JackA1ltman/NonGKI_Kernel_Build_2nd/releases/download/1786511535/veux-aosp_a16-20260812045905-Anykernel3.zip"
+  REF_ASSET_SHA256: "f47e8e93b419f158b85d76bacc9d414a9cd8198202c596f5882428a7431ca09f"
+  REF_ASSET_SIZE: "15929501"
+
+  REF_ANYKERNEL_COMMIT: "7ccc28e0cb48ed311d7341e9ec8391ef80916ce5"
+  REF_KERNEL_RECONSTRUCTED_COMMIT: "f4b8a13a43a130a9aab83cc985ce4d4421291ae6"
+
+  OUR_KERNEL_RELEASE: "5.4.274~positron/5ec160dc"
+  OUR_IMAGE_SHA256: "e036175ada602df3bcb443da7c390e8cd4b0e900c26fbfa313725db02855ec96"
+  OUR_IMAGE_SIZE: "29839872"
+  OUR_DTB_SHA256: "42728a6f3d48ae35ac6be4b14ea51bc8a323e77baec2ee544827487378f99d37"
+  OUR_DTB_SIZE: "275689"
+  OUR_CONFIG_SHA256: "c9831aeadf65064bf6632973b2bd6f4da905da9707718bc75ded0bd228150ca6"
+  OUR_RESUKISU_COMMIT: "faccf4c5edc7be37776216e7d43dd3dca0239331"
+
+jobs:
+  audit:
+    name: Read-only VEUX stable differential audit
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Prepare audit environment
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          sudo apt-get update
+          sudo apt-get install -y \
+            unzip \
+            zip \
+            jq \
+            file \
+            binutils \
+            device-tree-compiler
+
+          mkdir -p \
+            "$GITHUB_WORKSPACE/work/reference" \
+            "$GITHUB_WORKSPACE/work/extracted" \
+            "$GITHUB_WORKSPACE/work/upstream" \
+            "$GITHUB_WORKSPACE/work/analysis/dtbs" \
+            "$GITHUB_WORKSPACE/audit-output"
+
+          {
+            echo "VEUX STABLE REFERENCE DIFFERENTIAL AUDIT"
+            echo
+            echo "READ-ONLY AUDIT"
+            echo "NO KERNEL BUILD"
+            echo "NO BOOT IMAGE CREATION"
+            echo "NO FLASHING"
+            echo
+          } > "$GITHUB_WORKSPACE/audit-output/SCOPE.txt"
+
+      - name: Verify exact published VEUX release metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          API_URL="https://api.github.com/repos/JackA1ltman/NonGKI_Kernel_Build_2nd/releases/tags/${REF_RELEASE_TAG}"
+
+          curl \
+            --fail \
+            --silent \
+            --show-error \
+            --retry 3 \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${{ github.token }}" \
+            "$API_URL" \
+            -o "$GITHUB_WORKSPACE/work/reference/release.json"
+
+          jq . "$GITHUB_WORKSPACE/work/reference/release.json" \
+            > "$GITHUB_WORKSPACE/audit-output/reference-release-metadata.json"
+
+          ACTUAL_RELEASE_ID="$(
+            jq -r '.id' "$GITHUB_WORKSPACE/work/reference/release.json"
+          )"
+
+          ACTUAL_TARGET="$(
+            jq -r '.target_commitish' "$GITHUB_WORKSPACE/work/reference/release.json"
+          )"
+
+          ASSET_COUNT="$(
+            jq \
+              --arg NAME "$REF_ASSET_NAME" \
+              '[.assets[] | select(.name == $NAME)] | length' \
+              "$GITHUB_WORKSPACE/work/reference/release.json"
+          )"
+
+          ASSET_SIZE="$(
+            jq -r \
+              --arg NAME "$REF_ASSET_NAME" \
+              '.assets[] | select(.name == $NAME) | .size' \
+              "$GITHUB_WORKSPACE/work/reference/release.json"
+          )"
+
+          ASSET_DIGEST="$(
+            jq -r \
+              --arg NAME "$REF_ASSET_NAME" \
+              '.assets[] | select(.name == $NAME) | .digest' \
+              "$GITHUB_WORKSPACE/work/reference/release.json"
+          )"
+
+          ASSET_URL="$(
+            jq -r \
+              --arg NAME "$REF_ASSET_NAME" \
+              '.assets[] | select(.name == $NAME) | .browser_download_url' \
+              "$GITHUB_WORKSPACE/work/reference/release.json"
+          )"
+
+          test "$ACTUAL_RELEASE_ID" = "$REF_RELEASE_ID"
+          test "$ACTUAL_TARGET" = "$REF_BUILDER_COMMIT"
+          test "$ASSET_COUNT" = "1"
+          test "$ASSET_SIZE" = "$REF_ASSET_SIZE"
+          test "$ASSET_DIGEST" = "sha256:${REF_ASSET_SHA256}"
+          test "$ASSET_URL" = "$REF_ASSET_URL"
+
+          {
+            echo "REFERENCE RELEASE METADATA"
+            echo
+            echo "Tag:                 $REF_RELEASE_TAG"
+            echo "Release ID:          $ACTUAL_RELEASE_ID"
+            echo "Builder commit:      $ACTUAL_TARGET"
+            echo "Asset:               $REF_ASSET_NAME"
+            echo "Published size:      $ASSET_SIZE"
+            echo "Published digest:    $ASSET_DIGEST"
+            echo "Published URL:       $ASSET_URL"
+            echo
+            echo "RESULT: PASS"
+          } > "$GITHUB_WORKSPACE/audit-output/reference-release-check.txt"
+
+      - name: Download and byte-verify exact VEUX reference ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd "$GITHUB_WORKSPACE/work/reference"
+
+          curl \
+            --fail \
+            --location \
+            --silent \
+            --show-error \
+            --retry 3 \
+            "$REF_ASSET_URL" \
+            -o "$REF_ASSET_NAME"
+
+          ACTUAL_SIZE="$(stat -c '%s' "$REF_ASSET_NAME")"
+          ACTUAL_SHA="$(sha256sum "$REF_ASSET_NAME" | awk '{print $1}')"
+
+          test "$ACTUAL_SIZE" = "$REF_ASSET_SIZE"
+          test "$ACTUAL_SHA" = "$REF_ASSET_SHA256"
+
+          unzip -t "$REF_ASSET_NAME" \
+            > "$GITHUB_WORKSPACE/audit-output/reference-zip-integrity.txt"
+
+          unzip -q \
+            "$REF_ASSET_NAME" \
+            -d "$GITHUB_WORKSPACE/work/extracted"
+
+          {
+            echo "REFERENCE ASSET BYTE VERIFICATION"
+            echo
+            echo "File:     $REF_ASSET_NAME"
+            echo "Size:     $ACTUAL_SIZE"
+            echo "SHA-256:  $ACTUAL_SHA"
+            echo
+            echo "RESULT: PASS"
+          } > "$GITHUB_WORKSPACE/audit-output/reference-asset-hash.txt"
+
+          cp "$REF_ASSET_NAME" \
+            "$GITHUB_WORKSPACE/audit-output/reference-release-exact.zip"
+
+      - name: Inventory exact contents of published ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd "$GITHUB_WORKSPACE/work/extracted"
+
+          find . -type f -printf '%P\t%s\n' \
+            | LC_ALL=C sort \
+            > "$GITHUB_WORKSPACE/audit-output/reference-file-inventory.tsv"
+
+          find . -type f -print0 \
+            | LC_ALL=C sort -z \
+            | xargs -0 sha256sum \
+            > "$GITHUB_WORKSPACE/audit-output/reference-file-sha256.txt"
+
+          {
+            echo "REFERENCE PACKAGE IMPORTANT FILES"
+            echo
+
+            for NAME in \
+              Image \
+              Image.gz \
+              Image.gz-dtb \
+              dtb \
+              dtb.img \
+              dtbo.img \
+              anykernel.sh \
+              tools/ak3-custom.sh \
+              tools/ak3-core.sh
+            do
+              if [ -f "$NAME" ]; then
+                printf '%-24s PRESENT  size=%s  sha256=%s\n' \
+                  "$NAME" \
+                  "$(stat -c '%s' "$NAME")" \
+                  "$(sha256sum "$NAME" | awk '{print $1}')"
+              else
+                printf '%-24s ABSENT\n' "$NAME"
+              fi
+            done
+          } > "$GITHUB_WORKSPACE/audit-output/reference-important-files.txt"
+
+          echo "========== INVENTORY =========="
+          cat "$GITHUB_WORKSPACE/audit-output/reference-important-files.txt"
+
+      - name: Fetch exact release builder source
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          BASE="https://raw.githubusercontent.com/JackA1ltman/NonGKI_Kernel_Build_2nd/${REF_BUILDER_COMMIT}/.github/workflows"
+
+          curl \
+            --fail \
+            --silent \
+            --show-error \
+            --retry 3 \
+            "$BASE/build-redmi-note11pro-5g-aosp-a16.yml" \
+            -o "$GITHUB_WORKSPACE/work/upstream/reference-builder.yml"
+
+          curl \
+            --fail \
+            --silent \
+            --show-error \
+            --retry 3 \
+            "$BASE/pack-process/action.yml" \
+            -o "$GITHUB_WORKSPACE/work/upstream/reference-pack-process.yml"
+
+          cp "$GITHUB_WORKSPACE/work/upstream/reference-builder.yml" \
+            "$GITHUB_WORKSPACE/audit-output/reference-builder.yml"
+
+          cp "$GITHUB_WORKSPACE/work/upstream/reference-pack-process.yml" \
+            "$GITHUB_WORKSPACE/audit-output/reference-pack-process.yml"
+
+          sha256sum \
+            "$GITHUB_WORKSPACE/work/upstream/reference-builder.yml" \
+            "$GITHUB_WORKSPACE/work/upstream/reference-pack-process.yml" \
+            > "$GITHUB_WORKSPACE/audit-output/reference-builder-source-sha256.txt"
+
+      - name: Assert exact VEUX builder settings
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          F="$GITHUB_WORKSPACE/work/upstream/reference-builder.yml"
+
+          grep -Eq '^[[:space:]]*DEVICE_CODENAME[[:space:]]*:[[:space:]]*"veux"' "$F"
+          grep -Eq '^[[:space:]]*KERNEL_SOURCE[[:space:]]*:[[:space:]]*"https://github.com/dereference23/kernel_xiaomi_sm6375.git"' "$F"
+          grep -Eq '^[[:space:]]*KERNEL_BRANCH[[:space:]]*:[[:space:]]*"main"' "$F"
+          grep -Eq '^[[:space:]]*CLANG_SOURCE[[:space:]]*:[[:space:]]*"https://github.com/LineageOS/android_prebuilts_clang_kernel_linux-x86_clang-r416183b.git"' "$F"
+          grep -Eq '^[[:space:]]*DEFCONFIG_NAME[[:space:]]*:[[:space:]]*"veux_defconfig"' "$F"
+          grep -Eq '^[[:space:]]*KERNELSU_AUTO_FORK[[:space:]]*:[[:space:]]*"resukisu"' "$F"
+          grep -Eq '^[[:space:]]*SUSFS_ENABLE[[:space:]]*:[[:space:]]*true' "$F"
+          grep -Eq '^[[:space:]]*SUSFS_FIXED[[:space:]]*:[[:space:]]*true' "$F"
+          grep -Eq '^[[:space:]]*AK3_SOURCE[[:space:]]*:[[:space:]]*"https://github.com/dereference23/AnyKernel3.git"' "$F"
+          grep -Eq '^[[:space:]]*AK3_BRANCH[[:space:]]*:[[:space:]]*"veux"' "$F"
+          grep -Eq '^[[:space:]]*NEED_DTBO[[:space:]]*:[[:space:]]*false' "$F"
+          grep -Eq '^[[:space:]]*ROM_TEXT[[:space:]]*:[[:space:]]*"aosp_a16"' "$F"
+          grep -Eq '^[[:space:]]*PACK_METHOD[[:space:]]*:[[:space:]]*"Anykernel3"' "$F"
+          grep -Eq '^[[:space:]]*HOOK_METHOD[[:space:]]*:[[:space:]]*"syscall"' "$F"
+
+          grep -Fq 'CONFIG_TMPFS_XATTR=y' "$F"
+
+          {
+            echo "REFERENCE VEUX BUILDER SETTINGS"
+            echo
+            echo "Device:              veux"
+            echo "Kernel source:       dereference23/kernel_xiaomi_sm6375"
+            echo "Kernel branch:       main"
+            echo "Compiler lineage:    clang-r416183b"
+            echo "Defconfig:            veux_defconfig"
+            echo "KernelSU fork:        ReSukiSU"
+            echo "SUSFS:               enabled"
+            echo "SUSFS fixed:         enabled"
+            echo "AnyKernel source:     dereference23/AnyKernel3"
+            echo "AnyKernel branch:     veux"
+            echo "ROM target:           AOSP Android 16"
+            echo "Pack method:          AnyKernel3"
+            echo "Hook method:          syscall"
+            echo "NEED_DTBO:            false"
+            echo "Extra config:         CONFIG_TMPFS_XATTR=y"
+            echo
+            echo "RESULT: PASS"
+          } > "$GITHUB_WORKSPACE/audit-output/reference-builder-settings.txt"
+
+      - name: Reconstruct kernel source head used by release
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          API="https://api.github.com/repos/dereference23/kernel_xiaomi_sm6375/commits?sha=main&until=2026-08-12T05:12:26Z&per_page=1"
+
+          curl \
+            --fail \
+            --silent \
+            --show-error \
+            --retry 3 \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${{ github.token }}" \
+            "$API" \
+            -o "$GITHUB_WORKSPACE/work/upstream/kernel-release-time-head.json"
+
+          RECONSTRUCTED_SHA="$(
+            jq -r '.[0].sha' \
+              "$GITHUB_WORKSPACE/work/upstream/kernel-release-time-head.json"
+          )"
+
+          test "$RECONSTRUCTED_SHA" = "$REF_KERNEL_RECONSTRUCTED_COMMIT"
+
+          curl \
+            --fail \
+            --silent \
+            --show-error \
+            --retry 3 \
+            "https://raw.githubusercontent.com/dereference23/kernel_xiaomi_sm6375/${REF_KERNEL_RECONSTRUCTED_COMMIT}/Makefile" \
+            -o "$GITHUB_WORKSPACE/work/upstream/reference-kernel-Makefile"
+
+          VERSION="$(
+            awk '/^VERSION =/{print $3; exit}' \
+              "$GITHUB_WORKSPACE/work/upstream/reference-kernel-Makefile"
+          )"
+
+          PATCHLEVEL="$(
+            awk '/^PATCHLEVEL =/{print $3; exit}' \
+              "$GITHUB_WORKSPACE/work/upstream/reference-kernel-Makefile"
+          )"
+
+          SUBLEVEL="$(
+            awk '/^SUBLEVEL =/{print $3; exit}' \
+              "$GITHUB_WORKSPACE/work/upstream/reference-kernel-Makefile"
+          )"
+
+          test "${VERSION}.${PATCHLEVEL}.${SUBLEVEL}" = "5.4.302"
+
+          {
+            echo "REFERENCE KERNEL SOURCE RECONSTRUCTION"
+            echo
+            echo "Builder cloned:       branch main"
+            echo "Release time:         2026-08-12T05:12:26Z"
+            echo "Reconstructed head:   $RECONSTRUCTED_SHA"
+            echo "Kernel Makefile:      ${VERSION}.${PATCHLEVEL}.${SUBLEVEL}"
+            echo
+            echo "NOTE:"
+            echo "This reconstructs the branch head from Git history at release time."
+            echo "The released Image is inspected separately below and remains"
+            echo "the primary evidence for the actually shipped kernel."
+            echo
+            echo "RESULT: PASS"
+          } > "$GITHUB_WORKSPACE/audit-output/reference-kernel-source.txt"
+
+      - name: Verify exact VEUX AnyKernel branch identity
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          curl \
+            --fail \
+            --silent \
+            --show-error \
+            --retry 3 \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${{ github.token }}" \
+            "https://api.github.com/repos/dereference23/AnyKernel3/branches/veux" \
+            -o "$GITHUB_WORKSPACE/work/upstream/anykernel-branch.json"
+
+          ACTUAL_AK_HEAD="$(
+            jq -r '.commit.sha' \
+              "$GITHUB_WORKSPACE/work/upstream/anykernel-branch.json"
+          )"
+
+          test "$ACTUAL_AK_HEAD" = "$REF_ANYKERNEL_COMMIT"
+
+          BASE="https://raw.githubusercontent.com/dereference23/AnyKernel3/${REF_ANYKERNEL_COMMIT}"
+
+          curl \
+            --fail \
+            --silent \
+            --show-error \
+            --retry 3 \
+            "$BASE/anykernel.sh" \
+            -o "$GITHUB_WORKSPACE/work/upstream/anykernel.sh"
+
+          curl \
+            --fail \
+            --silent \
+            --show-error \
+            --retry 3 \
+            "$BASE/tools/ak3-custom.sh" \
+            -o "$GITHUB_WORKSPACE/work/upstream/ak3-custom.sh"
+
+          sha256sum \
+            "$GITHUB_WORKSPACE/work/upstream/anykernel.sh" \
+            "$GITHUB_WORKSPACE/work/upstream/ak3-custom.sh" \
+            > "$GITHUB_WORKSPACE/audit-output/reference-anykernel-upstream-sha256.txt"
+
+          {
+            echo "VEUX ANYKERNEL IDENTITY"
+            echo
+            echo "Branch:       veux"
+            echo "Commit:       $ACTUAL_AK_HEAD"
+            echo
+            echo "RESULT: PASS"
+          } > "$GITHUB_WORKSPACE/audit-output/reference-anykernel-identity.txt"
+
+      - name: Verify packaged AnyKernel scripts against exact VEUX source
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          EX="$GITHUB_WORKSPACE/work/extracted"
+          UP="$GITHUB_WORKSPACE/work/upstream"
+
+          test -f "$EX/anykernel.sh"
+          test -f "$EX/tools/ak3-custom.sh"
+
+          cmp -s \
+            "$EX/anykernel.sh" \
+            "$UP/anykernel.sh"
+
+          cmp -s \
+            "$EX/tools/ak3-custom.sh" \
+            "$UP/ak3-custom.sh"
+
+          {
+            echo "PACKAGED ANYKERNEL SOURCE COMPARISON"
+            echo
+            echo "anykernel.sh:         BYTE-IDENTICAL"
+            echo "tools/ak3-custom.sh: BYTE-IDENTICAL"
+            echo
+            echo "Exact AnyKernel commit:"
+            echo "$REF_ANYKERNEL_COMMIT"
+            echo
+            echo "RESULT: PASS"
+          } > "$GITHUB_WORKSPACE/audit-output/reference-packaged-anykernel-comparison.txt"
+
+          cp "$EX/anykernel.sh" \
+            "$GITHUB_WORKSPACE/audit-output/reference-packaged-anykernel.sh"
+
+          cp "$EX/tools/ak3-custom.sh" \
+            "$GITHUB_WORKSPACE/audit-output/reference-packaged-ak3-custom.sh"
+
+      - name: Audit VEUX installer partition behavior
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          AK="$GITHUB_WORKSPACE/work/extracted/anykernel.sh"
+          CUSTOM="$GITHUB_WORKSPACE/work/extracted/tools/ak3-custom.sh"
+
+          grep -Fq 'device.name1=veux' "$AK"
+          grep -Fq 'device.name2=peux' "$AK"
+
+          grep -Fq 'BLOCK=boot;' "$AK"
+          grep -Fq 'BLOCK=vendor_boot;' "$AK"
+
+          test "$(
+            grep -Fc 'split_boot;' "$AK"
+          )" -ge 2
+
+          test "$(
+            grep -Fc 'flash_boot;' "$AK"
+          )" -ge 2
+
+          grep -Fq 'check_vendor_hals;' "$AK"
+          grep -Fq 'erase_dtbo;' "$AK"
+
+          grep -Fq 'check_vendor_hals()' "$CUSTOM"
+          grep -Fq 'erase_dtbo()' "$CUSTOM"
+          grep -Fq 'fdtput' "$CUSTOM"
+          grep -Fq '/dev/block/by-name/dtbo$SLOT' "$CUSTOM"
+
+          {
+            echo "VEUX REFERENCE INSTALLER BEHAVIOR"
+            echo
+            echo "---- anykernel.sh relevant lines ----"
+            grep -nE \
+              'device\.name|BLOCK=|split_boot|flash_boot|check_ksu|check_cmdline|check_twrp|check_vendor_hals|erase_dtbo' \
+              "$AK"
+
+            echo
+            echo "---- ak3-custom.sh relevant lines ----"
+            grep -nE \
+              'check_vendor_hals|Stock Audio|Stock Display|Stock NFC|Stock IR|fdtput|erase_dtbo|dtbo' \
+              "$CUSTOM"
+
+            echo
+            echo "INTERPRETATION"
+            echo "Reference installer is NOT boot-only."
+            echo "It explicitly handles boot and vendor_boot."
+            echo "It also contains VEUX-specific DTB/HAL adaptation."
+            echo "It contains explicit dtbo partition handling."
+            echo
+            echo "RESULT: PASS"
+          } > "$GITHUB_WORKSPACE/audit-output/reference-installer-behavior.txt"
+
+      - name: Extract and inspect released kernel Image
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          EX="$GITHUB_WORKSPACE/work/extracted"
+          ANA="$GITHUB_WORKSPACE/work/analysis"
+
+          KERNEL_PACKAGE=""
+
+          for NAME in Image Image.gz Image.gz-dtb; do
+            if [ -f "$EX/$NAME" ]; then
+              KERNEL_PACKAGE="$EX/$NAME"
+              break
+            fi
+          done
+
+          if [ -z "$KERNEL_PACKAGE" ]; then
+            echo "No Image/Image.gz/Image.gz-dtb found in published ZIP."
+            exit 1
+          fi
+
+          PACKAGE_NAME="$(basename "$KERNEL_PACKAGE")"
+
+          python3 - "$KERNEL_PACKAGE" "$ANA/kernel.raw" <<'PY'
+          import pathlib
+          import shutil
+          import sys
+          import zlib
+
+          src = pathlib.Path(sys.argv[1])
+          dst = pathlib.Path(sys.argv[2])
+          data = src.read_bytes()
+
+          if src.name == "Image":
+              shutil.copyfile(src, dst)
+          elif data.startswith(b"\x1f\x8b"):
+              d = zlib.decompressobj(16 + zlib.MAX_WBITS)
+              raw = d.decompress(data)
+              raw += d.flush()
+              if not raw:
+                  raise SystemExit("gzip kernel decompression produced no data")
+              dst.write_bytes(raw)
+          else:
+              raise SystemExit(f"Unsupported kernel package format: {src.name}")
+          PY
+
+          PACKAGE_SIZE="$(stat -c '%s' "$KERNEL_PACKAGE")"
+          PACKAGE_SHA="$(sha256sum "$KERNEL_PACKAGE" | awk '{print $1}')"
+
+          RAW_SIZE="$(stat -c '%s' "$ANA/kernel.raw")"
+          RAW_SHA="$(sha256sum "$ANA/kernel.raw" | awk '{print $1}')"
+
+          strings -a "$ANA/kernel.raw" \
+            | grep -E \
+              'Linux version|ReSukiSU|KernelSU|SUSFS|susfs' \
+            | head -n 200 \
+            > "$GITHUB_WORKSPACE/audit-output/reference-kernel-strings.txt" \
+            || true
+
+          LINUX_VERSION_LINE="$(
+            strings -a "$ANA/kernel.raw" \
+              | grep -m1 '^Linux version ' \
+              || true
+          )"
+
+          python3 - "$ANA/kernel.raw" \
+            > "$GITHUB_WORKSPACE/audit-output/reference-arm64-image-header.txt" <<'PY'
+          import pathlib
+          import struct
+          import sys
+
+          p = pathlib.Path(sys.argv[1])
+          data = p.read_bytes()
+
+          print("ARM64 IMAGE HEADER")
+          print()
+
+          if len(data) < 64:
+              print("File too small for arm64 Image header")
+              raise SystemExit(1)
+
+          code0, code1 = struct.unpack_from("<II", data, 0)
+          text_offset = struct.unpack_from("<Q", data, 8)[0]
+          image_size = struct.unpack_from("<Q", data, 16)[0]
+          flags = struct.unpack_from("<Q", data, 24)[0]
+          magic = struct.unpack_from("<I", data, 56)[0]
+
+          print(f"code0:       0x{code0:08x}")
+          print(f"code1:       0x{code1:08x}")
+          print(f"text_offset: 0x{text_offset:x}")
+          print(f"image_size:  {image_size}")
+          print(f"flags:       0x{flags:x}")
+          print(f"magic:       0x{magic:08x}")
+
+          if magic == 0x644d5241:
+              print("arm64_magic: PASS")
+          else:
+              print("arm64_magic: FAIL")
+              raise SystemExit(1)
+          PY
+
+          {
+            echo "REFERENCE RELEASED KERNEL IMAGE"
+            echo
+            echo "Packaged file:       $PACKAGE_NAME"
+            echo "Package size:        $PACKAGE_SIZE"
+            echo "Package SHA-256:     $PACKAGE_SHA"
+            echo "Raw Image size:      $RAW_SIZE"
+            echo "Raw Image SHA-256:   $RAW_SHA"
+            echo
+            echo "Linux version string:"
+            echo "${LINUX_VERSION_LINE:-NOT FOUND}"
+            echo
+          } > "$GITHUB_WORKSPACE/audit-output/reference-kernel-image.txt"
+
+          if [ -z "$LINUX_VERSION_LINE" ]; then
+            echo "Could not recover Linux version string from released Image."
+            exit 1
+          fi
+
+          echo "$LINUX_VERSION_LINE" \
+            | grep -Fq 'Linux version 5.4.'
+
+          cat "$GITHUB_WORKSPACE/audit-output/reference-kernel-image.txt"
+
+      - name: Extract every valid FDT blob from reference package
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 <<'PY'
+          from pathlib import Path
+          import hashlib
+          import struct
+
+          root = Path.cwd()
+          ex = root / "work" / "extracted"
+          out = root / "work" / "analysis" / "dtbs"
+          out.mkdir(parents=True, exist_ok=True)
+
+          candidates = [
+              ex / "dtb",
+              ex / "dtb.img",
+              ex / "dtbo.img",
+              ex / "Image.gz-dtb",
+          ]
+
+          rows = []
+          magic = b"\xd0\x0d\xfe\xed"
+
+          for src in candidates:
+              if not src.is_file():
+                  continue
+
+              data = src.read_bytes()
+              pos = 0
+              index = 0
+
+              while True:
+                  off = data.find(magic, pos)
+                  if off < 0:
+                      break
+
+                  if off + 8 > len(data):
+                      break
+
+                  total = struct.unpack(">I", data[off + 4:off + 8])[0]
+
+                  if 40 <= total <= 8 * 1024 * 1024 and off + total <= len(data):
+                      blob = data[off:off + total]
+
+                      # Basic FDT structural header sanity.
+                      if len(blob) >= 40:
+                          version = struct.unpack(">I", blob[20:24])[0]
+                          last_comp = struct.unpack(">I", blob[24:28])[0]
+
+                          if 1 <= version <= 100 and last_comp <= version:
+                              index += 1
+                              name = f"{src.name.replace('.', '_')}-{index:02d}.dtb"
+                              dst = out / name
+                              dst.write_bytes(blob)
+
+                              sha = hashlib.sha256(blob).hexdigest()
+                              rows.append(
+                                  (
+                                      src.name,
+                                      off,
+                                      total,
+                                      sha,
+                                      str(dst.relative_to(root)),
+                                  )
+                              )
+                              pos = off + total
+                              continue
+
+                  pos = off + 4
+
+          report = root / "audit-output" / "reference-fdt-index.tsv"
+
+          with report.open("w", encoding="utf-8") as f:
+              f.write("source\toffset\tsize\tsha256\tfile\n")
+              for row in rows:
+                  f.write("\t".join(map(str, row)) + "\n")
+
+          print(f"Extracted valid FDT blobs: {len(rows)}")
+          for row in rows:
+              print(row)
+          PY
+
+          {
+            echo "REFERENCE FDT SUMMARY"
+            echo
+            cat "$GITHUB_WORKSPACE/audit-output/reference-fdt-index.tsv"
+          } > "$GITHUB_WORKSPACE/audit-output/reference-fdt-summary.txt"
+
+      - name: Decode reference FDT identities
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          OUT="$GITHUB_WORKSPACE/audit-output/reference-fdt-decoded.txt"
+          : > "$OUT"
+
+          shopt -s nullglob
+
+          DTBS=("$GITHUB_WORKSPACE"/work/analysis/dtbs/*.dtb)
+
+          if [ "${#DTBS[@]}" -eq 0 ]; then
+            {
+              echo "No standalone valid FDT blob was found in:"
+              echo "- dtb"
+              echo "- dtb.img"
+              echo "- dtbo.img"
+              echo "- Image.gz-dtb"
+              echo
+              echo "This is an observation, not an audit failure."
+            } >> "$OUT"
+
+            exit 0
+          fi
+
+          for DTB in "${DTBS[@]}"; do
+            NAME="$(basename "$DTB")"
+            DTS="$GITHUB_WORKSPACE/work/analysis/dtbs/${NAME%.dtb}.dts"
+            ERR="$GITHUB_WORKSPACE/work/analysis/dtbs/${NAME%.dtb}.dtc.stderr"
+
+            {
+              echo "============================================================"
+              echo "FDT: $NAME"
+              echo "Size: $(stat -c '%s' "$DTB")"
+              echo "SHA-256: $(sha256sum "$DTB" | awk '{print $1}')"
+            } >> "$OUT"
+
+            if dtc -I dtb -O dts "$DTB" -o "$DTS" 2>"$ERR"; then
+              {
+                echo
+                echo "Identity-relevant DTS lines:"
+                grep -nE \
+                  'model =|compatible =|qcom,msm-id|qcom,board-id|qcom,pmic-id' \
+                  "$DTS" \
+                  | head -n 120 \
+                  || true
+              } >> "$OUT"
+            else
+              {
+                echo
+                echo "DTC decode failed:"
+                cat "$ERR"
+              } >> "$OUT"
+            fi
+
+            echo >> "$OUT"
+          done
+
+          cat "$OUT"
+
+      - name: Compare released reference outputs with frozen Workflow 17 kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          EX="$GITHUB_WORKSPACE/work/extracted"
+          REPORT="$GITHUB_WORKSPACE/audit-output/reference-vs-our-w17.txt"
+
+          REF_IMAGE_FILE=""
+
+          for NAME in Image Image.gz Image.gz-dtb; do
+            if [ -f "$EX/$NAME" ]; then
+              REF_IMAGE_FILE="$EX/$NAME"
+              break
+            fi
+          done
+
+          REF_IMAGE_NAME="$(basename "$REF_IMAGE_FILE")"
+          REF_IMAGE_SIZE="$(stat -c '%s' "$REF_IMAGE_FILE")"
+          REF_IMAGE_SHA="$(sha256sum "$REF_IMAGE_FILE" | awk '{print $1}')"
+
+          REF_DTB_PRESENT="NO"
+          REF_DTB_SIZE="N/A"
+          REF_DTB_SHA="N/A"
+
+          if [ -f "$EX/dtb" ]; then
+            REF_DTB_PRESENT="YES"
+            REF_DTB_SIZE="$(stat -c '%s' "$EX/dtb")"
+            REF_DTB_SHA="$(sha256sum "$EX/dtb" | awk '{print $1}')"
+          fi
+
+          OUR_DTB_MATCH_COUNT="$(
+            find "$GITHUB_WORKSPACE/work/analysis/dtbs" \
+              -type f \
+              -name '*.dtb' \
+              -print0 \
+              | xargs -0 -r sha256sum \
+              | awk -v WANT="$OUR_DTB_SHA256" '$1 == WANT {c++} END {print c+0}'
+          )"
+
+          {
+            echo "VEUX REFERENCE vs FROZEN WORKFLOW 17"
+            echo
+            echo "REFERENCE"
+            echo "---------"
+            echo "Reference release tag:       $REF_RELEASE_TAG"
+            echo "Reference builder commit:    $REF_BUILDER_COMMIT"
+            echo "Reference AnyKernel commit:  $REF_ANYKERNEL_COMMIT"
+            echo "Reference package target:    AOSP Android 16"
+            echo "Reference kernel base:       reconstructed 5.4.302 main"
+            echo "Reference Image file:        $REF_IMAGE_NAME"
+            echo "Reference Image size:        $REF_IMAGE_SIZE"
+            echo "Reference Image SHA-256:     $REF_IMAGE_SHA"
+            echo "Reference root dtb present:  $REF_DTB_PRESENT"
+            echo "Reference root dtb size:     $REF_DTB_SIZE"
+            echo "Reference root dtb SHA-256:  $REF_DTB_SHA"
+            echo
+            echo "OUR FROZEN W17"
+            echo "--------------"
+            echo "Kernel release:              $OUR_KERNEL_RELEASE"
+            echo "Image size:                  $OUR_IMAGE_SIZE"
+            echo "Image SHA-256:               $OUR_IMAGE_SHA256"
+            echo "DTB size:                    $OUR_DTB_SIZE"
+            echo "DTB SHA-256:                 $OUR_DTB_SHA256"
+            echo "Config SHA-256:              $OUR_CONFIG_SHA256"
+            echo "ReSukiSU commit:             $OUR_RESUKISU_COMMIT"
+            echo
+            echo "DIRECT COMPARISON"
+            echo "-----------------"
+
+            if [ "$REF_IMAGE_SHA" = "$OUR_IMAGE_SHA256" ]; then
+              echo "Packaged Image bytes:        IDENTICAL"
+            else
+              echo "Packaged Image bytes:        DIFFERENT"
+            fi
+
+            if [ "$REF_IMAGE_SIZE" = "$OUR_IMAGE_SIZE" ]; then
+              echo "Packaged Image size:         IDENTICAL"
+            else
+              echo "Packaged Image size:         DIFFERENT"
+            fi
+
+            if [ "$REF_DTB_PRESENT" = "YES" ] && \
+               [ "$REF_DTB_SHA" = "$OUR_DTB_SHA256" ]; then
+              echo "Root dtb bytes:              IDENTICAL"
+            elif [ "$REF_DTB_PRESENT" = "YES" ]; then
+              echo "Root dtb bytes:              DIFFERENT"
+            else
+              echo "Root dtb bytes:              NO ROOT dtb IN REFERENCE ZIP"
+            fi
+
+            echo "Extracted FDTs matching W17: $OUR_DTB_MATCH_COUNT"
+            echo
+            echo "PACKAGING BEHAVIOR"
+            echo "------------------"
+            echo "Reference installer:"
+            echo "  - handles boot"
+            echo "  - handles vendor_boot"
+            echo "  - performs VEUX-specific DTB/HAL adaptation"
+            echo "  - contains explicit dtbo erase/neutralization logic"
+            echo
+            echo "Current frozen project strategy:"
+            echo "  - kernel-only boot modification"
+            echo "  - vendor_boot kept stock"
+            echo "  - dtbo kept stock"
+            echo
+            echo "IMPORTANT:"
+            echo "Reference package targets AOSP Android 16."
+            echo "It is NOT proof that its vendor_boot/dtbo behavior should be"
+            echo "copied to Stock HyperOS/Android 13."
+          } > "$REPORT"
+
+          cat "$REPORT"
+
+      - name: Create differential decision report
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cat > "$GITHUB_WORKSPACE/audit-output/DECISION.txt" <<'EOF'
+          VEUX STABLE REFERENCE DIFFERENTIAL AUDIT
+          ========================================
+
+          AUDIT RESULT:
+          PASS
+
+          FLASH SAFETY:
+          NOT ESTABLISHED
+
+          WHAT THIS AUDIT ESTABLISHES:
+          - The exact published VEUX reference release was downloaded.
+          - Its published size and SHA-256 were verified.
+          - Its ZIP integrity was verified.
+          - Its actual package contents were inventoried.
+          - Its released kernel Image was inspected.
+          - Valid FDT blobs were searched and decoded where present.
+          - The exact release builder source was inspected.
+          - The exact VEUX AnyKernel source was inspected.
+          - Packaged AnyKernel scripts were byte-compared against the pinned source.
+          - Reference partition behavior was audited.
+          - Reference outputs were compared against the frozen Workflow-17 kernel.
+
+          IMPORTANT DIFFERENCE:
+          The reference VEUX AnyKernel path is not boot-only.
+
+          It explicitly contains:
+          - boot handling
+          - vendor_boot handling
+          - VEUX-specific DTB/HAL adaptation
+          - dtbo partition handling
+
+          IMPORTANT LIMITATION:
+          The reference build is for Based AOSP Android 16.
+
+          The current device baseline under investigation is Stock HyperOS /
+          Android 13.
+
+          Therefore:
+          DO NOT blindly copy the reference vendor_boot logic.
+          DO NOT blindly erase or replace dtbo.
+          DO NOT flash as a result of this audit alone.
+
+          NEXT ENGINEERING QUESTION:
+          Determine which of the reference Device Tree / vendor_boot behaviors
+          are genuinely required by the frozen 5.4.274 kernel on the exact
+          Stock HyperOS boot chain, using the already captured stock boot,
+          vendor_boot and dtbo evidence.
+
+          NO FLASHING WAS PERFORMED BY THIS WORKFLOW.
+          EOF
+
+          cat "$GITHUB_WORKSPACE/audit-output/DECISION.txt"
+
+      - name: Create audit manifest and checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd "$GITHUB_WORKSPACE/audit-output"
+
+          {
+            echo "17R VEUX STABLE REFERENCE DIFFERENTIAL AUDIT"
+            echo
+            echo "Reference release tag:      $REF_RELEASE_TAG"
+            echo "Reference builder commit:   $REF_BUILDER_COMMIT"
+            echo "Reference asset:            $REF_ASSET_NAME"
+            echo "Reference asset SHA-256:    $REF_ASSET_SHA256"
+            echo "Reference AnyKernel commit: $REF_ANYKERNEL_COMMIT"
+            echo
+            echo "Frozen W17 kernel release:  $OUR_KERNEL_RELEASE"
+            echo "Frozen W17 Image SHA-256:   $OUR_IMAGE_SHA256"
+            echo "Frozen W17 DTB SHA-256:     $OUR_DTB_SHA256"
+            echo "Frozen W17 config SHA-256:  $OUR_CONFIG_SHA256"
+            echo
+            echo "AUDIT RESULT: PASS"
+            echo "FLASH SAFETY: NOT ESTABLISHED"
+            echo "BOOT IMAGE CREATED: NO"
+            echo "FLASHED: NO"
+          } > MANIFEST.txt
+
+          find . \
+            -maxdepth 1 \
+            -type f \
+            ! -name 'SHA256SUMS' \
+            -printf '%f\n' \
+            | LC_ALL=C sort \
+            | while IFS= read -r FILE; do
+                sha256sum "$FILE"
+              done \
+            > SHA256SUMS
+
+          sha256sum -c SHA256SUMS \
+            > SHA256SUMS.verify.txt
+
+          cat SHA256SUMS.verify.txt
+
+      - name: Upload complete 17R audit artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: veux-17R-stable-reference-differential-audit
+          path: audit-output/
+          if-no-files-found: warn
+          retention-days: 30
+          compression-level: 0
