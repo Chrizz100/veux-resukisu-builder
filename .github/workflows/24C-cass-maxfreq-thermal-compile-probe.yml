@@ -1,0 +1,758 @@
+name: 24C - VEUX CASS MaxFreq Thermal Compile Probe
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    env:
+      ARCH: arm64
+      COMMON_REF: "android11-5.4.274_r00"
+
+      STABILITY_REVERT: "f74e5c1b7c3f3e42f694e5ab524f95f62a0dab80"
+      CASS_COMMIT: "b9b5ddba28bf9f23ac1a2af27f574291451244fd"
+
+      EXPECTED_CANDIDATE_TREE: "5d25b7e0124d7fb695f3f07b45928fcb5780d0e8"
+
+      CLANG_PREBUILT_COMMIT: "aa2e4a514a6c85eebcc4a27149eaf9244e951a1e"
+      TOOLCHAIN_DIR: ${{ github.workspace }}/toolchains/clang-r416183b
+
+      OUT_DIR: out
+      ARTIFACT_DIR: ${{ github.workspace }}/cass-maxfreq-probe
+
+    steps:
+      - name: Prepare audit directory
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p \
+            "$ARTIFACT_DIR" \
+            "$TOOLCHAIN_DIR"
+
+          {
+            echo "VEUX Candidate 2 CASS MaxFreq/Thermal Compile Probe"
+            echo
+            echo "Purpose:"
+            echo "- reconstruct exact Candidate 2"
+            echo "- verify current max-frequency capacity infrastructure"
+            echo "- do NOT restore removed thermal_load_avg()"
+            echo "- restore old CASS capacity separation using current max-frequency scale"
+            echo "- compile only the affected scheduler object"
+            echo
+            echo "No final Image will be created."
+            echo "Nothing will be flashed."
+          } > "$ARTIFACT_DIR/PLAN.txt"
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          sudo apt-get update
+
+          sudo apt-get install -y --no-install-recommends \
+            bc \
+            bison \
+            build-essential \
+            ca-certificates \
+            curl \
+            flex \
+            git \
+            libelf-dev \
+            libncurses-dev \
+            libssl-dev \
+            python3 \
+            python-is-python3 \
+            xz-utils
+
+      - name: Install exact Android clang-r416183b
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          curl \
+            --fail \
+            --location \
+            --retry 3 \
+            "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/${CLANG_PREBUILT_COMMIT}/clang-r416183b.tar.gz" \
+            -o "${RUNNER_TEMP}/clang-r416183b.tar.gz"
+
+          tar \
+            -xzf "${RUNNER_TEMP}/clang-r416183b.tar.gz" \
+            -C "$TOOLCHAIN_DIR"
+
+          echo "$TOOLCHAIN_DIR/bin" >> "$GITHUB_PATH"
+
+          "$TOOLCHAIN_DIR/bin/clang" --version \
+            | tee "$ARTIFACT_DIR/clang-version.txt"
+
+          "$TOOLCHAIN_DIR/bin/ld.lld" --version \
+            | tee -a "$ARTIFACT_DIR/clang-version.txt"
+
+          if ! "$TOOLCHAIN_DIR/bin/clang" --version \
+            | grep -q 'r416183b'
+          then
+            echo "ERROR: expected clang-r416183b"
+            exit 1
+          fi
+
+      - name: Checkout exact VEUX source
+        uses: actions/checkout@v7
+        with:
+          repository: dereference23/kernel_xiaomi_sm6375
+          ref: "20240619"
+          fetch-depth: 0
+          path: kernel
+          persist-credentials: false
+
+      - name: Recreate exact Candidate 2
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email \
+            "41898282+github-actions[bot]@users.noreply.github.com"
+
+          BASE_SHA="$(git rev-parse HEAD)"
+          BASE_TREE="$(git rev-parse HEAD^{tree})"
+
+          git remote remove android-common 2>/dev/null || true
+          git remote add \
+            android-common \
+            https://android.googlesource.com/kernel/common
+
+          git fetch \
+            --no-tags \
+            android-common \
+            "$COMMON_REF"
+
+          git merge \
+            --no-edit \
+            FETCH_HEAD
+
+          MERGED_SHA="$(git rev-parse HEAD)"
+          MERGED_TREE="$(git rev-parse HEAD^{tree})"
+
+          git cat-file -e \
+            "${STABILITY_REVERT}^{commit}"
+
+          git revert \
+            --no-edit \
+            "$STABILITY_REVERT"
+
+          CANDIDATE_SHA="$(git rev-parse HEAD)"
+          CANDIDATE_TREE="$(git rev-parse HEAD^{tree})"
+          KERNEL_VERSION="$(make -s kernelversion)"
+
+          if [ "$KERNEL_VERSION" != "5.4.274" ]; then
+            echo "ERROR: expected Linux 5.4.274"
+            echo "Actual: $KERNEL_VERSION"
+            exit 1
+          fi
+
+          if [ "$CANDIDATE_TREE" != "$EXPECTED_CANDIDATE_TREE" ]; then
+            echo "ERROR: Candidate 2 tree mismatch"
+            echo "Expected: $EXPECTED_CANDIDATE_TREE"
+            echo "Actual:   $CANDIDATE_TREE"
+            exit 1
+          fi
+
+          {
+            echo "BASE_SHA=$BASE_SHA"
+            echo "BASE_TREE=$BASE_TREE"
+            echo "MERGED_SHA=$MERGED_SHA"
+            echo "MERGED_TREE=$MERGED_TREE"
+            echo "CANDIDATE_SHA=$CANDIDATE_SHA"
+            echo "CANDIDATE_TREE=$CANDIDATE_TREE"
+            echo "KERNEL_VERSION=$KERNEL_VERSION"
+            echo "STABILITY_REVERT=$STABILITY_REVERT"
+            echo "CASS_COMMIT=$CASS_COMMIT"
+          } | tee "$ARTIFACT_DIR/IDENTITY.txt"
+
+      - name: Capture old thermal_load_avg lineage
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          BASE_SHA="$(
+            awk -F= \
+              '$1=="BASE_SHA" {print $2}' \
+              "$ARTIFACT_DIR/IDENTITY.txt"
+          )"
+
+          {
+            echo "# thermal_load_avg in original 20240619 base"
+            echo
+
+            git grep \
+              -n \
+              -w \
+              'thermal_load_avg' \
+              "$BASE_SHA" \
+              -- \
+              kernel \
+              include \
+              arch \
+              drivers \
+              2>/dev/null \
+              || true
+
+            echo
+            echo "# History changing thermal_load_avg"
+            echo
+
+            git log \
+              --all \
+              --oneline \
+              --decorate=no \
+              -S'thermal_load_avg' \
+              -- \
+              kernel \
+              include \
+              arch \
+              drivers \
+              || true
+          } > "$ARTIFACT_DIR/THERMAL-LOAD-AVG-LINEAGE.txt"
+
+          cat "$ARTIFACT_DIR/THERMAL-LOAD-AVG-LINEAGE.txt"
+
+      - name: Verify current max frequency capacity infrastructure
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          {
+            echo "# Candidate 2 max frequency capacity infrastructure"
+            echo
+
+            echo "===== arch_scale_max_freq_capacity ====="
+
+            git grep \
+              -n \
+              'arch_scale_max_freq_capacity' \
+              -- \
+              arch \
+              include \
+              kernel \
+              drivers \
+              || true
+
+            echo
+            echo "===== topology_get_max_freq_scale ====="
+
+            git grep \
+              -n \
+              'topology_get_max_freq_scale' \
+              -- \
+              arch \
+              include \
+              kernel \
+              drivers \
+              || true
+
+            echo
+            echo "===== max_freq_scale ====="
+
+            git grep \
+              -n \
+              'max_freq_scale' \
+              -- \
+              arch \
+              include \
+              kernel \
+              drivers \
+              || true
+
+            echo
+            echo "===== arch_set_max_freq_scale ====="
+
+            git grep \
+              -n \
+              'arch_set_max_freq_scale' \
+              -- \
+              arch \
+              include \
+              kernel \
+              drivers \
+              || true
+
+          } > "$ARTIFACT_DIR/MAXFREQ-INFRASTRUCTURE.txt"
+
+          cat "$ARTIFACT_DIR/MAXFREQ-INFRASTRUCTURE.txt"
+
+          if ! git grep -q \
+            'arch_scale_max_freq_capacity' \
+            -- arch/arm64 include/linux
+          then
+            echo "ERROR: arch_scale_max_freq_capacity unavailable"
+            exit 1
+          fi
+
+          if ! git grep -q \
+            'topology_get_max_freq_scale' \
+            -- include/linux arch/arm64
+          then
+            echo "ERROR: topology_get_max_freq_scale unavailable"
+            exit 1
+          fi
+
+          if ! git grep -q \
+            'max_freq_scale' \
+            -- include/linux drivers arch
+          then
+            echo "ERROR: max_freq_scale storage unavailable"
+            exit 1
+          fi
+
+      - name: Verify max frequency scale has a live writer
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          {
+            echo "# Search for live max-frequency-scale writers"
+            echo
+
+            git grep \
+              -nE \
+              'arch_set_max_freq_scale|max_freq_scale.*=' \
+              -- \
+              drivers \
+              kernel \
+              arch \
+              include \
+              || true
+
+          } > "$ARTIFACT_DIR/MAXFREQ-WRITERS.txt"
+
+          cat "$ARTIFACT_DIR/MAXFREQ-WRITERS.txt"
+
+          WRITER_COUNT="$(
+            git grep \
+              -nE \
+              'arch_set_max_freq_scale|max_freq_scale.*=' \
+              -- \
+              drivers \
+              kernel \
+              arch \
+              include \
+              2>/dev/null \
+              | wc -l \
+              | tr -d ' '
+          )"
+
+          echo "WRITER_COUNT=$WRITER_COUNT" \
+            | tee "$ARTIFACT_DIR/MAXFREQ-WRITER-COUNT.txt"
+
+          if [ "$WRITER_COUNT" -lt 1 ]; then
+            echo "ERROR: max_freq_scale exists but no writer was found"
+            exit 1
+          fi
+
+      - name: Capture exact pre probe CASS state
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cp \
+            kernel/sched/cass.c \
+            "$ARTIFACT_DIR/cass-before-probe.c"
+
+          {
+            echo "# Current CASS capacity state"
+            echo
+
+            grep \
+              -nE \
+              -B8 \
+              -A14 \
+              'cap_max|cap_no_therm|cap_orig|arch_scale_cpu_capacity|thermal_load_avg|SCHED_CAPACITY_SCALE / curr->cap' \
+              kernel/sched/cass.c \
+              || true
+
+          } > "$ARTIFACT_DIR/CASS-BEFORE.txt"
+
+          cat "$ARTIFACT_DIR/CASS-BEFORE.txt"
+
+          if git grep -q \
+            -w \
+            'thermal_load_avg' \
+            -- \
+            arch \
+            include \
+            kernel \
+            drivers
+          then
+            echo "ERROR: thermal_load_avg unexpectedly exists in Candidate 2"
+            exit 1
+          fi
+
+      - name: Apply minimal CASS max frequency capacity probe
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("kernel/sched/cass.c")
+          text = path.read_text()
+
+          old = """\
+          \tunsigned long cap;
+          \tunsigned long cap_max;
+          \tunsigned long eff_util;
+          """
+
+          new = """\
+          \tunsigned long cap;
+          \tunsigned long cap_max;
+          \tunsigned long cap_no_therm;
+          \tunsigned long cap_orig;
+          \tunsigned long eff_util;
+          """
+
+          if text.count(old) != 1:
+              raise SystemExit(
+                  "struct capacity fields anchor mismatch: "
+                  f"{text.count(old)} matches"
+              )
+
+          text = text.replace(old, new, 1)
+
+          old = """\
+          \tc->cap = c->cap_max - min(c->hard_util, c->cap_max - 1);
+          """
+
+          new = """\
+          \tc->cap = c->cap_max - min(c->hard_util, c->cap_max - 1);
+
+          \t/*
+          \t * Keep a non-throttled capacity denominator for relative load
+          \t * balancing, matching the original CASS separation between
+          \t * maximum available capacity and load-distribution capacity.
+          \t */
+          \tc->cap_no_therm =
+          \t\tc->cap_orig - min(c->hard_util, c->cap_orig - 1);
+          """
+
+          if text.count(old) != 1:
+              raise SystemExit(
+                  "cass_cpu_util capacity anchor mismatch: "
+                  f"{text.count(old)} matches"
+              )
+
+          text = text.replace(old, new, 1)
+
+          old = """\
+          \t\t/* Get the original, maximum _possible_ capacity of this CPU */
+          \t\tcurr->cap_max = arch_scale_cpu_capacity(cpu);
+          """
+
+          new = """\
+          \t\t/* Get the original, maximum possible capacity of this CPU. */
+          \t\tcurr->cap_orig = arch_scale_cpu_capacity(cpu);
+
+          \t\t/*
+          \t\t * Account for the current maximum allowed CPU frequency.
+          \t\t * Candidate 2 no longer provides thermal_load_avg(), while
+          \t\t * ARM64 keeps max-frequency capacity in max_freq_scale.
+          \t\t */
+          \t\tcurr->cap_max =
+          \t\t\tcurr->cap_orig *
+          \t\t\tarch_scale_max_freq_capacity(NULL, cpu) >>
+          \t\t\tSCHED_CAPACITY_SHIFT;
+
+          \t\t/* Keep all later capacity divisions well-defined. */
+          \t\tcurr->cap_max = max(curr->cap_max, 1UL);
+          """
+
+          if text.count(old) != 1:
+              raise SystemExit(
+                  "CASS cap_max anchor mismatch: "
+                  f"{text.count(old)} matches"
+              )
+
+          text = text.replace(old, new, 1)
+
+          old = """\
+          \t\tcurr->util =
+          \t\t\tcurr->util * SCHED_CAPACITY_SCALE / curr->cap;
+          """
+
+          new = """\
+          \t\tcurr->util =
+          \t\t\tcurr->util * SCHED_CAPACITY_SCALE /
+          \t\t\tcurr->cap_no_therm;
+          """
+
+          if text.count(old) != 1:
+              raise SystemExit(
+                  "relative-util denominator anchor mismatch: "
+                  f"{text.count(old)} matches"
+              )
+
+          text = text.replace(old, new, 1)
+
+          path.write_text(text)
+          PY
+
+          cp \
+            kernel/sched/cass.c \
+            "$ARTIFACT_DIR/cass-after-probe.c"
+
+      - name: Verify probe semantics
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if grep -wq \
+            'thermal_load_avg' \
+            kernel/sched/cass.c
+          then
+            echo "ERROR: obsolete thermal_load_avg was reintroduced"
+            exit 1
+          fi
+
+          for token in \
+            'cap_orig' \
+            'cap_no_therm' \
+            'arch_scale_max_freq_capacity'
+          do
+            if ! grep -wq \
+              "$token" \
+              kernel/sched/cass.c
+            then
+              echo "ERROR: required probe token missing: $token"
+              exit 1
+            fi
+          done
+
+          if ! grep -qF \
+            'curr->cap_no_therm;' \
+            kernel/sched/cass.c
+          then
+            echo "ERROR: relative-util non-throttled denominator missing"
+            exit 1
+          fi
+
+          git diff --check \
+            > "$ARTIFACT_DIR/GIT-DIFF-CHECK.txt" \
+            2>&1
+
+          git diff \
+            --no-ext-diff \
+            --no-color \
+            -- \
+            kernel/sched/cass.c \
+            > "$ARTIFACT_DIR/CASS-MAXFREQ-PROBE.diff"
+
+          DIFF_SHA="$(
+            sha256sum \
+              "$ARTIFACT_DIR/CASS-MAXFREQ-PROBE.diff" \
+              | awk '{print $1}'
+          )"
+
+          {
+            echo "PROBE_SOURCE_CHECK=PASS"
+            echo "DIFF_SHA256=$DIFF_SHA"
+            echo "OBSOLETE_THERMAL_LOAD_AVG=ABSENT"
+            echo "CAP_ORIG=RESTORED"
+            echo "CAP_NO_THERM=RESTORED"
+            echo "CAP_MAX_SOURCE=arch_scale_max_freq_capacity"
+          } | tee "$ARTIFACT_DIR/PROBE-SOURCE-CHECK.txt"
+
+          cat "$ARTIFACT_DIR/CASS-MAXFREQ-PROBE.diff"
+
+      - name: Resolve VEUX configuration
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -rf "$OUT_DIR"
+
+          make \
+            O="$OUT_DIR" \
+            ARCH="$ARCH" \
+            LLVM=1 \
+            LLVM_IAS=1 \
+            veux_defconfig \
+            2>&1 \
+            | tee "$ARTIFACT_DIR/defconfig.log"
+
+          CONFIG="$OUT_DIR/.config"
+
+          if [ ! -f "$CONFIG" ]; then
+            echo "ERROR: .config missing"
+            exit 1
+          fi
+
+          if ! grep -qx \
+            'CONFIG_SCHED_CASS=y' \
+            "$CONFIG"
+          then
+            echo "ERROR: CONFIG_SCHED_CASS is not enabled"
+            exit 1
+          fi
+
+          cp \
+            "$CONFIG" \
+            "$ARTIFACT_DIR/resolved.config"
+
+          {
+            grep -E \
+              '^(CONFIG_SCHED_CASS=|CONFIG_CPU_FREQ=|CONFIG_CPU_FREQ_GOV_SCHEDUTIL=|CONFIG_ARM_QCOM_CPUFREQ_HW=|CONFIG_ARM_QCOM_LPM_CPUIDLE=)' \
+              "$CONFIG" \
+              || true
+          } > "$ARTIFACT_DIR/CONFIG-IMPORTANT.txt"
+
+          cat "$ARTIFACT_DIR/CONFIG-IMPORTANT.txt"
+
+      - name: Compile only affected CASS object
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          set +e
+
+          make \
+            -j"$(nproc)" \
+            O="$OUT_DIR" \
+            ARCH="$ARCH" \
+            LLVM=1 \
+            LLVM_IAS=1 \
+            kernel/sched/cass.o \
+            2>&1 \
+            | tee "$ARTIFACT_DIR/cass-object-build.log"
+
+          BUILD_RC=${PIPESTATUS[0]}
+
+          set -e
+
+          printf '%s\n' \
+            "$BUILD_RC" \
+            > "$ARTIFACT_DIR/cass-object-build.exit-code"
+
+          if [ "$BUILD_RC" -ne 0 ]; then
+            echo "ERROR: CASS object compile probe failed"
+            exit "$BUILD_RC"
+          fi
+
+          if [ ! -f "$OUT_DIR/kernel/sched/cass.o" ]; then
+            echo "ERROR: expected CASS object missing"
+            exit 1
+          fi
+
+          sha256sum \
+            "$OUT_DIR/kernel/sched/cass.o" \
+            | tee "$ARTIFACT_DIR/cass.o.sha256"
+
+      - name: Audit compile diagnostics
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          LOG="$ARTIFACT_DIR/cass-object-build.log"
+
+          grep -Ei \
+            '(^|[[:space:]])error:' \
+            "$LOG" \
+            > "$ARTIFACT_DIR/ERRORS.txt" \
+            || true
+
+          grep -Ei \
+            '(^|[[:space:]])warning:' \
+            "$LOG" \
+            > "$ARTIFACT_DIR/WARNINGS.txt" \
+            || true
+
+          ERROR_COUNT="$(
+            wc -l < "$ARTIFACT_DIR/ERRORS.txt" \
+              | tr -d ' '
+          )"
+
+          WARNING_COUNT="$(
+            wc -l < "$ARTIFACT_DIR/WARNINGS.txt" \
+              | tr -d ' '
+          )"
+
+          {
+            echo "ERROR_COUNT=$ERROR_COUNT"
+            echo "WARNING_COUNT=$WARNING_COUNT"
+          } | tee "$ARTIFACT_DIR/DIAGNOSTICS.txt"
+
+          if [ "$ERROR_COUNT" -ne 0 ]; then
+            echo "ERROR: compiler errors detected"
+            cat "$ARTIFACT_DIR/ERRORS.txt"
+            exit 1
+          fi
+
+          if [ "$WARNING_COUNT" -ne 0 ]; then
+            echo "ERROR: compiler warnings detected in CASS probe"
+            cat "$ARTIFACT_DIR/WARNINGS.txt"
+            exit 1
+          fi
+
+      - name: Build final probe report
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          CURRENT_TREE="$(
+            git rev-parse HEAD^{tree}
+          )"
+
+          if [ "$CURRENT_TREE" != "$EXPECTED_CANDIDATE_TREE" ]; then
+            echo "ERROR: committed Candidate 2 identity changed"
+            exit 1
+          fi
+
+          DIFF_SHA="$(
+            sha256sum \
+              "$ARTIFACT_DIR/CASS-MAXFREQ-PROBE.diff" \
+              | awk '{print $1}'
+          )"
+
+          {
+            echo "RESULT=PASS"
+            echo "BASE_CANDIDATE_TREE=$CURRENT_TREE"
+            echo "PROBE_DIFF_SHA256=$DIFF_SHA"
+            echo "THERMAL_LOAD_AVG_RESTORED=NO"
+            echo "CAP_ORIG_RESTORED=YES"
+            echo "CAP_NO_THERM_RESTORED=YES"
+            echo "CAP_MAX_USES_MAX_FREQ_SCALE=YES"
+            echo "CASS_OBJECT_BUILD=PASS"
+            echo "COMPILER_ERRORS=0"
+            echo "COMPILER_WARNINGS=0"
+            echo "FULL_KERNEL_BUILT=NO"
+            echo "IMAGE_CREATED=NO"
+            echo "DEVICE_FLASHED=NO"
+          } | tee "$ARTIFACT_DIR/RESULT.txt"
+
+      - name: Upload CASS compile probe
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: VEUX-CASS-MaxFreq-Thermal-Compile-Probe
+          path: cass-maxfreq-probe/
+          if-no-files-found: error
+          retention-days: 30
