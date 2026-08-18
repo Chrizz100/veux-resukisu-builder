@@ -1,0 +1,583 @@
+name: 22P - VEUX Positron Residual Audit
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    env:
+      ARCH: arm64
+      COMMON_REF: "android11-5.4.274_r00"
+      STABILITY_REVERT: "f74e5c1b7c3f3e42f694e5ab524f95f62a0dab80"
+      CASS_COMMIT: "b9b5ddba28bf9f23ac1a2af27f574291451244fd"
+      EXPECTED_CANDIDATE_TREE: "5d25b7e0124d7fb695f3f07b45928fcb5780d0e8"
+      STOCK_REF: "veux-r-oss"
+      ARTIFACT_DIR: ${{ github.workspace }}/positron-audit
+
+    steps:
+      - name: Checkout exact Positron VEUX base
+        uses: actions/checkout@v7
+        with:
+          repository: dereference23/kernel_xiaomi_sm6375
+          ref: "20240619"
+          fetch-depth: 0
+          path: kernel
+          persist-credentials: false
+
+      - name: Recreate exact Candidate 2
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p "$ARTIFACT_DIR"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          BASE_SHA="$(git rev-parse HEAD)"
+          BASE_TREE="$(git rev-parse HEAD^{tree})"
+
+          git remote remove android-common 2>/dev/null || true
+          git remote add android-common https://android.googlesource.com/kernel/common
+          git fetch --no-tags android-common "$COMMON_REF"
+          git merge --no-edit FETCH_HEAD
+
+          MERGED_SHA="$(git rev-parse HEAD)"
+          MERGED_TREE="$(git rev-parse HEAD^{tree})"
+
+          git cat-file -e "${STABILITY_REVERT}^{commit}"
+          git revert --no-edit "$STABILITY_REVERT"
+
+          CANDIDATE_SHA="$(git rev-parse HEAD)"
+          CANDIDATE_TREE="$(git rev-parse HEAD^{tree})"
+          KERNEL_VERSION="$(make -s kernelversion)"
+
+          if [ "$KERNEL_VERSION" != "5.4.274" ]; then
+            echo "ERROR: expected Linux 5.4.274, got $KERNEL_VERSION"
+            exit 1
+          fi
+
+          if [ "$CANDIDATE_TREE" != "$EXPECTED_CANDIDATE_TREE" ]; then
+            echo "ERROR: Candidate 2 tree mismatch"
+            echo "Expected: $EXPECTED_CANDIDATE_TREE"
+            echo "Actual:   $CANDIDATE_TREE"
+            exit 1
+          fi
+
+          {
+            echo "BASE_SHA=$BASE_SHA"
+            echo "BASE_TREE=$BASE_TREE"
+            echo "MERGED_SHA=$MERGED_SHA"
+            echo "MERGED_TREE=$MERGED_TREE"
+            echo "CANDIDATE_SHA=$CANDIDATE_SHA"
+            echo "CANDIDATE_TREE=$CANDIDATE_TREE"
+            echo "KERNEL_VERSION=$KERNEL_VERSION"
+            echo "STABILITY_REVERT=$STABILITY_REVERT"
+            echo "CASS_COMMIT=$CASS_COMMIT"
+          } | tee "$ARTIFACT_DIR/candidate2.txt"
+
+          printf '%s\n' "$BASE_SHA" > "$ARTIFACT_DIR/base-sha.txt"
+          printf '%s\n' "$CANDIDATE_SHA" > "$ARTIFACT_DIR/candidate-sha.txt"
+
+      - name: Fetch official Xiaomi VEUX source reference
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git remote remove xiaomi 2>/dev/null || true
+          git remote add xiaomi https://github.com/MiCode/Xiaomi_Kernel_OpenSource.git
+          git fetch --no-tags xiaomi "+refs/heads/${STOCK_REF}:refs/remotes/xiaomi/${STOCK_REF}"
+
+          STOCK_SHA="$(git rev-parse "xiaomi/${STOCK_REF}")"
+          BASE_SHA="$(cat "$ARTIFACT_DIR/base-sha.txt")"
+          MERGE_BASE="$(git merge-base "$BASE_SHA" "xiaomi/${STOCK_REF}" || true)"
+
+          {
+            echo "STOCK_REF=$STOCK_REF"
+            echo "STOCK_SHA=$STOCK_SHA"
+            echo "MERGE_BASE=${MERGE_BASE:-NONE}"
+          } | tee "$ARTIFACT_DIR/xiaomi-reference.txt"
+
+          if [ -n "$MERGE_BASE" ]; then
+            if git merge-base --is-ancestor "xiaomi/${STOCK_REF}" "$BASE_SHA"; then
+              printf '%s\n' "xiaomi/${STOCK_REF}..${BASE_SHA}" > "$ARTIFACT_DIR/audit-range.txt"
+              echo "RANGE_MODE=stock-head-is-ancestor" >> "$ARTIFACT_DIR/xiaomi-reference.txt"
+            else
+              printf '%s\n' "${MERGE_BASE}..${BASE_SHA}" > "$ARTIFACT_DIR/audit-range.txt"
+              echo "RANGE_MODE=merge-base-to-positron-base" >> "$ARTIFACT_DIR/xiaomi-reference.txt"
+            fi
+          else
+            echo "ERROR: no git merge-base with Xiaomi VEUX source"
+            exit 1
+          fi
+
+      - name: Enumerate Positron-side history and classify residual effects
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          RANGE="$(cat "$ARTIFACT_DIR/audit-range.txt")"
+          mkdir -p "$ARTIFACT_DIR/suspicious-patches"
+
+          git log \
+            --first-parent \
+            --reverse \
+            --date=iso-strict \
+            --pretty=format:'%H%x09%ad%x09%an%x09%ae%x09%s' \
+            "$RANGE" \
+            > "$ARTIFACT_DIR/positron-first-parent-history.tsv"
+
+          python3 - <<'PY'
+          import csv
+          import os
+          import re
+          import subprocess
+          from pathlib import Path
+
+          out = Path(os.environ["ARTIFACT_DIR"])
+          range_spec = (out / "audit-range.txt").read_text().strip()
+
+          keywords = re.compile(
+              r"thermal|throttl|cpufreq|cpu.?freq|freq|boost|overclock|underclock|"
+              r"voltage|lpm|cpuidle|idle|sched|cass|uclamp|walt|core.?ctl|"
+              r"power|battery|latency|qos|sleep_disabled|kgsl|gpu|game|touch",
+              re.I,
+          )
+          high = re.compile(
+              r"no thermal throttling|disable.*thermal|thermal.*disable|"
+              r"apply efficient freqs|force.*freq|fixed.*freq|overclock|underclock",
+              re.I,
+          )
+          medium = re.compile(
+              r"kill userspace cpu boosting|always respect min freq|cpufreq|boost|"
+              r"cass|uclamp|lpm|cpuidle|sleep_disabled|core.?ctl|qos|latency",
+              re.I,
+          )
+          likely_fix = re.compile(
+              r"\bfix\b|\bfixes\b|bug|deadlock|race|overflow|uaf|use-after-free|"
+              r"null pointer|lock inversion|cve-|security",
+              re.I,
+          )
+
+          def sh(*args, check=True):
+              p = subprocess.run(
+                  args,
+                  text=True,
+                  stdout=subprocess.PIPE,
+                  stderr=subprocess.PIPE,
+              )
+              if check and p.returncode != 0:
+                  raise RuntimeError(f"command failed {args}: {p.stderr}")
+              return p
+
+          revs = sh(
+              "git", "rev-list", "--first-parent", "--reverse", range_spec
+          ).stdout.splitlines()
+
+          rows = []
+
+          for sha in revs:
+              subject = sh(
+                  "git", "show", "-s", "--format=%s", sha
+              ).stdout.strip()
+              body = sh(
+                  "git", "show", "-s", "--format=%B", sha
+              ).stdout.strip()
+              author = sh(
+                  "git", "show", "-s", "--format=%an <%ae>", sha
+              ).stdout.strip()
+              files = [
+                  x for x in sh(
+                      "git",
+                      "diff-tree",
+                      "--no-commit-id",
+                      "--name-only",
+                      "-r",
+                      sha,
+                  ).stdout.splitlines()
+                  if x
+              ]
+
+              haystack = "\n".join([subject, body, *files])
+
+              if not keywords.search(haystack):
+                  continue
+
+              patch = sh(
+                  "git", "diff", f"{sha}^", sha, "--binary"
+              ).stdout
+
+              patch_path = out / "suspicious-patches" / f"{sha}.patch"
+              patch_path.write_text(patch)
+
+              reverse_rc = subprocess.run(
+                  ["git", "apply", "--reverse", "--check", str(patch_path)],
+                  stdout=subprocess.DEVNULL,
+                  stderr=subprocess.DEVNULL,
+              ).returncode
+
+              forward_rc = subprocess.run(
+                  ["git", "apply", "--check", str(patch_path)],
+                  stdout=subprocess.DEVNULL,
+                  stderr=subprocess.DEVNULL,
+              ).returncode
+
+              if reverse_rc == 0 and forward_rc != 0:
+                  state = "EFFECT_PRESENT"
+              elif forward_rc == 0 and reverse_rc != 0:
+                  state = "EFFECT_ABSENT"
+              elif forward_rc == 0 and reverse_rc == 0:
+                  state = "AMBIGUOUS_PATCH_STATE"
+              else:
+                  state = "DRIFT_NEEDS_REVIEW"
+
+              if high.search(haystack):
+                  risk = "HIGH_REVIEW"
+              elif likely_fix.search(subject) and not medium.search(subject):
+                  risk = "LIKELY_FIX"
+              elif medium.search(haystack):
+                  risk = "MEDIUM_REVIEW"
+              else:
+                  risk = "LOW_REVIEW"
+
+              rows.append({
+                  "sha": sha,
+                  "state": state,
+                  "risk": risk,
+                  "author": author,
+                  "subject": subject,
+                  "files": ",".join(files),
+              })
+
+          with (out / "suspicious-commits.tsv").open("w", newline="") as f:
+              w = csv.DictWriter(
+                  f,
+                  fieldnames=[
+                      "sha",
+                      "state",
+                      "risk",
+                      "author",
+                      "subject",
+                      "files",
+                  ],
+                  delimiter="\t",
+              )
+              w.writeheader()
+              w.writerows(rows)
+
+          present = [
+              r for r in rows
+              if r["state"] == "EFFECT_PRESENT"
+          ]
+          high_present = [
+              r for r in present
+              if r["risk"] == "HIGH_REVIEW"
+          ]
+          medium_present = [
+              r for r in present
+              if r["risk"] == "MEDIUM_REVIEW"
+          ]
+          drift = [
+              r for r in rows
+              if r["state"] in {
+                  "DRIFT_NEEDS_REVIEW",
+                  "AMBIGUOUS_PATCH_STATE",
+              }
+          ]
+
+          with (out / "machine-summary.txt").open("w") as f:
+              f.write(f"FIRST_PARENT_COMMITS={len(revs)}\n")
+              f.write(f"SUSPICIOUS_COMMITS={len(rows)}\n")
+              f.write(f"EFFECT_PRESENT={len(present)}\n")
+              f.write(f"HIGH_REVIEW_PRESENT={len(high_present)}\n")
+              f.write(f"MEDIUM_REVIEW_PRESENT={len(medium_present)}\n")
+              f.write(f"DRIFT_OR_AMBIGUOUS={len(drift)}\n")
+          PY
+
+      - name: Audit known Positron hotspots in current Candidate 2
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          {
+            echo "# KNOWN POSITRON HOTSPOTS - CURRENT CANDIDATE 2"
+            echo
+
+            echo "## 1. Forced BLAIR minimum-frequency table"
+            if grep -nE \
+              '1708800|1228800|eff_table' \
+              drivers/cpuidle/lpm-levels.c
+            then
+              echo "RESULT=FOUND_REVIEW"
+            else
+              echo "RESULT=ABSENT"
+            fi
+            echo
+
+            echo "## 2. CASS thermal-capacity handling"
+            if [ -f kernel/sched/cass.c ]; then
+              grep -nE \
+                'thermal_load_avg|cap_orig|cap_no_therm|cap_max = arch_scale_cpu_capacity|SCHED_CAPACITY_SCALE / curr->cap' \
+                kernel/sched/cass.c || true
+            else
+              echo "kernel/sched/cass.c missing"
+            fi
+            echo
+
+            echo "## 3. CPUFreq userspace min/max policy overrides"
+            grep -n -A18 -B5 \
+              'store_one(file_name, object)' \
+              drivers/cpufreq/cpufreq.c || true
+            grep -nE \
+              'policy->object == &policy->min|policy->object == &policy->max|val < policy->min' \
+              drivers/cpufreq/cpufreq.c || true
+            echo
+
+            echo "## 4. LPM sleep_disabled changes"
+            grep -nE \
+              'sleep_disabled|lpm_sleep_disabled' \
+              drivers/cpuidle/lpm-levels.c \
+              drivers/cpuidle/cpuidle.c \
+              include/linux/cpuidle.h \
+              2>/dev/null || true
+            echo
+
+            echo "## 5. CASS source/config presence"
+            test -f kernel/sched/cass.c \
+              && echo "CASS_SOURCE=present" \
+              || echo "CASS_SOURCE=absent"
+
+            grep -nE \
+              '^CONFIG_SCHED_CASS=|SCHED_CASS' \
+              arch/arm64/configs/veux_defconfig \
+              kernel/sched/Kconfig \
+              kernel/sched/Makefile \
+              2>/dev/null || true
+
+          } > "$ARTIFACT_DIR/hotspot-current-state.txt"
+
+          cat "$ARTIFACT_DIR/hotspot-current-state.txt"
+
+      - name: Resolve baseline VEUX config and record active power scheduler options
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -rf out-positron-audit
+
+          make \
+            O=out-positron-audit \
+            ARCH="$ARCH" \
+            veux_defconfig \
+            >/dev/null
+
+          CONFIG=out-positron-audit/.config
+
+          cp "$CONFIG" \
+            "$ARTIFACT_DIR/veux-baseline-resolved.config"
+
+          grep -E \
+            '^(CONFIG_SCHED_CASS=|# CONFIG_SCHED_CASS|CONFIG_CPU_FREQ=|CONFIG_CPU_FREQ_DEFAULT_GOV_|CONFIG_CPU_FREQ_GOV_|CONFIG_CPU_IDLE=|CONFIG_ARM_QCOM_LPM_CPUIDLE=|CONFIG_THERMAL=|CONFIG_THERMAL_GOV_|CONFIG_QCOM_CPU_ISOLATION=|CONFIG_SCHED_WALT=|CONFIG_UCLAMP_TASK=|CONFIG_ENERGY_MODEL=)' \
+            "$CONFIG" \
+            > "$ARTIFACT_DIR/config-hotspots.txt" \
+            || true
+
+          cat "$ARTIFACT_DIR/config-hotspots.txt"
+
+      - name: Compare Candidate 2 hotspots with official Xiaomi VEUX source
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git diff \
+            --no-ext-diff \
+            --no-color \
+            "xiaomi/${STOCK_REF}" \
+            HEAD \
+            -- \
+            drivers/cpufreq/cpufreq.c \
+            drivers/cpuidle/cpuidle.c \
+            drivers/cpuidle/lpm-levels.c \
+            include/linux/cpuidle.h \
+            kernel/sched/cass.c \
+            kernel/sched/core.c \
+            kernel/smp.c \
+            arch/arm64/configs/veux_defconfig \
+            > "$ARTIFACT_DIR/candidate2-vs-xiaomi-hotspots.diff" \
+            || true
+
+          git diff \
+            --stat \
+            "xiaomi/${STOCK_REF}" \
+            HEAD \
+            > "$ARTIFACT_DIR/candidate2-vs-xiaomi-full.stat" \
+            || true
+
+      - name: Build concise audit report
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          import csv
+          import os
+          from pathlib import Path
+
+          out = Path(os.environ["ARTIFACT_DIR"])
+
+          with (out / "suspicious-commits.tsv").open() as f:
+              rows = list(csv.DictReader(f, delimiter="\t"))
+
+          def pick(text):
+              t = text.lower()
+
+              if "no thermal throttling for us" in t:
+                  return (
+                      "CRITICAL_REVIEW",
+                      "CASS ignores thermally reduced capacity in CPU selection",
+                  )
+
+              if "apply efficient freqs for blair" in t:
+                  return (
+                      "REMOVED_TARGET",
+                      "Forced BLAIR minimum frequencies",
+                  )
+
+              if "kill userspace cpu boosting entirely" in t:
+                  return (
+                      "POLICY_REVIEW",
+                      "Makes scaling_min_freq writes a no-op",
+                  )
+
+              if "always respect min freq" in t:
+                  return (
+                      "POLICY_REVIEW",
+                      "Clamps requested max frequency to current minimum",
+                  )
+
+              if "cass" in t:
+                  return (
+                      "SCHEDULER_REVIEW",
+                      "Alternative CASS scheduler behavior",
+                  )
+
+              if (
+                  "sleep_disabled" in t
+                  or "cpuidle" in t
+                  or "lpm" in t
+              ):
+                  return (
+                      "IDLE_REVIEW",
+                      "Power/idle path behavior differs from stock",
+                  )
+
+              if (
+                  "thermal" in t
+                  or "freq" in t
+                  or "boost" in t
+              ):
+                  return (
+                      "POWER_REVIEW",
+                      "Power/frequency behavior differs from stock",
+                  )
+
+              return (
+                  "OTHER_REVIEW",
+                  "Keyword-selected Positron-side change",
+              )
+
+          important = []
+
+          for r in rows:
+              cls, reason = pick(r["subject"])
+
+              if (
+                  r["state"] == "EFFECT_PRESENT"
+                  or cls == "REMOVED_TARGET"
+                  or r["state"].startswith("DRIFT")
+              ):
+                  important.append((r, cls, reason))
+
+          report = []
+
+          report.append(
+              "# VEUX Candidate 2 - Positron Residual Audit"
+          )
+          report.append("")
+          report.append(
+              "This is a read-only source/configuration audit. "
+              "It does not build, flash, or modify a device image."
+          )
+          report.append("")
+          report.append("## Machine summary")
+          report.append("```text")
+          report.append(
+              (out / "machine-summary.txt").read_text().strip()
+          )
+          report.append("```")
+          report.append("")
+          report.append("## Important residual candidates")
+          report.append("")
+          report.append(
+              "| State | Class | Commit | Subject | Reason |"
+          )
+          report.append(
+              "|---|---|---|---|---|"
+          )
+
+          for r, cls, reason in important:
+              subj = r["subject"].replace("|", "\\|")
+              report.append(
+                  f"| {r['state']} | {cls} | "
+                  f"`{r['sha'][:12]}` | {subj} | {reason} |"
+              )
+
+          report.append("")
+          report.append("## Known hotspot snapshot")
+          report.append("```text")
+          report.append(
+              (out / "hotspot-current-state.txt").read_text().strip()
+          )
+          report.append("```")
+          report.append("")
+          report.append("## Baseline resolved config hotspots")
+          report.append("```text")
+          report.append(
+              (out / "config-hotspots.txt").read_text().strip()
+          )
+          report.append("```")
+          report.append("")
+          report.append(
+              "Final REMOVE/KEEP decisions require reviewing each "
+              "EFFECT_PRESENT/DRIFT item against VEUX stock behavior "
+              "and the already boot-tested Candidate 2. "
+              "No automatic reverts are performed here."
+          )
+
+          (out / "AUDIT-SUMMARY.md").write_text(
+              "\n".join(report) + "\n"
+          )
+          PY
+
+          cat "$ARTIFACT_DIR/AUDIT-SUMMARY.md"
+
+      - name: Upload audit artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: VEUX-Positron-Residual-Audit
+          path: positron-audit/
+          if-no-files-found: error
+          retention-days: 30
