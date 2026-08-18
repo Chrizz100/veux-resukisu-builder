@@ -1,0 +1,534 @@
+name: 23C - VEUX CASS Thermal API Audit
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    env:
+      ARCH: arm64
+      COMMON_REF: "android11-5.4.274_r00"
+      STABILITY_REVERT: "f74e5c1b7c3f3e42f694e5ab524f95f62a0dab80"
+      EXPECTED_CANDIDATE_TREE: "5d25b7e0124d7fb695f3f07b45928fcb5780d0e8"
+      CASS_COMMIT: "b9b5ddba28bf9f23ac1a2af27f574291451244fd"
+      ARTIFACT_DIR: ${{ github.workspace }}/cass-thermal-audit
+
+    steps:
+      - name: Checkout exact VEUX base
+        uses: actions/checkout@v7
+        with:
+          repository: dereference23/kernel_xiaomi_sm6375
+          ref: "20240619"
+          fetch-depth: 0
+          path: kernel
+          persist-credentials: false
+
+      - name: Recreate exact Candidate 2
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p "$ARTIFACT_DIR"
+
+          git config user.name "github-actions[bot]"
+          git config user.email \
+            "41898282+github-actions[bot]@users.noreply.github.com"
+
+          BASE_SHA="$(git rev-parse HEAD)"
+
+          git remote remove android-common 2>/dev/null || true
+          git remote add \
+            android-common \
+            https://android.googlesource.com/kernel/common
+
+          git fetch \
+            --no-tags \
+            android-common \
+            "$COMMON_REF"
+
+          git merge \
+            --no-edit \
+            FETCH_HEAD
+
+          MERGED_SHA="$(git rev-parse HEAD)"
+          MERGED_TREE="$(git rev-parse HEAD^{tree})"
+
+          git cat-file -e \
+            "${STABILITY_REVERT}^{commit}"
+
+          git revert \
+            --no-edit \
+            "$STABILITY_REVERT"
+
+          CANDIDATE_SHA="$(git rev-parse HEAD)"
+          CANDIDATE_TREE="$(git rev-parse HEAD^{tree})"
+          KERNEL_VERSION="$(make -s kernelversion)"
+
+          if [ "$KERNEL_VERSION" != "5.4.274" ]; then
+            echo "ERROR: expected Linux 5.4.274"
+            echo "Actual: $KERNEL_VERSION"
+            exit 1
+          fi
+
+          if [ "$CANDIDATE_TREE" != "$EXPECTED_CANDIDATE_TREE" ]; then
+            echo "ERROR: Candidate 2 tree mismatch"
+            echo "Expected: $EXPECTED_CANDIDATE_TREE"
+            echo "Actual:   $CANDIDATE_TREE"
+            exit 1
+          fi
+
+          {
+            echo "BASE_SHA=$BASE_SHA"
+            echo "MERGED_SHA=$MERGED_SHA"
+            echo "MERGED_TREE=$MERGED_TREE"
+            echo "CANDIDATE_SHA=$CANDIDATE_SHA"
+            echo "CANDIDATE_TREE=$CANDIDATE_TREE"
+            echo "KERNEL_VERSION=$KERNEL_VERSION"
+            echo "STABILITY_REVERT=$STABILITY_REVERT"
+            echo "CASS_COMMIT=$CASS_COMMIT"
+          } | tee "$ARTIFACT_DIR/IDENTITY.txt"
+
+      - name: Verify current CASS state
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ ! -f kernel/sched/cass.c ]; then
+            echo "ERROR: kernel/sched/cass.c missing"
+            exit 1
+          fi
+
+          {
+            echo "# CASS current source"
+            echo
+            echo "## First 100 lines"
+            sed -n '1,100p' kernel/sched/cass.c
+            echo
+            echo "## Capacity related lines"
+            grep -nE \
+              'cap_max|cap_orig|cap_no_therm|thermal|arch_scale_cpu_capacity|SCHED_CAPACITY_SCALE' \
+              kernel/sched/cass.c \
+              || true
+          } | tee "$ARTIFACT_DIR/CASS-CURRENT.txt"
+
+      - name: Recover pre Positron thermal CASS implementation
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git cat-file -e \
+            "${CASS_COMMIT}^{commit}"
+
+          git show \
+            "${CASS_COMMIT}^:kernel/sched/cass.c" \
+            > "$ARTIFACT_DIR/cass-before-no-thermal-throttling.c"
+
+          git show \
+            "${CASS_COMMIT}:kernel/sched/cass.c" \
+            > "$ARTIFACT_DIR/cass-after-no-thermal-throttling.c"
+
+          git show \
+            --no-ext-diff \
+            --no-color \
+            --format=fuller \
+            "$CASS_COMMIT" \
+            -- kernel/sched/cass.c \
+            > "$ARTIFACT_DIR/CASS-NO-THERMAL-COMMIT.patch"
+
+          {
+            echo "# Relevant old implementation"
+            echo
+            grep -nE \
+              'cap_max|cap_orig|cap_no_therm|thermal_load_avg|arch_scale_cpu_capacity|SCHED_CAPACITY_SCALE' \
+              "$ARTIFACT_DIR/cass-before-no-thermal-throttling.c" \
+              || true
+          } | tee "$ARTIFACT_DIR/CASS-OLD-THERMAL-LINES.txt"
+
+      - name: Search exact Candidate 2 for thermal pressure APIs
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          PATTERN='thermal_load_avg|thermal_pressure|arch_scale_thermal|thermal.*capacity|capacity.*thermal|arch_scale_cpu_capacity|topology_get_cpu_scale|cpu_capacity_orig|capacity_orig_of'
+
+          {
+            echo "# Candidate 2 thermal/capacity API inventory"
+            echo
+            echo "Pattern:"
+            echo "$PATTERN"
+            echo
+
+            grep -RInE \
+              --exclude-dir=.git \
+              --exclude-dir=out \
+              --include='*.c' \
+              --include='*.h' \
+              "$PATTERN" \
+              arch \
+              include \
+              kernel \
+              drivers \
+              2>/dev/null \
+              || true
+          } > "$ARTIFACT_DIR/THERMAL-API-INVENTORY.txt"
+
+          cat "$ARTIFACT_DIR/THERMAL-API-INVENTORY.txt"
+
+      - name: Find declarations and definitions only
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          {
+            echo "# Definitions/declarations"
+            echo
+
+            for symbol in \
+              thermal_load_avg \
+              arch_scale_thermal_pressure \
+              topology_get_thermal_pressure \
+              thermal_pressure \
+              arch_scale_cpu_capacity \
+              topology_get_cpu_scale \
+              capacity_orig_of
+            do
+              echo
+              echo "===== $symbol ====="
+
+              grep -RInE \
+                --exclude-dir=.git \
+                --exclude-dir=out \
+                --include='*.c' \
+                --include='*.h' \
+                "\\b${symbol}\\b" \
+                arch \
+                include \
+                kernel \
+                drivers \
+                2>/dev/null \
+                || true
+            done
+          } > "$ARTIFACT_DIR/API-SYMBOLS.txt"
+
+          cat "$ARTIFACT_DIR/API-SYMBOLS.txt"
+
+      - name: Inspect scheduler thermal infrastructure
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          FILES=(
+            kernel/sched/sched.h
+            kernel/sched/fair.c
+            kernel/sched/core.c
+            include/linux/sched/topology.h
+            include/linux/arch_topology.h
+            arch/arm64/include/asm/topology.h
+          )
+
+          : > "$ARTIFACT_DIR/SCHEDULER-THERMAL-CONTEXT.txt"
+
+          for file in "${FILES[@]}"; do
+            {
+              echo
+              echo
+              echo "=================================================="
+              echo "FILE: $file"
+              echo "=================================================="
+            } >> "$ARTIFACT_DIR/SCHEDULER-THERMAL-CONTEXT.txt"
+
+            if [ ! -f "$file" ]; then
+              echo "FILE MISSING" \
+                >> "$ARTIFACT_DIR/SCHEDULER-THERMAL-CONTEXT.txt"
+              continue
+            fi
+
+            grep -nE \
+              -B8 \
+              -A12 \
+              'thermal_load_avg|thermal_pressure|arch_scale_thermal|arch_scale_cpu_capacity|capacity_orig_of|cpu_capacity' \
+              "$file" \
+              >> "$ARTIFACT_DIR/SCHEDULER-THERMAL-CONTEXT.txt" \
+              || true
+          done
+
+          cat "$ARTIFACT_DIR/SCHEDULER-THERMAL-CONTEXT.txt"
+
+      - name: Inspect CASS include visibility
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          {
+            echo "# cass.c include visibility"
+            echo
+            echo "## Includes at top of cass.c"
+            grep -nE \
+              '^[[:space:]]*#include' \
+              kernel/sched/cass.c \
+              || true
+
+            echo
+            echo "## Local scheduler header presence"
+            grep -nE \
+              'sched\.h|topology\.h|arch_topology' \
+              kernel/sched/cass.c \
+              || true
+
+            echo
+            echo "## sched.h includes"
+            grep -nE \
+              '^[[:space:]]*#include' \
+              kernel/sched/sched.h \
+              || true
+          } > "$ARTIFACT_DIR/CASS-INCLUDE-VISIBILITY.txt"
+
+          cat "$ARTIFACT_DIR/CASS-INCLUDE-VISIBILITY.txt"
+
+      - name: Inspect 5.4.274 common merge thermal changes
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          MERGE_SHA="$(
+            awk -F= \
+              '$1=="MERGED_SHA" {print $2}' \
+              "$ARTIFACT_DIR/IDENTITY.txt"
+          )"
+
+          BASE_SHA="$(
+            awk -F= \
+              '$1=="BASE_SHA" {print $2}' \
+              "$ARTIFACT_DIR/IDENTITY.txt"
+          )"
+
+          {
+            echo "# Android common merge - scheduler thermal related history"
+            echo
+            echo "Range:"
+            echo "$BASE_SHA..$MERGE_SHA"
+            echo
+
+            git log \
+              --oneline \
+              --decorate=no \
+              --regexp-ignore-case \
+              --grep='thermal' \
+              "$BASE_SHA..$MERGE_SHA" \
+              -- \
+              kernel/sched \
+              include/linux \
+              arch/arm64 \
+              || true
+
+            echo
+            echo "# Capacity-related scheduler commits"
+
+            git log \
+              --oneline \
+              --decorate=no \
+              --regexp-ignore-case \
+              --grep='capacity' \
+              "$BASE_SHA..$MERGE_SHA" \
+              -- \
+              kernel/sched \
+              include/linux \
+              arch/arm64 \
+              || true
+          } > "$ARTIFACT_DIR/COMMON-MERGE-THERMAL-HISTORY.txt"
+
+          cat "$ARTIFACT_DIR/COMMON-MERGE-THERMAL-HISTORY.txt"
+
+      - name: Generate exact API conclusion
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          import os
+          import re
+          from pathlib import Path
+
+          root = Path(".")
+          out = Path(os.environ["ARTIFACT_DIR"])
+
+          files = []
+
+          for base in ("arch", "include", "kernel", "drivers"):
+              for path in Path(base).rglob("*"):
+                  if path.is_file() and path.suffix in {".c", ".h"}:
+                      files.append(path)
+
+          symbols = [
+              "thermal_load_avg",
+              "arch_scale_thermal_pressure",
+              "topology_get_thermal_pressure",
+              "thermal_pressure",
+              "arch_scale_cpu_capacity",
+              "topology_get_cpu_scale",
+              "capacity_orig_of",
+          ]
+
+          counts = {s: 0 for s in symbols}
+          locations = {s: [] for s in symbols}
+
+          for path in files:
+              try:
+                  text = path.read_text(errors="ignore")
+              except Exception:
+                  continue
+
+              for symbol in symbols:
+                  if re.search(rf"\b{re.escape(symbol)}\b", text):
+                      count = len(
+                          re.findall(
+                              rf"\b{re.escape(symbol)}\b",
+                              text,
+                          )
+                      )
+                      counts[symbol] += count
+                      locations[symbol].append(str(path))
+
+          cass = Path("kernel/sched/cass.c").read_text(
+              errors="ignore"
+          )
+
+          report = []
+
+          report.append(
+              "VEUX Candidate 2 - CASS Thermal API Conclusion"
+          )
+          report.append(
+              "=============================================="
+          )
+          report.append("")
+
+          for symbol in symbols:
+              report.append(
+                  f"{symbol}: occurrences={counts[symbol]}"
+              )
+
+              for loc in locations[symbol][:20]:
+                  report.append(f"  - {loc}")
+
+              if len(locations[symbol]) > 20:
+                  report.append(
+                      f"  - ... {len(locations[symbol]) - 20} more files"
+                  )
+
+          report.append("")
+
+          if "thermal_load_avg" in cass:
+              report.append(
+                  "CURRENT_CASS_THERMAL_LOAD_AVG=YES"
+              )
+          else:
+              report.append(
+                  "CURRENT_CASS_THERMAL_LOAD_AVG=NO"
+              )
+
+          if (
+              "cap_max = arch_scale_cpu_capacity(cpu)"
+              in cass
+          ):
+              report.append(
+                  "CURRENT_CASS_USES_RAW_ARCH_CAPACITY=YES"
+              )
+          else:
+              report.append(
+                  "CURRENT_CASS_USES_RAW_ARCH_CAPACITY=NO"
+              )
+
+          report.append("")
+
+          if counts["thermal_load_avg"] > 0:
+              report.append(
+                  "PRIMARY_API_CANDIDATE=thermal_load_avg"
+              )
+          elif counts["arch_scale_thermal_pressure"] > 0:
+              report.append(
+                  "PRIMARY_API_CANDIDATE=arch_scale_thermal_pressure"
+              )
+          elif counts["topology_get_thermal_pressure"] > 0:
+              report.append(
+                  "PRIMARY_API_CANDIDATE=topology_get_thermal_pressure"
+              )
+          elif counts["thermal_pressure"] > 0:
+              report.append(
+                  "PRIMARY_API_CANDIDATE=thermal_pressure-family-needs-review"
+              )
+          else:
+              report.append(
+                  "PRIMARY_API_CANDIDATE=NONE_FOUND"
+              )
+
+          report.append("")
+          report.append(
+              "NO_SOURCE_CHANGE_PERFORMED=YES"
+          )
+          report.append(
+              "NO_KERNEL_BUILD_PERFORMED=YES"
+          )
+          report.append(
+              "NO_FLASH_PERFORMED=YES"
+          )
+
+          (out / "API-CONCLUSION.txt").write_text(
+              "\n".join(report) + "\n"
+          )
+          PY
+
+          cat "$ARTIFACT_DIR/API-CONCLUSION.txt"
+
+      - name: Verify audit did not modify Candidate 2
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          FINAL_TREE="$(git rev-parse HEAD^{tree})"
+
+          if [ "$FINAL_TREE" != "$EXPECTED_CANDIDATE_TREE" ]; then
+            echo "ERROR: source tree changed during audit"
+            echo "Expected: $EXPECTED_CANDIDATE_TREE"
+            echo "Actual:   $FINAL_TREE"
+            exit 1
+          fi
+
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "ERROR: working tree is dirty after audit"
+            git status --short
+            exit 1
+          fi
+
+          {
+            echo "AUDIT_RESULT=PASS"
+            echo "FINAL_TREE=$FINAL_TREE"
+            echo "SOURCE_MODIFIED=NO"
+            echo "KERNEL_BUILT=NO"
+            echo "DEVICE_FLASHED=NO"
+          } | tee "$ARTIFACT_DIR/RESULT.txt"
+
+      - name: Upload CASS thermal API audit
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: VEUX-CASS-Thermal-API-Audit
+          path: cass-thermal-audit/
+          if-no-files-found: error
+          retention-days: 30
