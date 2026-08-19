@@ -1,0 +1,773 @@
+name: 28P - VEUX Positron Rotation RT Priority Audit
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    env:
+      ARCH: arm64
+      COMMON_REF: "android11-5.4.274_r00"
+      STABILITY_REVERT: "f74e5c1b7c3f3e42f694e5ab524f95f62a0dab80"
+      EXPECTED_CANDIDATE_TREE: "5d25b7e0124d7fb695f3f07b45928fcb5780d0e8"
+      STOCK_REF: "veux-r-oss"
+      ARTIFACT_DIR: ${{ github.workspace }}/rotation-rt-audit
+
+    steps:
+      - name: Prepare audit directory
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p "$ARTIFACT_DIR"
+
+          cat > "$ARTIFACT_DIR/PLAN.txt" <<'EOF'
+          VEUX Positron Rotation Thread / RT Priority Audit
+          =================================================
+
+          Background:
+          - CASS/Thermal has completed compile validation through 27C.
+          - The next critical Positron residual is the rotation-thread
+            real-time priority behaviour.
+
+          Purpose:
+          - reconstruct exact Candidate 2
+          - locate every rotation-related implementation
+          - locate RT scheduling and priority assignments around it
+          - detect maximum or near-maximum RT-priority patterns
+          - trace the responsible history
+          - compare affected files with official Xiaomi VEUX source
+          - produce evidence before changing anything
+
+          This workflow is AUDIT ONLY.
+
+          It does NOT:
+          - modify kernel source
+          - revert a commit
+          - apply the CASS patch
+          - build a kernel
+          - create boot.img
+          - create a flashable ZIP
+          - access a phone
+          - flash anything
+          EOF
+
+      - name: Checkout exact VEUX source
+        uses: actions/checkout@v7
+        with:
+          repository: dereference23/kernel_xiaomi_sm6375
+          ref: "20240619"
+          fetch-depth: 0
+          path: kernel
+          persist-credentials: false
+
+      - name: Recreate exact Candidate 2
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email \
+            "41898282+github-actions[bot]@users.noreply.github.com"
+
+          BASE_SHA="$(git rev-parse HEAD)"
+          BASE_TREE="$(git rev-parse HEAD^{tree})"
+
+          git remote remove android-common 2>/dev/null || true
+
+          git remote add \
+            android-common \
+            https://android.googlesource.com/kernel/common
+
+          git fetch \
+            --no-tags \
+            android-common \
+            "$COMMON_REF"
+
+          git merge \
+            --no-edit \
+            FETCH_HEAD
+
+          MERGED_SHA="$(git rev-parse HEAD)"
+          MERGED_TREE="$(git rev-parse HEAD^{tree})"
+
+          git cat-file -e \
+            "${STABILITY_REVERT}^{commit}"
+
+          git revert \
+            --no-edit \
+            "$STABILITY_REVERT"
+
+          CANDIDATE_SHA="$(git rev-parse HEAD)"
+          CANDIDATE_TREE="$(git rev-parse HEAD^{tree})"
+          KERNEL_VERSION="$(make -s kernelversion)"
+
+          if [ "$KERNEL_VERSION" != "5.4.274" ]; then
+            echo "ERROR: expected Linux 5.4.274"
+            echo "Actual: $KERNEL_VERSION"
+            exit 1
+          fi
+
+          if [ "$CANDIDATE_TREE" != "$EXPECTED_CANDIDATE_TREE" ]; then
+            echo "ERROR: Candidate 2 tree mismatch"
+            echo "Expected: $EXPECTED_CANDIDATE_TREE"
+            echo "Actual:   $CANDIDATE_TREE"
+            exit 1
+          fi
+
+          {
+            echo "BASE_SHA=$BASE_SHA"
+            echo "BASE_TREE=$BASE_TREE"
+            echo "MERGED_SHA=$MERGED_SHA"
+            echo "MERGED_TREE=$MERGED_TREE"
+            echo "CANDIDATE_SHA=$CANDIDATE_SHA"
+            echo "CANDIDATE_TREE=$CANDIDATE_TREE"
+            echo "KERNEL_VERSION=$KERNEL_VERSION"
+            echo "COMMON_REF=$COMMON_REF"
+            echo "STABILITY_REVERT=$STABILITY_REVERT"
+          } | tee "$ARTIFACT_DIR/IDENTITY.txt"
+
+      - name: Fetch official Xiaomi VEUX reference
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git remote remove xiaomi 2>/dev/null || true
+
+          git remote add \
+            xiaomi \
+            https://github.com/MiCode/Xiaomi_Kernel_OpenSource.git
+
+          git fetch \
+            --no-tags \
+            xiaomi \
+            "+refs/heads/${STOCK_REF}:refs/remotes/xiaomi/${STOCK_REF}"
+
+          STOCK_SHA="$(git rev-parse "xiaomi/${STOCK_REF}")"
+
+          BASE_SHA="$(
+            awk -F= \
+              '$1=="BASE_SHA" {print $2}' \
+              "$ARTIFACT_DIR/IDENTITY.txt"
+          )"
+
+          MERGE_BASE="$(
+            git merge-base \
+              "$BASE_SHA" \
+              "xiaomi/${STOCK_REF}" \
+              || true
+          )"
+
+          {
+            echo "STOCK_REF=$STOCK_REF"
+            echo "STOCK_SHA=$STOCK_SHA"
+            echo "MERGE_BASE=${MERGE_BASE:-NONE}"
+          } | tee "$ARTIFACT_DIR/XIAOMI-REFERENCE.txt"
+
+          if [ -z "$MERGE_BASE" ]; then
+            echo "ERROR: no merge-base with official Xiaomi VEUX source"
+            exit 1
+          fi
+
+      - name: Search current Candidate 2 for rotation and RT priority code
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          {
+            echo "============================================================"
+            echo "ROTATION REFERENCES"
+            echo "============================================================"
+            echo
+
+            git grep \
+              -niE \
+              'rotation|rotate' \
+              -- \
+              arch \
+              block \
+              drivers \
+              fs \
+              include \
+              kernel \
+              mm \
+              security \
+              2>/dev/null \
+              || true
+
+            echo
+            echo "============================================================"
+            echo "RT PRIORITY / POLICY REFERENCES"
+            echo "============================================================"
+            echo
+
+            git grep \
+              -niE \
+              'MAX_RT_PRIO|MAX_USER_RT_PRIO|sched_priority|SCHED_FIFO|SCHED_RR|sched_setscheduler|sched_setattr|sched_set_fifo|rt_priority' \
+              -- \
+              arch \
+              block \
+              drivers \
+              fs \
+              include \
+              kernel \
+              mm \
+              security \
+              2>/dev/null \
+              || true
+          } > "$ARTIFACT_DIR/CURRENT-ROTATION-RT-GREP.txt"
+
+          cat "$ARTIFACT_DIR/CURRENT-ROTATION-RT-GREP.txt"
+
+      - name: Perform contextual rotation RT analysis
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          import os
+          import re
+          import subprocess
+          from pathlib import Path
+
+          out = Path(os.environ["ARTIFACT_DIR"])
+
+          rotation_re = re.compile(
+              r"\b(rotation|rotate|rotating)\b",
+              re.I,
+          )
+
+          rt_re = re.compile(
+              r"MAX_RT_PRIO|"
+              r"MAX_USER_RT_PRIO|"
+              r"sched_priority|"
+              r"SCHED_FIFO|"
+              r"SCHED_RR|"
+              r"sched_setscheduler|"
+              r"sched_setattr|"
+              r"sched_set_fifo|"
+              r"rt_priority",
+              re.I,
+          )
+
+          max_rt_re = re.compile(
+              r"MAX_RT_PRIO\s*-\s*1|"
+              r"MAX_USER_RT_PRIO\s*-\s*1|"
+              r"sched_priority\s*=\s*99\b|"
+              r"sched_priority\s*=\s*MAX_RT_PRIO|"
+              r"sched_priority\s*=\s*MAX_USER_RT_PRIO",
+              re.I,
+          )
+
+          roots = (
+              "arch/",
+              "block/",
+              "drivers/",
+              "fs/",
+              "include/",
+              "kernel/",
+              "mm/",
+              "security/",
+          )
+
+          tracked = subprocess.check_output(
+              ["git", "ls-files"],
+              text=True,
+          ).splitlines()
+
+          rows = []
+          rotation_files = set()
+          high_contexts = []
+
+          for name in tracked:
+              if not name.startswith(roots):
+                  continue
+
+              path = Path(name)
+
+              try:
+                  data = path.read_bytes()
+              except OSError:
+                  continue
+
+              if b"\0" in data:
+                  continue
+
+              try:
+                  text = data.decode("utf-8")
+              except UnicodeDecodeError:
+                  text = data.decode("utf-8", "replace")
+
+              lines = text.splitlines()
+
+              rotation_lines = [
+                  idx
+                  for idx, line in enumerate(lines)
+                  if rotation_re.search(line)
+              ]
+
+              if not rotation_lines:
+                  continue
+
+              rotation_files.add(name)
+
+              rt_lines = {
+                  idx
+                  for idx, line in enumerate(lines)
+                  if rt_re.search(line)
+              }
+
+              max_lines = {
+                  idx
+                  for idx, line in enumerate(lines)
+                  if max_rt_re.search(line)
+              }
+
+              for idx in rotation_lines:
+                  nearby_rt = sorted(
+                      x
+                      for x in rt_lines
+                      if abs(x - idx) <= 60
+                  )
+
+                  nearby_max = sorted(
+                      x
+                      for x in max_lines
+                      if abs(x - idx) <= 60
+                  )
+
+                  rows.append(
+                      (
+                          name,
+                          idx + 1,
+                          lines[idx].strip(),
+                          len(nearby_rt),
+                          len(nearby_max),
+                      )
+                  )
+
+                  if nearby_rt:
+                      start = max(
+                          0,
+                          min([idx, *nearby_rt]) - 20,
+                      )
+                      end = min(
+                          len(lines),
+                          max([idx, *nearby_rt]) + 21,
+                      )
+
+                      block = [
+                          "=" * 78,
+                          f"FILE: {name}",
+                          f"ROTATION_LINE: {idx + 1}",
+                          f"NEARBY_RT_REFERENCES: {len(nearby_rt)}",
+                          f"NEARBY_MAX_RT_REFERENCES: {len(nearby_max)}",
+                          "=" * 78,
+                      ]
+
+                      for pos in range(start, end):
+                          marks = []
+
+                          if pos == idx:
+                              marks.append("ROTATION")
+
+                          if pos in rt_lines:
+                              marks.append("RT")
+
+                          if pos in max_lines:
+                              marks.append("MAX_RT")
+
+                          mark = ",".join(marks) or "-"
+
+                          block.append(
+                              f"{pos + 1:6d} [{mark:15}] "
+                              f"{lines[pos]}"
+                          )
+
+                      high_contexts.append(
+                          "\n".join(block)
+                      )
+
+          with (out / "ROTATION-HITS.tsv").open("w") as f:
+              f.write(
+                  "file\tline\ttext\tnearby_rt\tnearby_max_rt\n"
+              )
+
+              for row in rows:
+                  safe_text = row[2].replace("\t", " ")
+                  f.write(
+                      f"{row[0]}\t"
+                      f"{row[1]}\t"
+                      f"{safe_text}\t"
+                      f"{row[3]}\t"
+                      f"{row[4]}\n"
+                  )
+
+          (out / "ROTATION-FILES.txt").write_text(
+              "".join(
+                  f"{name}\n"
+                  for name in sorted(rotation_files)
+              )
+          )
+
+          (out / "ROTATION-RT-CONTEXT.txt").write_text(
+              "\n\n".join(high_contexts)
+              + ("\n" if high_contexts else "")
+          )
+
+          high_risk_rows = [
+              row
+              for row in rows
+              if row[4] > 0
+          ]
+
+          with (out / "ROTATION-MAX-RT-HITS.tsv").open("w") as f:
+              f.write(
+                  "file\tline\ttext\tnearby_rt\tnearby_max_rt\n"
+              )
+
+              for row in high_risk_rows:
+                  safe_text = row[2].replace("\t", " ")
+                  f.write(
+                      f"{row[0]}\t"
+                      f"{row[1]}\t"
+                      f"{safe_text}\t"
+                      f"{row[3]}\t"
+                      f"{row[4]}\n"
+                  )
+
+          with (out / "CURRENT-MACHINE-SUMMARY.txt").open("w") as f:
+              f.write(
+                  f"ROTATION_FILES={len(rotation_files)}\n"
+              )
+              f.write(
+                  f"ROTATION_REFERENCES={len(rows)}\n"
+              )
+              f.write(
+                  "ROTATION_WITH_NEARBY_RT="
+                  f"{sum(1 for row in rows if row[3] > 0)}\n"
+              )
+              f.write(
+                  "ROTATION_WITH_NEARBY_MAX_RT="
+                  f"{len(high_risk_rows)}\n"
+              )
+          PY
+
+          echo
+          echo "===== CURRENT MACHINE SUMMARY ====="
+          cat "$ARTIFACT_DIR/CURRENT-MACHINE-SUMMARY.txt"
+
+          echo
+          echo "===== ROTATION FILES ====="
+          cat "$ARTIFACT_DIR/ROTATION-FILES.txt" || true
+
+          echo
+          echo "===== MAX-RT ROTATION HITS ====="
+          cat "$ARTIFACT_DIR/ROTATION-MAX-RT-HITS.tsv" || true
+
+      - name: Trace Positron rotation and RT priority history
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          {
+            echo "============================================================"
+            echo "COMMITS TOUCHING ROTATION TERMS"
+            echo "============================================================"
+            echo
+
+            git log \
+              --all \
+              --date=iso-strict \
+              --pretty=format:'%H%x09%ad%x09%an%x09%s' \
+              -G'rotation|rotate' \
+              -- \
+              arch \
+              block \
+              drivers \
+              fs \
+              include \
+              kernel \
+              mm \
+              security \
+              || true
+
+            echo
+            echo
+            echo "============================================================"
+            echo "COMMITS TOUCHING MAXIMUM RT PRIORITY TERMS"
+            echo "============================================================"
+            echo
+
+            git log \
+              --all \
+              --date=iso-strict \
+              --pretty=format:'%H%x09%ad%x09%an%x09%s' \
+              -G'MAX_RT_PRIO|MAX_USER_RT_PRIO|sched_priority|SCHED_FIFO|SCHED_RR' \
+              -- \
+              arch \
+              block \
+              drivers \
+              fs \
+              include \
+              kernel \
+              mm \
+              security \
+              || true
+
+          } > "$ARTIFACT_DIR/ROTATION-RT-HISTORY.txt"
+
+          cat "$ARTIFACT_DIR/ROTATION-RT-HISTORY.txt"
+
+      - name: Capture history for each rotation file
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          : > "$ARTIFACT_DIR/ROTATION-FILE-HISTORY.txt"
+
+          while IFS= read -r FILE; do
+            [ -n "$FILE" ] || continue
+
+            {
+              echo
+              echo "============================================================"
+              echo "FILE: $FILE"
+              echo "============================================================"
+
+              git log \
+                --all \
+                --date=iso-strict \
+                --pretty=format:'%H%x09%ad%x09%an%x09%s' \
+                -- "$FILE" \
+                || true
+
+              echo
+            } >> "$ARTIFACT_DIR/ROTATION-FILE-HISTORY.txt"
+
+          done < "$ARTIFACT_DIR/ROTATION-FILES.txt"
+
+          cat "$ARTIFACT_DIR/ROTATION-FILE-HISTORY.txt"
+
+      - name: Compare rotation files with official Xiaomi VEUX
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mapfile -t FILES \
+            < "$ARTIFACT_DIR/ROTATION-FILES.txt"
+
+          if [ "${#FILES[@]}" -eq 0 ]; then
+            : > "$ARTIFACT_DIR/CANDIDATE2-VS-XIAOMI-ROTATION.diff"
+            echo "NO_ROTATION_FILES=YES" \
+              > "$ARTIFACT_DIR/XIAOMI-DIFF-SUMMARY.txt"
+            exit 0
+          fi
+
+          git diff \
+            --no-ext-diff \
+            --no-color \
+            "xiaomi/${STOCK_REF}" \
+            HEAD \
+            -- "${FILES[@]}" \
+            > "$ARTIFACT_DIR/CANDIDATE2-VS-XIAOMI-ROTATION.diff" \
+            || true
+
+          git diff \
+            --stat \
+            "xiaomi/${STOCK_REF}" \
+            HEAD \
+            -- "${FILES[@]}" \
+            > "$ARTIFACT_DIR/CANDIDATE2-VS-XIAOMI-ROTATION.stat" \
+            || true
+
+          DIFF_BYTES="$(
+            stat -c '%s' \
+              "$ARTIFACT_DIR/CANDIDATE2-VS-XIAOMI-ROTATION.diff"
+          )"
+
+          {
+            echo "ROTATION_FILE_COUNT=${#FILES[@]}"
+            echo "XIAOMI_ROTATION_DIFF_BYTES=$DIFF_BYTES"
+
+            if [ "$DIFF_BYTES" -gt 0 ]; then
+              echo "DIFFERS_FROM_XIAOMI=YES"
+            else
+              echo "DIFFERS_FROM_XIAOMI=NO"
+            fi
+          } | tee "$ARTIFACT_DIR/XIAOMI-DIFF-SUMMARY.txt"
+
+          cat "$ARTIFACT_DIR/CANDIDATE2-VS-XIAOMI-ROTATION.stat"
+
+      - name: Search exact maximum RT priority patterns globally
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          {
+            echo "===== MAX_RT_PRIO - 1 ====="
+
+            git grep \
+              -nE \
+              'MAX_RT_PRIO[[:space:]]*-[[:space:]]*1' \
+              -- \
+              arch \
+              block \
+              drivers \
+              fs \
+              include \
+              kernel \
+              mm \
+              security \
+              || true
+
+            echo
+            echo "===== MAX_USER_RT_PRIO - 1 ====="
+
+            git grep \
+              -nE \
+              'MAX_USER_RT_PRIO[[:space:]]*-[[:space:]]*1' \
+              -- \
+              arch \
+              block \
+              drivers \
+              fs \
+              include \
+              kernel \
+              mm \
+              security \
+              || true
+
+            echo
+            echo "===== explicit priority 99 ====="
+
+            git grep \
+              -nE \
+              'sched_priority[[:space:]]*=[[:space:]]*99([^0-9]|$)' \
+              -- \
+              arch \
+              block \
+              drivers \
+              fs \
+              include \
+              kernel \
+              mm \
+              security \
+              || true
+
+          } > "$ARTIFACT_DIR/GLOBAL-MAX-RT-PATTERNS.txt"
+
+          cat "$ARTIFACT_DIR/GLOBAL-MAX-RT-PATTERNS.txt"
+
+      - name: Build rotation RT audit conclusion
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          out = Path(os.environ["ARTIFACT_DIR"])
+
+          summary = {}
+
+          for line in (
+              out / "CURRENT-MACHINE-SUMMARY.txt"
+          ).read_text().splitlines():
+              if "=" in line:
+                  key, value = line.split("=", 1)
+                  summary[key] = value
+
+          diff_summary = {}
+
+          path = out / "XIAOMI-DIFF-SUMMARY.txt"
+
+          if path.exists():
+              for line in path.read_text().splitlines():
+                  if "=" in line:
+                      key, value = line.split("=", 1)
+                      diff_summary[key] = value
+
+          max_hits = int(
+              summary.get(
+                  "ROTATION_WITH_NEARBY_MAX_RT",
+                  "0",
+              )
+          )
+
+          nearby_rt = int(
+              summary.get(
+                  "ROTATION_WITH_NEARBY_RT",
+                  "0",
+              )
+          )
+
+          if max_hits > 0:
+              review = "CRITICAL_REVIEW"
+          elif nearby_rt > 0:
+              review = "RT_REVIEW"
+          else:
+              review = "NO_ROTATION_RT_COLOCATION_FOUND"
+
+          with (out / "RESULT.txt").open("w") as f:
+              f.write("RESULT=PASS_AUDIT\n")
+              f.write(
+                  "BASE_CANDIDATE_TREE="
+                  "5d25b7e0124d7fb695f3f07b45928fcb5780d0e8\n"
+              )
+              f.write(
+                  "ROTATION_FILES="
+                  f"{summary.get('ROTATION_FILES', '0')}\n"
+              )
+              f.write(
+                  "ROTATION_REFERENCES="
+                  f"{summary.get('ROTATION_REFERENCES', '0')}\n"
+              )
+              f.write(
+                  "ROTATION_WITH_NEARBY_RT="
+                  f"{nearby_rt}\n"
+              )
+              f.write(
+                  "ROTATION_WITH_NEARBY_MAX_RT="
+                  f"{max_hits}\n"
+              )
+              f.write(
+                  "DIFFERS_FROM_XIAOMI="
+                  f"{diff_summary.get('DIFFERS_FROM_XIAOMI', 'UNKNOWN')}\n"
+              )
+              f.write(
+                  f"REVIEW_CLASS={review}\n"
+              )
+              f.write("SOURCE_MODIFIED=NO\n")
+              f.write("KERNEL_BUILT=NO\n")
+              f.write("IMAGE_CREATED=NO\n")
+              f.write("BOOT_IMAGE_CREATED=NO\n")
+              f.write("DEVICE_FLASHED=NO\n")
+          PY
+
+          cat "$ARTIFACT_DIR/RESULT.txt"
+
+      - name: Upload rotation RT priority audit
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: VEUX-Positron-Rotation-RT-Priority-Audit
+          path: rotation-rt-audit/
+          if-no-files-found: error
+          retention-days: 30
