@@ -1,0 +1,1493 @@
+name: 38C2 - VEUX Restore Default HZ250 Full Build Probe
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+
+    env:
+      ARCH: arm64
+
+      COMMON_REF: "android11-5.4.274_r00"
+      STOCK_REF: "veux-r-oss"
+
+      STABILITY_REVERT: "f74e5c1b7c3f3e42f694e5ab524f95f62a0dab80"
+      LB_CAPACITY_COMMIT: "2c1495be9eabac845acc8da45f070622d6455091"
+      HZ100_COMMIT: "a904f66b6a6f9c061e51439b081b82e4bf48af68"
+
+      EXPECTED_CANDIDATE_TREE: "5d25b7e0124d7fb695f3f07b45928fcb5780d0e8"
+
+      EXPECTED_CASS_DIFF_SHA256: "67abb81be8c2d7727c3e4c8a92419c9e9a3d97ee3d3e5355d3acabce34adf659"
+
+      EXPECTED_XIAOMI_PELT_SHA256: "bad23ba491cc5d4669936507b392888765aa65fd8063b2a95a492d6b0dca0cb0"
+
+      EXPECTED_HZ_KCONFIG_SHA256: "685e9a79f3dbf17e9bd5b402dfd25ad014886fbe1b6975a0913b3621519cd7fe"
+
+      CLANG_PREBUILT_COMMIT: "aa2e4a514a6c85eebcc4a27149eaf9244e951a1e"
+
+      TOOLCHAIN_DIR: ${{ github.workspace }}/toolchains/clang-r416183b
+      OUT_DIR: out
+      ARTIFACT_DIR: ${{ github.workspace }}/hz250-restore-probe-c2
+
+    steps:
+      - name: Prepare probe directory
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p \
+            "$ARTIFACT_DIR" \
+            "$TOOLCHAIN_DIR"
+
+          cat > "$ARTIFACT_DIR/PLAN.txt" <<'EOF'
+          VEUX Restore Default HZ250 Full Build Probe - Correction 2
+          ===========================================================
+
+          38C forensic result:
+          - Candidate reconstruction passed.
+          - Candidate tree identity passed.
+          - Candidate explicitly contains CONFIG_HZ_100=y.
+          - Candidate contains no other explicit HZ selection.
+          - Candidate, Xiaomi and Android Common kernel/Kconfig.hz
+            are byteidentical.
+          - common Kconfig default is HZ_250.
+          - 38C failed before source modification/build because the
+            historical HZ100 commit patch no longer applies cleanly
+            in reverse to the later Candidate 2 defconfig context.
+
+          38C2 correction:
+          - preserve 38C unchanged as forensic evidence
+          - verify the historical HZ100 commit
+          - verify Candidate contains exactly one CONFIG_HZ_100=y
+          - remove exactly that one line context-independently
+          - verify no explicit HZ selection remains
+          - verify that this step changed no other defconfig line
+          - resolve veux_defconfig
+          - require Kconfig default:
+              CONFIG_HZ_250=y
+              CONFIG_HZ=250
+
+          Cumulative proven changes retained:
+          - CASS MaxFreq/Thermal adaptation
+          - SPRD task rotation disabled
+          - standard LB CPU-capacity rate limit restored
+          - CONFIG_CPUSETS restored
+          - exact Xiaomi VEUX PELT8 restored
+
+          No ReSukiSU/SUSFS changes.
+          No boot.img.
+          No flashable ZIP.
+          No device access.
+          No flashing.
+          EOF
+
+      - name: Install build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          sudo apt-get update
+
+          sudo apt-get install -y --no-install-recommends \
+            bc \
+            bison \
+            build-essential \
+            ca-certificates \
+            cpio \
+            curl \
+            flex \
+            git \
+            libelf-dev \
+            libncurses-dev \
+            libssl-dev \
+            python3 \
+            python-is-python3 \
+            rsync \
+            xz-utils \
+            zstd
+
+      - name: Install exact Android clang-r416183b
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          curl \
+            --fail \
+            --location \
+            --retry 3 \
+            "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/${CLANG_PREBUILT_COMMIT}/clang-r416183b.tar.gz" \
+            -o "${RUNNER_TEMP}/clang-r416183b.tar.gz"
+
+          tar \
+            -xzf "${RUNNER_TEMP}/clang-r416183b.tar.gz" \
+            -C "$TOOLCHAIN_DIR"
+
+          echo "$TOOLCHAIN_DIR/bin" >> "$GITHUB_PATH"
+
+          "$TOOLCHAIN_DIR/bin/clang" --version \
+            | tee "$ARTIFACT_DIR/clang-version.txt"
+
+          "$TOOLCHAIN_DIR/bin/ld.lld" --version \
+            | tee -a "$ARTIFACT_DIR/clang-version.txt"
+
+          if ! "$TOOLCHAIN_DIR/bin/clang" --version \
+            | grep -q 'r416183b'
+          then
+            echo "ERROR: expected clang-r416183b"
+            exit 1
+          fi
+
+          for tool in \
+            clang \
+            ld.lld \
+            llvm-ar \
+            llvm-nm \
+            llvm-objcopy \
+            llvm-objdump \
+            llvm-readelf \
+            llvm-size \
+            llvm-strip
+          do
+            if [ ! -x "$TOOLCHAIN_DIR/bin/$tool" ]; then
+              echo "ERROR: missing toolchain binary: $tool"
+              exit 1
+            fi
+          done
+
+      - name: Checkout exact VEUX source
+        uses: actions/checkout@v7
+        with:
+          repository: dereference23/kernel_xiaomi_sm6375
+          ref: "20240619"
+          fetch-depth: 0
+          path: kernel
+          persist-credentials: false
+
+      - name: Recreate exact Candidate 2
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email \
+            "41898282+github-actions[bot]@users.noreply.github.com"
+
+          BASE_SHA="$(git rev-parse HEAD)"
+          BASE_TREE="$(git rev-parse HEAD^{tree})"
+
+          git remote remove android-common 2>/dev/null || true
+
+          git remote add \
+            android-common \
+            https://android.googlesource.com/kernel/common
+
+          git fetch \
+            --no-tags \
+            android-common \
+            "$COMMON_REF"
+
+          COMMON_SHA="$(git rev-parse FETCH_HEAD)"
+
+          git update-ref \
+            refs/remotes/android-common/audit-base \
+            "$COMMON_SHA"
+
+          git merge \
+            --no-edit \
+            "$COMMON_SHA"
+
+          MERGED_SHA="$(git rev-parse HEAD)"
+          MERGED_TREE="$(git rev-parse HEAD^{tree})"
+
+          git cat-file -e \
+            "${STABILITY_REVERT}^{commit}"
+
+          git revert \
+            --no-edit \
+            "$STABILITY_REVERT"
+
+          CANDIDATE_SHA="$(git rev-parse HEAD)"
+          CANDIDATE_TREE="$(git rev-parse HEAD^{tree})"
+
+          KERNEL_VERSION="$(
+            make -s kernelversion
+          )"
+
+          if [ "$KERNEL_VERSION" != "5.4.274" ]; then
+            echo "ERROR: expected Linux 5.4.274"
+            echo "Actual: $KERNEL_VERSION"
+            exit 1
+          fi
+
+          if [ "$CANDIDATE_TREE" != "$EXPECTED_CANDIDATE_TREE" ]; then
+            echo "ERROR: Candidate 2 tree mismatch"
+            echo "Expected: $EXPECTED_CANDIDATE_TREE"
+            echo "Actual:   $CANDIDATE_TREE"
+            exit 1
+          fi
+
+          {
+            echo "BASE_SHA=$BASE_SHA"
+            echo "BASE_TREE=$BASE_TREE"
+            echo "COMMON_SHA=$COMMON_SHA"
+            echo "MERGED_SHA=$MERGED_SHA"
+            echo "MERGED_TREE=$MERGED_TREE"
+            echo "CANDIDATE_SHA=$CANDIDATE_SHA"
+            echo "CANDIDATE_TREE=$CANDIDATE_TREE"
+            echo "KERNEL_VERSION=$KERNEL_VERSION"
+            echo "COMMON_REF=$COMMON_REF"
+            echo "STABILITY_REVERT=$STABILITY_REVERT"
+            echo "LB_CAPACITY_COMMIT=$LB_CAPACITY_COMMIT"
+            echo "HZ100_COMMIT=$HZ100_COMMIT"
+          } | tee "$ARTIFACT_DIR/IDENTITY.txt"
+
+      - name: Fetch official Xiaomi VEUX reference
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git remote remove xiaomi 2>/dev/null || true
+
+          git remote add \
+            xiaomi \
+            https://github.com/MiCode/Xiaomi_Kernel_OpenSource.git
+
+          git fetch \
+            --no-tags \
+            xiaomi \
+            "+refs/heads/${STOCK_REF}:refs/remotes/xiaomi/${STOCK_REF}"
+
+          STOCK_SHA="$(
+            git rev-parse "xiaomi/${STOCK_REF}"
+          )"
+
+          {
+            echo "STOCK_REF=$STOCK_REF"
+            echo "STOCK_SHA=$STOCK_SHA"
+          } | tee "$ARTIFACT_DIR/XIAOMI-REFERENCE.txt"
+
+      - name: Verify common HZ Kconfig baseline
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cp \
+            kernel/Kconfig.hz \
+            "$ARTIFACT_DIR/candidate-Kconfig.hz"
+
+          git show \
+            "xiaomi/${STOCK_REF}:kernel/Kconfig.hz" \
+            > "$ARTIFACT_DIR/xiaomi-Kconfig.hz"
+
+          git show \
+            "android-common/audit-base:kernel/Kconfig.hz" \
+            > "$ARTIFACT_DIR/common-Kconfig.hz"
+
+          for FILE in \
+            "$ARTIFACT_DIR/candidate-Kconfig.hz" \
+            "$ARTIFACT_DIR/xiaomi-Kconfig.hz" \
+            "$ARTIFACT_DIR/common-Kconfig.hz"
+          do
+            SHA="$(
+              sha256sum "$FILE" \
+                | awk '{print $1}'
+            )"
+
+            if [ "$SHA" != "$EXPECTED_HZ_KCONFIG_SHA256" ]; then
+              echo "ERROR: unexpected kernel/Kconfig.hz"
+              echo "FILE=$FILE"
+              echo "EXPECTED=$EXPECTED_HZ_KCONFIG_SHA256"
+              echo "ACTUAL=$SHA"
+              exit 1
+            fi
+          done
+
+          if ! grep -qF \
+            'default HZ_250' \
+            kernel/Kconfig.hz
+          then
+            echo "ERROR: kernel/Kconfig.hz does not default to HZ_250"
+            exit 1
+          fi
+
+          {
+            echo "HZ_KCONFIGS_BYTEIDENTICAL=YES"
+            echo "HZ_KCONFIG_SHA256=$EXPECTED_HZ_KCONFIG_SHA256"
+            echo "HZ_KCONFIG_DEFAULT=250"
+          } | tee "$ARTIFACT_DIR/HZ-KCONFIG-STATE.txt"
+
+      - name: Verify historical HZ100 commit and Candidate baseline
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          DEFCONFIG="arch/arm64/configs/veux_defconfig"
+
+          git cat-file -e \
+            "${HZ100_COMMIT}^{commit}"
+
+          mapfile -t COMMIT_FILES < <(
+            git diff-tree \
+              --no-commit-id \
+              --name-only \
+              -r \
+              "$HZ100_COMMIT"
+          )
+
+          if [ "${#COMMIT_FILES[@]}" -ne 1 ]; then
+            echo "ERROR: HZ100 commit does not modify exactly one file"
+            printf '%s\n' "${COMMIT_FILES[@]}"
+            exit 1
+          fi
+
+          if [ "${COMMIT_FILES[0]}" != "$DEFCONFIG" ]; then
+            echo "ERROR: HZ100 commit modified unexpected file"
+            printf '%s\n' "${COMMIT_FILES[@]}"
+            exit 1
+          fi
+
+          if ! git show \
+            --format= \
+            "$HZ100_COMMIT" \
+            | grep -qF '+CONFIG_HZ_100=y'
+          then
+            echo "ERROR: historical HZ100 commit does not add CONFIG_HZ_100=y"
+            exit 1
+          fi
+
+          HZ100_COUNT="$(
+            grep -xc \
+              'CONFIG_HZ_100=y' \
+              "$DEFCONFIG" \
+              || true
+          )"
+
+          if [ "$HZ100_COUNT" -ne 1 ]; then
+            echo "ERROR: expected exactly one CONFIG_HZ_100=y"
+            echo "Actual count: $HZ100_COUNT"
+            exit 1
+          fi
+
+          OTHER_HZ_COUNT="$(
+            grep -Ec \
+              '^CONFIG_HZ_(250|300|1000)=y$' \
+              "$DEFCONFIG" \
+              || true
+          )"
+
+          if [ "$OTHER_HZ_COUNT" -ne 0 ]; then
+            echo "ERROR: Candidate contains another explicit HZ choice"
+            grep -nE \
+              '^CONFIG_HZ_' \
+              "$DEFCONFIG" \
+              || true
+            exit 1
+          fi
+
+          {
+            echo "HZ100_COMMIT_VERIFIED=YES"
+            echo "CANDIDATE_HZ100_COUNT=$HZ100_COUNT"
+            echo "CANDIDATE_OTHER_EXPLICIT_HZ_COUNT=$OTHER_HZ_COUNT"
+
+            echo
+            grep -nE \
+              '^CONFIG_HZ_' \
+              "$DEFCONFIG" \
+              || true
+          } | tee "$ARTIFACT_DIR/HZ100-BASELINE.txt"
+
+      - name: Remove only custom CONFIG_HZ_100
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          DEFCONFIG="arch/arm64/configs/veux_defconfig"
+
+          cp \
+            "$DEFCONFIG" \
+            "$ARTIFACT_DIR/veux-defconfig-before-hz-restore"
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path(
+              "arch/arm64/configs/veux_defconfig"
+          )
+
+          text = path.read_text()
+
+          target = "CONFIG_HZ_100=y\n"
+
+          count = text.count(target)
+
+          if count != 1:
+              raise SystemExit(
+                  "ERROR: expected exactly one CONFIG_HZ_100=y line, "
+                  f"got {count}"
+              )
+
+          text = text.replace(
+              target,
+              "",
+              1,
+          )
+
+          path.write_text(text)
+          PY
+
+          cp \
+            "$DEFCONFIG" \
+            "$ARTIFACT_DIR/veux-defconfig-after-hz-restore"
+
+          if grep -qx \
+            'CONFIG_HZ_100=y' \
+            "$DEFCONFIG"
+          then
+            echo "ERROR: CONFIG_HZ_100=y remains"
+            exit 1
+          fi
+
+          if grep -qE \
+            '^CONFIG_HZ_(100|250|300|1000)=y$' \
+            "$DEFCONFIG"
+          then
+            echo "ERROR: explicit HZ selection remains"
+            grep -nE \
+              '^CONFIG_HZ_' \
+              "$DEFCONFIG"
+            exit 1
+          fi
+
+          git diff \
+            --no-ext-diff \
+            --no-color \
+            --unified=3 \
+            -- "$DEFCONFIG" \
+            > "$ARTIFACT_DIR/HZ100-RESTORE.diff"
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          diff = Path(
+              "../hz250-restore-probe-c2/HZ100-RESTORE.diff"
+          ).read_text().splitlines()
+
+          changed = []
+
+          for line in diff:
+              if line.startswith("---"):
+                  continue
+
+              if line.startswith("+++"):
+                  continue
+
+              if line.startswith("-") or line.startswith("+"):
+                  changed.append(line)
+
+          expected = [
+              "-CONFIG_HZ_100=y",
+          ]
+
+          if changed != expected:
+              raise SystemExit(
+                  "ERROR: HZ restore changed more than the one expected "
+                  f"defconfig line: {changed}"
+              )
+          PY
+
+          HZ_DIFF_SHA="$(
+            sha256sum \
+              "$ARTIFACT_DIR/HZ100-RESTORE.diff" \
+              | awk '{print $1}'
+          )"
+
+          {
+            echo "HZ100_REMOVAL_METHOD=EXACT_SINGLE_LINE"
+            echo "HZ100_COMMIT=$HZ100_COMMIT"
+            echo "CONFIG_HZ_100_REMOVED=YES"
+            echo "OTHER_HZ_LINES_CHANGED=NO"
+            echo "VEUX_DEFCONFIG_EXPLICIT_HZ=NO"
+            echo "HZ_RESTORE_DIFF_SHA256=$HZ_DIFF_SHA"
+          } | tee "$ARTIFACT_DIR/HZ-RESTORE-STATE.txt"
+
+          cat "$ARTIFACT_DIR/HZ100-RESTORE.diff"
+
+      - name: Restore standard load balance capacity rate limit
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git cat-file -e \
+            "${LB_CAPACITY_COMMIT}^{commit}"
+
+          git show \
+            --format= \
+            --binary \
+            "$LB_CAPACITY_COMMIT" \
+            > "$ARTIFACT_DIR/LB-CAPACITY-ORIGINAL-COMMIT.patch"
+
+          PATCH="$ARTIFACT_DIR/LB-CAPACITY-ORIGINAL-COMMIT.patch"
+
+          test -s "$PATCH"
+
+          git apply \
+            --reverse \
+            --check \
+            "$PATCH"
+
+          git apply \
+            --reverse \
+            "$PATCH"
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          fair = Path(
+              "kernel/sched/fair.c"
+          ).read_text()
+
+          sched = Path(
+              "kernel/sched/sched.h"
+          ).read_text()
+
+          required = (
+              "unsigned long interval;",
+              "interval = msecs_to_jiffies(sd->balance_interval);",
+              "interval = clamp(interval, 1UL, max_load_balance_interval);",
+              "sdg->sgc->next_update = jiffies + interval;",
+              "env->idle != CPU_NEWLY_IDLE",
+              "time_after_eq(jiffies, sg->sgc->next_update)",
+          )
+
+          for token in required:
+              if token not in fair:
+                  raise SystemExit(
+                      f"ERROR: LB capacity restore token missing: {token}"
+                  )
+
+          if "next_update;" not in sched:
+              raise SystemExit(
+                  "ERROR: sched_group_capacity::next_update missing"
+              )
+          PY
+
+          git diff \
+            --no-ext-diff \
+            --no-color \
+            -- \
+            kernel/sched/fair.c \
+            kernel/sched/sched.h \
+            > "$ARTIFACT_DIR/LB-CAPACITY-RATELIMIT-RESTORE.diff"
+
+          LB_DIFF_SHA="$(
+            sha256sum \
+              "$ARTIFACT_DIR/LB-CAPACITY-RATELIMIT-RESTORE.diff" \
+              | awk '{print $1}'
+          )"
+
+          {
+            echo "LB_CAPACITY_COMMIT_REVERSED=YES"
+            echo "LB_CAPACITY_RESTORE_DIFF_SHA256=$LB_DIFF_SHA"
+            echo "LB_CAPACITY_TIME_GATE=RESTORED"
+          } | tee "$ARTIFACT_DIR/LB-CAPACITY-STATE.txt"
+
+      - name: Apply proven CASS MaxFreq Thermal patch
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("kernel/sched/cass.c")
+          text = path.read_text()
+
+          old = """\
+          \tunsigned long cap;
+          \tunsigned long cap_max;
+          \tunsigned long eff_util;
+          """
+
+          new = """\
+          \tunsigned long cap;
+          \tunsigned long cap_max;
+          \tunsigned long cap_no_therm;
+          \tunsigned long cap_orig;
+          \tunsigned long eff_util;
+          """
+
+          if text.count(old) != 1:
+              raise SystemExit(
+                  "ERROR: CASS struct anchor mismatch"
+              )
+
+          text = text.replace(
+              old,
+              new,
+              1,
+          )
+
+          old = """\
+          \tc->cap = c->cap_max - min(c->hard_util, c->cap_max - 1);
+          """
+
+          new = """\
+          \tc->cap = c->cap_max - min(c->hard_util, c->cap_max - 1);
+
+          \t/*
+          \t * Keep a non-throttled capacity denominator for relative load
+          \t * balancing, matching the original CASS capacity separation.
+          \t */
+          \tc->cap_no_therm =
+          \t\tc->cap_orig - min(c->hard_util, c->cap_orig - 1);
+          """
+
+          if text.count(old) != 1:
+              raise SystemExit(
+                  "ERROR: CASS capacity anchor mismatch"
+              )
+
+          text = text.replace(
+              old,
+              new,
+              1,
+          )
+
+          old = """\
+          \t\t/* Get the original, maximum _possible_ capacity of this CPU */
+          \t\tcurr->cap_max = arch_scale_cpu_capacity(cpu);
+          """
+
+          new = """\
+          \t\t/* Get the original, maximum possible capacity of this CPU. */
+          \t\tcurr->cap_orig = arch_scale_cpu_capacity(cpu);
+
+          \t\t/* Account for the current maximum allowed CPU frequency. */
+          \t\tcurr->cap_max =
+          \t\t\tcurr->cap_orig *
+          \t\t\tarch_scale_max_freq_capacity(NULL, cpu) >>
+          \t\t\tSCHED_CAPACITY_SHIFT;
+
+          \t\t/* Keep all later capacity divisions well-defined. */
+          \t\tcurr->cap_max = max(curr->cap_max, 1UL);
+          """
+
+          if text.count(old) != 1:
+              raise SystemExit(
+                  "ERROR: CASS cap_max anchor mismatch"
+              )
+
+          text = text.replace(
+              old,
+              new,
+              1,
+          )
+
+          old = """\
+          \t\tcurr->util =
+          \t\t\tcurr->util * SCHED_CAPACITY_SCALE / curr->cap;
+          """
+
+          new = """\
+          \t\tcurr->util =
+          \t\t\tcurr->util * SCHED_CAPACITY_SCALE /
+          \t\t\tcurr->cap_no_therm;
+          """
+
+          if text.count(old) != 1:
+              raise SystemExit(
+                  "ERROR: CASS relative-util anchor mismatch"
+              )
+
+          text = text.replace(
+              old,
+              new,
+              1,
+          )
+
+          path.write_text(text)
+          PY
+
+          git diff \
+            --no-ext-diff \
+            --no-color \
+            -- kernel/sched/cass.c \
+            > "$ARTIFACT_DIR/CASS-PATCH.diff"
+
+          CASS_DIFF_SHA="$(
+            sha256sum \
+              "$ARTIFACT_DIR/CASS-PATCH.diff" \
+              | awk '{print $1}'
+          )"
+
+          if [ "$CASS_DIFF_SHA" != "$EXPECTED_CASS_DIFF_SHA256" ]; then
+            echo "ERROR: CASS patch differs from proven version"
+            echo "Expected: $EXPECTED_CASS_DIFF_SHA256"
+            echo "Actual:   $CASS_DIFF_SHA"
+            exit 1
+          fi
+
+          {
+            echo "CASS_PATCH=PASS"
+            echo "CASS_DIFF_SHA256=$CASS_DIFF_SHA"
+            echo "CAP_ORIG_RESTORED=YES"
+            echo "CAP_NO_THERM_RESTORED=YES"
+            echo "CAP_MAX_USES_MAX_FREQ_SCALE=YES"
+          } | tee "$ARTIFACT_DIR/CASS-PATCH-STATE.txt"
+
+      - name: Disable SPRD rotation
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path(
+              "arch/arm64/configs/veux_defconfig"
+          )
+
+          text = path.read_text()
+
+          old = "CONFIG_SPRD_ROTATION_TASK=y"
+          new = "# CONFIG_SPRD_ROTATION_TASK is not set"
+
+          count = text.count(old)
+
+          if count != 1:
+              raise SystemExit(
+                  "ERROR: SPRD rotation anchor mismatch: "
+                  f"{count}"
+              )
+
+          path.write_text(
+              text.replace(
+                  old,
+                  new,
+                  1,
+              )
+          )
+          PY
+
+          echo "SPRD_ROTATION_DISABLED=YES" \
+            | tee "$ARTIFACT_DIR/SPRD-ROTATION-STATE.txt"
+
+      - name: Enable CPUSETS
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path(
+              "arch/arm64/configs/veux_defconfig"
+          )
+
+          text = path.read_text()
+
+          if "CONFIG_CPUSETS=y" in text:
+              raise SystemExit(
+                  "ERROR: CONFIG_CPUSETS=y unexpectedly present"
+              )
+
+          old = """\
+          CONFIG_CGROUP_FREEZER=y
+          CONFIG_CGROUP_CPUACCT=y
+          """
+
+          new = """\
+          CONFIG_CGROUP_FREEZER=y
+          CONFIG_CPUSETS=y
+          CONFIG_CGROUP_CPUACCT=y
+          """
+
+          count = text.count(old)
+
+          if count != 1:
+              raise SystemExit(
+                  "ERROR: CPUSETS insertion anchor mismatch: "
+                  f"{count}"
+              )
+
+          path.write_text(
+              text.replace(
+                  old,
+                  new,
+                  1,
+              )
+          )
+          PY
+
+          echo "CPUSETS_ENABLED=YES" \
+            | tee "$ARTIFACT_DIR/CPUSETS-STATE.txt"
+
+      - name: Restore exact Xiaomi VEUX PELT8
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          HEADER="kernel/sched/sched-pelt.h"
+
+          git show \
+            "xiaomi/${STOCK_REF}:kernel/sched/sched-pelt.h" \
+            > "$HEADER"
+
+          HEADER_SHA="$(
+            sha256sum "$HEADER" \
+              | awk '{print $1}'
+          )"
+
+          if [ "$HEADER_SHA" != "$EXPECTED_XIAOMI_PELT_SHA256" ]; then
+            echo "ERROR: Xiaomi PELT header hash mismatch"
+            echo "Expected: $EXPECTED_XIAOMI_PELT_SHA256"
+            echo "Actual:   $HEADER_SHA"
+            exit 1
+          fi
+
+          if ! grep -qx \
+            '#define LOAD_AVG_PERIOD 8' \
+            "$HEADER"
+          then
+            echo "ERROR: PELT period is not 8"
+            exit 1
+          fi
+
+          if ! grep -qx \
+            '#define LOAD_AVG_MAX 12336' \
+            "$HEADER"
+          then
+            echo "ERROR: LOAD_AVG_MAX is not 12336"
+            exit 1
+          fi
+
+          python3 - <<'PY'
+          import re
+          from pathlib import Path
+
+          text = Path(
+              "kernel/sched/sched-pelt.h"
+          ).read_text()
+
+          match = re.search(
+              r"runnable_avg_yN_inv\[\].*?=\s*\{(.*?)\};",
+              text,
+              re.S,
+          )
+
+          if not match:
+              raise SystemExit(
+                  "ERROR: PELT lookup table missing"
+              )
+
+          entries = re.findall(
+              r"0x[0-9a-fA-F]+",
+              match.group(1),
+          )
+
+          if len(entries) != 8:
+              raise SystemExit(
+                  f"ERROR: expected 8 PELT entries, got {len(entries)}"
+              )
+          PY
+
+          git diff \
+            --no-ext-diff \
+            --no-color \
+            -- kernel/sched/sched-pelt.h \
+            > "$ARTIFACT_DIR/PELT8-RESTORE.diff"
+
+          PELT_DIFF_SHA="$(
+            sha256sum \
+              "$ARTIFACT_DIR/PELT8-RESTORE.diff" \
+              | awk '{print $1}'
+          )"
+
+          {
+            echo "PELT_PERIOD=8"
+            echo "LOAD_AVG_MAX=12336"
+            echo "PELT_TABLE_ENTRIES=8"
+            echo "PELT_HEADER_SHA256=$HEADER_SHA"
+            echo "PELT_RESTORE_DIFF_SHA256=$PELT_DIFF_SHA"
+            echo "EXACT_XIAOMI_HEADER=YES"
+          } | tee "$ARTIFACT_DIR/PELT8-STATE.txt"
+
+      - name: Verify cumulative source state
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          DEFCONFIG="arch/arm64/configs/veux_defconfig"
+
+          if grep -qE \
+            '^CONFIG_HZ_(100|250|300|1000)=y$' \
+            "$DEFCONFIG"
+          then
+            echo "ERROR: explicit HZ selection remains in VEUX defconfig"
+            grep -nE \
+              '^CONFIG_HZ_' \
+              "$DEFCONFIG"
+            exit 1
+          fi
+
+          if ! grep -qx \
+            'CONFIG_CPUSETS=y' \
+            "$DEFCONFIG"
+          then
+            echo "ERROR: CPUSETS not enabled"
+            exit 1
+          fi
+
+          if ! grep -qx \
+            '# CONFIG_SPRD_ROTATION_TASK is not set' \
+            "$DEFCONFIG"
+          then
+            echo "ERROR: SPRD rotation not disabled"
+            exit 1
+          fi
+
+          if ! grep -qF \
+            'time_after_eq(jiffies, sg->sgc->next_update)' \
+            kernel/sched/fair.c
+          then
+            echo "ERROR: LB capacity rate limit missing"
+            exit 1
+          fi
+
+          if ! grep -qF \
+            'arch_scale_max_freq_capacity(NULL, cpu)' \
+            kernel/sched/cass.c
+          then
+            echo "ERROR: CASS max-frequency adaptation missing"
+            exit 1
+          fi
+
+          if ! grep -qF \
+            'curr->cap_no_therm' \
+            kernel/sched/cass.c
+          then
+            echo "ERROR: CASS cap_no_therm missing"
+            exit 1
+          fi
+
+          if ! grep -qx \
+            '#define LOAD_AVG_PERIOD 8' \
+            kernel/sched/sched-pelt.h
+          then
+            echo "ERROR: Xiaomi PELT8 missing"
+            exit 1
+          fi
+
+          if grep -qF \
+            'update_cpumask(cs, trialcs, "0-7")' \
+            kernel/cgroup/cpuset.c
+          then
+            echo "ERROR: hardcoded CPUSET 0-7 override present"
+            exit 1
+          fi
+
+          if ! grep -qF \
+            'update_cpumask(cs, trialcs, buf)' \
+            kernel/cgroup/cpuset.c
+          then
+            echo "ERROR: normal CPUSET mask handling missing"
+            exit 1
+          fi
+
+          git diff --check \
+            > "$ARTIFACT_DIR/GIT-DIFF-CHECK.txt" \
+            2>&1
+
+          {
+            echo "CUMULATIVE_SOURCE_CHECK=PASS"
+            echo "VEUX_DEFCONFIG_EXPLICIT_HZ=NO"
+            echo "CASS_MAXFREQ=YES"
+            echo "CASS_CAP_NO_THERM=YES"
+            echo "SPRD_ROTATION_DISABLED=YES"
+            echo "LB_CAPACITY_RATE_LIMIT=YES"
+            echo "CPUSETS_ENABLED=YES"
+            echo "PELT8_XIAOMI=YES"
+          } | tee "$ARTIFACT_DIR/CUMULATIVE-SOURCE-STATE.txt"
+
+      - name: Resolve VEUX configuration
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          export PATH="$TOOLCHAIN_DIR/bin:$PATH"
+          export KCFLAGS="-D__ANDROID_COMMON_KERNEL__"
+
+          rm -rf "$OUT_DIR"
+
+          make \
+            O="$OUT_DIR" \
+            ARCH="$ARCH" \
+            LLVM=1 \
+            veux_defconfig \
+            2>&1 \
+            | tee "$ARTIFACT_DIR/config.log"
+
+          CONFIG="$OUT_DIR/.config"
+
+          if [ ! -f "$CONFIG" ]; then
+            echo "ERROR: resolved .config missing"
+            exit 1
+          fi
+
+          if ! grep -qx \
+            'CONFIG_HZ_250=y' \
+            "$CONFIG"
+          then
+            echo "ERROR: HZ250 default was not selected"
+
+            grep -E \
+              '^(CONFIG_HZ_|# CONFIG_HZ_|CONFIG_HZ=)' \
+              "$CONFIG" \
+              || true
+
+            exit 1
+          fi
+
+          if ! grep -qx \
+            'CONFIG_HZ=250' \
+            "$CONFIG"
+          then
+            echo "ERROR: resolved CONFIG_HZ is not 250"
+            exit 1
+          fi
+
+          if grep -qx \
+            'CONFIG_HZ_100=y' \
+            "$CONFIG"
+          then
+            echo "ERROR: HZ100 remains enabled"
+            exit 1
+          fi
+
+          REQUIRED_CONFIGS=(
+            CONFIG_ARCH_QCOM=y
+            CONFIG_ARCH_HOLI=y
+            CONFIG_ARCH_BLAIR=y
+            CONFIG_WT_QGKI=y
+            CONFIG_LTO_CLANG=y
+            CONFIG_BUILD_ARM64_UNCOMPRESSED_KERNEL=y
+            CONFIG_SCHED_CASS=y
+            CONFIG_CPUSETS=y
+            CONFIG_CPU_FREQ=y
+            CONFIG_CPU_FREQ_GOV_SCHEDUTIL=y
+            CONFIG_ARM_QCOM_CPUFREQ_HW=y
+          )
+
+          for item in "${REQUIRED_CONFIGS[@]}"; do
+            if ! grep -qx \
+              "$item" \
+              "$CONFIG"
+            then
+              echo "ERROR: required config missing: $item"
+              exit 1
+            fi
+          done
+
+          if grep -qx \
+            'CONFIG_SPRD_ROTATION_TASK=y' \
+            "$CONFIG"
+          then
+            echo "ERROR: SPRD rotation unexpectedly enabled"
+            exit 1
+          fi
+
+          cp \
+            "$CONFIG" \
+            "$ARTIFACT_DIR/resolved.config"
+
+          {
+            echo "===== Important resolved configuration ====="
+
+            grep -E \
+              '^(CONFIG_HZ_|# CONFIG_HZ_|CONFIG_HZ=|CONFIG_NO_HZ=|CONFIG_HIGH_RES_TIMERS=|CONFIG_PREEMPT=|CONFIG_SCHED_CASS=|CONFIG_CPUSETS=|CONFIG_SPRD_ROTATION_TASK=|# CONFIG_SPRD_ROTATION_TASK|CONFIG_CPU_FREQ=|CONFIG_CPU_FREQ_GOV_SCHEDUTIL=|CONFIG_ARM_QCOM_CPUFREQ_HW=)' \
+              "$CONFIG" \
+              || true
+          } | tee "$ARTIFACT_DIR/CONFIG-IMPORTANT.txt"
+
+          {
+            echo "HZ_DEFAULT_SELECTED=YES"
+            echo "HZ_CHOICE=250"
+            echo "CONFIG_HZ=250"
+          } | tee "$ARTIFACT_DIR/HZ250-RESOLVED-STATE.txt"
+
+          make \
+            -s \
+            O="$OUT_DIR" \
+            ARCH="$ARCH" \
+            LLVM=1 \
+            kernelrelease \
+            | tee "$ARTIFACT_DIR/kernelrelease.txt"
+
+      - name: Build complete kernel Image and DTBs
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          export PATH="$TOOLCHAIN_DIR/bin:$PATH"
+          export KCFLAGS="-D__ANDROID_COMMON_KERNEL__"
+
+          set +e
+
+          make \
+            -j"$(nproc)" \
+            O="$OUT_DIR" \
+            ARCH="$ARCH" \
+            LLVM=1 \
+            Image \
+            dtbs \
+            2>&1 \
+            | tee "$ARTIFACT_DIR/full-build.log"
+
+          BUILD_RC=${PIPESTATUS[0]}
+
+          set -e
+
+          printf '%s\n' \
+            "$BUILD_RC" \
+            > "$ARTIFACT_DIR/full-build.exit-code"
+
+          if [ "$BUILD_RC" -ne 0 ]; then
+            echo "ERROR: full kernel build failed"
+            exit "$BUILD_RC"
+          fi
+
+      - name: Verify CPUSET object
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          CPUSET_OBJ="$OUT_DIR/kernel/cgroup/cpuset.o"
+
+          if [ ! -s "$CPUSET_OBJ" ]; then
+            echo "ERROR: cpuset.o missing"
+            exit 1
+          fi
+
+          {
+            echo "CPUSET_OBJECT_BUILT=YES"
+            echo "CPUSET_OBJECT_BYTES=$(stat -c '%s' "$CPUSET_OBJ")"
+          } | tee "$ARTIFACT_DIR/CPUSET-OBJECT-STATE.txt"
+
+          sha256sum \
+            "$CPUSET_OBJ" \
+            | tee "$ARTIFACT_DIR/cpuset.o.sha256"
+
+      - name: Verify linked kernel cumulative state
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          VMLINUX="$OUT_DIR/vmlinux"
+
+          if [ ! -s "$VMLINUX" ]; then
+            echo "ERROR: vmlinux missing"
+            exit 1
+          fi
+
+          "$TOOLCHAIN_DIR/bin/llvm-nm" \
+            "$VMLINUX" \
+            > "$ARTIFACT_DIR/vmlinux-symbols.txt"
+
+          grep -E \
+            '[[:space:]]cass_[A-Za-z0-9_]+' \
+            "$ARTIFACT_DIR/vmlinux-symbols.txt" \
+            > "$ARTIFACT_DIR/vmlinux-cass-symbols.txt" \
+            || true
+
+          CASS_SYMBOL_COUNT="$(
+            wc -l \
+              < "$ARTIFACT_DIR/vmlinux-cass-symbols.txt" \
+              | tr -d ' '
+          )"
+
+          if [ "$CASS_SYMBOL_COUNT" -lt 1 ]; then
+            echo "ERROR: CASS disappeared"
+            exit 1
+          fi
+
+          grep -E \
+            'check_for_task_rotation|try_rotation_task|do_rotation_task|rotation_task_init|set_rotation_enable' \
+            "$ARTIFACT_DIR/vmlinux-symbols.txt" \
+            > "$ARTIFACT_DIR/ROTATION-SYMBOLS.txt" \
+            || true
+
+          ROTATION_SYMBOL_COUNT="$(
+            wc -l \
+              < "$ARTIFACT_DIR/ROTATION-SYMBOLS.txt" \
+              | tr -d ' '
+          )"
+
+          if [ "$ROTATION_SYMBOL_COUNT" -ne 0 ]; then
+            echo "ERROR: SPRD rotation symbols remain linked"
+            cat "$ARTIFACT_DIR/ROTATION-SYMBOLS.txt"
+            exit 1
+          fi
+
+          grep -Ei \
+            '[[:space:]][A-Za-z0-9_]*cpuset[A-Za-z0-9_]*$' \
+            "$ARTIFACT_DIR/vmlinux-symbols.txt" \
+            > "$ARTIFACT_DIR/vmlinux-cpuset-symbols.txt" \
+            || true
+
+          CPUSET_SYMBOL_COUNT="$(
+            wc -l \
+              < "$ARTIFACT_DIR/vmlinux-cpuset-symbols.txt" \
+              | tr -d ' '
+          )"
+
+          if [ "$CPUSET_SYMBOL_COUNT" -lt 1 ]; then
+            echo "ERROR: CPUSET symbols missing"
+            exit 1
+          fi
+
+          {
+            echo "CASS_SYMBOL_COUNT=$CASS_SYMBOL_COUNT"
+            echo "ROTATION_SYMBOL_COUNT=$ROTATION_SYMBOL_COUNT"
+            echo "CPUSET_SYMBOL_COUNT=$CPUSET_SYMBOL_COUNT"
+          } | tee "$ARTIFACT_DIR/LINKED-KERNEL-STATE.txt"
+
+      - name: Verify complete build outputs
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          IMAGE="$OUT_DIR/arch/arm64/boot/Image"
+          VEUX_DTB="$OUT_DIR/arch/arm64/boot/dts/vendor/xiaomi/veux.dtb"
+          VMLINUX="$OUT_DIR/vmlinux"
+
+          for FILE in \
+            "$IMAGE" \
+            "$VEUX_DTB" \
+            "$VMLINUX"
+          do
+            if [ ! -s "$FILE" ]; then
+              echo "ERROR: build output missing: $FILE"
+              exit 1
+            fi
+          done
+
+          "$OUT_DIR/scripts/dtc/dtc" \
+            -I dtb \
+            -O dts \
+            -o /dev/null \
+            "$VEUX_DTB"
+
+          {
+            echo "IMAGE_BYTES=$(stat -c '%s' "$IMAGE")"
+            echo "VEUX_DTB_BYTES=$(stat -c '%s' "$VEUX_DTB")"
+            echo "VMLINUX_BYTES=$(stat -c '%s' "$VMLINUX")"
+
+            echo
+            sha256sum "$IMAGE"
+            sha256sum "$VEUX_DTB"
+            sha256sum "$VMLINUX"
+          } | tee "$ARTIFACT_DIR/OUTPUT-HASHES.txt"
+
+          echo "VEUX_DTB_PARSE=PASS" \
+            | tee "$ARTIFACT_DIR/DTB-CHECK.txt"
+
+      - name: Audit full build diagnostics
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          LOG="$ARTIFACT_DIR/full-build.log"
+
+          grep -Ei \
+            '(^|[[:space:]])error:' \
+            "$LOG" \
+            > "$ARTIFACT_DIR/ERRORS.txt" \
+            || true
+
+          grep -Ei \
+            '(^|[[:space:]])warning:' \
+            "$LOG" \
+            > "$ARTIFACT_DIR/WARNINGS.txt" \
+            || true
+
+          ERROR_COUNT="$(
+            wc -l \
+              < "$ARTIFACT_DIR/ERRORS.txt" \
+              | tr -d ' '
+          )"
+
+          WARNING_COUNT="$(
+            wc -l \
+              < "$ARTIFACT_DIR/WARNINGS.txt" \
+              | tr -d ' '
+          )"
+
+          {
+            echo "ERROR_COUNT=$ERROR_COUNT"
+            echo "WARNING_COUNT=$WARNING_COUNT"
+          } | tee "$ARTIFACT_DIR/DIAGNOSTICS.txt"
+
+          if [ "$ERROR_COUNT" -ne 0 ]; then
+            echo "ERROR: compiler errors detected"
+            cat "$ARTIFACT_DIR/ERRORS.txt"
+            exit 1
+          fi
+
+          if [ "$WARNING_COUNT" -ne 0 ]; then
+            echo
+            echo "NOTE: successful full build emitted warnings:"
+            cat "$ARTIFACT_DIR/WARNINGS.txt"
+          fi
+
+      - name: Prepare final HZ250 report
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          IMAGE="$OUT_DIR/arch/arm64/boot/Image"
+          VEUX_DTB="$OUT_DIR/arch/arm64/boot/dts/vendor/xiaomi/veux.dtb"
+
+          cp \
+            "$IMAGE" \
+            "$ARTIFACT_DIR/Image"
+
+          cp \
+            "$VEUX_DTB" \
+            "$ARTIFACT_DIR/veux.dtb"
+
+          IMAGE_SHA="$(
+            sha256sum "$IMAGE" \
+              | awk '{print $1}'
+          )"
+
+          DTB_SHA="$(
+            sha256sum "$VEUX_DTB" \
+              | awk '{print $1}'
+          )"
+
+          CASS_SYMBOL_COUNT="$(
+            awk -F= \
+              '$1=="CASS_SYMBOL_COUNT" {print $2}' \
+              "$ARTIFACT_DIR/LINKED-KERNEL-STATE.txt"
+          )"
+
+          ROTATION_SYMBOL_COUNT="$(
+            awk -F= \
+              '$1=="ROTATION_SYMBOL_COUNT" {print $2}' \
+              "$ARTIFACT_DIR/LINKED-KERNEL-STATE.txt"
+          )"
+
+          CPUSET_SYMBOL_COUNT="$(
+            awk -F= \
+              '$1=="CPUSET_SYMBOL_COUNT" {print $2}' \
+              "$ARTIFACT_DIR/LINKED-KERNEL-STATE.txt"
+          )"
+
+          WARNING_COUNT="$(
+            awk -F= \
+              '$1=="WARNING_COUNT" {print $2}' \
+              "$ARTIFACT_DIR/DIAGNOSTICS.txt"
+          )"
+
+          HZ_DIFF_SHA="$(
+            awk -F= \
+              '$1=="HZ_RESTORE_DIFF_SHA256" {print $2}' \
+              "$ARTIFACT_DIR/HZ-RESTORE-STATE.txt"
+          )"
+
+          LB_DIFF_SHA="$(
+            awk -F= \
+              '$1=="LB_CAPACITY_RESTORE_DIFF_SHA256" {print $2}' \
+              "$ARTIFACT_DIR/LB-CAPACITY-STATE.txt"
+          )"
+
+          PELT_DIFF_SHA="$(
+            awk -F= \
+              '$1=="PELT_RESTORE_DIFF_SHA256" {print $2}' \
+              "$ARTIFACT_DIR/PELT8-STATE.txt"
+          )"
+
+          {
+            echo "RESULT=PASS"
+            echo "BASE_CANDIDATE_TREE=$EXPECTED_CANDIDATE_TREE"
+
+            echo "CASS_PATCH_SHA256=$EXPECTED_CASS_DIFF_SHA256"
+            echo "CASS_PATCH_MATCHES_PROVEN_VERSION=YES"
+            echo "CASS_SYMBOL_COUNT=$CASS_SYMBOL_COUNT"
+
+            echo "SPRD_ROTATION_DISABLED=YES"
+            echo "ROTATION_SYMBOL_COUNT=$ROTATION_SYMBOL_COUNT"
+
+            echo "LB_CAPACITY_UNGATED_COMMIT=$LB_CAPACITY_COMMIT"
+            echo "LB_CAPACITY_UNGATED_COMMIT_REVERSED=YES"
+            echo "LB_CAPACITY_RESTORE_DIFF_SHA256=$LB_DIFF_SHA"
+            echo "LB_CAPACITY_TIME_GATE=RESTORED"
+
+            echo "CPUSETS_ENABLED=YES"
+            echo "CPUSET_HARDCODED_0_7=NO"
+            echo "CPUSET_SYMBOL_COUNT=$CPUSET_SYMBOL_COUNT"
+
+            echo "PELT_RESTORED_PERIOD=8"
+            echo "PELT_RESTORE_SOURCE=XIAOMI_VEUX"
+            echo "PELT_HEADER_SHA256=$EXPECTED_XIAOMI_PELT_SHA256"
+            echo "PELT_RESTORE_DIFF_SHA256=$PELT_DIFF_SHA"
+
+            echo "HZ100_COMMIT=$HZ100_COMMIT"
+            echo "HZ100_REMOVAL_METHOD=EXACT_SINGLE_LINE"
+            echo "CONFIG_HZ_100_REMOVED=YES"
+            echo "HZ_RESTORE_DIFF_SHA256=$HZ_DIFF_SHA"
+            echo "VEUX_DEFCONFIG_EXPLICIT_HZ=NO"
+            echo "HZ_KCONFIG_DEFAULT=250"
+            echo "HZ_RESOLVED_CHOICE=250"
+            echo "CONFIG_HZ=250"
+            echo "HZ_KCONFIG_SHA256=$EXPECTED_HZ_KCONFIG_SHA256"
+
+            echo "FULL_KERNEL_BUILD=PASS"
+            echo "COMPILER_ERRORS=0"
+            echo "COMPILER_WARNINGS=$WARNING_COUNT"
+
+            echo "IMAGE_CREATED=YES"
+            echo "DTBS_BUILT=YES"
+            echo "VEUX_DTB_PARSE=PASS"
+            echo "IMAGE_SHA256=$IMAGE_SHA"
+            echo "VEUX_DTB_SHA256=$DTB_SHA"
+
+            echo "RESUKISU_CHANGED=NO"
+            echo "SUSFS_CHANGED=NO"
+            echo "BOOT_IMAGE_CREATED=NO"
+            echo "FLASHABLE_ZIP_CREATED=NO"
+            echo "DEVICE_FLASHED=NO"
+          } | tee "$ARTIFACT_DIR/RESULT.txt"
+
+      - name: Upload corrected HZ250 full build probe
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: VEUX-Default-HZ250-Full-Build-Probe-C2
+          path: hz250-restore-probe-c2/
+          if-no-files-found: error
+          retention-days: 30
