@@ -1,0 +1,848 @@
+name: 27C - VEUX CASS MaxFreq Thermal Full Kernel Compile Probe
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+
+    env:
+      ARCH: arm64
+      COMMON_REF: "android11-5.4.274_r00"
+      STABILITY_REVERT: "f74e5c1b7c3f3e42f694e5ab524f95f62a0dab80"
+      EXPECTED_CANDIDATE_TREE: "5d25b7e0124d7fb695f3f07b45928fcb5780d0e8"
+      EXPECTED_PROBE_DIFF_SHA256: "67abb81be8c2d7727c3e4c8a92419c9e9a3d97ee3d3e5355d3acabce34adf659"
+      CLANG_PREBUILT_COMMIT: "aa2e4a514a6c85eebcc4a27149eaf9244e951a1e"
+      TOOLCHAIN_DIR: ${{ github.workspace }}/toolchains/clang-r416183b
+      OUT_DIR: out
+      ARTIFACT_DIR: ${{ github.workspace }}/cass-full-kernel-probe
+
+    steps:
+      - name: Prepare probe directory
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p \
+            "$ARTIFACT_DIR" \
+            "$TOOLCHAIN_DIR"
+
+          cat > "$ARTIFACT_DIR/PLAN.txt" <<'EOF'
+          VEUX Candidate 2 CASS MaxFreq/Thermal Full Kernel Compile Probe
+          =================================================================
+
+          Established by 26C:
+          - CASS is included through kernel/sched/fair.c
+          - kernel/sched/fair.o compiled successfully
+          - zero compiler errors
+          - zero compiler warnings
+          - CASS symbols are present in fair.o
+          - thermal_load_avg() is not restored
+          - cap_orig is restored
+          - cap_no_therm is restored
+          - cap_max uses arch_scale_max_freq_capacity
+
+          Purpose of 27C:
+          - reconstruct exact Candidate 2
+          - apply exactly the proven 26C CASS patch
+          - verify the patch SHA-256
+          - resolve the exact VEUX configuration
+          - build the complete kernel Image
+          - build VEUX DTBs
+          - verify the resulting Image and VEUX DTB
+          - verify CASS is present in the linked vmlinux
+
+          This workflow does NOT:
+          - integrate or change ReSukiSU
+          - integrate or change SUSFS
+          - create boot.img
+          - create a flashable ZIP
+          - access a phone
+          - flash anything
+          EOF
+
+      - name: Install build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          sudo apt-get update
+
+          sudo apt-get install -y --no-install-recommends \
+            bc \
+            bison \
+            build-essential \
+            ca-certificates \
+            cpio \
+            curl \
+            flex \
+            git \
+            libelf-dev \
+            libncurses-dev \
+            libssl-dev \
+            python3 \
+            python-is-python3 \
+            rsync \
+            xz-utils \
+            zstd
+
+      - name: Install exact Android clang-r416183b
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          curl \
+            --fail \
+            --location \
+            --retry 3 \
+            "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/${CLANG_PREBUILT_COMMIT}/clang-r416183b.tar.gz" \
+            -o "${RUNNER_TEMP}/clang-r416183b.tar.gz"
+
+          tar \
+            -xzf "${RUNNER_TEMP}/clang-r416183b.tar.gz" \
+            -C "$TOOLCHAIN_DIR"
+
+          echo "$TOOLCHAIN_DIR/bin" >> "$GITHUB_PATH"
+
+          "$TOOLCHAIN_DIR/bin/clang" --version \
+            | tee "$ARTIFACT_DIR/clang-version.txt"
+
+          "$TOOLCHAIN_DIR/bin/ld.lld" --version \
+            | tee -a "$ARTIFACT_DIR/clang-version.txt"
+
+          if ! "$TOOLCHAIN_DIR/bin/clang" --version \
+            | grep -q 'r416183b'
+          then
+            echo "ERROR: expected clang-r416183b"
+            exit 1
+          fi
+
+          for tool in \
+            clang \
+            ld.lld \
+            llvm-ar \
+            llvm-nm \
+            llvm-objcopy \
+            llvm-objdump \
+            llvm-readelf \
+            llvm-size \
+            llvm-strip
+          do
+            if [ ! -x "$TOOLCHAIN_DIR/bin/$tool" ]; then
+              echo "ERROR: missing toolchain binary: $tool"
+              exit 1
+            fi
+          done
+
+      - name: Checkout exact VEUX source
+        uses: actions/checkout@v7
+        with:
+          repository: dereference23/kernel_xiaomi_sm6375
+          ref: "20240619"
+          fetch-depth: 0
+          path: kernel
+          persist-credentials: false
+
+      - name: Recreate exact Candidate 2
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email \
+            "41898282+github-actions[bot]@users.noreply.github.com"
+
+          BASE_SHA="$(git rev-parse HEAD)"
+          BASE_TREE="$(git rev-parse HEAD^{tree})"
+
+          git remote remove android-common 2>/dev/null || true
+
+          git remote add \
+            android-common \
+            https://android.googlesource.com/kernel/common
+
+          git fetch \
+            --no-tags \
+            android-common \
+            "$COMMON_REF"
+
+          git merge \
+            --no-edit \
+            FETCH_HEAD
+
+          MERGED_SHA="$(git rev-parse HEAD)"
+          MERGED_TREE="$(git rev-parse HEAD^{tree})"
+
+          git cat-file -e \
+            "${STABILITY_REVERT}^{commit}"
+
+          git revert \
+            --no-edit \
+            "$STABILITY_REVERT"
+
+          CANDIDATE_SHA="$(git rev-parse HEAD)"
+          CANDIDATE_TREE="$(git rev-parse HEAD^{tree})"
+          KERNEL_VERSION="$(make -s kernelversion)"
+
+          if [ "$KERNEL_VERSION" != "5.4.274" ]; then
+            echo "ERROR: expected Linux 5.4.274"
+            echo "Actual: $KERNEL_VERSION"
+            exit 1
+          fi
+
+          if [ "$CANDIDATE_TREE" != "$EXPECTED_CANDIDATE_TREE" ]; then
+            echo "ERROR: Candidate 2 tree mismatch"
+            echo "Expected: $EXPECTED_CANDIDATE_TREE"
+            echo "Actual:   $CANDIDATE_TREE"
+            exit 1
+          fi
+
+          {
+            echo "BASE_SHA=$BASE_SHA"
+            echo "BASE_TREE=$BASE_TREE"
+            echo "MERGED_SHA=$MERGED_SHA"
+            echo "MERGED_TREE=$MERGED_TREE"
+            echo "CANDIDATE_SHA=$CANDIDATE_SHA"
+            echo "CANDIDATE_TREE=$CANDIDATE_TREE"
+            echo "KERNEL_VERSION=$KERNEL_VERSION"
+            echo "COMMON_REF=$COMMON_REF"
+            echo "STABILITY_REVERT=$STABILITY_REVERT"
+          } | tee "$ARTIFACT_DIR/IDENTITY.txt"
+
+      - name: Verify CASS build ownership
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          {
+            echo "===== CASS source ownership ====="
+            grep -nE \
+              -B4 \
+              -A10 \
+              'CONFIG_SCHED_CASS|#include "cass\.c"' \
+              kernel/sched/fair.c \
+              || true
+
+            echo
+            echo "===== Scheduler Makefile ====="
+            grep -nE \
+              'fair\.o|cass\.o' \
+              kernel/sched/Makefile \
+              || true
+          } | tee "$ARTIFACT_DIR/CASS-KBUILD-OWNERSHIP.txt"
+
+          if ! grep -qF \
+            '#include "cass.c"' \
+            kernel/sched/fair.c
+          then
+            echo "ERROR: fair.c does not include cass.c"
+            exit 1
+          fi
+
+          if ! grep -qE \
+            'obj-y[[:space:]]*\+=[^#]*fair\.o' \
+            kernel/sched/Makefile
+          then
+            echo "ERROR: fair.o is not a scheduler Kbuild object"
+            exit 1
+          fi
+
+          {
+            echo "CASS_SOURCE=kernel/sched/cass.c"
+            echo "CASS_OWNER_SOURCE=kernel/sched/fair.c"
+            echo "CASS_OWNER_OBJECT=kernel/sched/fair.o"
+          } > "$ARTIFACT_DIR/CASS-KBUILD-CONCLUSION.txt"
+
+      - name: Verify max frequency capacity infrastructure
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          {
+            echo "===== arch_scale_max_freq_capacity ====="
+            git grep -n \
+              'arch_scale_max_freq_capacity' \
+              -- arch include kernel drivers \
+              || true
+
+            echo
+            echo "===== topology_get_max_freq_scale ====="
+            git grep -n \
+              'topology_get_max_freq_scale' \
+              -- arch include kernel drivers \
+              || true
+
+            echo
+            echo "===== max_freq_scale ====="
+            git grep -n \
+              'max_freq_scale' \
+              -- arch include kernel drivers \
+              || true
+
+            echo
+            echo "===== arch_set_max_freq_scale ====="
+            git grep -n \
+              'arch_set_max_freq_scale' \
+              -- arch include kernel drivers \
+              || true
+          } > "$ARTIFACT_DIR/MAXFREQ-INFRASTRUCTURE.txt"
+
+          cat "$ARTIFACT_DIR/MAXFREQ-INFRASTRUCTURE.txt"
+
+          if ! git grep -q \
+            'arch_scale_max_freq_capacity' \
+            -- arch/arm64 include/linux
+          then
+            echo "ERROR: arch_scale_max_freq_capacity unavailable"
+            exit 1
+          fi
+
+          if ! git grep -q \
+            'topology_get_max_freq_scale' \
+            -- include/linux arch/arm64
+          then
+            echo "ERROR: topology_get_max_freq_scale unavailable"
+            exit 1
+          fi
+
+          if ! git grep -q \
+            'max_freq_scale' \
+            -- include/linux drivers arch
+          then
+            echo "ERROR: max_freq_scale storage unavailable"
+            exit 1
+          fi
+
+          WRITER_COUNT="$(
+            git grep \
+              -nE \
+              'arch_set_max_freq_scale|max_freq_scale.*=' \
+              -- drivers kernel arch include \
+              2>/dev/null \
+              | wc -l \
+              | tr -d ' '
+          )"
+
+          echo "WRITER_COUNT=$WRITER_COUNT" \
+            | tee "$ARTIFACT_DIR/MAXFREQ-WRITER-COUNT.txt"
+
+          if [ "$WRITER_COUNT" -lt 1 ]; then
+            echo "ERROR: max_freq_scale exists but no writer was found"
+            exit 1
+          fi
+
+      - name: Capture exact pre patch CASS
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cp \
+            kernel/sched/cass.c \
+            "$ARTIFACT_DIR/cass-before-probe.c"
+
+          grep \
+            -nE \
+            -B8 \
+            -A14 \
+            'cap_max|cap_no_therm|cap_orig|arch_scale_cpu_capacity|thermal_load_avg|SCHED_CAPACITY_SCALE / curr->cap' \
+            kernel/sched/cass.c \
+            > "$ARTIFACT_DIR/CASS-BEFORE.txt" \
+            || true
+
+          cat "$ARTIFACT_DIR/CASS-BEFORE.txt"
+
+      - name: Apply proven 26C CASS patch
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("kernel/sched/cass.c")
+          text = path.read_text()
+
+          old = """\
+          \tunsigned long cap;
+          \tunsigned long cap_max;
+          \tunsigned long eff_util;
+          """
+
+          new = """\
+          \tunsigned long cap;
+          \tunsigned long cap_max;
+          \tunsigned long cap_no_therm;
+          \tunsigned long cap_orig;
+          \tunsigned long eff_util;
+          """
+
+          if text.count(old) != 1:
+              raise SystemExit(
+                  "struct capacity fields anchor mismatch: "
+                  f"{text.count(old)} matches"
+              )
+
+          text = text.replace(old, new, 1)
+
+          old = """\
+          \tc->cap = c->cap_max - min(c->hard_util, c->cap_max - 1);
+          """
+
+          new = """\
+          \tc->cap = c->cap_max - min(c->hard_util, c->cap_max - 1);
+
+          \t/*
+          \t * Keep a non-throttled capacity denominator for relative load
+          \t * balancing, matching the original CASS capacity separation.
+          \t */
+          \tc->cap_no_therm =
+          \t\tc->cap_orig - min(c->hard_util, c->cap_orig - 1);
+          """
+
+          if text.count(old) != 1:
+              raise SystemExit(
+                  "cass_cpu_util capacity anchor mismatch: "
+                  f"{text.count(old)} matches"
+              )
+
+          text = text.replace(old, new, 1)
+
+          old = """\
+          \t\t/* Get the original, maximum _possible_ capacity of this CPU */
+          \t\tcurr->cap_max = arch_scale_cpu_capacity(cpu);
+          """
+
+          new = """\
+          \t\t/* Get the original, maximum possible capacity of this CPU. */
+          \t\tcurr->cap_orig = arch_scale_cpu_capacity(cpu);
+
+          \t\t/* Account for the current maximum allowed CPU frequency. */
+          \t\tcurr->cap_max =
+          \t\t\tcurr->cap_orig *
+          \t\t\tarch_scale_max_freq_capacity(NULL, cpu) >>
+          \t\t\tSCHED_CAPACITY_SHIFT;
+
+          \t\t/* Keep all later capacity divisions well-defined. */
+          \t\tcurr->cap_max = max(curr->cap_max, 1UL);
+          """
+
+          if text.count(old) != 1:
+              raise SystemExit(
+                  "CASS cap_max anchor mismatch: "
+                  f"{text.count(old)} matches"
+              )
+
+          text = text.replace(old, new, 1)
+
+          old = """\
+          \t\tcurr->util =
+          \t\t\tcurr->util * SCHED_CAPACITY_SCALE / curr->cap;
+          """
+
+          new = """\
+          \t\tcurr->util =
+          \t\t\tcurr->util * SCHED_CAPACITY_SCALE /
+          \t\t\tcurr->cap_no_therm;
+          """
+
+          if text.count(old) != 1:
+              raise SystemExit(
+                  "relative-util denominator anchor mismatch: "
+                  f"{text.count(old)} matches"
+              )
+
+          text = text.replace(old, new, 1)
+
+          path.write_text(text)
+          PY
+
+          cp \
+            kernel/sched/cass.c \
+            "$ARTIFACT_DIR/cass-after-probe.c"
+
+      - name: Verify exact 26C patch identity
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          import re
+          from pathlib import Path
+
+          text = Path("kernel/sched/cass.c").read_text()
+
+          code = re.sub(
+              r"/\*.*?\*/",
+              "",
+              text,
+              flags=re.S,
+          )
+
+          code = re.sub(
+              r"//.*",
+              "",
+              code,
+          )
+
+          if re.search(r"\bthermal_load_avg\s*\(", code):
+              raise SystemExit(
+                  "ERROR: obsolete thermal_load_avg() code call present"
+              )
+
+          required = (
+              "cap_orig",
+              "cap_no_therm",
+              "arch_scale_max_freq_capacity",
+              "curr->cap_no_therm",
+          )
+
+          for token in required:
+              if token not in code:
+                  raise SystemExit(
+                      f"ERROR: required CASS token missing: {token}"
+                  )
+          PY
+
+          git diff --check \
+            > "$ARTIFACT_DIR/GIT-DIFF-CHECK.txt" \
+            2>&1
+
+          git diff \
+            --no-ext-diff \
+            --no-color \
+            -- kernel/sched/cass.c \
+            > "$ARTIFACT_DIR/CASS-MAXFREQ-FULL-BUILD.diff"
+
+          DIFF_SHA="$(
+            sha256sum \
+              "$ARTIFACT_DIR/CASS-MAXFREQ-FULL-BUILD.diff" \
+              | awk '{print $1}'
+          )"
+
+          echo "EXPECTED_DIFF_SHA256=$EXPECTED_PROBE_DIFF_SHA256"
+          echo "ACTUAL_DIFF_SHA256=$DIFF_SHA"
+
+          if [ "$DIFF_SHA" != "$EXPECTED_PROBE_DIFF_SHA256" ]; then
+            echo "ERROR: CASS patch differs from proven 26C patch"
+            exit 1
+          fi
+
+          {
+            echo "PROBE_SOURCE_CHECK=PASS"
+            echo "DIFF_SHA256=$DIFF_SHA"
+            echo "MATCHES_26C=YES"
+            echo "THERMAL_LOAD_AVG_CODE=ABSENT"
+            echo "CAP_ORIG=RESTORED"
+            echo "CAP_NO_THERM=RESTORED"
+            echo "CAP_MAX_SOURCE=arch_scale_max_freq_capacity"
+          } | tee "$ARTIFACT_DIR/PATCH-IDENTITY.txt"
+
+      - name: Resolve exact VEUX configuration
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          export PATH="$TOOLCHAIN_DIR/bin:$PATH"
+          export KCFLAGS="-D__ANDROID_COMMON_KERNEL__"
+
+          rm -rf "$OUT_DIR"
+
+          make \
+            O="$OUT_DIR" \
+            ARCH="$ARCH" \
+            LLVM=1 \
+            veux_defconfig \
+            2>&1 \
+            | tee "$ARTIFACT_DIR/config.log"
+
+          CONFIG="$OUT_DIR/.config"
+
+          if [ ! -f "$CONFIG" ]; then
+            echo "ERROR: resolved .config missing"
+            exit 1
+          fi
+
+          REQUIRED_CONFIGS=(
+            CONFIG_ARCH_QCOM=y
+            CONFIG_ARCH_HOLI=y
+            CONFIG_ARCH_BLAIR=y
+            CONFIG_WT_QGKI=y
+            CONFIG_LTO_CLANG=y
+            CONFIG_BUILD_ARM64_UNCOMPRESSED_KERNEL=y
+            CONFIG_SCHED_CASS=y
+            CONFIG_CPU_FREQ=y
+            CONFIG_CPU_FREQ_GOV_SCHEDUTIL=y
+            CONFIG_ARM_QCOM_CPUFREQ_HW=y
+          )
+
+          for item in "${REQUIRED_CONFIGS[@]}"; do
+            if ! grep -qx "$item" "$CONFIG"; then
+              echo "ERROR: required config missing: $item"
+              exit 1
+            fi
+          done
+
+          cp \
+            "$CONFIG" \
+            "$ARTIFACT_DIR/resolved.config"
+
+          grep -E \
+            '^(CONFIG_ARCH_QCOM=|CONFIG_ARCH_HOLI=|CONFIG_ARCH_BLAIR=|CONFIG_WT_QGKI=|CONFIG_LTO_CLANG=|CONFIG_BUILD_ARM64_UNCOMPRESSED_KERNEL=|CONFIG_SCHED_CASS=|CONFIG_CPU_FREQ=|CONFIG_CPU_FREQ_GOV_SCHEDUTIL=|CONFIG_ARM_QCOM_CPUFREQ_HW=|CONFIG_ARM_QCOM_LPM_CPUIDLE=)' \
+            "$CONFIG" \
+            > "$ARTIFACT_DIR/CONFIG-IMPORTANT.txt" \
+            || true
+
+          cat "$ARTIFACT_DIR/CONFIG-IMPORTANT.txt"
+
+          make \
+            -s \
+            O="$OUT_DIR" \
+            ARCH="$ARCH" \
+            LLVM=1 \
+            kernelrelease \
+            | tee "$ARTIFACT_DIR/kernelrelease.txt"
+
+      - name: Build complete kernel Image and DTBs
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          export PATH="$TOOLCHAIN_DIR/bin:$PATH"
+          export KCFLAGS="-D__ANDROID_COMMON_KERNEL__"
+
+          set +e
+
+          make \
+            -j"$(nproc)" \
+            O="$OUT_DIR" \
+            ARCH="$ARCH" \
+            LLVM=1 \
+            Image \
+            dtbs \
+            2>&1 \
+            | tee "$ARTIFACT_DIR/full-build.log"
+
+          BUILD_RC=${PIPESTATUS[0]}
+
+          set -e
+
+          printf '%s\n' \
+            "$BUILD_RC" \
+            > "$ARTIFACT_DIR/full-build.exit-code"
+
+          if [ "$BUILD_RC" -ne 0 ]; then
+            echo "ERROR: full kernel build failed"
+            exit "$BUILD_RC"
+          fi
+
+      - name: Verify complete build outputs
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          IMAGE="$OUT_DIR/arch/arm64/boot/Image"
+          VEUX_DTB="$OUT_DIR/arch/arm64/boot/dts/vendor/xiaomi/veux.dtb"
+          VMLINUX="$OUT_DIR/vmlinux"
+
+          if [ ! -s "$IMAGE" ]; then
+            echo "ERROR: kernel Image missing"
+            exit 1
+          fi
+
+          if [ ! -s "$VEUX_DTB" ]; then
+            echo "ERROR: VEUX DTB missing"
+            exit 1
+          fi
+
+          if [ ! -s "$VMLINUX" ]; then
+            echo "ERROR: vmlinux missing"
+            exit 1
+          fi
+
+          {
+            echo "IMAGE_BYTES=$(stat -c '%s' "$IMAGE")"
+            echo "VEUX_DTB_BYTES=$(stat -c '%s' "$VEUX_DTB")"
+            echo "VMLINUX_BYTES=$(stat -c '%s' "$VMLINUX")"
+            echo
+            sha256sum "$IMAGE"
+            sha256sum "$VEUX_DTB"
+            sha256sum "$VMLINUX"
+          } | tee "$ARTIFACT_DIR/OUTPUT-HASHES.txt"
+
+          "$OUT_DIR/scripts/dtc/dtc" \
+            -I dtb \
+            -O dts \
+            -o /dev/null \
+            "$VEUX_DTB"
+
+          echo "VEUX_DTB_PARSE=PASS" \
+            | tee "$ARTIFACT_DIR/DTB-CHECK.txt"
+
+      - name: Verify linked kernel contains CASS
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          VMLINUX="$OUT_DIR/vmlinux"
+
+          "$TOOLCHAIN_DIR/bin/llvm-nm" "$VMLINUX" \
+            > "$ARTIFACT_DIR/vmlinux-symbols.txt"
+
+          grep -E \
+            '[[:space:]]cass_[A-Za-z0-9_]+' \
+            "$ARTIFACT_DIR/vmlinux-symbols.txt" \
+            > "$ARTIFACT_DIR/vmlinux-cass-symbols.txt" \
+            || true
+
+          cat "$ARTIFACT_DIR/vmlinux-cass-symbols.txt"
+
+          CASS_SYMBOL_COUNT="$(
+            wc -l \
+              < "$ARTIFACT_DIR/vmlinux-cass-symbols.txt" \
+              | tr -d ' '
+          )"
+
+          echo "CASS_SYMBOL_COUNT=$CASS_SYMBOL_COUNT" \
+            | tee "$ARTIFACT_DIR/CASS-SYMBOL-COUNT.txt"
+
+          if [ "$CASS_SYMBOL_COUNT" -lt 1 ]; then
+            echo "ERROR: linked vmlinux contains no CASS symbols"
+            exit 1
+          fi
+
+      - name: Audit full build diagnostics
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          LOG="$ARTIFACT_DIR/full-build.log"
+
+          grep -Ei \
+            '(^|[[:space:]])error:' \
+            "$LOG" \
+            > "$ARTIFACT_DIR/ERRORS.txt" \
+            || true
+
+          grep -Ei \
+            '(^|[[:space:]])warning:' \
+            "$LOG" \
+            > "$ARTIFACT_DIR/WARNINGS.txt" \
+            || true
+
+          ERROR_COUNT="$(
+            wc -l \
+              < "$ARTIFACT_DIR/ERRORS.txt" \
+              | tr -d ' '
+          )"
+
+          WARNING_COUNT="$(
+            wc -l \
+              < "$ARTIFACT_DIR/WARNINGS.txt" \
+              | tr -d ' '
+          )"
+
+          {
+            echo "ERROR_COUNT=$ERROR_COUNT"
+            echo "WARNING_COUNT=$WARNING_COUNT"
+          } | tee "$ARTIFACT_DIR/DIAGNOSTICS.txt"
+
+          if [ "$ERROR_COUNT" -ne 0 ]; then
+            echo "ERROR: compiler error text detected despite successful build"
+            cat "$ARTIFACT_DIR/ERRORS.txt"
+            exit 1
+          fi
+
+          if [ "$WARNING_COUNT" -ne 0 ]; then
+            echo
+            echo "NOTE: full build completed successfully but emitted warnings:"
+            cat "$ARTIFACT_DIR/WARNINGS.txt"
+          fi
+
+      - name: Prepare full kernel probe artifact
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          IMAGE="$OUT_DIR/arch/arm64/boot/Image"
+          VEUX_DTB="$OUT_DIR/arch/arm64/boot/dts/vendor/xiaomi/veux.dtb"
+
+          cp \
+            "$IMAGE" \
+            "$ARTIFACT_DIR/Image"
+
+          cp \
+            "$VEUX_DTB" \
+            "$ARTIFACT_DIR/veux.dtb"
+
+          IMAGE_SHA="$(
+            sha256sum "$IMAGE" \
+              | awk '{print $1}'
+          )"
+
+          DTB_SHA="$(
+            sha256sum "$VEUX_DTB" \
+              | awk '{print $1}'
+          )"
+
+          CASS_SYMBOL_COUNT="$(
+            awk -F= \
+              '$1=="CASS_SYMBOL_COUNT" {print $2}' \
+              "$ARTIFACT_DIR/CASS-SYMBOL-COUNT.txt"
+          )"
+
+          WARNING_COUNT="$(
+            awk -F= \
+              '$1=="WARNING_COUNT" {print $2}' \
+              "$ARTIFACT_DIR/DIAGNOSTICS.txt"
+          )"
+
+          {
+            echo "RESULT=PASS"
+            echo "BASE_CANDIDATE_TREE=$EXPECTED_CANDIDATE_TREE"
+            echo "CASS_PATCH_SHA256=$EXPECTED_PROBE_DIFF_SHA256"
+            echo "CASS_PATCH_MATCHES_26C=YES"
+            echo "THERMAL_LOAD_AVG_RESTORED=NO"
+            echo "CAP_ORIG_RESTORED=YES"
+            echo "CAP_NO_THERM_RESTORED=YES"
+            echo "CAP_MAX_USES_MAX_FREQ_SCALE=YES"
+            echo "FULL_KERNEL_BUILD=PASS"
+            echo "IMAGE_CREATED=YES"
+            echo "DTBS_BUILT=YES"
+            echo "VEUX_DTB_PARSE=PASS"
+            echo "CASS_SYMBOL_COUNT=$CASS_SYMBOL_COUNT"
+            echo "COMPILER_ERRORS=0"
+            echo "COMPILER_WARNINGS=$WARNING_COUNT"
+            echo "IMAGE_SHA256=$IMAGE_SHA"
+            echo "VEUX_DTB_SHA256=$DTB_SHA"
+            echo "RESUKISU_CHANGED=NO"
+            echo "SUSFS_CHANGED=NO"
+            echo "BOOT_IMAGE_CREATED=NO"
+            echo "FLASHABLE_ZIP_CREATED=NO"
+            echo "DEVICE_FLASHED=NO"
+          } | tee "$ARTIFACT_DIR/RESULT.txt"
+
+      - name: Upload CASS full kernel compile probe
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: VEUX-CASS-MaxFreq-Thermal-Full-Kernel-Compile-Probe
+          path: cass-full-kernel-probe/
+          if-no-files-found: error
+          retention-days: 30
