@@ -1,0 +1,1167 @@
+name: 33C - VEUX Enable CPUSETS Full Build Probe
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+
+    env:
+      ARCH: arm64
+      COMMON_REF: "android11-5.4.274_r00"
+
+      STABILITY_REVERT: "f74e5c1b7c3f3e42f694e5ab524f95f62a0dab80"
+      LB_CAPACITY_COMMIT: "2c1495be9eabac845acc8da45f070622d6455091"
+
+      EXPECTED_CANDIDATE_TREE: "5d25b7e0124d7fb695f3f07b45928fcb5780d0e8"
+
+      EXPECTED_CASS_DIFF_SHA256: "67abb81be8c2d7727c3e4c8a92419c9e9a3d97ee3d3e5355d3acabce34adf659"
+
+      CLANG_PREBUILT_COMMIT: "aa2e4a514a6c85eebcc4a27149eaf9244e951a1e"
+
+      TOOLCHAIN_DIR: ${{ github.workspace }}/toolchains/clang-r416183b
+      OUT_DIR: out
+      ARTIFACT_DIR: ${{ github.workspace }}/cpusets-enable-probe
+
+    steps:
+      - name: Prepare probe directory
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p \
+            "$ARTIFACT_DIR" \
+            "$TOOLCHAIN_DIR"
+
+          cat > "$ARTIFACT_DIR/PLAN.txt" <<'EOF'
+          VEUX Enable CPUSETS Full Build Probe
+          =====================================
+
+          Established by 32P:
+          - Candidate 2 resolves CONFIG_CPUSETS as disabled.
+          - Candidate 2 cpuset.c already uses the normal userspace mask:
+              update_cpumask(cs, trialcs, buf)
+          - Candidate 2 does NOT contain the hardcoded "0-7" override.
+          - Xiaomi VEUX does NOT contain the hardcoded "0-7" override.
+          - Android Common does NOT contain the hardcoded "0-7" override.
+          - therefore cpuset.c requires no modification.
+          - the remaining deviation is the disabled CONFIG_CPUSETS setting.
+
+          Cumulative proven changes retained by 33C:
+          - CASS MaxFreq/Thermal adaptation
+          - SPRD task rotation disabled
+          - standard load-balance capacity rate limit restored
+
+          New 33C change:
+          - restore CONFIG_CPUSETS=y in veux_defconfig
+
+          Validation:
+          - exact Candidate 2 identity
+          - normal cpuset source path
+          - CONFIG_CPUSETS=y after veux_defconfig
+          - cpuset.o actually compiled
+          - CASS still linked
+          - SPRD rotation remains absent
+          - complete Image + DTBs build
+          - zero compiler errors
+
+          This workflow does NOT:
+          - modify cpuset.c
+          - restore the hardcoded 0-7 patch
+          - modify ReSukiSU
+          - modify SUSFS
+          - create boot.img
+          - create a flashable ZIP
+          - access a phone
+          - flash anything
+          EOF
+
+      - name: Install build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          sudo apt-get update
+
+          sudo apt-get install -y --no-install-recommends \
+            bc \
+            bison \
+            build-essential \
+            ca-certificates \
+            cpio \
+            curl \
+            flex \
+            git \
+            libelf-dev \
+            libncurses-dev \
+            libssl-dev \
+            python3 \
+            python-is-python3 \
+            rsync \
+            xz-utils \
+            zstd
+
+      - name: Install exact Android clang-r416183b
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          curl \
+            --fail \
+            --location \
+            --retry 3 \
+            "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/${CLANG_PREBUILT_COMMIT}/clang-r416183b.tar.gz" \
+            -o "${RUNNER_TEMP}/clang-r416183b.tar.gz"
+
+          tar \
+            -xzf "${RUNNER_TEMP}/clang-r416183b.tar.gz" \
+            -C "$TOOLCHAIN_DIR"
+
+          echo "$TOOLCHAIN_DIR/bin" >> "$GITHUB_PATH"
+
+          "$TOOLCHAIN_DIR/bin/clang" --version \
+            | tee "$ARTIFACT_DIR/clang-version.txt"
+
+          "$TOOLCHAIN_DIR/bin/ld.lld" --version \
+            | tee -a "$ARTIFACT_DIR/clang-version.txt"
+
+          if ! "$TOOLCHAIN_DIR/bin/clang" --version \
+            | grep -q 'r416183b'
+          then
+            echo "ERROR: expected clang-r416183b"
+            exit 1
+          fi
+
+          for tool in \
+            clang \
+            ld.lld \
+            llvm-ar \
+            llvm-nm \
+            llvm-objcopy \
+            llvm-objdump \
+            llvm-readelf \
+            llvm-size \
+            llvm-strip
+          do
+            if [ ! -x "$TOOLCHAIN_DIR/bin/$tool" ]; then
+              echo "ERROR: missing toolchain binary: $tool"
+              exit 1
+            fi
+          done
+
+      - name: Checkout exact VEUX source
+        uses: actions/checkout@v7
+        with:
+          repository: dereference23/kernel_xiaomi_sm6375
+          ref: "20240619"
+          fetch-depth: 0
+          path: kernel
+          persist-credentials: false
+
+      - name: Recreate exact Candidate 2
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email \
+            "41898282+github-actions[bot]@users.noreply.github.com"
+
+          BASE_SHA="$(git rev-parse HEAD)"
+          BASE_TREE="$(git rev-parse HEAD^{tree})"
+
+          git remote remove android-common 2>/dev/null || true
+
+          git remote add \
+            android-common \
+            https://android.googlesource.com/kernel/common
+
+          git fetch \
+            --no-tags \
+            android-common \
+            "$COMMON_REF"
+
+          COMMON_SHA="$(git rev-parse FETCH_HEAD)"
+
+          git update-ref \
+            refs/remotes/android-common/audit-base \
+            "$COMMON_SHA"
+
+          git merge \
+            --no-edit \
+            "$COMMON_SHA"
+
+          MERGED_SHA="$(git rev-parse HEAD)"
+          MERGED_TREE="$(git rev-parse HEAD^{tree})"
+
+          git cat-file -e \
+            "${STABILITY_REVERT}^{commit}"
+
+          git revert \
+            --no-edit \
+            "$STABILITY_REVERT"
+
+          CANDIDATE_SHA="$(git rev-parse HEAD)"
+          CANDIDATE_TREE="$(git rev-parse HEAD^{tree})"
+
+          KERNEL_VERSION="$(
+            make -s kernelversion
+          )"
+
+          if [ "$KERNEL_VERSION" != "5.4.274" ]; then
+            echo "ERROR: expected Linux 5.4.274"
+            echo "Actual: $KERNEL_VERSION"
+            exit 1
+          fi
+
+          if [ "$CANDIDATE_TREE" != "$EXPECTED_CANDIDATE_TREE" ]; then
+            echo "ERROR: Candidate 2 tree mismatch"
+            echo "Expected: $EXPECTED_CANDIDATE_TREE"
+            echo "Actual:   $CANDIDATE_TREE"
+            exit 1
+          fi
+
+          {
+            echo "BASE_SHA=$BASE_SHA"
+            echo "BASE_TREE=$BASE_TREE"
+            echo "COMMON_SHA=$COMMON_SHA"
+            echo "MERGED_SHA=$MERGED_SHA"
+            echo "MERGED_TREE=$MERGED_TREE"
+            echo "CANDIDATE_SHA=$CANDIDATE_SHA"
+            echo "CANDIDATE_TREE=$CANDIDATE_TREE"
+            echo "KERNEL_VERSION=$KERNEL_VERSION"
+            echo "COMMON_REF=$COMMON_REF"
+            echo "STABILITY_REVERT=$STABILITY_REVERT"
+            echo "LB_CAPACITY_COMMIT=$LB_CAPACITY_COMMIT"
+          } | tee "$ARTIFACT_DIR/IDENTITY.txt"
+
+      - name: Verify Candidate cpuset source is already normal
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SOURCE="kernel/cgroup/cpuset.c"
+
+          if [ ! -f "$SOURCE" ]; then
+            echo "ERROR: kernel/cgroup/cpuset.c missing"
+            exit 1
+          fi
+
+          if ! grep -qF \
+            'update_cpumask(cs, trialcs, buf)' \
+            "$SOURCE"
+          then
+            echo "ERROR: normal userspace cpuset mask path missing"
+            exit 1
+          fi
+
+          if grep -qF \
+            'update_cpumask(cs, trialcs, "0-7")' \
+            "$SOURCE"
+          then
+            echo "ERROR: hardcoded 0-7 cpuset override unexpectedly present"
+            exit 1
+          fi
+
+          {
+            echo "CPUSET_SOURCE_PATH=kernel/cgroup/cpuset.c"
+            echo "USERSPACE_MASK_BUF=YES"
+            echo "HARDCODED_0_7=NO"
+
+            echo
+            echo "===== cpuset write context ====="
+
+            grep \
+              -n \
+              -A16 \
+              -B10 \
+              'case FILE_CPULIST' \
+              "$SOURCE" \
+              || true
+          } | tee "$ARTIFACT_DIR/CPUSET-SOURCE-STATE.txt"
+
+          sha256sum \
+            "$SOURCE" \
+            | tee "$ARTIFACT_DIR/cpuset-source-before.sha256"
+
+      - name: Verify CPUSETS baseline is disabled
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if grep -qx \
+            'CONFIG_CPUSETS=y' \
+            arch/arm64/configs/veux_defconfig
+          then
+            echo "ERROR: CPUSETS unexpectedly already enabled"
+            exit 1
+          fi
+
+          {
+            echo "===== Candidate VEUX cgroup configuration ====="
+
+            grep -nE \
+              'CONFIG_CGROUPS|CONFIG_CGROUP_SCHED|CONFIG_CGROUP_FREEZER|CONFIG_CPUSETS|CONFIG_CGROUP_CPUACCT|CONFIG_CGROUP_BPF' \
+              arch/arm64/configs/veux_defconfig \
+              || true
+          } | tee "$ARTIFACT_DIR/CPUSET-BASELINE-CONFIG.txt"
+
+          echo "CPUSETS_BASELINE_EXPLICIT_Y=NO" \
+            | tee "$ARTIFACT_DIR/CPUSET-BASELINE-STATE.txt"
+
+      - name: Restore standard load balance capacity rate limit
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git cat-file -e \
+            "${LB_CAPACITY_COMMIT}^{commit}"
+
+          git show \
+            --format= \
+            --binary \
+            "$LB_CAPACITY_COMMIT" \
+            > "$ARTIFACT_DIR/LB-CAPACITY-ORIGINAL-COMMIT.patch"
+
+          PATCH="$ARTIFACT_DIR/LB-CAPACITY-ORIGINAL-COMMIT.patch"
+
+          test -s "$PATCH"
+
+          git apply \
+            --reverse \
+            --check \
+            "$PATCH"
+
+          git apply \
+            --reverse \
+            "$PATCH"
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          fair = Path("kernel/sched/fair.c").read_text()
+          sched = Path("kernel/sched/sched.h").read_text()
+
+          required_fair = (
+              "unsigned long interval;",
+              "interval = msecs_to_jiffies(sd->balance_interval);",
+              "interval = clamp(interval, 1UL, max_load_balance_interval);",
+              "sdg->sgc->next_update = jiffies + interval;",
+              "env->idle != CPU_NEWLY_IDLE",
+              "time_after_eq(jiffies, sg->sgc->next_update)",
+              "update_group_capacity(env->sd, env->dst_cpu);",
+          )
+
+          for token in required_fair:
+              if token not in fair:
+                  raise SystemExit(
+                      f"ERROR: LB capacity restore token missing: {token}"
+                  )
+
+          if "next_update;" not in sched:
+              raise SystemExit(
+                  "ERROR: sched_group_capacity next_update not restored"
+              )
+          PY
+
+          git diff \
+            --no-ext-diff \
+            --no-color \
+            -- \
+            kernel/sched/fair.c \
+            kernel/sched/sched.h \
+            > "$ARTIFACT_DIR/LB-CAPACITY-RATELIMIT-RESTORE.diff"
+
+          RESTORE_DIFF_SHA="$(
+            sha256sum \
+              "$ARTIFACT_DIR/LB-CAPACITY-RATELIMIT-RESTORE.diff" \
+              | awk '{print $1}'
+          )"
+
+          {
+            echo "LB_CAPACITY_COMMIT_REVERSED=YES"
+            echo "LB_CAPACITY_COMMIT=$LB_CAPACITY_COMMIT"
+            echo "LB_CAPACITY_RESTORE_DIFF_SHA256=$RESTORE_DIFF_SHA"
+            echo "NEXT_UPDATE_FIELD=RESTORED"
+            echo "TIME_GATE=RESTORED"
+          } | tee "$ARTIFACT_DIR/LB-CAPACITY-STATE.txt"
+
+      - name: Apply proven CASS MaxFreq Thermal patch
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("kernel/sched/cass.c")
+          text = path.read_text()
+
+          old = """\
+          \tunsigned long cap;
+          \tunsigned long cap_max;
+          \tunsigned long eff_util;
+          """
+
+          new = """\
+          \tunsigned long cap;
+          \tunsigned long cap_max;
+          \tunsigned long cap_no_therm;
+          \tunsigned long cap_orig;
+          \tunsigned long eff_util;
+          """
+
+          if text.count(old) != 1:
+              raise SystemExit(
+                  "struct capacity fields anchor mismatch: "
+                  f"{text.count(old)} matches"
+              )
+
+          text = text.replace(old, new, 1)
+
+          old = """\
+          \tc->cap = c->cap_max - min(c->hard_util, c->cap_max - 1);
+          """
+
+          new = """\
+          \tc->cap = c->cap_max - min(c->hard_util, c->cap_max - 1);
+
+          \t/*
+          \t * Keep a non-throttled capacity denominator for relative load
+          \t * balancing, matching the original CASS capacity separation.
+          \t */
+          \tc->cap_no_therm =
+          \t\tc->cap_orig - min(c->hard_util, c->cap_orig - 1);
+          """
+
+          if text.count(old) != 1:
+              raise SystemExit(
+                  "cass_cpu_util capacity anchor mismatch: "
+                  f"{text.count(old)} matches"
+              )
+
+          text = text.replace(old, new, 1)
+
+          old = """\
+          \t\t/* Get the original, maximum _possible_ capacity of this CPU */
+          \t\tcurr->cap_max = arch_scale_cpu_capacity(cpu);
+          """
+
+          new = """\
+          \t\t/* Get the original, maximum possible capacity of this CPU. */
+          \t\tcurr->cap_orig = arch_scale_cpu_capacity(cpu);
+
+          \t\t/* Account for the current maximum allowed CPU frequency. */
+          \t\tcurr->cap_max =
+          \t\t\tcurr->cap_orig *
+          \t\t\tarch_scale_max_freq_capacity(NULL, cpu) >>
+          \t\t\tSCHED_CAPACITY_SHIFT;
+
+          \t\t/* Keep all later capacity divisions well-defined. */
+          \t\tcurr->cap_max = max(curr->cap_max, 1UL);
+          """
+
+          if text.count(old) != 1:
+              raise SystemExit(
+                  "CASS cap_max anchor mismatch: "
+                  f"{text.count(old)} matches"
+              )
+
+          text = text.replace(old, new, 1)
+
+          old = """\
+          \t\tcurr->util =
+          \t\t\tcurr->util * SCHED_CAPACITY_SCALE / curr->cap;
+          """
+
+          new = """\
+          \t\tcurr->util =
+          \t\t\tcurr->util * SCHED_CAPACITY_SCALE /
+          \t\t\tcurr->cap_no_therm;
+          """
+
+          if text.count(old) != 1:
+              raise SystemExit(
+                  "relative-util denominator anchor mismatch: "
+                  f"{text.count(old)} matches"
+              )
+
+          text = text.replace(old, new, 1)
+
+          path.write_text(text)
+          PY
+
+          git diff \
+            --no-ext-diff \
+            --no-color \
+            -- kernel/sched/cass.c \
+            > "$ARTIFACT_DIR/CASS-PATCH.diff"
+
+          CASS_DIFF_SHA="$(
+            sha256sum \
+              "$ARTIFACT_DIR/CASS-PATCH.diff" \
+              | awk '{print $1}'
+          )"
+
+          echo "EXPECTED_CASS_DIFF_SHA256=$EXPECTED_CASS_DIFF_SHA256"
+          echo "ACTUAL_CASS_DIFF_SHA256=$CASS_DIFF_SHA"
+
+          if [ "$CASS_DIFF_SHA" != "$EXPECTED_CASS_DIFF_SHA256" ]; then
+            echo "ERROR: CASS patch differs from proven patch"
+            exit 1
+          fi
+
+          {
+            echo "CASS_PATCH=PASS"
+            echo "CASS_DIFF_SHA256=$CASS_DIFF_SHA"
+            echo "THERMAL_LOAD_AVG_RESTORED=NO"
+            echo "CAP_ORIG_RESTORED=YES"
+            echo "CAP_NO_THERM_RESTORED=YES"
+            echo "CAP_MAX_USES_MAX_FREQ_SCALE=YES"
+          } | tee "$ARTIFACT_DIR/CASS-PATCH-STATE.txt"
+
+      - name: Disable SPRD rotation
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("arch/arm64/configs/veux_defconfig")
+          text = path.read_text()
+
+          old = "CONFIG_SPRD_ROTATION_TASK=y"
+          new = "# CONFIG_SPRD_ROTATION_TASK is not set"
+
+          count = text.count(old)
+
+          if count != 1:
+              raise SystemExit(
+                  "SPRD rotation anchor mismatch: "
+                  f"{count} matches"
+              )
+
+          text = text.replace(old, new, 1)
+
+          path.write_text(text)
+          PY
+
+          if grep -qx \
+            'CONFIG_SPRD_ROTATION_TASK=y' \
+            arch/arm64/configs/veux_defconfig
+          then
+            echo "ERROR: SPRD rotation still enabled"
+            exit 1
+          fi
+
+          echo "SPRD_ROTATION_DISABLED=YES" \
+            | tee "$ARTIFACT_DIR/SPRD-ROTATION-STATE.txt"
+
+      - name: Enable CPUSETS in VEUX defconfig
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("arch/arm64/configs/veux_defconfig")
+          text = path.read_text()
+
+          if "CONFIG_CPUSETS=y" in text:
+              raise SystemExit(
+                  "ERROR: CONFIG_CPUSETS=y unexpectedly already present"
+              )
+
+          old = """\
+          CONFIG_CGROUP_FREEZER=y
+          CONFIG_CGROUP_CPUACCT=y
+          """
+
+          new = """\
+          CONFIG_CGROUP_FREEZER=y
+          CONFIG_CPUSETS=y
+          CONFIG_CGROUP_CPUACCT=y
+          """
+
+          count = text.count(old)
+
+          if count != 1:
+              raise SystemExit(
+                  "CPUSETS insertion anchor mismatch: "
+                  f"{count} matches"
+              )
+
+          text = text.replace(old, new, 1)
+
+          path.write_text(text)
+          PY
+
+          if ! grep -qx \
+            'CONFIG_CPUSETS=y' \
+            arch/arm64/configs/veux_defconfig
+          then
+            echo "ERROR: CONFIG_CPUSETS=y was not added"
+            exit 1
+          fi
+
+          CPUSET_COUNT="$(
+            grep -xc \
+              'CONFIG_CPUSETS=y' \
+              arch/arm64/configs/veux_defconfig
+          )"
+
+          if [ "$CPUSET_COUNT" -ne 1 ]; then
+            echo "ERROR: expected exactly one CONFIG_CPUSETS=y entry"
+            exit 1
+          fi
+
+          {
+            echo "CPUSETS_ADDED_TO_VEUX_DEFCONFIG=YES"
+            echo "CPUSETS_ENTRY_COUNT=$CPUSET_COUNT"
+
+            echo
+            grep -nE \
+              'CONFIG_CGROUP_FREEZER|CONFIG_CPUSETS|CONFIG_CGROUP_CPUACCT' \
+              arch/arm64/configs/veux_defconfig
+          } | tee "$ARTIFACT_DIR/CPUSET-DEFCONFIG-CHANGE.txt"
+
+          git diff \
+            --no-ext-diff \
+            --no-color \
+            -- arch/arm64/configs/veux_defconfig \
+            > "$ARTIFACT_DIR/VEUX-DEFCONFIG-CUMULATIVE.diff"
+
+          cat "$ARTIFACT_DIR/VEUX-DEFCONFIG-CUMULATIVE.diff"
+
+          git diff --check \
+            > "$ARTIFACT_DIR/FINAL-GIT-DIFF-CHECK.txt" \
+            2>&1
+
+      - name: Verify cpuset source remained untouched
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SOURCE="kernel/cgroup/cpuset.c"
+
+          sha256sum \
+            "$SOURCE" \
+            | tee "$ARTIFACT_DIR/cpuset-source-after.sha256"
+
+          BEFORE="$(
+            awk '{print $1}' \
+              "$ARTIFACT_DIR/cpuset-source-before.sha256"
+          )"
+
+          AFTER="$(
+            awk '{print $1}' \
+              "$ARTIFACT_DIR/cpuset-source-after.sha256"
+          )"
+
+          if [ "$BEFORE" != "$AFTER" ]; then
+            echo "ERROR: cpuset.c changed unexpectedly"
+            exit 1
+          fi
+
+          if ! grep -qF \
+            'update_cpumask(cs, trialcs, buf)' \
+            "$SOURCE"
+          then
+            echo "ERROR: normal cpuset mask handling disappeared"
+            exit 1
+          fi
+
+          if grep -qF \
+            'update_cpumask(cs, trialcs, "0-7")' \
+            "$SOURCE"
+          then
+            echo "ERROR: hardcoded 0-7 override appeared"
+            exit 1
+          fi
+
+          {
+            echo "CPUSET_SOURCE_MODIFIED=NO"
+            echo "CPUSET_SOURCE_SHA256=$AFTER"
+            echo "USERSPACE_MASK_BUF=YES"
+            echo "HARDCODED_0_7=NO"
+          } | tee "$ARTIFACT_DIR/CPUSET-SOURCE-INTEGRITY.txt"
+
+      - name: Resolve VEUX configuration
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          export PATH="$TOOLCHAIN_DIR/bin:$PATH"
+          export KCFLAGS="-D__ANDROID_COMMON_KERNEL__"
+
+          rm -rf "$OUT_DIR"
+
+          make \
+            O="$OUT_DIR" \
+            ARCH="$ARCH" \
+            LLVM=1 \
+            veux_defconfig \
+            2>&1 \
+            | tee "$ARTIFACT_DIR/config.log"
+
+          CONFIG="$OUT_DIR/.config"
+
+          if [ ! -f "$CONFIG" ]; then
+            echo "ERROR: resolved .config missing"
+            exit 1
+          fi
+
+          REQUIRED_CONFIGS=(
+            CONFIG_ARCH_QCOM=y
+            CONFIG_ARCH_HOLI=y
+            CONFIG_ARCH_BLAIR=y
+            CONFIG_WT_QGKI=y
+            CONFIG_LTO_CLANG=y
+            CONFIG_BUILD_ARM64_UNCOMPRESSED_KERNEL=y
+            CONFIG_SCHED_CASS=y
+            CONFIG_CPUSETS=y
+            CONFIG_CPU_FREQ=y
+            CONFIG_CPU_FREQ_GOV_SCHEDUTIL=y
+            CONFIG_ARM_QCOM_CPUFREQ_HW=y
+          )
+
+          for item in "${REQUIRED_CONFIGS[@]}"; do
+            if ! grep -qx \
+              "$item" \
+              "$CONFIG"
+            then
+              echo "ERROR: required config missing: $item"
+              exit 1
+            fi
+          done
+
+          if grep -qx \
+            'CONFIG_SPRD_ROTATION_TASK=y' \
+            "$CONFIG"
+          then
+            echo "ERROR: SPRD rotation unexpectedly enabled"
+            exit 1
+          fi
+
+          if ! grep -qx \
+            '# CONFIG_SPRD_ROTATION_TASK is not set' \
+            "$CONFIG"
+          then
+            echo "ERROR: SPRD rotation disable marker missing"
+            exit 1
+          fi
+
+          if grep -qx \
+            '# CONFIG_CPUSETS is not set' \
+            "$CONFIG"
+          then
+            echo "ERROR: CPUSETS still disabled in resolved configuration"
+            exit 1
+          fi
+
+          cp \
+            "$CONFIG" \
+            "$ARTIFACT_DIR/resolved.config"
+
+          {
+            echo "===== Important resolved configuration ====="
+
+            grep -E \
+              '^(CONFIG_CGROUPS=|CONFIG_CGROUP_SCHED=|CONFIG_CGROUP_FREEZER=|CONFIG_CPUSETS=|# CONFIG_CPUSETS|CONFIG_CGROUP_CPUACCT=|CONFIG_CGROUP_BPF=|CONFIG_SCHED_CASS=|CONFIG_SPRD_ROTATION_TASK=|# CONFIG_SPRD_ROTATION_TASK|CONFIG_CPU_FREQ=|CONFIG_CPU_FREQ_GOV_SCHEDUTIL=|CONFIG_ARM_QCOM_CPUFREQ_HW=)' \
+              "$CONFIG" \
+              || true
+          } | tee "$ARTIFACT_DIR/CONFIG-IMPORTANT.txt"
+
+          echo "CPUSETS_RESOLVED=ENABLED" \
+            | tee "$ARTIFACT_DIR/CPUSET-RESOLVED-STATE.txt"
+
+          make \
+            -s \
+            O="$OUT_DIR" \
+            ARCH="$ARCH" \
+            LLVM=1 \
+            kernelrelease \
+            | tee "$ARTIFACT_DIR/kernelrelease.txt"
+
+      - name: Build complete kernel Image and DTBs
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          export PATH="$TOOLCHAIN_DIR/bin:$PATH"
+          export KCFLAGS="-D__ANDROID_COMMON_KERNEL__"
+
+          set +e
+
+          make \
+            -j"$(nproc)" \
+            O="$OUT_DIR" \
+            ARCH="$ARCH" \
+            LLVM=1 \
+            Image \
+            dtbs \
+            2>&1 \
+            | tee "$ARTIFACT_DIR/full-build.log"
+
+          BUILD_RC=${PIPESTATUS[0]}
+
+          set -e
+
+          printf '%s\n' \
+            "$BUILD_RC" \
+            > "$ARTIFACT_DIR/full-build.exit-code"
+
+          if [ "$BUILD_RC" -ne 0 ]; then
+            echo "ERROR: full kernel build failed"
+            exit "$BUILD_RC"
+          fi
+
+      - name: Verify CPUSET object was compiled
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          CPUSET_OBJ="$OUT_DIR/kernel/cgroup/cpuset.o"
+
+          if [ ! -f "$CPUSET_OBJ" ]; then
+            echo "ERROR: CONFIG_CPUSETS=y but cpuset.o was not built"
+            exit 1
+          fi
+
+          CPUSET_BYTES="$(
+            stat -c '%s' \
+              "$CPUSET_OBJ"
+          )"
+
+          if [ "$CPUSET_BYTES" -le 0 ]; then
+            echo "ERROR: cpuset.o is empty"
+            exit 1
+          fi
+
+          sha256sum \
+            "$CPUSET_OBJ" \
+            | tee "$ARTIFACT_DIR/cpuset.o.sha256"
+
+          "$TOOLCHAIN_DIR/bin/llvm-nm" \
+            "$CPUSET_OBJ" \
+            > "$ARTIFACT_DIR/cpuset-object-symbols.txt" \
+            2>&1 \
+            || true
+
+          CPUSET_SYMBOL_COUNT="$(
+            grep -Ei \
+              'cpuset' \
+              "$ARTIFACT_DIR/cpuset-object-symbols.txt" \
+              | wc -l \
+              | tr -d ' '
+          )"
+
+          {
+            echo "CPUSET_OBJECT=kernel/cgroup/cpuset.o"
+            echo "CPUSET_OBJECT_BYTES=$CPUSET_BYTES"
+            echo "CPUSET_OBJECT_BUILT=YES"
+            echo "CPUSET_SYMBOL_COUNT=$CPUSET_SYMBOL_COUNT"
+          } | tee "$ARTIFACT_DIR/CPUSET-OBJECT-STATE.txt"
+
+      - name: Verify linked kernel cumulative state
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          VMLINUX="$OUT_DIR/vmlinux"
+
+          if [ ! -s "$VMLINUX" ]; then
+            echo "ERROR: vmlinux missing"
+            exit 1
+          fi
+
+          "$TOOLCHAIN_DIR/bin/llvm-nm" \
+            "$VMLINUX" \
+            > "$ARTIFACT_DIR/vmlinux-symbols.txt"
+
+          grep -E \
+            '[[:space:]]cass_[A-Za-z0-9_]+' \
+            "$ARTIFACT_DIR/vmlinux-symbols.txt" \
+            > "$ARTIFACT_DIR/vmlinux-cass-symbols.txt" \
+            || true
+
+          CASS_SYMBOL_COUNT="$(
+            wc -l \
+              < "$ARTIFACT_DIR/vmlinux-cass-symbols.txt" \
+              | tr -d ' '
+          )"
+
+          if [ "$CASS_SYMBOL_COUNT" -lt 1 ]; then
+            echo "ERROR: CASS disappeared from linked kernel"
+            exit 1
+          fi
+
+          grep -E \
+            'check_for_task_rotation|try_rotation_task|do_rotation_task|rotation_task_init|set_rotation_enable' \
+            "$ARTIFACT_DIR/vmlinux-symbols.txt" \
+            > "$ARTIFACT_DIR/ROTATION-SYMBOLS.txt" \
+            || true
+
+          ROTATION_SYMBOL_COUNT="$(
+            wc -l \
+              < "$ARTIFACT_DIR/ROTATION-SYMBOLS.txt" \
+              | tr -d ' '
+          )"
+
+          if [ "$ROTATION_SYMBOL_COUNT" -ne 0 ]; then
+            echo "ERROR: SPRD rotation symbols remain linked"
+            cat "$ARTIFACT_DIR/ROTATION-SYMBOLS.txt"
+            exit 1
+          fi
+
+          grep -Ei \
+            '[[:space:]][A-Za-z0-9_]*cpuset[A-Za-z0-9_]*$' \
+            "$ARTIFACT_DIR/vmlinux-symbols.txt" \
+            > "$ARTIFACT_DIR/vmlinux-cpuset-symbols.txt" \
+            || true
+
+          VMLINUX_CPUSET_SYMBOL_COUNT="$(
+            wc -l \
+              < "$ARTIFACT_DIR/vmlinux-cpuset-symbols.txt" \
+              | tr -d ' '
+          )"
+
+          {
+            echo "CASS_SYMBOL_COUNT=$CASS_SYMBOL_COUNT"
+            echo "ROTATION_SYMBOL_COUNT=$ROTATION_SYMBOL_COUNT"
+            echo "VMLINUX_CPUSET_SYMBOL_COUNT=$VMLINUX_CPUSET_SYMBOL_COUNT"
+          } | tee "$ARTIFACT_DIR/LINKED-KERNEL-STATE.txt"
+
+      - name: Verify complete build outputs
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          IMAGE="$OUT_DIR/arch/arm64/boot/Image"
+          VEUX_DTB="$OUT_DIR/arch/arm64/boot/dts/vendor/xiaomi/veux.dtb"
+          VMLINUX="$OUT_DIR/vmlinux"
+
+          if [ ! -s "$IMAGE" ]; then
+            echo "ERROR: kernel Image missing"
+            exit 1
+          fi
+
+          if [ ! -s "$VEUX_DTB" ]; then
+            echo "ERROR: VEUX DTB missing"
+            exit 1
+          fi
+
+          if [ ! -s "$VMLINUX" ]; then
+            echo "ERROR: vmlinux missing"
+            exit 1
+          fi
+
+          "$OUT_DIR/scripts/dtc/dtc" \
+            -I dtb \
+            -O dts \
+            -o /dev/null \
+            "$VEUX_DTB"
+
+          {
+            echo "IMAGE_BYTES=$(stat -c '%s' "$IMAGE")"
+            echo "VEUX_DTB_BYTES=$(stat -c '%s' "$VEUX_DTB")"
+            echo "VMLINUX_BYTES=$(stat -c '%s' "$VMLINUX")"
+            echo
+            sha256sum "$IMAGE"
+            sha256sum "$VEUX_DTB"
+            sha256sum "$VMLINUX"
+          } | tee "$ARTIFACT_DIR/OUTPUT-HASHES.txt"
+
+          echo "VEUX_DTB_PARSE=PASS" \
+            | tee "$ARTIFACT_DIR/DTB-CHECK.txt"
+
+      - name: Audit full build diagnostics
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          LOG="$ARTIFACT_DIR/full-build.log"
+
+          grep -Ei \
+            '(^|[[:space:]])error:' \
+            "$LOG" \
+            > "$ARTIFACT_DIR/ERRORS.txt" \
+            || true
+
+          grep -Ei \
+            '(^|[[:space:]])warning:' \
+            "$LOG" \
+            > "$ARTIFACT_DIR/WARNINGS.txt" \
+            || true
+
+          ERROR_COUNT="$(
+            wc -l \
+              < "$ARTIFACT_DIR/ERRORS.txt" \
+              | tr -d ' '
+          )"
+
+          WARNING_COUNT="$(
+            wc -l \
+              < "$ARTIFACT_DIR/WARNINGS.txt" \
+              | tr -d ' '
+          )"
+
+          {
+            echo "ERROR_COUNT=$ERROR_COUNT"
+            echo "WARNING_COUNT=$WARNING_COUNT"
+          } | tee "$ARTIFACT_DIR/DIAGNOSTICS.txt"
+
+          if [ "$ERROR_COUNT" -ne 0 ]; then
+            echo "ERROR: compiler errors detected"
+            cat "$ARTIFACT_DIR/ERRORS.txt"
+            exit 1
+          fi
+
+          if [ "$WARNING_COUNT" -ne 0 ]; then
+            echo
+            echo "NOTE: successful full build emitted warnings:"
+            cat "$ARTIFACT_DIR/WARNINGS.txt"
+          fi
+
+      - name: Prepare final CPUSETS report
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          IMAGE="$OUT_DIR/arch/arm64/boot/Image"
+          VEUX_DTB="$OUT_DIR/arch/arm64/boot/dts/vendor/xiaomi/veux.dtb"
+
+          cp \
+            "$IMAGE" \
+            "$ARTIFACT_DIR/Image"
+
+          cp \
+            "$VEUX_DTB" \
+            "$ARTIFACT_DIR/veux.dtb"
+
+          IMAGE_SHA="$(
+            sha256sum "$IMAGE" \
+              | awk '{print $1}'
+          )"
+
+          DTB_SHA="$(
+            sha256sum "$VEUX_DTB" \
+              | awk '{print $1}'
+          )"
+
+          CASS_SYMBOL_COUNT="$(
+            awk -F= \
+              '$1=="CASS_SYMBOL_COUNT" {print $2}' \
+              "$ARTIFACT_DIR/LINKED-KERNEL-STATE.txt"
+          )"
+
+          ROTATION_SYMBOL_COUNT="$(
+            awk -F= \
+              '$1=="ROTATION_SYMBOL_COUNT" {print $2}' \
+              "$ARTIFACT_DIR/LINKED-KERNEL-STATE.txt"
+          )"
+
+          CPUSET_SYMBOL_COUNT="$(
+            awk -F= \
+              '$1=="CPUSET_SYMBOL_COUNT" {print $2}' \
+              "$ARTIFACT_DIR/CPUSET-OBJECT-STATE.txt"
+          )"
+
+          VMLINUX_CPUSET_SYMBOL_COUNT="$(
+            awk -F= \
+              '$1=="VMLINUX_CPUSET_SYMBOL_COUNT" {print $2}' \
+              "$ARTIFACT_DIR/LINKED-KERNEL-STATE.txt"
+          )"
+
+          WARNING_COUNT="$(
+            awk -F= \
+              '$1=="WARNING_COUNT" {print $2}' \
+              "$ARTIFACT_DIR/DIAGNOSTICS.txt"
+          )"
+
+          RESTORE_DIFF_SHA="$(
+            awk -F= \
+              '$1=="LB_CAPACITY_RESTORE_DIFF_SHA256" {print $2}' \
+              "$ARTIFACT_DIR/LB-CAPACITY-STATE.txt"
+          )"
+
+          CPUSET_SOURCE_SHA="$(
+            awk -F= \
+              '$1=="CPUSET_SOURCE_SHA256" {print $2}' \
+              "$ARTIFACT_DIR/CPUSET-SOURCE-INTEGRITY.txt"
+          )"
+
+          {
+            echo "RESULT=PASS"
+            echo "BASE_CANDIDATE_TREE=$EXPECTED_CANDIDATE_TREE"
+
+            echo "CASS_PATCH_SHA256=$EXPECTED_CASS_DIFF_SHA256"
+            echo "CASS_PATCH_MATCHES_PROVEN_VERSION=YES"
+            echo "CASS_SYMBOL_COUNT=$CASS_SYMBOL_COUNT"
+
+            echo "SPRD_ROTATION_DISABLED=YES"
+            echo "ROTATION_SYMBOL_COUNT=$ROTATION_SYMBOL_COUNT"
+
+            echo "LB_CAPACITY_UNGATED_COMMIT=$LB_CAPACITY_COMMIT"
+            echo "LB_CAPACITY_UNGATED_COMMIT_REVERSED=YES"
+            echo "LB_CAPACITY_RESTORE_DIFF_SHA256=$RESTORE_DIFF_SHA"
+            echo "LB_CAPACITY_TIME_GATE=RESTORED"
+
+            echo "CPUSETS_BASELINE_DISABLED=YES"
+            echo "CPUSETS_ENABLED=YES"
+            echo "CPUSETS_RESOLVED=ENABLED"
+            echo "CPUSET_SOURCE_MODIFIED=NO"
+            echo "CPUSET_SOURCE_SHA256=$CPUSET_SOURCE_SHA"
+            echo "CPUSET_USERSPACE_MASK_BUF=YES"
+            echo "CPUSET_HARDCODED_0_7=NO"
+            echo "CPUSET_OBJECT_BUILT=YES"
+            echo "CPUSET_OBJECT_SYMBOL_COUNT=$CPUSET_SYMBOL_COUNT"
+            echo "VMLINUX_CPUSET_SYMBOL_COUNT=$VMLINUX_CPUSET_SYMBOL_COUNT"
+
+            echo "FULL_KERNEL_BUILD=PASS"
+            echo "COMPILER_ERRORS=0"
+            echo "COMPILER_WARNINGS=$WARNING_COUNT"
+
+            echo "IMAGE_CREATED=YES"
+            echo "DTBS_BUILT=YES"
+            echo "VEUX_DTB_PARSE=PASS"
+            echo "IMAGE_SHA256=$IMAGE_SHA"
+            echo "VEUX_DTB_SHA256=$DTB_SHA"
+
+            echo "RESUKISU_CHANGED=NO"
+            echo "SUSFS_CHANGED=NO"
+            echo "BOOT_IMAGE_CREATED=NO"
+            echo "FLASHABLE_ZIP_CREATED=NO"
+            echo "DEVICE_FLASHED=NO"
+          } | tee "$ARTIFACT_DIR/RESULT.txt"
+
+      - name: Upload CPUSETS full build probe
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: VEUX-CPUSETS-Enable-Full-Build-Probe
+          path: cpusets-enable-probe/
+          if-no-files-found: error
+          retention-days: 30
