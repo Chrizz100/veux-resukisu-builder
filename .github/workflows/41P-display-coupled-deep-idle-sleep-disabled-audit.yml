@@ -1,0 +1,1738 @@
+name: 41P - VEUX Display Coupled Deep Idle Sleep Disabled Audit
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    env:
+      ARCH: arm64
+
+      COMMON_REF: "android11-5.4.274_r00"
+      STOCK_REF: "veux-r-oss"
+
+      STABILITY_REVERT: "f74e5c1b7c3f3e42f694e5ab524f95f62a0dab80"
+
+      EXPECTED_CANDIDATE_TREE: "5d25b7e0124d7fb695f3f07b45928fcb5780d0e8"
+
+      OUT_DIR: out
+      ARTIFACT_DIR: ${{ github.workspace }}/display-deep-idle-audit
+
+    steps:
+      - name: Prepare audit directory
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p "$ARTIFACT_DIR"
+
+          cat > "$ARTIFACT_DIR/PLAN.txt" <<'EOF'
+          VEUX Display Coupled Deep Idle / sleep_disabled Audit
+          =====================================================
+
+          Previously closed items:
+          - CASS MaxFreq/Thermal adaptation
+          - SPRD task rotation disabled
+          - standard LB CPU-capacity rate limit restored
+          - CONFIG_CPUSETS restored
+          - CASS reserved-CPU issue rendered inactive
+          - exact Xiaomi VEUX PELT8 restored
+          - custom HZ100 removed, HZ250 default restored
+          - schedutil lower-step heuristic removed
+          - normal schedutil UClamp boost+cap restored
+
+          Current related checklist items:
+          1. Deep Idle disabled while display is on
+          2. related sleep_disabled modifications
+
+          Known Candidate observations:
+          - under CONFIG_DRM_PANEL:
+              static bool sleep_disabled = true;
+          - display UNBLANK sets sleep_disabled=true
+          - display POWERDOWN/LP sets sleep_disabled=false
+          - goodix_get_panel() supplies the active panel
+          - a DRM panel notifier is registered
+          - idle selection contains a sleep_disabled guard
+          - idle entry contains a sleep_disabled guard
+          - lpm_sleep_disabled() is exported
+          - generic cpuidle code calls lpm_sleep_disabled()
+
+          Known Xiaomi observation:
+          - sleep_disabled exists as a normal module parameter
+          - its baseline declaration is not display-coupled
+          - Xiaomi does not have the Candidate lpm_sleep_disabled()
+            integration in include/linux/cpuidle.h
+
+          Purpose of 41P:
+          - reconstruct exact Candidate 2
+          - resolve relevant VEUX configuration
+          - enumerate every sleep_disabled-related reference
+          - prove exact screen-on/screen-off behaviour
+          - prove exact idle-selection and idle-entry effects
+          - inspect generic cpuidle integration
+          - dynamically discover introducing commits using git blame/log
+          - compare Candidate 2 with official Xiaomi VEUX
+          - compare with Android Common where corresponding files exist
+          - determine whether this is a custom display-coupled idle policy
+
+          IMPORTANT:
+          - no unverified historical commit SHA is hardcoded
+          - commit attribution is discovered from the exact source tree
+
+          This workflow is AUDIT ONLY.
+
+          No source modification.
+          No kernel Image build.
+          No boot.img.
+          No flashable ZIP.
+          No device access.
+          No flashing.
+          EOF
+
+      - name: Checkout exact VEUX source
+        uses: actions/checkout@v7
+        with:
+          repository: dereference23/kernel_xiaomi_sm6375
+          ref: "20240619"
+          fetch-depth: 0
+          path: kernel
+          persist-credentials: false
+
+      - name: Recreate exact Candidate 2
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email \
+            "41898282+github-actions[bot]@users.noreply.github.com"
+
+          BASE_SHA="$(git rev-parse HEAD)"
+          BASE_TREE="$(git rev-parse HEAD^{tree})"
+
+          git remote remove android-common 2>/dev/null || true
+
+          git remote add \
+            android-common \
+            https://android.googlesource.com/kernel/common
+
+          git fetch \
+            --no-tags \
+            android-common \
+            "$COMMON_REF"
+
+          COMMON_SHA="$(git rev-parse FETCH_HEAD)"
+
+          git update-ref \
+            refs/remotes/android-common/audit-base \
+            "$COMMON_SHA"
+
+          git merge \
+            --no-edit \
+            "$COMMON_SHA"
+
+          MERGED_SHA="$(git rev-parse HEAD)"
+          MERGED_TREE="$(git rev-parse HEAD^{tree})"
+
+          git cat-file -e \
+            "${STABILITY_REVERT}^{commit}"
+
+          git revert \
+            --no-edit \
+            "$STABILITY_REVERT"
+
+          CANDIDATE_SHA="$(git rev-parse HEAD)"
+          CANDIDATE_TREE="$(git rev-parse HEAD^{tree})"
+
+          KERNEL_VERSION="$(
+            make -s kernelversion
+          )"
+
+          if [ "$KERNEL_VERSION" != "5.4.274" ]; then
+            echo "ERROR: expected Linux 5.4.274"
+            echo "Actual: $KERNEL_VERSION"
+            exit 1
+          fi
+
+          if [ "$CANDIDATE_TREE" != "$EXPECTED_CANDIDATE_TREE" ]; then
+            echo "ERROR: Candidate 2 tree mismatch"
+            echo "Expected: $EXPECTED_CANDIDATE_TREE"
+            echo "Actual:   $CANDIDATE_TREE"
+            exit 1
+          fi
+
+          {
+            echo "BASE_SHA=$BASE_SHA"
+            echo "BASE_TREE=$BASE_TREE"
+            echo "COMMON_SHA=$COMMON_SHA"
+            echo "MERGED_SHA=$MERGED_SHA"
+            echo "MERGED_TREE=$MERGED_TREE"
+            echo "CANDIDATE_SHA=$CANDIDATE_SHA"
+            echo "CANDIDATE_TREE=$CANDIDATE_TREE"
+            echo "KERNEL_VERSION=$KERNEL_VERSION"
+            echo "COMMON_REF=$COMMON_REF"
+            echo "STABILITY_REVERT=$STABILITY_REVERT"
+          } | tee "$ARTIFACT_DIR/IDENTITY.txt"
+
+      - name: Fetch official Xiaomi VEUX reference
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git remote remove xiaomi 2>/dev/null || true
+
+          git remote add \
+            xiaomi \
+            https://github.com/MiCode/Xiaomi_Kernel_OpenSource.git
+
+          git fetch \
+            --no-tags \
+            xiaomi \
+            "+refs/heads/${STOCK_REF}:refs/remotes/xiaomi/${STOCK_REF}"
+
+          STOCK_SHA="$(
+            git rev-parse "xiaomi/${STOCK_REF}"
+          )"
+
+          MERGE_BASE="$(
+            git merge-base \
+              HEAD \
+              "xiaomi/${STOCK_REF}" \
+              || true
+          )"
+
+          {
+            echo "STOCK_REF=$STOCK_REF"
+            echo "STOCK_SHA=$STOCK_SHA"
+            echo "CANDIDATE_XIAOMI_MERGE_BASE=${MERGE_BASE:-NONE}"
+          } | tee "$ARTIFACT_DIR/XIAOMI-REFERENCE.txt"
+
+      - name: Resolve relevant VEUX idle configuration
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -rf "$OUT_DIR"
+
+          make \
+            O="$OUT_DIR" \
+            ARCH="$ARCH" \
+            veux_defconfig \
+            2>&1 \
+            | tee "$ARTIFACT_DIR/config.log"
+
+          CONFIG="$OUT_DIR/.config"
+
+          if [ ! -f "$CONFIG" ]; then
+            echo "ERROR: resolved .config missing"
+            exit 1
+          fi
+
+          cp \
+            "$CONFIG" \
+            "$ARTIFACT_DIR/resolved.config"
+
+          {
+            echo "===== Relevant resolved idle/display configuration ====="
+
+            grep -E \
+              '^(CONFIG_CPU_IDLE=|# CONFIG_CPU_IDLE|CONFIG_ARM_QCOM_LPM_CPUIDLE=|# CONFIG_ARM_QCOM_LPM_CPUIDLE|CONFIG_DRM=|# CONFIG_DRM|CONFIG_DRM_PANEL=|# CONFIG_DRM_PANEL|CONFIG_PM=|# CONFIG_PM|CONFIG_PM_SLEEP=|# CONFIG_PM_SLEEP|CONFIG_SUSPEND=|# CONFIG_SUSPEND|CONFIG_NO_HZ=|# CONFIG_NO_HZ)' \
+              "$CONFIG" \
+              || true
+          } | tee "$ARTIFACT_DIR/IDLE-CONFIG.txt"
+
+          get_state()
+          {
+            local symbol="$1"
+
+            if grep -qx \
+              "${symbol}=y" \
+              "$CONFIG"
+            then
+              echo "Y"
+            elif grep -qx \
+              "${symbol}=m" \
+              "$CONFIG"
+            then
+              echo "M"
+            elif grep -qx \
+              "# ${symbol} is not set" \
+              "$CONFIG"
+            then
+              echo "N"
+            else
+              echo "UNKNOWN"
+            fi
+          }
+
+          {
+            echo "CONFIG_CPU_IDLE_STATE=$(get_state CONFIG_CPU_IDLE)"
+            echo "CONFIG_ARM_QCOM_LPM_CPUIDLE_STATE=$(get_state CONFIG_ARM_QCOM_LPM_CPUIDLE)"
+            echo "CONFIG_DRM_STATE=$(get_state CONFIG_DRM)"
+            echo "CONFIG_DRM_PANEL_STATE=$(get_state CONFIG_DRM_PANEL)"
+            echo "CONFIG_PM_STATE=$(get_state CONFIG_PM)"
+          } | tee "$ARTIFACT_DIR/IDLE-CONFIG-STATE.txt"
+
+      - name: Enumerate Candidate sleep disabled references
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          {
+            echo "============================================================"
+            echo "Candidate sleep_disabled / display integration references"
+            echo "============================================================"
+
+            git grep \
+              -nE \
+              'sleep_disabled|lpm_sleep_disabled|lpm_drm_panel_notify|goodix_get_panel|drm_panel_notifier_register' \
+              HEAD \
+              -- \
+              drivers/cpuidle \
+              include/linux \
+              2>/dev/null \
+              || true
+          } > "$ARTIFACT_DIR/CANDIDATE-SLEEP-REFERENCES.txt"
+
+          cat "$ARTIFACT_DIR/CANDIDATE-SLEEP-REFERENCES.txt"
+
+          REF_COUNT="$(
+            grep -Ec \
+              'sleep_disabled|lpm_sleep_disabled|lpm_drm_panel_notify|goodix_get_panel|drm_panel_notifier_register' \
+              "$ARTIFACT_DIR/CANDIDATE-SLEEP-REFERENCES.txt" \
+              || true
+          )"
+
+          echo "CANDIDATE_SLEEP_REFERENCE_COUNT=$REF_COUNT" \
+            | tee "$ARTIFACT_DIR/CANDIDATE-SLEEP-REFERENCE-COUNT.txt"
+
+      - name: Enumerate Xiaomi sleep disabled references
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          {
+            echo "============================================================"
+            echo "Xiaomi sleep_disabled / display integration references"
+            echo "============================================================"
+
+            git grep \
+              -nE \
+              'sleep_disabled|lpm_sleep_disabled|lpm_drm_panel_notify|goodix_get_panel|drm_panel_notifier_register' \
+              "xiaomi/${STOCK_REF}" \
+              -- \
+              drivers/cpuidle \
+              include/linux \
+              2>/dev/null \
+              || true
+          } > "$ARTIFACT_DIR/XIAOMI-SLEEP-REFERENCES.txt"
+
+          cat "$ARTIFACT_DIR/XIAOMI-SLEEP-REFERENCES.txt"
+
+      - name: Enumerate Android Common sleep disabled references
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          {
+            echo "============================================================"
+            echo "Android Common related references"
+            echo "============================================================"
+
+            git grep \
+              -nE \
+              'sleep_disabled|lpm_sleep_disabled|lpm_drm_panel_notify|goodix_get_panel|drm_panel_notifier_register' \
+              "android-common/audit-base" \
+              -- \
+              drivers/cpuidle \
+              include/linux \
+              2>/dev/null \
+              || true
+          } > "$ARTIFACT_DIR/COMMON-SLEEP-REFERENCES.txt"
+
+          cat "$ARTIFACT_DIR/COMMON-SLEEP-REFERENCES.txt"
+
+      - name: Extract relevant source files from all baselines
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          FILES=(
+            "drivers/cpuidle/lpm-levels.c"
+            "drivers/cpuidle/cpuidle.c"
+            "include/linux/cpuidle.h"
+            "drivers/cpuidle/lpm-levels-legacy.c"
+          )
+
+          : > "$ARTIFACT_DIR/SOURCE-PRESENCE-MATRIX.tsv"
+
+          printf '%s\n' \
+            $'source\tfile\tpresent' \
+            > "$ARTIFACT_DIR/SOURCE-PRESENCE-MATRIX.tsv"
+
+          for FILE in "${FILES[@]}"; do
+            SAFE="$(
+              echo "$FILE" \
+                | tr '/' '_'
+            )"
+
+            if git cat-file -e \
+              "HEAD:${FILE}" \
+              2>/dev/null
+            then
+              git show \
+                "HEAD:${FILE}" \
+                > "$ARTIFACT_DIR/candidate-${SAFE}"
+
+              printf 'CANDIDATE\t%s\t1\n' \
+                "$FILE" \
+                >> "$ARTIFACT_DIR/SOURCE-PRESENCE-MATRIX.tsv"
+            else
+              printf 'CANDIDATE\t%s\t0\n' \
+                "$FILE" \
+                >> "$ARTIFACT_DIR/SOURCE-PRESENCE-MATRIX.tsv"
+            fi
+
+            if git cat-file -e \
+              "xiaomi/${STOCK_REF}:${FILE}" \
+              2>/dev/null
+            then
+              git show \
+                "xiaomi/${STOCK_REF}:${FILE}" \
+                > "$ARTIFACT_DIR/xiaomi-${SAFE}"
+
+              printf 'XIAOMI\t%s\t1\n' \
+                "$FILE" \
+                >> "$ARTIFACT_DIR/SOURCE-PRESENCE-MATRIX.tsv"
+            else
+              printf 'XIAOMI\t%s\t0\n' \
+                "$FILE" \
+                >> "$ARTIFACT_DIR/SOURCE-PRESENCE-MATRIX.tsv"
+            fi
+
+            if git cat-file -e \
+              "android-common/audit-base:${FILE}" \
+              2>/dev/null
+            then
+              git show \
+                "android-common/audit-base:${FILE}" \
+                > "$ARTIFACT_DIR/common-${SAFE}"
+
+              printf 'ANDROID_COMMON\t%s\t1\n' \
+                "$FILE" \
+                >> "$ARTIFACT_DIR/SOURCE-PRESENCE-MATRIX.tsv"
+            else
+              printf 'ANDROID_COMMON\t%s\t0\n' \
+                "$FILE" \
+                >> "$ARTIFACT_DIR/SOURCE-PRESENCE-MATRIX.tsv"
+            fi
+          done
+
+          cat "$ARTIFACT_DIR/SOURCE-PRESENCE-MATRIX.tsv"
+
+      - name: Verify Candidate display coupled sleep policy
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          LPM="drivers/cpuidle/lpm-levels.c"
+          CORE="drivers/cpuidle/cpuidle.c"
+          HEADER="include/linux/cpuidle.h"
+
+          REQUIRED_LPM=(
+            'static bool sleep_disabled = true;'
+            'module_param_named(sleep_disabled, sleep_disabled, bool, 0444);'
+            'static int lpm_drm_panel_notify'
+            'case DRM_PANEL_BLANK_UNBLANK:'
+            'sleep_disabled = true;'
+            'case DRM_PANEL_BLANK_POWERDOWN:'
+            'case DRM_PANEL_BLANK_LP:'
+            'sleep_disabled = false;'
+            'extern struct drm_panel *goodix_get_panel(void);'
+            'struct drm_panel *active_panel = goodix_get_panel();'
+            'drm_panel_notifier_register(active_panel, &drm_notifier)'
+            'if (!cpu || sleep_disabled)'
+            'if (sleep_disabled) {'
+            'cpu_do_idle();'
+            'bool lpm_sleep_disabled(void)'
+            'EXPORT_SYMBOL(lpm_sleep_disabled);'
+          )
+
+          for TOKEN in "${REQUIRED_LPM[@]}"; do
+            if ! grep -qF \
+              "$TOKEN" \
+              "$LPM"
+            then
+              echo "ERROR: Candidate idle token missing: $TOKEN"
+              exit 1
+            fi
+          done
+
+          if ! grep -qF \
+            'if (!lpm_sleep_disabled())' \
+            "$CORE"
+          then
+            echo "ERROR: generic cpuidle lpm_sleep_disabled guard missing"
+            exit 1
+          fi
+
+          if ! grep -qF \
+            'extern bool lpm_sleep_disabled(void);' \
+            "$HEADER"
+          then
+            echo "ERROR: cpuidle header lpm_sleep_disabled declaration missing"
+            exit 1
+          fi
+
+          {
+            echo "CANDIDATE_SLEEP_DEFAULT_TRUE=YES"
+            echo "CANDIDATE_SLEEP_PARAM_READONLY=YES"
+            echo "CANDIDATE_DRM_PANEL_NOTIFIER=YES"
+            echo "CANDIDATE_DISPLAY_UNBLANK_SLEEP_DISABLED_TRUE=YES"
+            echo "CANDIDATE_DISPLAY_POWERDOWN_SLEEP_DISABLED_FALSE=YES"
+            echo "CANDIDATE_GOODIX_PANEL_BINDING=YES"
+            echo "CANDIDATE_IDLE_SELECTION_SLEEP_GUARD=YES"
+            echo "CANDIDATE_IDLE_ENTRY_SLEEP_GUARD=YES"
+            echo "CANDIDATE_LPM_SLEEP_DISABLED_EXPORT=YES"
+            echo "CANDIDATE_GENERIC_CPUIDLE_INTEGRATION=YES"
+          } | tee "$ARTIFACT_DIR/CANDIDATE-IDLE-POLICY.txt"
+
+      - name: Capture Candidate semantic contexts
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          LPM="drivers/cpuidle/lpm-levels.c"
+          CORE="drivers/cpuidle/cpuidle.c"
+          HEADER="include/linux/cpuidle.h"
+
+          {
+            echo "============================================================"
+            echo "sleep_disabled declaration / DRM notifier"
+            echo "============================================================"
+
+            grep \
+              -n \
+              -A70 \
+              -B15 \
+              'static bool sleep_disabled = true' \
+              "$LPM" \
+              || true
+
+            echo
+            echo "============================================================"
+            echo "Idle selection guard"
+            echo "============================================================"
+
+            grep \
+              -n \
+              -A25 \
+              -B25 \
+              'if (!cpu || sleep_disabled)' \
+              "$LPM" \
+              || true
+
+            echo
+            echo "============================================================"
+            echo "Idle entry guard"
+            echo "============================================================"
+
+            grep \
+              -n \
+              -A25 \
+              -B25 \
+              'if (sleep_disabled) {' \
+              "$LPM" \
+              || true
+
+            echo
+            echo "============================================================"
+            echo "lpm_sleep_disabled export"
+            echo "============================================================"
+
+            grep \
+              -n \
+              -A12 \
+              -B12 \
+              'bool lpm_sleep_disabled' \
+              "$LPM" \
+              || true
+
+            echo
+            echo "============================================================"
+            echo "DRM panel registration"
+            echo "============================================================"
+
+            grep \
+              -n \
+              -A25 \
+              -B20 \
+              'active_panel = goodix_get_panel' \
+              "$LPM" \
+              || true
+
+            echo
+            echo "============================================================"
+            echo "Generic cpuidle integration"
+            echo "============================================================"
+
+            grep \
+              -n \
+              -A15 \
+              -B15 \
+              'lpm_sleep_disabled' \
+              "$CORE" \
+              || true
+
+            echo
+            echo "============================================================"
+            echo "Header integration"
+            echo "============================================================"
+
+            grep \
+              -n \
+              -A10 \
+              -B10 \
+              'lpm_sleep_disabled' \
+              "$HEADER" \
+              || true
+
+          } > "$ARTIFACT_DIR/CANDIDATE-IDLE-CONTEXTS.txt"
+
+          cat "$ARTIFACT_DIR/CANDIDATE-IDLE-CONTEXTS.txt"
+
+      - name: Analyse Xiaomi baseline policy
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          LPM="$ARTIFACT_DIR/xiaomi-drivers_cpuidle_lpm-levels.c"
+          CORE="$ARTIFACT_DIR/xiaomi-drivers_cpuidle_cpuidle.c"
+          HEADER="$ARTIFACT_DIR/xiaomi-include_linux_cpuidle.h"
+
+          if [ ! -s "$LPM" ]; then
+            echo "ERROR: Xiaomi lpm-levels.c missing"
+            exit 1
+          fi
+
+          if ! grep -qF \
+            'static bool sleep_disabled;' \
+            "$LPM"
+          then
+            echo "ERROR: Xiaomi normal sleep_disabled declaration missing"
+            exit 1
+          fi
+
+          if ! grep -qF \
+            'module_param_named(sleep_disabled, sleep_disabled, bool, 0664);' \
+            "$LPM"
+          then
+            echo "ERROR: Xiaomi normal sleep_disabled module parameter missing"
+            exit 1
+          fi
+
+          XIAOMI_DEFAULT_TRUE=0
+          XIAOMI_DRM_NOTIFY=0
+          XIAOMI_GOODIX_PANEL=0
+          XIAOMI_LPM_EXPORT=0
+          XIAOMI_CORE_INTEGRATION=0
+          XIAOMI_HEADER_INTEGRATION=0
+          XIAOMI_SELECT_GUARD=0
+          XIAOMI_ENTRY_GUARD=0
+
+          grep -qF \
+            'static bool sleep_disabled = true;' \
+            "$LPM" \
+            && XIAOMI_DEFAULT_TRUE=1 \
+            || true
+
+          grep -qF \
+            'lpm_drm_panel_notify' \
+            "$LPM" \
+            && XIAOMI_DRM_NOTIFY=1 \
+            || true
+
+          grep -qF \
+            'goodix_get_panel' \
+            "$LPM" \
+            && XIAOMI_GOODIX_PANEL=1 \
+            || true
+
+          grep -qF \
+            'bool lpm_sleep_disabled(void)' \
+            "$LPM" \
+            && XIAOMI_LPM_EXPORT=1 \
+            || true
+
+          if [ -s "$CORE" ]; then
+            grep -qF \
+              'lpm_sleep_disabled' \
+              "$CORE" \
+              && XIAOMI_CORE_INTEGRATION=1 \
+              || true
+          fi
+
+          if [ -s "$HEADER" ]; then
+            grep -qF \
+              'lpm_sleep_disabled' \
+              "$HEADER" \
+              && XIAOMI_HEADER_INTEGRATION=1 \
+              || true
+          fi
+
+          grep -qF \
+            'if (!cpu || sleep_disabled)' \
+            "$LPM" \
+            && XIAOMI_SELECT_GUARD=1 \
+            || true
+
+          grep -qF \
+            'if (sleep_disabled) {' \
+            "$LPM" \
+            && XIAOMI_ENTRY_GUARD=1 \
+            || true
+
+          {
+            echo "XIAOMI_SLEEP_DEFAULT_TRUE=$XIAOMI_DEFAULT_TRUE"
+            echo "XIAOMI_SLEEP_DEFAULT_FALSE=$((1 - XIAOMI_DEFAULT_TRUE))"
+            echo "XIAOMI_SLEEP_PARAM_0664=1"
+            echo "XIAOMI_DRM_PANEL_NOTIFIER=$XIAOMI_DRM_NOTIFY"
+            echo "XIAOMI_GOODIX_PANEL_BINDING=$XIAOMI_GOODIX_PANEL"
+            echo "XIAOMI_LPM_SLEEP_DISABLED_EXPORT=$XIAOMI_LPM_EXPORT"
+            echo "XIAOMI_GENERIC_CPUIDLE_INTEGRATION=$XIAOMI_CORE_INTEGRATION"
+            echo "XIAOMI_HEADER_INTEGRATION=$XIAOMI_HEADER_INTEGRATION"
+            echo "XIAOMI_CANDIDATE_STYLE_SELECT_GUARD=$XIAOMI_SELECT_GUARD"
+            echo "XIAOMI_CANDIDATE_STYLE_ENTRY_GUARD=$XIAOMI_ENTRY_GUARD"
+          } | tee "$ARTIFACT_DIR/XIAOMI-IDLE-POLICY.txt"
+
+      - name: Capture Xiaomi sleep disabled contexts
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          LPM="$ARTIFACT_DIR/xiaomi-drivers_cpuidle_lpm-levels.c"
+
+          {
+            echo "============================================================"
+            echo "Xiaomi sleep_disabled declaration"
+            echo "============================================================"
+
+            grep \
+              -n \
+              -A25 \
+              -B15 \
+              'static bool sleep_disabled' \
+              "$LPM" \
+              || true
+
+            echo
+            echo "============================================================"
+            echo "Every Xiaomi sleep_disabled use"
+            echo "============================================================"
+
+            grep \
+              -n \
+              -A12 \
+              -B12 \
+              'sleep_disabled' \
+              "$LPM" \
+              || true
+          } > "$ARTIFACT_DIR/XIAOMI-IDLE-CONTEXTS.txt"
+
+          cat "$ARTIFACT_DIR/XIAOMI-IDLE-CONTEXTS.txt"
+
+      - name: Build sleep policy matrix
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          out = Path(os.environ["ARTIFACT_DIR"])
+
+          def read(path):
+              p = out / path
+              if not p.exists():
+                  return ""
+              return p.read_text(errors="replace")
+
+          candidate_lpm = Path(
+              "drivers/cpuidle/lpm-levels.c"
+          ).read_text(errors="replace")
+
+          candidate_core = Path(
+              "drivers/cpuidle/cpuidle.c"
+          ).read_text(errors="replace")
+
+          candidate_header = Path(
+              "include/linux/cpuidle.h"
+          ).read_text(errors="replace")
+
+          xiaomi_lpm = read(
+              "xiaomi-drivers_cpuidle_lpm-levels.c"
+          )
+
+          xiaomi_core = read(
+              "xiaomi-drivers_cpuidle_cpuidle.c"
+          )
+
+          xiaomi_header = read(
+              "xiaomi-include_linux_cpuidle.h"
+          )
+
+          common_lpm = read(
+              "common-drivers_cpuidle_lpm-levels.c"
+          )
+
+          common_core = read(
+              "common-drivers_cpuidle_cpuidle.c"
+          )
+
+          common_header = read(
+              "common-include_linux_cpuidle.h"
+          )
+
+          sources = {
+              "CANDIDATE": (
+                  candidate_lpm,
+                  candidate_core,
+                  candidate_header,
+              ),
+              "XIAOMI": (
+                  xiaomi_lpm,
+                  xiaomi_core,
+                  xiaomi_header,
+              ),
+              "ANDROID_COMMON": (
+                  common_lpm,
+                  common_core,
+                  common_header,
+              ),
+          }
+
+          def yes(condition):
+              return 1 if condition else 0
+
+          rows = []
+
+          for label, (lpm, core, header) in sources.items():
+              rows.append(
+                  (
+                      label,
+                      yes(
+                          "static bool sleep_disabled = true;"
+                          in lpm
+                      ),
+                      yes(
+                          "module_param_named("
+                          "sleep_disabled, sleep_disabled, bool, 0444)"
+                          in lpm
+                      ),
+                      yes(
+                          "lpm_drm_panel_notify"
+                          in lpm
+                      ),
+                      yes(
+                          "goodix_get_panel"
+                          in lpm
+                      ),
+                      yes(
+                          "drm_panel_notifier_register("
+                          in lpm
+                      ),
+                      yes(
+                          "if (!cpu || sleep_disabled)"
+                          in lpm
+                      ),
+                      yes(
+                          "if (sleep_disabled) {"
+                          in lpm
+                          and "cpu_do_idle();"
+                          in lpm
+                      ),
+                      yes(
+                          "bool lpm_sleep_disabled(void)"
+                          in lpm
+                      ),
+                      yes(
+                          "lpm_sleep_disabled()"
+                          in core
+                      ),
+                      yes(
+                          "extern bool lpm_sleep_disabled(void);"
+                          in header
+                      ),
+                  )
+              )
+
+          with (
+              out / "SLEEP-POLICY-MATRIX.tsv"
+          ).open("w") as f:
+              f.write(
+                  "source\t"
+                  "default_true\t"
+                  "readonly_param\t"
+                  "drm_notifier\t"
+                  "goodix_panel\t"
+                  "panel_registration\t"
+                  "selection_guard\t"
+                  "entry_guard_cpu_do_idle\t"
+                  "lpm_export\t"
+                  "core_integration\t"
+                  "header_integration\n"
+              )
+
+              for row in rows:
+                  f.write(
+                      "\t".join(
+                          str(value)
+                          for value in row
+                      )
+                      + "\n"
+                  )
+          PY
+
+          cat "$ARTIFACT_DIR/SLEEP-POLICY-MATRIX.tsv"
+
+      - name: Discover exact Candidate blame for custom idle tokens
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          LPM="drivers/cpuidle/lpm-levels.c"
+          CORE="drivers/cpuidle/cpuidle.c"
+          HEADER="include/linux/cpuidle.h"
+
+          : > "$ARTIFACT_DIR/CANDIDATE-IDLE-BLAME.txt"
+
+          blame_token()
+          {
+            local file="$1"
+            local token="$2"
+            local label="$3"
+
+            local line
+
+            line="$(
+              grep \
+                -nF \
+                "$token" \
+                "$file" \
+                | head -n 1 \
+                | cut -d: -f1 \
+                || true
+            )"
+
+            {
+              echo "============================================================"
+              echo "LABEL=$label"
+              echo "FILE=$file"
+              echo "TOKEN=$token"
+              echo "LINE=${line:-NOT_FOUND}"
+              echo "============================================================"
+
+              if [ -n "${line:-}" ]; then
+                git blame \
+                  -L "${line},${line}" \
+                  HEAD \
+                  -- "$file" \
+                  || true
+              else
+                echo "TOKEN_NOT_FOUND"
+              fi
+
+              echo
+            } >> "$ARTIFACT_DIR/CANDIDATE-IDLE-BLAME.txt"
+          }
+
+          blame_token \
+            "$LPM" \
+            'static bool sleep_disabled = true;' \
+            'sleep default true'
+
+          blame_token \
+            "$LPM" \
+            'static int lpm_drm_panel_notify' \
+            'DRM panel notifier'
+
+          blame_token \
+            "$LPM" \
+            'extern struct drm_panel *goodix_get_panel(void);' \
+            'Goodix active panel binding'
+
+          blame_token \
+            "$LPM" \
+            'if (!cpu || sleep_disabled)' \
+            'idle selection guard'
+
+          blame_token \
+            "$LPM" \
+            'bool lpm_sleep_disabled(void)' \
+            'LPM exported state'
+
+          blame_token \
+            "$CORE" \
+            'if (!lpm_sleep_disabled())' \
+            'generic cpuidle integration'
+
+          blame_token \
+            "$HEADER" \
+            'extern bool lpm_sleep_disabled(void);' \
+            'header integration'
+
+          cat "$ARTIFACT_DIR/CANDIDATE-IDLE-BLAME.txt"
+
+      - name: Discover exact idle policy history
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          {
+            echo "============================================================"
+            echo "sleep_disabled=true history"
+            echo "============================================================"
+
+            git log \
+              --all \
+              --date=iso-strict \
+              --pretty=format:'%H%x09%ad%x09%an%x09%s' \
+              -S'static bool sleep_disabled = true;' \
+              -- drivers/cpuidle/lpm-levels.c \
+              || true
+
+            echo
+            echo
+            echo "============================================================"
+            echo "DRM panel notifier history"
+            echo "============================================================"
+
+            git log \
+              --all \
+              --date=iso-strict \
+              --pretty=format:'%H%x09%ad%x09%an%x09%s' \
+              -S'lpm_drm_panel_notify' \
+              -- drivers/cpuidle/lpm-levels.c \
+              || true
+
+            echo
+            echo
+            echo "============================================================"
+            echo "goodix_get_panel history"
+            echo "============================================================"
+
+            git log \
+              --all \
+              --date=iso-strict \
+              --pretty=format:'%H%x09%ad%x09%an%x09%s' \
+              -S'goodix_get_panel' \
+              -- drivers/cpuidle/lpm-levels.c \
+              || true
+
+            echo
+            echo
+            echo "============================================================"
+            echo "idle selection sleep guard history"
+            echo "============================================================"
+
+            git log \
+              --all \
+              --date=iso-strict \
+              --pretty=format:'%H%x09%ad%x09%an%x09%s' \
+              -S'if (!cpu || sleep_disabled)' \
+              -- drivers/cpuidle/lpm-levels.c \
+              || true
+
+            echo
+            echo
+            echo "============================================================"
+            echo "lpm_sleep_disabled export history"
+            echo "============================================================"
+
+            git log \
+              --all \
+              --date=iso-strict \
+              --pretty=format:'%H%x09%ad%x09%an%x09%s' \
+              -S'lpm_sleep_disabled' \
+              -- \
+              drivers/cpuidle/lpm-levels.c \
+              drivers/cpuidle/cpuidle.c \
+              include/linux/cpuidle.h \
+              || true
+
+          } > "$ARTIFACT_DIR/IDLE-POLICY-HISTORY.txt"
+
+          cat "$ARTIFACT_DIR/IDLE-POLICY-HISTORY.txt"
+
+      - name: Extract unique introducing commit candidates
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          {
+            git log \
+              --all \
+              --format='%H' \
+              -S'static bool sleep_disabled = true;' \
+              -- drivers/cpuidle/lpm-levels.c \
+              || true
+
+            git log \
+              --all \
+              --format='%H' \
+              -S'lpm_drm_panel_notify' \
+              -- drivers/cpuidle/lpm-levels.c \
+              || true
+
+            git log \
+              --all \
+              --format='%H' \
+              -S'goodix_get_panel' \
+              -- drivers/cpuidle/lpm-levels.c \
+              || true
+
+            git log \
+              --all \
+              --format='%H' \
+              -S'if (!cpu || sleep_disabled)' \
+              -- drivers/cpuidle/lpm-levels.c \
+              || true
+
+            git log \
+              --all \
+              --format='%H' \
+              -S'lpm_sleep_disabled' \
+              -- \
+              drivers/cpuidle/lpm-levels.c \
+              drivers/cpuidle/cpuidle.c \
+              include/linux/cpuidle.h \
+              || true
+          } \
+            | grep -E '^[0-9a-f]{40}$' \
+            | sort -u \
+            > "$ARTIFACT_DIR/IDLE-POLICY-COMMIT-CANDIDATES.txt" \
+            || true
+
+          : > "$ARTIFACT_DIR/IDLE-POLICY-COMMIT-SUMMARIES.txt"
+
+          while IFS= read -r SHA; do
+            [ -n "$SHA" ] || continue
+
+            {
+              echo "============================================================"
+              git show \
+                --no-patch \
+                --format='SHA=%H%nAUTHOR_DATE=%aI%nAUTHOR=%an%nSUBJECT=%s' \
+                "$SHA" \
+                || true
+
+              echo
+              echo "FILES:"
+
+              git diff-tree \
+                --no-commit-id \
+                --name-status \
+                -r \
+                "$SHA" \
+                || true
+
+              echo
+            } >> "$ARTIFACT_DIR/IDLE-POLICY-COMMIT-SUMMARIES.txt"
+
+          done < "$ARTIFACT_DIR/IDLE-POLICY-COMMIT-CANDIDATES.txt"
+
+          cat "$ARTIFACT_DIR/IDLE-POLICY-COMMIT-CANDIDATES.txt"
+
+          echo
+          cat "$ARTIFACT_DIR/IDLE-POLICY-COMMIT-SUMMARIES.txt"
+
+      - name: Compare Candidate with Xiaomi idle files
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          compare_file()
+          {
+            local candidate="$1"
+            local xiaomi="$2"
+            local output="$3"
+
+            if [ -s "$candidate" ] && [ -s "$xiaomi" ]; then
+              diff \
+                -u \
+                "$xiaomi" \
+                "$candidate" \
+                > "$output" \
+                || true
+            else
+              {
+                echo "COMPARISON_UNAVAILABLE"
+                echo "CANDIDATE=$candidate"
+                echo "XIAOMI=$xiaomi"
+              } > "$output"
+            fi
+          }
+
+          compare_file \
+            "$ARTIFACT_DIR/candidate-drivers_cpuidle_lpm-levels.c" \
+            "$ARTIFACT_DIR/xiaomi-drivers_cpuidle_lpm-levels.c" \
+            "$ARTIFACT_DIR/CANDIDATE-VS-XIAOMI-LPM-LEVELS.diff"
+
+          compare_file \
+            "$ARTIFACT_DIR/candidate-drivers_cpuidle_cpuidle.c" \
+            "$ARTIFACT_DIR/xiaomi-drivers_cpuidle_cpuidle.c" \
+            "$ARTIFACT_DIR/CANDIDATE-VS-XIAOMI-CPUIDLE-CORE.diff"
+
+          compare_file \
+            "$ARTIFACT_DIR/candidate-include_linux_cpuidle.h" \
+            "$ARTIFACT_DIR/xiaomi-include_linux_cpuidle.h" \
+            "$ARTIFACT_DIR/CANDIDATE-VS-XIAOMI-CPUIDLE-HEADER.diff"
+
+          {
+            echo "LPM_LEVELS_DIFF_BYTES=$(
+              stat -c '%s' \
+                "$ARTIFACT_DIR/CANDIDATE-VS-XIAOMI-LPM-LEVELS.diff"
+            )"
+
+            echo "CPUIDLE_CORE_DIFF_BYTES=$(
+              stat -c '%s' \
+                "$ARTIFACT_DIR/CANDIDATE-VS-XIAOMI-CPUIDLE-CORE.diff"
+            )"
+
+            echo "CPUIDLE_HEADER_DIFF_BYTES=$(
+              stat -c '%s' \
+                "$ARTIFACT_DIR/CANDIDATE-VS-XIAOMI-CPUIDLE-HEADER.diff"
+            )"
+          } | tee "$ARTIFACT_DIR/IDLE-DIFF-SUMMARY.txt"
+
+      - name: Extract sleep-related portions of Candidate Xiaomi diff
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          {
+            echo "============================================================"
+            echo "LPM levels diff sleep/display regions"
+            echo "============================================================"
+
+            grep \
+              -nE \
+              -A20 \
+              -B20 \
+              'sleep_disabled|lpm_sleep_disabled|lpm_drm_panel_notify|goodix_get_panel|drm_panel_notifier' \
+              "$ARTIFACT_DIR/CANDIDATE-VS-XIAOMI-LPM-LEVELS.diff" \
+              || true
+
+            echo
+            echo "============================================================"
+            echo "cpuidle core diff sleep regions"
+            echo "============================================================"
+
+            grep \
+              -nE \
+              -A15 \
+              -B15 \
+              'lpm_sleep_disabled' \
+              "$ARTIFACT_DIR/CANDIDATE-VS-XIAOMI-CPUIDLE-CORE.diff" \
+              || true
+
+            echo
+            echo "============================================================"
+            echo "cpuidle header diff sleep regions"
+            echo "============================================================"
+
+            grep \
+              -nE \
+              -A15 \
+              -B15 \
+              'lpm_sleep_disabled' \
+              "$ARTIFACT_DIR/CANDIDATE-VS-XIAOMI-CPUIDLE-HEADER.diff" \
+              || true
+          } > "$ARTIFACT_DIR/CANDIDATE-VS-XIAOMI-SLEEP-DIFF-CONTEXT.txt"
+
+          cat "$ARTIFACT_DIR/CANDIDATE-VS-XIAOMI-SLEEP-DIFF-CONTEXT.txt"
+
+      - name: Model screen state idle behaviour
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          out = Path(os.environ["ARTIFACT_DIR"])
+
+          lpm = Path(
+              "drivers/cpuidle/lpm-levels.c"
+          ).read_text(errors="replace")
+
+          core = Path(
+              "drivers/cpuidle/cpuidle.c"
+          ).read_text(errors="replace")
+
+          config = (
+              out / "IDLE-CONFIG-STATE.txt"
+          ).read_text(errors="replace")
+
+          def has(token, text=lpm):
+              return token in text
+
+          drm_state = "UNKNOWN"
+
+          for line in config.splitlines():
+              if line.startswith(
+                  "CONFIG_DRM_PANEL_STATE="
+              ):
+                  drm_state = line.split(
+                      "=",
+                      1,
+                  )[1]
+
+          default_true = has(
+              "static bool sleep_disabled = true;"
+          )
+
+          unblank_true = (
+              has("case DRM_PANEL_BLANK_UNBLANK:")
+              and has("sleep_disabled = true;")
+          )
+
+          screen_off_false = (
+              has("case DRM_PANEL_BLANK_POWERDOWN:")
+              and has("case DRM_PANEL_BLANK_LP:")
+              and has("sleep_disabled = false;")
+          )
+
+          panel_binding = (
+              has("goodix_get_panel")
+              and has("drm_panel_notifier_register")
+          )
+
+          selection_guard = has(
+              "if (!cpu || sleep_disabled)"
+          )
+
+          entry_guard = (
+              has("if (sleep_disabled) {")
+              and has("cpu_do_idle();")
+          )
+
+          generic_guard = (
+              "if (!lpm_sleep_disabled())"
+              in core
+          )
+
+          display_policy_compiled = (
+              drm_state in ("Y", "M")
+          )
+
+          screen_on_deep_idle_block = all(
+              (
+                  display_policy_compiled,
+                  default_true,
+                  unblank_true,
+                  panel_binding,
+                  selection_guard,
+                  entry_guard,
+              )
+          )
+
+          screen_off_reenable = all(
+              (
+                  display_policy_compiled,
+                  screen_off_false,
+                  selection_guard,
+                  entry_guard,
+              )
+          )
+
+          with (
+              out /
+              "DISPLAY-IDLE-CONTROL-FLOW.txt"
+          ).open("w") as f:
+              f.write(
+                  f"CONFIG_DRM_PANEL_STATE={drm_state}\n"
+              )
+              f.write(
+                  "SLEEP_DISABLED_DEFAULT_TRUE="
+                  f"{'YES' if default_true else 'NO'}\n"
+              )
+              f.write(
+                  "DISPLAY_UNBLANK_SETS_TRUE="
+                  f"{'YES' if unblank_true else 'NO'}\n"
+              )
+              f.write(
+                  "DISPLAY_POWERDOWN_OR_LP_SETS_FALSE="
+                  f"{'YES' if screen_off_false else 'NO'}\n"
+              )
+              f.write(
+                  "ACTIVE_PANEL_NOTIFIER_BOUND="
+                  f"{'YES' if panel_binding else 'NO'}\n"
+              )
+              f.write(
+                  "IDLE_SELECTION_GUARD="
+                  f"{'YES' if selection_guard else 'NO'}\n"
+              )
+              f.write(
+                  "IDLE_ENTRY_FALLBACK_CPU_DO_IDLE="
+                  f"{'YES' if entry_guard else 'NO'}\n"
+              )
+              f.write(
+                  "GENERIC_CPUIDLE_SLEEP_GUARD="
+                  f"{'YES' if generic_guard else 'NO'}\n"
+              )
+              f.write(
+                  "STATIC_SCREEN_ON_DEEP_IDLE_BLOCK="
+                  f"{'YES' if screen_on_deep_idle_block else 'NO'}\n"
+              )
+              f.write(
+                  "STATIC_SCREEN_OFF_DEEP_IDLE_REENABLE="
+                  f"{'YES' if screen_off_reenable else 'NO'}\n"
+              )
+
+          print(
+              (
+                  out /
+                  "DISPLAY-IDLE-CONTROL-FLOW.txt"
+              ).read_text()
+          )
+          PY
+
+      - name: Build machine readable audit conclusion
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          import csv
+          import os
+          from pathlib import Path
+
+          out = Path(os.environ["ARTIFACT_DIR"])
+
+          matrix = {}
+
+          with (
+              out /
+              "SLEEP-POLICY-MATRIX.tsv"
+          ).open() as f:
+              reader = csv.DictReader(
+                  f,
+                  delimiter="\t",
+              )
+
+              for row in reader:
+                  matrix[row["source"]] = row
+
+          candidate = matrix["CANDIDATE"]
+          xiaomi = matrix["XIAOMI"]
+          common = matrix["ANDROID_COMMON"]
+
+          flow = {}
+
+          for line in (
+              out /
+              "DISPLAY-IDLE-CONTROL-FLOW.txt"
+          ).read_text().splitlines():
+              if "=" in line:
+                  key, value = line.split(
+                      "=",
+                      1,
+                  )
+                  flow[key] = value
+
+          candidate_display_policy = all(
+              int(candidate[key]) == 1
+              for key in (
+                  "default_true",
+                  "readonly_param",
+                  "drm_notifier",
+                  "goodix_panel",
+                  "panel_registration",
+                  "selection_guard",
+                  "entry_guard_cpu_do_idle",
+                  "lpm_export",
+                  "core_integration",
+                  "header_integration",
+              )
+          )
+
+          xiaomi_display_policy = any(
+              int(xiaomi[key]) == 1
+              for key in (
+                  "default_true",
+                  "readonly_param",
+                  "drm_notifier",
+                  "goodix_panel",
+                  "panel_registration",
+                  "selection_guard",
+                  "entry_guard_cpu_do_idle",
+                  "lpm_export",
+                  "core_integration",
+                  "header_integration",
+              )
+          )
+
+          common_display_policy = any(
+              int(common[key]) == 1
+              for key in (
+                  "default_true",
+                  "readonly_param",
+                  "drm_notifier",
+                  "goodix_panel",
+                  "panel_registration",
+                  "selection_guard",
+                  "entry_guard_cpu_do_idle",
+                  "lpm_export",
+                  "core_integration",
+                  "header_integration",
+              )
+          )
+
+          screen_block = (
+              flow.get(
+                  "STATIC_SCREEN_ON_DEEP_IDLE_BLOCK"
+              )
+              == "YES"
+          )
+
+          if (
+              candidate_display_policy
+              and screen_block
+              and not xiaomi_display_policy
+              and not common_display_policy
+          ):
+              review = (
+                  "CUSTOM_DISPLAY_COUPLED_DEEP_IDLE_DISABLE_REVIEW"
+              )
+          elif candidate_display_policy and screen_block:
+              review = (
+                  "DISPLAY_COUPLED_DEEP_IDLE_POLICY_REVIEW"
+              )
+          else:
+              review = (
+                  "NO_COMPLETE_DISPLAY_COUPLED_DEEP_IDLE_BLOCK_CONFIRMED"
+              )
+
+          commits = []
+
+          commit_file = (
+              out /
+              "IDLE-POLICY-COMMIT-CANDIDATES.txt"
+          )
+
+          if commit_file.exists():
+              commits = [
+                  line.strip()
+                  for line in commit_file.read_text().splitlines()
+                  if line.strip()
+              ]
+
+          with (
+              out /
+              "RESULT.txt"
+          ).open("w") as f:
+              f.write(
+                  "RESULT=PASS_AUDIT\n"
+              )
+
+              f.write(
+                  "BASE_CANDIDATE_TREE="
+                  "5d25b7e0124d7fb695f3f07b45928fcb5780d0e8\n"
+              )
+
+              f.write(
+                  "CANDIDATE_DISPLAY_COUPLED_SLEEP_POLICY="
+                  f"{'YES' if candidate_display_policy else 'NO'}\n"
+              )
+
+              f.write(
+                  "STATIC_SCREEN_ON_DEEP_IDLE_BLOCK="
+                  f"{'YES' if screen_block else 'NO'}\n"
+              )
+
+              f.write(
+                  "STATIC_SCREEN_OFF_DEEP_IDLE_REENABLE="
+                  f"{flow.get('STATIC_SCREEN_OFF_DEEP_IDLE_REENABLE', 'UNKNOWN')}\n"
+              )
+
+              f.write(
+                  "CANDIDATE_SLEEP_DEFAULT_TRUE="
+                  f"{candidate['default_true']}\n"
+              )
+
+              f.write(
+                  "CANDIDATE_DRM_NOTIFIER="
+                  f"{candidate['drm_notifier']}\n"
+              )
+
+              f.write(
+                  "CANDIDATE_GOODIX_PANEL="
+                  f"{candidate['goodix_panel']}\n"
+              )
+
+              f.write(
+                  "CANDIDATE_SELECTION_GUARD="
+                  f"{candidate['selection_guard']}\n"
+              )
+
+              f.write(
+                  "CANDIDATE_ENTRY_GUARD_CPU_DO_IDLE="
+                  f"{candidate['entry_guard_cpu_do_idle']}\n"
+              )
+
+              f.write(
+                  "CANDIDATE_LPM_SLEEP_EXPORT="
+                  f"{candidate['lpm_export']}\n"
+              )
+
+              f.write(
+                  "CANDIDATE_GENERIC_CPUIDLE_INTEGRATION="
+                  f"{candidate['core_integration']}\n"
+              )
+
+              f.write(
+                  "XIAOMI_DISPLAY_COUPLED_POLICY="
+                  f"{'YES' if xiaomi_display_policy else 'NO'}\n"
+              )
+
+              f.write(
+                  "XIAOMI_SLEEP_DEFAULT_TRUE="
+                  f"{xiaomi['default_true']}\n"
+              )
+
+              f.write(
+                  "XIAOMI_DRM_NOTIFIER="
+                  f"{xiaomi['drm_notifier']}\n"
+              )
+
+              f.write(
+                  "XIAOMI_GOODIX_PANEL="
+                  f"{xiaomi['goodix_panel']}\n"
+              )
+
+              f.write(
+                  "XIAOMI_SELECTION_GUARD="
+                  f"{xiaomi['selection_guard']}\n"
+              )
+
+              f.write(
+                  "XIAOMI_ENTRY_GUARD_CPU_DO_IDLE="
+                  f"{xiaomi['entry_guard_cpu_do_idle']}\n"
+              )
+
+              f.write(
+                  "XIAOMI_LPM_SLEEP_EXPORT="
+                  f"{xiaomi['lpm_export']}\n"
+              )
+
+              f.write(
+                  "XIAOMI_GENERIC_CPUIDLE_INTEGRATION="
+                  f"{xiaomi['core_integration']}\n"
+              )
+
+              f.write(
+                  "ANDROID_COMMON_DISPLAY_COUPLED_POLICY="
+                  f"{'YES' if common_display_policy else 'NO'}\n"
+              )
+
+              f.write(
+                  "DISCOVERED_IDLE_POLICY_COMMIT_COUNT="
+                  f"{len(commits)}\n"
+              )
+
+              f.write(
+                  "DISCOVERED_IDLE_POLICY_COMMITS="
+                  f"{','.join(commits) if commits else 'NONE'}\n"
+              )
+
+              f.write(
+                  f"REVIEW_CLASS={review}\n"
+              )
+
+              f.write(
+                  "SOURCE_MODIFIED=NO\n"
+              )
+
+              f.write(
+                  "KERNEL_BUILT=NO\n"
+              )
+
+              f.write(
+                  "IMAGE_CREATED=NO\n"
+              )
+
+              f.write(
+                  "BOOT_IMAGE_CREATED=NO\n"
+              )
+
+              f.write(
+                  "FLASHABLE_ZIP_CREATED=NO\n"
+              )
+
+              f.write(
+                  "DEVICE_FLASHED=NO\n"
+              )
+
+          print(
+              (
+                  out /
+                  "RESULT.txt"
+              ).read_text()
+          )
+          PY
+
+      - name: Verify audit made no source changes
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if ! git diff --quiet; then
+            echo "ERROR: audit unexpectedly modified source"
+
+            git diff \
+              --no-ext-diff \
+              --no-color
+
+            exit 1
+          fi
+
+          echo "SOURCE_INTEGRITY=PASS" \
+            | tee "$ARTIFACT_DIR/SOURCE-INTEGRITY.txt"
+
+      - name: Upload display deep idle audit
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: VEUX-Display-Coupled-Deep-Idle-Sleep-Disabled-Audit
+          path: display-deep-idle-audit/
+          if-no-files-found: error
+          retention-days: 30
