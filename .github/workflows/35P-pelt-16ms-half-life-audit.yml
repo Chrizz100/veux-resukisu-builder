@@ -1,0 +1,949 @@
+name: 35P - VEUX PELT 16ms Half-Life Audit
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    env:
+      COMMON_REF: "android11-5.4.274_r00"
+      STOCK_REF: "veux-r-oss"
+
+      STABILITY_REVERT: "f74e5c1b7c3f3e42f694e5ab524f95f62a0dab80"
+
+      PELT_COMMIT: "e06427a5110ca6f14f10a1ae232ee4bce8fd7363"
+
+      EXPECTED_CANDIDATE_TREE: "5d25b7e0124d7fb695f3f07b45928fcb5780d0e8"
+
+      ARTIFACT_DIR: ${{ github.workspace }}/pelt-half-life-audit
+
+    steps:
+      - name: Prepare audit directory
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p "$ARTIFACT_DIR"
+
+          cat > "$ARTIFACT_DIR/PLAN.txt" <<'EOF'
+          VEUX PELT 16 ms Half-Life Audit
+          ===============================
+
+          Previously closed scheduler items:
+          - CASS MaxFreq/Thermal adaptation
+          - SPRD task rotation disabled
+          - standard load-balance capacity rate limit restored
+          - CONFIG_CPUSETS restored
+          - CASS reserved-CPU skip rendered inactive because
+            CONFIG_SPRD_ROTATION_TASK is disabled
+
+          Current checklist item:
+          - PELT half-life changed from 32 ms to 16 ms
+
+          Known commit:
+          e06427a5110ca6f14f10a1ae232ee4bce8fd7363
+          sched: Reduce PELT half-life from 32 ms to 16 ms
+
+          Purpose of 35P:
+          - reconstruct exact Candidate 2
+          - verify the exact PELT commit
+          - inspect its parent state
+          - inspect Candidate 2 PELT constants
+          - compare with official Xiaomi VEUX
+          - compare with Android Common 5.4.274
+          - inspect the generated PELT lookup table
+          - inspect the PELT generator source
+          - determine whether 16 ms is a custom performance tuning
+            or matches either baseline
+          - make no source modification
+
+          Audit only.
+
+          This workflow does NOT:
+          - restore 32 ms
+          - modify CASS
+          - modify CPUSETS
+          - modify SPRD rotation
+          - modify load-balance capacity handling
+          - build a kernel
+          - create boot.img
+          - create a flashable ZIP
+          - access a phone
+          - flash anything
+          EOF
+
+      - name: Checkout exact VEUX source
+        uses: actions/checkout@v7
+        with:
+          repository: dereference23/kernel_xiaomi_sm6375
+          ref: "20240619"
+          fetch-depth: 0
+          path: kernel
+          persist-credentials: false
+
+      - name: Recreate exact Candidate 2
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email \
+            "41898282+github-actions[bot]@users.noreply.github.com"
+
+          BASE_SHA="$(git rev-parse HEAD)"
+          BASE_TREE="$(git rev-parse HEAD^{tree})"
+
+          git remote remove android-common 2>/dev/null || true
+
+          git remote add \
+            android-common \
+            https://android.googlesource.com/kernel/common
+
+          git fetch \
+            --no-tags \
+            android-common \
+            "$COMMON_REF"
+
+          COMMON_SHA="$(git rev-parse FETCH_HEAD)"
+
+          git update-ref \
+            refs/remotes/android-common/audit-base \
+            "$COMMON_SHA"
+
+          git merge \
+            --no-edit \
+            "$COMMON_SHA"
+
+          MERGED_SHA="$(git rev-parse HEAD)"
+          MERGED_TREE="$(git rev-parse HEAD^{tree})"
+
+          git cat-file -e \
+            "${STABILITY_REVERT}^{commit}"
+
+          git revert \
+            --no-edit \
+            "$STABILITY_REVERT"
+
+          CANDIDATE_SHA="$(git rev-parse HEAD)"
+          CANDIDATE_TREE="$(git rev-parse HEAD^{tree})"
+
+          KERNEL_VERSION="$(
+            make -s kernelversion
+          )"
+
+          if [ "$KERNEL_VERSION" != "5.4.274" ]; then
+            echo "ERROR: expected Linux 5.4.274"
+            echo "Actual: $KERNEL_VERSION"
+            exit 1
+          fi
+
+          if [ "$CANDIDATE_TREE" != "$EXPECTED_CANDIDATE_TREE" ]; then
+            echo "ERROR: Candidate 2 tree mismatch"
+            echo "Expected: $EXPECTED_CANDIDATE_TREE"
+            echo "Actual:   $CANDIDATE_TREE"
+            exit 1
+          fi
+
+          {
+            echo "BASE_SHA=$BASE_SHA"
+            echo "BASE_TREE=$BASE_TREE"
+            echo "COMMON_SHA=$COMMON_SHA"
+            echo "MERGED_SHA=$MERGED_SHA"
+            echo "MERGED_TREE=$MERGED_TREE"
+            echo "CANDIDATE_SHA=$CANDIDATE_SHA"
+            echo "CANDIDATE_TREE=$CANDIDATE_TREE"
+            echo "KERNEL_VERSION=$KERNEL_VERSION"
+            echo "COMMON_REF=$COMMON_REF"
+            echo "STABILITY_REVERT=$STABILITY_REVERT"
+            echo "PELT_COMMIT=$PELT_COMMIT"
+          } | tee "$ARTIFACT_DIR/IDENTITY.txt"
+
+      - name: Fetch official Xiaomi VEUX reference
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git remote remove xiaomi 2>/dev/null || true
+
+          git remote add \
+            xiaomi \
+            https://github.com/MiCode/Xiaomi_Kernel_OpenSource.git
+
+          git fetch \
+            --no-tags \
+            xiaomi \
+            "+refs/heads/${STOCK_REF}:refs/remotes/xiaomi/${STOCK_REF}"
+
+          STOCK_SHA="$(
+            git rev-parse "xiaomi/${STOCK_REF}"
+          )"
+
+          {
+            echo "STOCK_REF=$STOCK_REF"
+            echo "STOCK_SHA=$STOCK_SHA"
+          } | tee "$ARTIFACT_DIR/XIAOMI-REFERENCE.txt"
+
+      - name: Verify exact PELT half-life commit
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git cat-file -e \
+            "${PELT_COMMIT}^{commit}"
+
+          git show \
+            --no-ext-diff \
+            --no-color \
+            --format=fuller \
+            "$PELT_COMMIT" \
+            > "$ARTIFACT_DIR/PELT-COMMIT.txt"
+
+          git show \
+            --format= \
+            --no-ext-diff \
+            --no-color \
+            "$PELT_COMMIT" \
+            > "$ARTIFACT_DIR/PELT-COMMIT.diff"
+
+          cat "$ARTIFACT_DIR/PELT-COMMIT.txt"
+
+          mapfile -t FILES < <(
+            git diff-tree \
+              --no-commit-id \
+              --name-only \
+              -r \
+              "$PELT_COMMIT"
+          )
+
+          if [ "${#FILES[@]}" -ne 1 ]; then
+            echo "ERROR: expected PELT commit to modify exactly one file"
+            printf '%s\n' "${FILES[@]}"
+            exit 1
+          fi
+
+          if [ "${FILES[0]}" != "kernel/sched/sched-pelt.h" ]; then
+            echo "ERROR: unexpected file modified by PELT commit"
+            printf '%s\n' "${FILES[@]}"
+            exit 1
+          fi
+
+          if ! git show \
+            --format= \
+            "$PELT_COMMIT" \
+            | grep -qF '+#define LOAD_AVG_PERIOD 16'
+          then
+            echo "ERROR: PELT commit does not introduce period 16"
+            exit 1
+          fi
+
+          if ! git show \
+            --format= \
+            "$PELT_COMMIT" \
+            | grep -qF -- '-#define LOAD_AVG_PERIOD 32'
+          then
+            echo "ERROR: PELT commit does not remove period 32"
+            exit 1
+          fi
+
+          {
+            echo "PELT_COMMIT_VERIFIED=YES"
+            echo "PELT_COMMIT_FILE=kernel/sched/sched-pelt.h"
+            echo "PELT_COMMIT_OLD_PERIOD=32"
+            echo "PELT_COMMIT_NEW_PERIOD=16"
+          } | tee "$ARTIFACT_DIR/PELT-COMMIT-STATE.txt"
+
+      - name: Capture PELT commit parent
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          PARENT="$(
+            git rev-parse \
+              "${PELT_COMMIT}^"
+          )"
+
+          git show \
+            "${PARENT}:kernel/sched/sched-pelt.h" \
+            > "$ARTIFACT_DIR/pelt-before-16ms.h"
+
+          git show \
+            "${PELT_COMMIT}:kernel/sched/sched-pelt.h" \
+            > "$ARTIFACT_DIR/pelt-after-16ms.h"
+
+          {
+            echo "PELT_COMMIT_PARENT=$PARENT"
+
+            echo
+            echo "===== BEFORE 16 ms CHANGE ====="
+
+            grep -nE \
+              'LOAD_AVG_PERIOD|LOAD_AVG_MAX|runnable_avg_yN_inv' \
+              "$ARTIFACT_DIR/pelt-before-16ms.h" \
+              || true
+
+            echo
+            echo "===== AFTER 16 ms CHANGE ====="
+
+            grep -nE \
+              'LOAD_AVG_PERIOD|LOAD_AVG_MAX|runnable_avg_yN_inv' \
+              "$ARTIFACT_DIR/pelt-after-16ms.h" \
+              || true
+
+          } | tee "$ARTIFACT_DIR/PELT-BEFORE-AFTER.txt"
+
+          if ! grep -qx \
+            '#define LOAD_AVG_PERIOD 32' \
+            "$ARTIFACT_DIR/pelt-before-16ms.h"
+          then
+            echo "ERROR: PELT parent is not period 32"
+            exit 1
+          fi
+
+          if ! grep -qx \
+            '#define LOAD_AVG_PERIOD 16' \
+            "$ARTIFACT_DIR/pelt-after-16ms.h"
+          then
+            echo "ERROR: PELT commit state is not period 16"
+            exit 1
+          fi
+
+      - name: Extract PELT headers from all sources
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git show \
+            HEAD:kernel/sched/sched-pelt.h \
+            > "$ARTIFACT_DIR/candidate-sched-pelt.h"
+
+          git show \
+            "xiaomi/${STOCK_REF}:kernel/sched/sched-pelt.h" \
+            > "$ARTIFACT_DIR/xiaomi-sched-pelt.h"
+
+          git show \
+            "android-common/audit-base:kernel/sched/sched-pelt.h" \
+            > "$ARTIFACT_DIR/common-sched-pelt.h"
+
+          for FILE in \
+            "$ARTIFACT_DIR/candidate-sched-pelt.h" \
+            "$ARTIFACT_DIR/xiaomi-sched-pelt.h" \
+            "$ARTIFACT_DIR/common-sched-pelt.h"
+          do
+            if [ ! -s "$FILE" ]; then
+              echo "ERROR: expected PELT header missing or empty: $FILE"
+              exit 1
+            fi
+          done
+
+      - name: Build PELT constant matrix
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          import os
+          import re
+          from pathlib import Path
+
+          out = Path(os.environ["ARTIFACT_DIR"])
+
+          sources = {
+              "CANDIDATE": out / "candidate-sched-pelt.h",
+              "XIAOMI": out / "xiaomi-sched-pelt.h",
+              "ANDROID_COMMON": out / "common-sched-pelt.h",
+              "PELT_PARENT": out / "pelt-before-16ms.h",
+              "PELT_COMMIT": out / "pelt-after-16ms.h",
+          }
+
+          rows = []
+
+          for label, path in sources.items():
+              text = path.read_text(
+                  errors="replace"
+              )
+
+              period_match = re.search(
+                  r"^#define\s+LOAD_AVG_PERIOD\s+(\d+)\s*$",
+                  text,
+                  re.M,
+              )
+
+              max_match = re.search(
+                  r"^#define\s+LOAD_AVG_MAX\s+(\d+)\s*$",
+                  text,
+                  re.M,
+              )
+
+              array_match = re.search(
+                  r"runnable_avg_yN_inv\[\].*?=\s*\{(.*?)\};",
+                  text,
+                  re.S,
+              )
+
+              if not period_match:
+                  raise SystemExit(
+                      f"ERROR: LOAD_AVG_PERIOD missing in {label}"
+                  )
+
+              if not max_match:
+                  raise SystemExit(
+                      f"ERROR: LOAD_AVG_MAX missing in {label}"
+                  )
+
+              if not array_match:
+                  raise SystemExit(
+                      f"ERROR: runnable_avg_yN_inv missing in {label}"
+                  )
+
+              entries = re.findall(
+                  r"0x[0-9a-fA-F]+",
+                  array_match.group(1),
+              )
+
+              rows.append(
+                  (
+                      label,
+                      int(period_match.group(1)),
+                      int(max_match.group(1)),
+                      len(entries),
+                  )
+              )
+
+          with (
+              out / "PELT-MATRIX.tsv"
+          ).open("w") as f:
+              f.write(
+                  "source\t"
+                  "load_avg_period\t"
+                  "load_avg_max\t"
+                  "yN_table_entries\n"
+              )
+
+              for row in rows:
+                  f.write(
+                      f"{row[0]}\t"
+                      f"{row[1]}\t"
+                      f"{row[2]}\t"
+                      f"{row[3]}\n"
+                  )
+          PY
+
+          cat "$ARTIFACT_DIR/PELT-MATRIX.tsv"
+
+      - name: Verify current Candidate 2 uses 16 ms PELT period
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          HEADER="kernel/sched/sched-pelt.h"
+
+          if ! grep -qx \
+            '#define LOAD_AVG_PERIOD 16' \
+            "$HEADER"
+          then
+            echo "ERROR: Candidate 2 is not using LOAD_AVG_PERIOD 16"
+            exit 1
+          fi
+
+          if ! grep -qx \
+            '#define LOAD_AVG_MAX 24130' \
+            "$HEADER"
+          then
+            echo "ERROR: Candidate 2 LOAD_AVG_MAX is not 24130"
+            exit 1
+          fi
+
+          {
+            echo "CANDIDATE_PELT_PERIOD=16"
+            echo "CANDIDATE_PELT_MAX=24130"
+          } | tee "$ARTIFACT_DIR/CANDIDATE-PELT-STATE.txt"
+
+      - name: Inspect PELT generated header comments
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          {
+            echo "===== Candidate sched-pelt.h ====="
+            cat kernel/sched/sched-pelt.h
+
+            echo
+            echo "===== Generated-file marker ====="
+
+            grep -nE \
+              'Generated|do not modify' \
+              kernel/sched/sched-pelt.h \
+              || true
+          } > "$ARTIFACT_DIR/CANDIDATE-PELT-HEADER.txt"
+
+          cat "$ARTIFACT_DIR/CANDIDATE-PELT-HEADER.txt"
+
+      - name: Inspect PELT generator source
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          GENERATOR="Documentation/scheduler/sched-pelt.c"
+
+          if [ ! -f "$GENERATOR" ]; then
+            echo "ERROR: PELT generator source missing"
+            exit 1
+          fi
+
+          cp \
+            "$GENERATOR" \
+            "$ARTIFACT_DIR/candidate-sched-pelt-generator.c"
+
+          {
+            echo "===== Candidate PELT generator ====="
+
+            grep -nE \
+              -A8 \
+              -B8 \
+              'HALF|half|PERIOD|period|32|16|decay|yN' \
+              "$GENERATOR" \
+              || true
+
+          } > "$ARTIFACT_DIR/PELT-GENERATOR-CONTEXT.txt"
+
+          cat "$ARTIFACT_DIR/PELT-GENERATOR-CONTEXT.txt"
+
+      - name: Compare PELT generator with Xiaomi and Android Common
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git show \
+            "xiaomi/${STOCK_REF}:Documentation/scheduler/sched-pelt.c" \
+            > "$ARTIFACT_DIR/xiaomi-sched-pelt-generator.c"
+
+          git show \
+            "android-common/audit-base:Documentation/scheduler/sched-pelt.c" \
+            > "$ARTIFACT_DIR/common-sched-pelt-generator.c"
+
+          CANDIDATE_SHA="$(
+            sha256sum \
+              "$ARTIFACT_DIR/candidate-sched-pelt-generator.c" \
+              | awk '{print $1}'
+          )"
+
+          XIAOMI_SHA="$(
+            sha256sum \
+              "$ARTIFACT_DIR/xiaomi-sched-pelt-generator.c" \
+              | awk '{print $1}'
+          )"
+
+          COMMON_SHA="$(
+            sha256sum \
+              "$ARTIFACT_DIR/common-sched-pelt-generator.c" \
+              | awk '{print $1}'
+          )"
+
+          {
+            echo "CANDIDATE_GENERATOR_SHA256=$CANDIDATE_SHA"
+            echo "XIAOMI_GENERATOR_SHA256=$XIAOMI_SHA"
+            echo "ANDROID_COMMON_GENERATOR_SHA256=$COMMON_SHA"
+
+            if [ "$CANDIDATE_SHA" = "$XIAOMI_SHA" ]; then
+              echo "CANDIDATE_GENERATOR_MATCHES_XIAOMI=YES"
+            else
+              echo "CANDIDATE_GENERATOR_MATCHES_XIAOMI=NO"
+            fi
+
+            if [ "$CANDIDATE_SHA" = "$COMMON_SHA" ]; then
+              echo "CANDIDATE_GENERATOR_MATCHES_ANDROID_COMMON=YES"
+            else
+              echo "CANDIDATE_GENERATOR_MATCHES_ANDROID_COMMON=NO"
+            fi
+
+          } | tee "$ARTIFACT_DIR/PELT-GENERATOR-MATRIX.txt"
+
+      - name: Inspect LOAD_AVG_PERIOD consumers
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          {
+            echo "============================================================"
+            echo "LOAD_AVG_PERIOD references"
+            echo "============================================================"
+
+            git grep \
+              -n \
+              'LOAD_AVG_PERIOD' \
+              -- \
+              kernel/sched \
+              Documentation/scheduler \
+              2>/dev/null \
+              || true
+
+            echo
+            echo "============================================================"
+            echo "LOAD_AVG_MAX references"
+            echo "============================================================"
+
+            git grep \
+              -n \
+              'LOAD_AVG_MAX' \
+              -- \
+              kernel/sched \
+              Documentation/scheduler \
+              2>/dev/null \
+              || true
+
+            echo
+            echo "============================================================"
+            echo "runnable_avg_yN_inv references"
+            echo "============================================================"
+
+            git grep \
+              -n \
+              'runnable_avg_yN_inv' \
+              -- \
+              kernel/sched \
+              Documentation/scheduler \
+              2>/dev/null \
+              || true
+
+          } > "$ARTIFACT_DIR/PELT-CONSUMERS.txt"
+
+          cat "$ARTIFACT_DIR/PELT-CONSUMERS.txt"
+
+      - name: Compare Candidate PELT header with Xiaomi
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          diff \
+            -u \
+            "$ARTIFACT_DIR/xiaomi-sched-pelt.h" \
+            "$ARTIFACT_DIR/candidate-sched-pelt.h" \
+            > "$ARTIFACT_DIR/CANDIDATE-VS-XIAOMI-PELT.diff" \
+            || true
+
+          diff \
+            -u \
+            "$ARTIFACT_DIR/common-sched-pelt.h" \
+            "$ARTIFACT_DIR/candidate-sched-pelt.h" \
+            > "$ARTIFACT_DIR/CANDIDATE-VS-COMMON-PELT.diff" \
+            || true
+
+          XIAOMI_DIFF_BYTES="$(
+            stat -c '%s' \
+              "$ARTIFACT_DIR/CANDIDATE-VS-XIAOMI-PELT.diff"
+          )"
+
+          COMMON_DIFF_BYTES="$(
+            stat -c '%s' \
+              "$ARTIFACT_DIR/CANDIDATE-VS-COMMON-PELT.diff"
+          )"
+
+          {
+            echo "CANDIDATE_XIAOMI_DIFF_BYTES=$XIAOMI_DIFF_BYTES"
+            echo "CANDIDATE_COMMON_DIFF_BYTES=$COMMON_DIFF_BYTES"
+          } | tee "$ARTIFACT_DIR/PELT-DIFF-SUMMARY.txt"
+
+          echo
+          echo "===== Candidate vs Xiaomi ====="
+          cat "$ARTIFACT_DIR/CANDIDATE-VS-XIAOMI-PELT.diff"
+
+          echo
+          echo "===== Candidate vs Android Common ====="
+          cat "$ARTIFACT_DIR/CANDIDATE-VS-COMMON-PELT.diff"
+
+      - name: Trace PELT half-life history
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          {
+            echo "============================================================"
+            echo "LOAD_AVG_PERIOD 16 history"
+            echo "============================================================"
+
+            git log \
+              --all \
+              --date=iso-strict \
+              --pretty=format:'%H%x09%ad%x09%an%x09%s' \
+              -S'#define LOAD_AVG_PERIOD 16' \
+              -- kernel/sched/sched-pelt.h \
+              || true
+
+            echo
+            echo
+            echo "============================================================"
+            echo "LOAD_AVG_PERIOD 32 history"
+            echo "============================================================"
+
+            git log \
+              --all \
+              --date=iso-strict \
+              --pretty=format:'%H%x09%ad%x09%an%x09%s' \
+              -S'#define LOAD_AVG_PERIOD 32' \
+              -- kernel/sched/sched-pelt.h \
+              || true
+
+            echo
+            echo
+            echo "============================================================"
+            echo "All PELT half-life related commits"
+            echo "============================================================"
+
+            git log \
+              --all \
+              --date=iso-strict \
+              --pretty=format:'%H%x09%ad%x09%an%x09%s' \
+              --grep='PELT.*half-life' \
+              -i \
+              || true
+
+          } > "$ARTIFACT_DIR/PELT-HISTORY.txt"
+
+          cat "$ARTIFACT_DIR/PELT-HISTORY.txt"
+
+      - name: Build machine-readable PELT conclusion
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          import csv
+          import os
+          from pathlib import Path
+
+          out = Path(os.environ["ARTIFACT_DIR"])
+
+          rows = {}
+
+          with (
+              out / "PELT-MATRIX.tsv"
+          ).open() as f:
+              reader = csv.DictReader(
+                  f,
+                  delimiter="\t",
+              )
+
+              for row in reader:
+                  rows[row["source"]] = row
+
+          for required in (
+              "CANDIDATE",
+              "XIAOMI",
+              "ANDROID_COMMON",
+              "PELT_PARENT",
+              "PELT_COMMIT",
+          ):
+              if required not in rows:
+                  raise SystemExit(
+                      f"ERROR: missing PELT matrix row: {required}"
+                  )
+
+          candidate_period = int(
+              rows["CANDIDATE"]["load_avg_period"]
+          )
+
+          xiaomi_period = int(
+              rows["XIAOMI"]["load_avg_period"]
+          )
+
+          common_period = int(
+              rows["ANDROID_COMMON"]["load_avg_period"]
+          )
+
+          parent_period = int(
+              rows["PELT_PARENT"]["load_avg_period"]
+          )
+
+          commit_period = int(
+              rows["PELT_COMMIT"]["load_avg_period"]
+          )
+
+          candidate_max = int(
+              rows["CANDIDATE"]["load_avg_max"]
+          )
+
+          xiaomi_max = int(
+              rows["XIAOMI"]["load_avg_max"]
+          )
+
+          common_max = int(
+              rows["ANDROID_COMMON"]["load_avg_max"]
+          )
+
+          candidate_table = int(
+              rows["CANDIDATE"]["yN_table_entries"]
+          )
+
+          xiaomi_table = int(
+              rows["XIAOMI"]["yN_table_entries"]
+          )
+
+          common_table = int(
+              rows["ANDROID_COMMON"]["yN_table_entries"]
+          )
+
+          if (
+              candidate_period == 16
+              and parent_period == 32
+              and commit_period == 16
+              and xiaomi_period == 32
+              and common_period == 32
+          ):
+              review = (
+                  "CUSTOM_16MS_PELT_TUNING_REVIEW"
+              )
+          elif (
+              candidate_period == xiaomi_period
+              and candidate_period == common_period
+          ):
+              review = (
+                  "PELT_MATCHES_XIAOMI_AND_COMMON"
+              )
+          elif candidate_period == xiaomi_period:
+              review = (
+                  "PELT_MATCHES_XIAOMI"
+              )
+          elif candidate_period == common_period:
+              review = (
+                  "PELT_MATCHES_ANDROID_COMMON"
+              )
+          else:
+              review = (
+                  "PELT_BASELINE_DIFFERENCE_REVIEW"
+              )
+
+          with (
+              out / "RESULT.txt"
+          ).open("w") as f:
+              f.write(
+                  "RESULT=PASS_AUDIT\n"
+              )
+
+              f.write(
+                  "BASE_CANDIDATE_TREE="
+                  "5d25b7e0124d7fb695f3f07b45928fcb5780d0e8\n"
+              )
+
+              f.write(
+                  "PELT_COMMIT="
+                  "e06427a5110ca6f14f10a1ae232ee4bce8fd7363\n"
+              )
+
+              f.write(
+                  f"CANDIDATE_PELT_PERIOD={candidate_period}\n"
+              )
+
+              f.write(
+                  f"CANDIDATE_LOAD_AVG_MAX={candidate_max}\n"
+              )
+
+              f.write(
+                  f"CANDIDATE_YN_TABLE_ENTRIES={candidate_table}\n"
+              )
+
+              f.write(
+                  f"XIAOMI_PELT_PERIOD={xiaomi_period}\n"
+              )
+
+              f.write(
+                  f"XIAOMI_LOAD_AVG_MAX={xiaomi_max}\n"
+              )
+
+              f.write(
+                  f"XIAOMI_YN_TABLE_ENTRIES={xiaomi_table}\n"
+              )
+
+              f.write(
+                  f"ANDROID_COMMON_PELT_PERIOD={common_period}\n"
+              )
+
+              f.write(
+                  f"ANDROID_COMMON_LOAD_AVG_MAX={common_max}\n"
+              )
+
+              f.write(
+                  f"ANDROID_COMMON_YN_TABLE_ENTRIES={common_table}\n"
+              )
+
+              f.write(
+                  f"PELT_COMMIT_PARENT_PERIOD={parent_period}\n"
+              )
+
+              f.write(
+                  f"PELT_COMMIT_RESULT_PERIOD={commit_period}\n"
+              )
+
+              f.write(
+                  f"REVIEW_CLASS={review}\n"
+              )
+
+              f.write(
+                  "SOURCE_MODIFIED=NO\n"
+              )
+
+              f.write(
+                  "KERNEL_BUILT=NO\n"
+              )
+
+              f.write(
+                  "IMAGE_CREATED=NO\n"
+              )
+
+              f.write(
+                  "BOOT_IMAGE_CREATED=NO\n"
+              )
+
+              f.write(
+                  "DEVICE_FLASHED=NO\n"
+              )
+
+          print(
+              (out / "RESULT.txt").read_text()
+          )
+          PY
+
+      - name: Verify audit made no source changes
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if ! git diff --quiet; then
+            echo "ERROR: audit unexpectedly modified source"
+            git diff \
+              --no-ext-diff \
+              --no-color
+            exit 1
+          fi
+
+          echo "SOURCE_INTEGRITY=PASS" \
+            | tee "$ARTIFACT_DIR/SOURCE-INTEGRITY.txt"
+
+      - name: Upload PELT half-life audit
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: VEUX-PELT-16ms-Half-Life-Audit
+          path: pelt-half-life-audit/
+          if-no-files-found: error
+          retention-days: 30
