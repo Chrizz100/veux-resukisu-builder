@@ -2,7 +2,8 @@
 
 Custom kernel for **Xiaomi/POCO VEUX (SM6375)**.
 
-Built and tested for **HyperOS Android 13 / OS1.0.12.0.TKCMIXM** and based on **Linux 5.4.274**.
+Built and tested for **HyperOS Android 13 / OS1.0.12.0.TKCMIXM** and based on **Positron Kernel 5.4.803**.
+Backportet to 5.4.274
 
 Included:
 - ReSukiSU
