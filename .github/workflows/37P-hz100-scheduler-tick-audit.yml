@@ -1,0 +1,924 @@
+name: 37P - VEUX HZ100 Scheduler Tick Audit
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    env:
+      ARCH: arm64
+
+      COMMON_REF: "android11-5.4.274_r00"
+      STOCK_REF: "veux-r-oss"
+
+      STABILITY_REVERT: "f74e5c1b7c3f3e42f694e5ab524f95f62a0dab80"
+
+      HZ100_COMMIT: "a904f66b6a6f9c061e51439b081b82e4bf48af68"
+
+      EXPECTED_CANDIDATE_TREE: "5d25b7e0124d7fb695f3f07b45928fcb5780d0e8"
+
+      OUT_DIR: out
+      ARTIFACT_DIR: ${{ github.workspace }}/hz100-audit
+
+    steps:
+      - name: Prepare audit directory
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p "$ARTIFACT_DIR"
+
+          cat > "$ARTIFACT_DIR/PLAN.txt" <<'EOF'
+          VEUX HZ100 Scheduler Tick Audit
+          ================================
+
+          Previously closed scheduler items:
+          - CASS MaxFreq/Thermal adaptation
+          - SPRD task rotation disabled
+          - standard load-balance capacity rate limit restored
+          - CONFIG_CPUSETS restored
+          - CASS reserved-CPU skip rendered inactive
+          - Xiaomi VEUX PELT8 restored and full-build validated
+
+          Current historical checklist item:
+          - CONFIG_HZ_100
+
+          Known commit:
+          a904f66b6a6f9c061e51439b081b82e4bf48af68
+          veux_defconfig: Use a timer frequency of 100 Hz
+
+          Commit intent:
+          - reduce scheduler tick from 300 Hz to 100 Hz
+          - reduce interrupts and power consumption
+          - trade scheduler/timer granularity for lower tick overhead
+
+          Purpose of 37P:
+          - reconstruct exact Candidate 2
+          - verify Candidate 2 resolves to HZ=100
+          - verify the exact HZ100 commit
+          - inspect the commit parent
+          - inspect all HZ choice values around that change
+          - inspect Linux HZ Kconfig defaults
+          - inspect official Xiaomi VEUX tree for HZ selections
+          - inspect Xiaomi HOLI/BLAIR/QGKI-related config fragments
+          - inspect Android Common 5.4.274 HZ selections
+          - determine whether HZ100 is a custom Positron tuning or
+            corresponds to the VEUX platform baseline
+
+          This workflow is AUDIT ONLY.
+
+          It does NOT:
+          - change CONFIG_HZ
+          - restore CONFIG_HZ_300
+          - modify PELT
+          - modify CASS
+          - modify CPUSETS
+          - modify SPRD rotation
+          - modify load-balance capacity handling
+          - build a kernel Image
+          - create boot.img
+          - create a flashable ZIP
+          - access a phone
+          - flash anything
+          EOF
+
+      - name: Checkout exact VEUX source
+        uses: actions/checkout@v7
+        with:
+          repository: dereference23/kernel_xiaomi_sm6375
+          ref: "20240619"
+          fetch-depth: 0
+          path: kernel
+          persist-credentials: false
+
+      - name: Recreate exact Candidate 2
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email \
+            "41898282+github-actions[bot]@users.noreply.github.com"
+
+          BASE_SHA="$(git rev-parse HEAD)"
+          BASE_TREE="$(git rev-parse HEAD^{tree})"
+
+          git remote remove android-common 2>/dev/null || true
+
+          git remote add \
+            android-common \
+            https://android.googlesource.com/kernel/common
+
+          git fetch \
+            --no-tags \
+            android-common \
+            "$COMMON_REF"
+
+          COMMON_SHA="$(git rev-parse FETCH_HEAD)"
+
+          git update-ref \
+            refs/remotes/android-common/audit-base \
+            "$COMMON_SHA"
+
+          git merge \
+            --no-edit \
+            "$COMMON_SHA"
+
+          MERGED_SHA="$(git rev-parse HEAD)"
+          MERGED_TREE="$(git rev-parse HEAD^{tree})"
+
+          git cat-file -e \
+            "${STABILITY_REVERT}^{commit}"
+
+          git revert \
+            --no-edit \
+            "$STABILITY_REVERT"
+
+          CANDIDATE_SHA="$(git rev-parse HEAD)"
+          CANDIDATE_TREE="$(git rev-parse HEAD^{tree})"
+
+          KERNEL_VERSION="$(
+            make -s kernelversion
+          )"
+
+          if [ "$KERNEL_VERSION" != "5.4.274" ]; then
+            echo "ERROR: expected Linux 5.4.274"
+            echo "Actual: $KERNEL_VERSION"
+            exit 1
+          fi
+
+          if [ "$CANDIDATE_TREE" != "$EXPECTED_CANDIDATE_TREE" ]; then
+            echo "ERROR: Candidate 2 tree mismatch"
+            echo "Expected: $EXPECTED_CANDIDATE_TREE"
+            echo "Actual:   $CANDIDATE_TREE"
+            exit 1
+          fi
+
+          {
+            echo "BASE_SHA=$BASE_SHA"
+            echo "BASE_TREE=$BASE_TREE"
+            echo "COMMON_SHA=$COMMON_SHA"
+            echo "MERGED_SHA=$MERGED_SHA"
+            echo "MERGED_TREE=$MERGED_TREE"
+            echo "CANDIDATE_SHA=$CANDIDATE_SHA"
+            echo "CANDIDATE_TREE=$CANDIDATE_TREE"
+            echo "KERNEL_VERSION=$KERNEL_VERSION"
+            echo "COMMON_REF=$COMMON_REF"
+            echo "STABILITY_REVERT=$STABILITY_REVERT"
+            echo "HZ100_COMMIT=$HZ100_COMMIT"
+          } | tee "$ARTIFACT_DIR/IDENTITY.txt"
+
+      - name: Fetch official Xiaomi VEUX reference
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git remote remove xiaomi 2>/dev/null || true
+
+          git remote add \
+            xiaomi \
+            https://github.com/MiCode/Xiaomi_Kernel_OpenSource.git
+
+          git fetch \
+            --no-tags \
+            xiaomi \
+            "+refs/heads/${STOCK_REF}:refs/remotes/xiaomi/${STOCK_REF}"
+
+          STOCK_SHA="$(
+            git rev-parse "xiaomi/${STOCK_REF}"
+          )"
+
+          {
+            echo "STOCK_REF=$STOCK_REF"
+            echo "STOCK_SHA=$STOCK_SHA"
+          } | tee "$ARTIFACT_DIR/XIAOMI-REFERENCE.txt"
+
+      - name: Verify exact HZ100 commit
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git cat-file -e \
+            "${HZ100_COMMIT}^{commit}"
+
+          git show \
+            --no-ext-diff \
+            --no-color \
+            --format=fuller \
+            "$HZ100_COMMIT" \
+            > "$ARTIFACT_DIR/HZ100-COMMIT.txt"
+
+          git show \
+            --format= \
+            --no-ext-diff \
+            --no-color \
+            "$HZ100_COMMIT" \
+            > "$ARTIFACT_DIR/HZ100-COMMIT.diff"
+
+          cat "$ARTIFACT_DIR/HZ100-COMMIT.txt"
+
+          mapfile -t FILES < <(
+            git diff-tree \
+              --no-commit-id \
+              --name-only \
+              -r \
+              "$HZ100_COMMIT"
+          )
+
+          if [ "${#FILES[@]}" -ne 1 ]; then
+            echo "ERROR: expected HZ100 commit to modify one file"
+            printf '%s\n' "${FILES[@]}"
+            exit 1
+          fi
+
+          if [ "${FILES[0]}" != "arch/arm64/configs/veux_defconfig" ]; then
+            echo "ERROR: HZ100 commit modified unexpected file"
+            printf '%s\n' "${FILES[@]}"
+            exit 1
+          fi
+
+          if ! git show \
+            --format= \
+            "$HZ100_COMMIT" \
+            | grep -qF '+CONFIG_HZ_100=y'
+          then
+            echo "ERROR: HZ100 commit does not add CONFIG_HZ_100=y"
+            exit 1
+          fi
+
+          {
+            echo "HZ100_COMMIT_VERIFIED=YES"
+            echo "HZ100_COMMIT_FILE=arch/arm64/configs/veux_defconfig"
+            echo "HZ100_COMMIT_ADDS_CONFIG_HZ_100=YES"
+          } | tee "$ARTIFACT_DIR/HZ100-COMMIT-STATE.txt"
+
+      - name: Inspect HZ100 commit parent
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          PARENT="$(
+            git rev-parse \
+              "${HZ100_COMMIT}^"
+          )"
+
+          git show \
+            "${PARENT}:arch/arm64/configs/veux_defconfig" \
+            > "$ARTIFACT_DIR/veux-before-hz100.config"
+
+          git show \
+            "${HZ100_COMMIT}:arch/arm64/configs/veux_defconfig" \
+            > "$ARTIFACT_DIR/veux-after-hz100.config"
+
+          {
+            echo "HZ100_COMMIT_PARENT=$PARENT"
+
+            echo
+            echo "===== BEFORE HZ100 COMMIT ====="
+
+            grep -nE \
+              '^CONFIG_HZ_|^# CONFIG_HZ_|^CONFIG_HZ=' \
+              "$ARTIFACT_DIR/veux-before-hz100.config" \
+              || true
+
+            echo
+            echo "===== AFTER HZ100 COMMIT ====="
+
+            grep -nE \
+              '^CONFIG_HZ_|^# CONFIG_HZ_|^CONFIG_HZ=' \
+              "$ARTIFACT_DIR/veux-after-hz100.config" \
+              || true
+
+          } | tee "$ARTIFACT_DIR/HZ100-BEFORE-AFTER.txt"
+
+          BEFORE_HZ100="$(
+            grep -xc \
+              'CONFIG_HZ_100=y' \
+              "$ARTIFACT_DIR/veux-before-hz100.config" \
+              || true
+          )"
+
+          AFTER_HZ100="$(
+            grep -xc \
+              'CONFIG_HZ_100=y' \
+              "$ARTIFACT_DIR/veux-after-hz100.config" \
+              || true
+          )"
+
+          {
+            echo "PARENT_CONFIG_HZ_100_COUNT=$BEFORE_HZ100"
+            echo "COMMIT_CONFIG_HZ_100_COUNT=$AFTER_HZ100"
+          } | tee "$ARTIFACT_DIR/HZ100-PARENT-STATE.txt"
+
+          if [ "$BEFORE_HZ100" -ne 0 ]; then
+            echo "ERROR: CONFIG_HZ_100 already existed before HZ100 commit"
+            exit 1
+          fi
+
+          if [ "$AFTER_HZ100" -ne 1 ]; then
+            echo "ERROR: HZ100 commit result does not contain exactly one HZ100 entry"
+            exit 1
+          fi
+
+      - name: Inspect Candidate 2 VEUX HZ declaration
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          CONFIG_FILE="arch/arm64/configs/veux_defconfig"
+
+          {
+            echo "===== Candidate 2 VEUX HZ lines ====="
+
+            grep -nE \
+              '^CONFIG_HZ_|^# CONFIG_HZ_|^CONFIG_HZ=' \
+              "$CONFIG_FILE" \
+              || true
+
+            echo
+            echo "===== Candidate timing-related config ====="
+
+            grep -nE \
+              'NO_HZ|HIGH_RES_TIMERS|PREEMPT|HZ_' \
+              "$CONFIG_FILE" \
+              || true
+
+          } > "$ARTIFACT_DIR/CANDIDATE-HZ-DEFCONFIG.txt"
+
+          cat "$ARTIFACT_DIR/CANDIDATE-HZ-DEFCONFIG.txt"
+
+          if ! grep -qx \
+            'CONFIG_HZ_100=y' \
+            "$CONFIG_FILE"
+          then
+            echo "ERROR: Candidate 2 does not explicitly select HZ100"
+            exit 1
+          fi
+
+          echo "CANDIDATE_DEFCONFIG_HZ100=YES" \
+            | tee "$ARTIFACT_DIR/CANDIDATE-HZ-DECLARATION.txt"
+
+      - name: Resolve Candidate 2 VEUX configuration
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -rf "$OUT_DIR"
+
+          make \
+            O="$OUT_DIR" \
+            ARCH="$ARCH" \
+            veux_defconfig \
+            2>&1 \
+            | tee "$ARTIFACT_DIR/config.log"
+
+          CONFIG="$OUT_DIR/.config"
+
+          if [ ! -f "$CONFIG" ]; then
+            echo "ERROR: resolved .config missing"
+            exit 1
+          fi
+
+          cp \
+            "$CONFIG" \
+            "$ARTIFACT_DIR/resolved.config"
+
+          {
+            echo "===== Resolved Candidate HZ ====="
+
+            grep -E \
+              '^(CONFIG_HZ_|# CONFIG_HZ_|CONFIG_HZ=|CONFIG_NO_HZ=|CONFIG_HIGH_RES_TIMERS=|CONFIG_PREEMPT=)' \
+              "$CONFIG" \
+              || true
+
+          } | tee "$ARTIFACT_DIR/CANDIDATE-HZ-RESOLVED.txt"
+
+          if ! grep -qx \
+            'CONFIG_HZ_100=y' \
+            "$CONFIG"
+          then
+            echo "ERROR: resolved Candidate config is not HZ100"
+            exit 1
+          fi
+
+          if ! grep -qx \
+            'CONFIG_HZ=100' \
+            "$CONFIG"
+          then
+            echo "ERROR: resolved Candidate CONFIG_HZ is not 100"
+            exit 1
+          fi
+
+          {
+            echo "CANDIDATE_HZ_CHOICE=100"
+            echo "CANDIDATE_CONFIG_HZ=100"
+          } | tee "$ARTIFACT_DIR/CANDIDATE-HZ-STATE.txt"
+
+      - name: Inspect kernel HZ Kconfig
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          {
+            echo "============================================================"
+            echo "Candidate kernel/Kconfig.hz"
+            echo "============================================================"
+
+            cat kernel/Kconfig.hz
+
+            echo
+            echo "============================================================"
+            echo "Candidate HZ Kconfig references"
+            echo "============================================================"
+
+            git grep \
+              -nE \
+              'config HZ_|default HZ_|CONFIG_HZ_|HZ_100|HZ_250|HZ_300|HZ_1000' \
+              -- \
+              kernel/Kconfig.hz \
+              arch/arm64 \
+              2>/dev/null \
+              || true
+
+          } > "$ARTIFACT_DIR/CANDIDATE-HZ-KCONFIG.txt"
+
+          cat "$ARTIFACT_DIR/CANDIDATE-HZ-KCONFIG.txt"
+
+      - name: Capture Xiaomi HZ config references
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git grep \
+            -nE \
+            'CONFIG_HZ_(100|250|300|1000)=y|CONFIG_HZ=[0-9]+' \
+            "xiaomi/${STOCK_REF}" \
+            -- arch/arm64/configs \
+            > "$ARTIFACT_DIR/XIAOMI-HZ-ALL-CONFIGS.txt" \
+            || true
+
+          cat "$ARTIFACT_DIR/XIAOMI-HZ-ALL-CONFIGS.txt"
+
+          git grep \
+            -niE \
+            'CONFIG_HZ_(100|250|300|1000)=y|CONFIG_HZ=[0-9]+' \
+            "xiaomi/${STOCK_REF}" \
+            -- \
+            'arch/arm64/configs/*veux*' \
+            'arch/arm64/configs/*holi*' \
+            'arch/arm64/configs/*blair*' \
+            'arch/arm64/configs/*qgki*' \
+            'arch/arm64/configs/*QGKI*' \
+            > "$ARTIFACT_DIR/XIAOMI-HZ-RELEVANT-CONFIGS.txt" \
+            2>/dev/null \
+            || true
+
+          {
+            echo "===== Xiaomi VEUX/HOLI/BLAIR/QGKI HZ references ====="
+
+            if [ -s "$ARTIFACT_DIR/XIAOMI-HZ-RELEVANT-CONFIGS.txt" ]; then
+              cat "$ARTIFACT_DIR/XIAOMI-HZ-RELEVANT-CONFIGS.txt"
+            else
+              echo "NO_RELEVANT_HZ_REFERENCE_FOUND"
+            fi
+          } | tee "$ARTIFACT_DIR/XIAOMI-HZ-RELEVANT.txt"
+
+      - name: List Xiaomi VEUX HOLI BLAIR QGKI config candidates
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git ls-tree \
+            -r \
+            --name-only \
+            "xiaomi/${STOCK_REF}" \
+            arch/arm64/configs \
+            | grep -Ei \
+              'veux|holi|blair|qgki' \
+            > "$ARTIFACT_DIR/XIAOMI-RELEVANT-CONFIG-FILES.txt" \
+            || true
+
+          cat "$ARTIFACT_DIR/XIAOMI-RELEVANT-CONFIG-FILES.txt"
+
+          : > "$ARTIFACT_DIR/XIAOMI-RELEVANT-CONFIG-CONTEXT.txt"
+
+          while IFS= read -r FILE; do
+            [ -n "$FILE" ] || continue
+
+            {
+              echo "============================================================"
+              echo "FILE=$FILE"
+              echo "============================================================"
+
+              git show \
+                "xiaomi/${STOCK_REF}:${FILE}" \
+                2>/dev/null \
+                | grep -nE \
+                    'CONFIG_HZ_|CONFIG_HZ=|CONFIG_NO_HZ|HIGH_RES_TIMERS|PREEMPT' \
+                || true
+
+              echo
+            } >> "$ARTIFACT_DIR/XIAOMI-RELEVANT-CONFIG-CONTEXT.txt"
+
+          done < "$ARTIFACT_DIR/XIAOMI-RELEVANT-CONFIG-FILES.txt"
+
+          cat "$ARTIFACT_DIR/XIAOMI-RELEVANT-CONFIG-CONTEXT.txt"
+
+      - name: Inspect Xiaomi HZ Kconfig
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git show \
+            "xiaomi/${STOCK_REF}:kernel/Kconfig.hz" \
+            > "$ARTIFACT_DIR/xiaomi-Kconfig.hz"
+
+          {
+            echo "===== Xiaomi kernel/Kconfig.hz ====="
+
+            cat "$ARTIFACT_DIR/xiaomi-Kconfig.hz"
+          } > "$ARTIFACT_DIR/XIAOMI-HZ-KCONFIG.txt"
+
+          cat "$ARTIFACT_DIR/XIAOMI-HZ-KCONFIG.txt"
+
+      - name: Inspect Android Common HZ configuration
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git show \
+            "android-common/audit-base:kernel/Kconfig.hz" \
+            > "$ARTIFACT_DIR/common-Kconfig.hz"
+
+          {
+            echo "============================================================"
+            echo "Android Common kernel/Kconfig.hz"
+            echo "============================================================"
+
+            cat "$ARTIFACT_DIR/common-Kconfig.hz"
+
+            echo
+            echo "============================================================"
+            echo "Android Common ARM64 HZ config references"
+            echo "============================================================"
+
+            git grep \
+              -nE \
+              'CONFIG_HZ_(100|250|300|1000)=y|CONFIG_HZ=[0-9]+' \
+              "android-common/audit-base" \
+              -- arch/arm64/configs \
+              || true
+
+          } > "$ARTIFACT_DIR/ANDROID-COMMON-HZ.txt"
+
+          cat "$ARTIFACT_DIR/ANDROID-COMMON-HZ.txt"
+
+      - name: Build HZ reference matrix
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          import os
+          import re
+          from pathlib import Path
+
+          out = Path(os.environ["ARTIFACT_DIR"])
+
+          def count_hz(path):
+              text = path.read_text(errors="replace")
+
+              result = {}
+
+              for hz in (100, 250, 300, 1000):
+                  result[hz] = len(
+                      re.findall(
+                          rf"CONFIG_HZ_{hz}=y",
+                          text,
+                      )
+                  )
+
+              return result
+
+          candidate = count_hz(
+              out / "CANDIDATE-HZ-DEFCONFIG.txt"
+          )
+
+          xiaomi_all = count_hz(
+              out / "XIAOMI-HZ-ALL-CONFIGS.txt"
+          )
+
+          xiaomi_relevant = count_hz(
+              out / "XIAOMI-HZ-RELEVANT-CONFIGS.txt"
+          )
+
+          common = count_hz(
+              out / "ANDROID-COMMON-HZ.txt"
+          )
+
+          with (
+              out / "HZ-MATRIX.tsv"
+          ).open("w") as f:
+              f.write(
+                  "source\t"
+                  "hz100_refs\t"
+                  "hz250_refs\t"
+                  "hz300_refs\t"
+                  "hz1000_refs\n"
+              )
+
+              for label, row in (
+                  ("CANDIDATE_VEUX", candidate),
+                  ("XIAOMI_ALL_ARM64_CONFIGS", xiaomi_all),
+                  ("XIAOMI_RELEVANT_CONFIGS", xiaomi_relevant),
+                  ("ANDROID_COMMON_ARM64_CONFIGS", common),
+              ):
+                  f.write(
+                      f"{label}\t"
+                      f"{row[100]}\t"
+                      f"{row[250]}\t"
+                      f"{row[300]}\t"
+                      f"{row[1000]}\n"
+                  )
+          PY
+
+          cat "$ARTIFACT_DIR/HZ-MATRIX.tsv"
+
+      - name: Trace HZ100 history
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          {
+            echo "============================================================"
+            echo "VEUX CONFIG_HZ_100 history"
+            echo "============================================================"
+
+            git log \
+              --all \
+              --date=iso-strict \
+              --pretty=format:'%H%x09%ad%x09%an%x09%s' \
+              -S'CONFIG_HZ_100=y' \
+              -- arch/arm64/configs/veux_defconfig \
+              || true
+
+            echo
+            echo
+            echo "============================================================"
+            echo "VEUX CONFIG_HZ_300 history"
+            echo "============================================================"
+
+            git log \
+              --all \
+              --date=iso-strict \
+              --pretty=format:'%H%x09%ad%x09%an%x09%s' \
+              -S'CONFIG_HZ_300=y' \
+              -- arch/arm64/configs/veux_defconfig \
+              || true
+
+            echo
+            echo
+            echo "============================================================"
+            echo "HZ-related VEUX defconfig commits"
+            echo "============================================================"
+
+            git log \
+              --all \
+              --date=iso-strict \
+              --pretty=format:'%H%x09%ad%x09%an%x09%s' \
+              --grep='timer frequency\|HZ\|scheduler tick' \
+              -i \
+              -- arch/arm64/configs/veux_defconfig \
+              || true
+
+          } > "$ARTIFACT_DIR/HZ-HISTORY.txt"
+
+          cat "$ARTIFACT_DIR/HZ-HISTORY.txt"
+
+      - name: Compare HZ Kconfig files
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cp \
+            kernel/Kconfig.hz \
+            "$ARTIFACT_DIR/candidate-Kconfig.hz"
+
+          diff \
+            -u \
+            "$ARTIFACT_DIR/xiaomi-Kconfig.hz" \
+            "$ARTIFACT_DIR/candidate-Kconfig.hz" \
+            > "$ARTIFACT_DIR/CANDIDATE-VS-XIAOMI-KCONFIG-HZ.diff" \
+            || true
+
+          diff \
+            -u \
+            "$ARTIFACT_DIR/common-Kconfig.hz" \
+            "$ARTIFACT_DIR/candidate-Kconfig.hz" \
+            > "$ARTIFACT_DIR/CANDIDATE-VS-COMMON-KCONFIG-HZ.diff" \
+            || true
+
+          {
+            echo "CANDIDATE_KCONFIG_HZ_SHA256=$(
+              sha256sum "$ARTIFACT_DIR/candidate-Kconfig.hz" | awk '{print $1}'
+            )"
+
+            echo "XIAOMI_KCONFIG_HZ_SHA256=$(
+              sha256sum "$ARTIFACT_DIR/xiaomi-Kconfig.hz" | awk '{print $1}'
+            )"
+
+            echo "ANDROID_COMMON_KCONFIG_HZ_SHA256=$(
+              sha256sum "$ARTIFACT_DIR/common-Kconfig.hz" | awk '{print $1}'
+            )"
+
+          } | tee "$ARTIFACT_DIR/HZ-KCONFIG-HASHES.txt"
+
+      - name: Build machine-readable HZ conclusion
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          import csv
+          import os
+          from pathlib import Path
+
+          out = Path(os.environ["ARTIFACT_DIR"])
+
+          rows = {}
+
+          with (
+              out / "HZ-MATRIX.tsv"
+          ).open() as f:
+              reader = csv.DictReader(
+                  f,
+                  delimiter="\t",
+              )
+
+              for row in reader:
+                  rows[row["source"]] = row
+
+          candidate_hz100 = int(
+              rows["CANDIDATE_VEUX"]["hz100_refs"]
+          )
+
+          xiaomi_relevant_100 = int(
+              rows["XIAOMI_RELEVANT_CONFIGS"]["hz100_refs"]
+          )
+
+          xiaomi_relevant_300 = int(
+              rows["XIAOMI_RELEVANT_CONFIGS"]["hz300_refs"]
+          )
+
+          parent = {}
+
+          for line in (
+              out / "HZ100-PARENT-STATE.txt"
+          ).read_text().splitlines():
+              if "=" in line:
+                  key, value = line.split("=", 1)
+                  parent[key] = value
+
+          parent_hz100 = int(
+              parent.get(
+                  "PARENT_CONFIG_HZ_100_COUNT",
+                  "0",
+              )
+          )
+
+          if (
+              candidate_hz100 > 0
+              and parent_hz100 == 0
+              and xiaomi_relevant_300 > 0
+              and xiaomi_relevant_100 == 0
+          ):
+              review = (
+                  "CUSTOM_HZ100_VS_XIAOMI_HZ300_REVIEW"
+              )
+          elif (
+              candidate_hz100 > 0
+              and xiaomi_relevant_100 > 0
+          ):
+              review = (
+                  "HZ100_PRESENT_IN_XIAOMI_RELEVANT_CONFIGS"
+              )
+          elif candidate_hz100 > 0:
+              review = (
+                  "CUSTOM_HZ100_BASELINE_REVIEW"
+              )
+          else:
+              review = (
+                  "HZ100_NOT_CONFIRMED"
+              )
+
+          with (
+              out / "RESULT.txt"
+          ).open("w") as f:
+              f.write(
+                  "RESULT=PASS_AUDIT\n"
+              )
+
+              f.write(
+                  "BASE_CANDIDATE_TREE="
+                  "5d25b7e0124d7fb695f3f07b45928fcb5780d0e8\n"
+              )
+
+              f.write(
+                  "HZ100_COMMIT="
+                  "a904f66b6a6f9c061e51439b081b82e4bf48af68\n"
+              )
+
+              f.write(
+                  "CANDIDATE_HZ_100=YES\n"
+              )
+
+              f.write(
+                  "CANDIDATE_CONFIG_HZ=100\n"
+              )
+
+              f.write(
+                  "HZ100_PRESENT_IN_COMMIT_PARENT="
+                  f"{'YES' if parent_hz100 > 0 else 'NO'}\n"
+              )
+
+              f.write(
+                  "XIAOMI_RELEVANT_HZ100_REFERENCES="
+                  f"{xiaomi_relevant_100}\n"
+              )
+
+              f.write(
+                  "XIAOMI_RELEVANT_HZ300_REFERENCES="
+                  f"{xiaomi_relevant_300}\n"
+              )
+
+              f.write(
+                  f"REVIEW_CLASS={review}\n"
+              )
+
+              f.write(
+                  "SOURCE_MODIFIED=NO\n"
+              )
+
+              f.write(
+                  "KERNEL_IMAGE_BUILT=NO\n"
+              )
+
+              f.write(
+                  "BOOT_IMAGE_CREATED=NO\n"
+              )
+
+              f.write(
+                  "DEVICE_FLASHED=NO\n"
+              )
+
+          print(
+              (out / "RESULT.txt").read_text()
+          )
+          PY
+
+      - name: Verify audit made no source changes
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if ! git diff --quiet; then
+            echo "ERROR: audit unexpectedly modified source"
+            git diff \
+              --no-ext-diff \
+              --no-color
+            exit 1
+          fi
+
+          echo "SOURCE_INTEGRITY=PASS" \
+            | tee "$ARTIFACT_DIR/SOURCE-INTEGRITY.txt"
+
+      - name: Upload HZ100 scheduler tick audit
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: VEUX-HZ100-Scheduler-Tick-Audit
+          path: hz100-audit/
+          if-no-files-found: error
+          retention-days: 30
