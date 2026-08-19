@@ -1,0 +1,1012 @@
+name: 31C - VEUX Restore LB Capacity Rate Limit Full Build Probe
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+
+    env:
+      ARCH: arm64
+      COMMON_REF: "android11-5.4.274_r00"
+
+      STABILITY_REVERT: "f74e5c1b7c3f3e42f694e5ab524f95f62a0dab80"
+
+      LB_CAPACITY_COMMIT: "2c1495be9eabac845acc8da45f070622d6455091"
+
+      EXPECTED_CANDIDATE_TREE: "5d25b7e0124d7fb695f3f07b45928fcb5780d0e8"
+
+      EXPECTED_CASS_DIFF_SHA256: "67abb81be8c2d7727c3e4c8a92419c9e9a3d97ee3d3e5355d3acabce34adf659"
+
+      CLANG_PREBUILT_COMMIT: "aa2e4a514a6c85eebcc4a27149eaf9244e951a1e"
+
+      TOOLCHAIN_DIR: ${{ github.workspace }}/toolchains/clang-r416183b
+      OUT_DIR: out
+      ARTIFACT_DIR: ${{ github.workspace }}/lb-capacity-ratelimit-probe
+
+    steps:
+      - name: Prepare probe directory
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p \
+            "$ARTIFACT_DIR" \
+            "$TOOLCHAIN_DIR"
+
+          cat > "$ARTIFACT_DIR/PLAN.txt" <<'EOF'
+          VEUX Restore Load-Balance CPU Capacity Rate Limit
+          =================================================
+
+          Established by 30P:
+          - Candidate 2 calls update_group_capacity() from update_sd_lb_stats().
+          - Candidate 2 has no next_update/time gate.
+          - Official Xiaomi VEUX has the time gate.
+          - Android Common 5.4.274 has the time gate.
+          - Commit 2c1495be9eabac845acc8da45f070622d6455091
+            removed the rate limit and made capacity updates unconditional.
+
+          Purpose of 31C:
+          - reconstruct exact Candidate 2
+          - reverse only the exact load-balance capacity commit
+          - restore sched_group_capacity::next_update
+          - restore balance_interval-based next_update calculation
+          - restore CPU_NEWLY_IDLE / time_after_eq() gate
+          - retain the proven CASS MaxFreq/Thermal adaptation
+          - keep SPRD task rotation disabled
+          - build complete Image and DTBs
+          - verify CASS remains linked
+          - verify SPRD rotation remains absent
+          - verify restored rate-limit code is compiled
+
+          This workflow does NOT:
+          - alter ReSukiSU
+          - alter SUSFS
+          - create boot.img
+          - create a flashable ZIP
+          - access a phone
+          - flash anything
+          EOF
+
+      - name: Install build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          sudo apt-get update
+
+          sudo apt-get install -y --no-install-recommends \
+            bc \
+            bison \
+            build-essential \
+            ca-certificates \
+            cpio \
+            curl \
+            flex \
+            git \
+            libelf-dev \
+            libncurses-dev \
+            libssl-dev \
+            python3 \
+            python-is-python3 \
+            rsync \
+            xz-utils \
+            zstd
+
+      - name: Install exact Android clang-r416183b
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          curl \
+            --fail \
+            --location \
+            --retry 3 \
+            "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/${CLANG_PREBUILT_COMMIT}/clang-r416183b.tar.gz" \
+            -o "${RUNNER_TEMP}/clang-r416183b.tar.gz"
+
+          tar \
+            -xzf "${RUNNER_TEMP}/clang-r416183b.tar.gz" \
+            -C "$TOOLCHAIN_DIR"
+
+          echo "$TOOLCHAIN_DIR/bin" >> "$GITHUB_PATH"
+
+          "$TOOLCHAIN_DIR/bin/clang" --version \
+            | tee "$ARTIFACT_DIR/clang-version.txt"
+
+          "$TOOLCHAIN_DIR/bin/ld.lld" --version \
+            | tee -a "$ARTIFACT_DIR/clang-version.txt"
+
+          if ! "$TOOLCHAIN_DIR/bin/clang" --version \
+            | grep -q 'r416183b'
+          then
+            echo "ERROR: expected clang-r416183b"
+            exit 1
+          fi
+
+          for tool in \
+            clang \
+            ld.lld \
+            llvm-ar \
+            llvm-nm \
+            llvm-objcopy \
+            llvm-objdump \
+            llvm-readelf \
+            llvm-size \
+            llvm-strip
+          do
+            if [ ! -x "$TOOLCHAIN_DIR/bin/$tool" ]; then
+              echo "ERROR: missing toolchain binary: $tool"
+              exit 1
+            fi
+          done
+
+      - name: Checkout exact VEUX source
+        uses: actions/checkout@v7
+        with:
+          repository: dereference23/kernel_xiaomi_sm6375
+          ref: "20240619"
+          fetch-depth: 0
+          path: kernel
+          persist-credentials: false
+
+      - name: Recreate exact Candidate 2
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email \
+            "41898282+github-actions[bot]@users.noreply.github.com"
+
+          BASE_SHA="$(git rev-parse HEAD)"
+          BASE_TREE="$(git rev-parse HEAD^{tree})"
+
+          git remote remove android-common 2>/dev/null || true
+
+          git remote add \
+            android-common \
+            https://android.googlesource.com/kernel/common
+
+          git fetch \
+            --no-tags \
+            android-common \
+            "$COMMON_REF"
+
+          COMMON_SHA="$(git rev-parse FETCH_HEAD)"
+
+          git update-ref \
+            refs/remotes/android-common/audit-base \
+            "$COMMON_SHA"
+
+          git merge \
+            --no-edit \
+            "$COMMON_SHA"
+
+          MERGED_SHA="$(git rev-parse HEAD)"
+          MERGED_TREE="$(git rev-parse HEAD^{tree})"
+
+          git cat-file -e \
+            "${STABILITY_REVERT}^{commit}"
+
+          git revert \
+            --no-edit \
+            "$STABILITY_REVERT"
+
+          CANDIDATE_SHA="$(git rev-parse HEAD)"
+          CANDIDATE_TREE="$(git rev-parse HEAD^{tree})"
+          KERNEL_VERSION="$(make -s kernelversion)"
+
+          if [ "$KERNEL_VERSION" != "5.4.274" ]; then
+            echo "ERROR: expected Linux 5.4.274"
+            echo "Actual: $KERNEL_VERSION"
+            exit 1
+          fi
+
+          if [ "$CANDIDATE_TREE" != "$EXPECTED_CANDIDATE_TREE" ]; then
+            echo "ERROR: Candidate 2 tree mismatch"
+            echo "Expected: $EXPECTED_CANDIDATE_TREE"
+            echo "Actual:   $CANDIDATE_TREE"
+            exit 1
+          fi
+
+          {
+            echo "BASE_SHA=$BASE_SHA"
+            echo "BASE_TREE=$BASE_TREE"
+            echo "COMMON_SHA=$COMMON_SHA"
+            echo "MERGED_SHA=$MERGED_SHA"
+            echo "MERGED_TREE=$MERGED_TREE"
+            echo "CANDIDATE_SHA=$CANDIDATE_SHA"
+            echo "CANDIDATE_TREE=$CANDIDATE_TREE"
+            echo "KERNEL_VERSION=$KERNEL_VERSION"
+            echo "COMMON_REF=$COMMON_REF"
+            echo "STABILITY_REVERT=$STABILITY_REVERT"
+            echo "LB_CAPACITY_COMMIT=$LB_CAPACITY_COMMIT"
+          } | tee "$ARTIFACT_DIR/IDENTITY.txt"
+
+      - name: Verify ungated Candidate 2 baseline
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if grep -q \
+            'next_update' \
+            kernel/sched/fair.c
+          then
+            echo "ERROR: baseline unexpectedly still has fair.c next_update logic"
+            exit 1
+          fi
+
+          if grep -q \
+            'next_update' \
+            kernel/sched/sched.h
+          then
+            echo "ERROR: baseline unexpectedly still has sched_group_capacity::next_update"
+            exit 1
+          fi
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          text = Path("kernel/sched/fair.c").read_text()
+
+          direct = """\
+          \t\tif (local_group) {
+          \t\t\tsds->local = sg;
+          \t\t\tsgs = local;
+          \t\t\tupdate_group_capacity(env->sd, env->dst_cpu);
+          \t\t}
+          """
+
+          count = text.count(direct)
+
+          if count != 1:
+              raise SystemExit(
+                  "ERROR: expected unconditional load-balance capacity "
+                  f"block exactly once, got {count}"
+              )
+          PY
+
+          {
+            echo "BASELINE_CAPACITY_REFRESH=UNGATED"
+            echo "BASELINE_NEXT_UPDATE_FIELD=ABSENT"
+            echo "BASELINE_TIME_GATE=ABSENT"
+          } | tee "$ARTIFACT_DIR/BASELINE-LB-CAPACITY-STATE.txt"
+
+      - name: Verify exact capacity commit scope
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git cat-file -e \
+            "${LB_CAPACITY_COMMIT}^{commit}"
+
+          git diff-tree \
+            --no-commit-id \
+            --name-only \
+            -r \
+            "$LB_CAPACITY_COMMIT" \
+            | sort \
+            > "$ARTIFACT_DIR/LB-CAPACITY-COMMIT-FILES.txt"
+
+          cat "$ARTIFACT_DIR/LB-CAPACITY-COMMIT-FILES.txt"
+
+          cat > "$RUNNER_TEMP/expected-capacity-files.txt" <<'EOF'
+          kernel/sched/fair.c
+          kernel/sched/sched.h
+          EOF
+
+          if ! diff -u \
+            "$RUNNER_TEMP/expected-capacity-files.txt" \
+            "$ARTIFACT_DIR/LB-CAPACITY-COMMIT-FILES.txt"
+          then
+            echo "ERROR: capacity commit scope is not exactly the expected two files"
+            exit 1
+          fi
+
+          git show \
+            --format= \
+            --binary \
+            "$LB_CAPACITY_COMMIT" \
+            > "$ARTIFACT_DIR/LB-CAPACITY-ORIGINAL-COMMIT.patch"
+
+          test -s \
+            "$ARTIFACT_DIR/LB-CAPACITY-ORIGINAL-COMMIT.patch"
+
+      - name: Restore standard load balance capacity rate limit
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          PATCH="$ARTIFACT_DIR/LB-CAPACITY-ORIGINAL-COMMIT.patch"
+
+          git apply \
+            --reverse \
+            --check \
+            "$PATCH"
+
+          git apply \
+            --reverse \
+            "$PATCH"
+
+          git diff --check \
+            > "$ARTIFACT_DIR/LB-CAPACITY-GIT-DIFF-CHECK.txt" \
+            2>&1
+
+          git diff \
+            --no-ext-diff \
+            --no-color \
+            -- \
+            kernel/sched/fair.c \
+            kernel/sched/sched.h \
+            > "$ARTIFACT_DIR/LB-CAPACITY-RATELIMIT-RESTORE.diff"
+
+          RESTORE_DIFF_SHA="$(
+            sha256sum \
+              "$ARTIFACT_DIR/LB-CAPACITY-RATELIMIT-RESTORE.diff" \
+              | awk '{print $1}'
+          )"
+
+          {
+            echo "RESTORE_METHOD=EXACT_REVERSE_OF_COMMIT"
+            echo "REVERSED_COMMIT=$LB_CAPACITY_COMMIT"
+            echo "RESTORE_DIFF_SHA256=$RESTORE_DIFF_SHA"
+          } | tee "$ARTIFACT_DIR/LB-CAPACITY-RESTORE-IDENTITY.txt"
+
+      - name: Verify restored capacity rate limit semantics
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          fair = Path("kernel/sched/fair.c").read_text()
+          sched = Path("kernel/sched/sched.h").read_text()
+
+          required_fair = (
+              "unsigned long interval;",
+              "interval = msecs_to_jiffies(sd->balance_interval);",
+              "interval = clamp(interval, 1UL, max_load_balance_interval);",
+              "sdg->sgc->next_update = jiffies + interval;",
+              "env->idle != CPU_NEWLY_IDLE",
+              "time_after_eq(jiffies, sg->sgc->next_update)",
+              "update_group_capacity(env->sd, env->dst_cpu);",
+          )
+
+          for token in required_fair:
+              if token not in fair:
+                  raise SystemExit(
+                      f"ERROR: restored fair.c token missing: {token}"
+                  )
+
+          if "unsigned long\t\tnext_update;" not in sched:
+              raise SystemExit(
+                  "ERROR: sched_group_capacity::next_update not restored"
+              )
+
+          unconditional = """\
+          \t\tif (local_group) {
+          \t\t\tsds->local = sg;
+          \t\t\tsgs = local;
+          \t\t\tupdate_group_capacity(env->sd, env->dst_cpu);
+          \t\t}
+          """
+
+          if unconditional in fair:
+              raise SystemExit(
+                  "ERROR: unconditional capacity-refresh block remains"
+              )
+          PY
+
+          {
+            echo "NEXT_UPDATE_FIELD=RESTORED"
+            echo "BALANCE_INTERVAL_CALCULATION=RESTORED"
+            echo "NEXT_UPDATE_ASSIGNMENT=RESTORED"
+            echo "CPU_NEWLY_IDLE_GATE=RESTORED"
+            echo "TIME_AFTER_EQ_GATE=RESTORED"
+            echo "UNCONDITIONAL_REFRESH=REMOVED"
+          } | tee "$ARTIFACT_DIR/LB-CAPACITY-SEMANTICS.txt"
+
+      - name: Verify Android Common uses the same gate model
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          COMMON_FAIR="$RUNNER_TEMP/common-fair.c"
+          COMMON_SCHED="$RUNNER_TEMP/common-sched.h"
+
+          git show \
+            "android-common/audit-base:kernel/sched/fair.c" \
+            > "$COMMON_FAIR"
+
+          git show \
+            "android-common/audit-base:kernel/sched/sched.h" \
+            > "$COMMON_SCHED"
+
+          if ! grep -qF \
+            'time_after_eq(jiffies, sg->sgc->next_update)' \
+            "$COMMON_FAIR"
+          then
+            echo "ERROR: Android Common does not contain expected next_update gate"
+            exit 1
+          fi
+
+          if ! grep -qF \
+            'sdg->sgc->next_update = jiffies + interval;' \
+            "$COMMON_FAIR"
+          then
+            echo "ERROR: Android Common does not contain expected next_update assignment"
+            exit 1
+          fi
+
+          if ! grep -q \
+            'next_update;' \
+            "$COMMON_SCHED"
+          then
+            echo "ERROR: Android Common does not contain next_update field"
+            exit 1
+          fi
+
+          {
+            echo "ANDROID_COMMON_TIME_GATE=YES"
+            echo "ANDROID_COMMON_NEXT_UPDATE_ASSIGNMENT=YES"
+            echo "ANDROID_COMMON_NEXT_UPDATE_FIELD=YES"
+          } | tee "$ARTIFACT_DIR/ANDROID-COMMON-CAPACITY-GATE.txt"
+
+      - name: Apply proven CASS MaxFreq Thermal patch
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("kernel/sched/cass.c")
+          text = path.read_text()
+
+          old = """\
+          \tunsigned long cap;
+          \tunsigned long cap_max;
+          \tunsigned long eff_util;
+          """
+
+          new = """\
+          \tunsigned long cap;
+          \tunsigned long cap_max;
+          \tunsigned long cap_no_therm;
+          \tunsigned long cap_orig;
+          \tunsigned long eff_util;
+          """
+
+          if text.count(old) != 1:
+              raise SystemExit(
+                  "struct capacity fields anchor mismatch: "
+                  f"{text.count(old)} matches"
+              )
+
+          text = text.replace(old, new, 1)
+
+          old = """\
+          \tc->cap = c->cap_max - min(c->hard_util, c->cap_max - 1);
+          """
+
+          new = """\
+          \tc->cap = c->cap_max - min(c->hard_util, c->cap_max - 1);
+
+          \t/*
+          \t * Keep a non-throttled capacity denominator for relative load
+          \t * balancing, matching the original CASS capacity separation.
+          \t */
+          \tc->cap_no_therm =
+          \t\tc->cap_orig - min(c->hard_util, c->cap_orig - 1);
+          """
+
+          if text.count(old) != 1:
+              raise SystemExit(
+                  "cass_cpu_util capacity anchor mismatch: "
+                  f"{text.count(old)} matches"
+              )
+
+          text = text.replace(old, new, 1)
+
+          old = """\
+          \t\t/* Get the original, maximum _possible_ capacity of this CPU */
+          \t\tcurr->cap_max = arch_scale_cpu_capacity(cpu);
+          """
+
+          new = """\
+          \t\t/* Get the original, maximum possible capacity of this CPU. */
+          \t\tcurr->cap_orig = arch_scale_cpu_capacity(cpu);
+
+          \t\t/* Account for the current maximum allowed CPU frequency. */
+          \t\tcurr->cap_max =
+          \t\t\tcurr->cap_orig *
+          \t\t\tarch_scale_max_freq_capacity(NULL, cpu) >>
+          \t\t\tSCHED_CAPACITY_SHIFT;
+
+          \t\t/* Keep all later capacity divisions well-defined. */
+          \t\tcurr->cap_max = max(curr->cap_max, 1UL);
+          """
+
+          if text.count(old) != 1:
+              raise SystemExit(
+                  "CASS cap_max anchor mismatch: "
+                  f"{text.count(old)} matches"
+              )
+
+          text = text.replace(old, new, 1)
+
+          old = """\
+          \t\tcurr->util =
+          \t\t\tcurr->util * SCHED_CAPACITY_SCALE / curr->cap;
+          """
+
+          new = """\
+          \t\tcurr->util =
+          \t\t\tcurr->util * SCHED_CAPACITY_SCALE /
+          \t\t\tcurr->cap_no_therm;
+          """
+
+          if text.count(old) != 1:
+              raise SystemExit(
+                  "relative-util denominator anchor mismatch: "
+                  f"{text.count(old)} matches"
+              )
+
+          text = text.replace(old, new, 1)
+
+          path.write_text(text)
+          PY
+
+          git diff \
+            --no-ext-diff \
+            --no-color \
+            -- kernel/sched/cass.c \
+            > "$ARTIFACT_DIR/CASS-PATCH.diff"
+
+          CASS_DIFF_SHA="$(
+            sha256sum \
+              "$ARTIFACT_DIR/CASS-PATCH.diff" \
+              | awk '{print $1}'
+          )"
+
+          echo "EXPECTED_CASS_DIFF_SHA256=$EXPECTED_CASS_DIFF_SHA256"
+          echo "ACTUAL_CASS_DIFF_SHA256=$CASS_DIFF_SHA"
+
+          if [ "$CASS_DIFF_SHA" != "$EXPECTED_CASS_DIFF_SHA256" ]; then
+            echo "ERROR: CASS patch differs from proven 26C/27C/29C patch"
+            exit 1
+          fi
+
+          {
+            echo "CASS_PATCH=PASS"
+            echo "CASS_DIFF_SHA256=$CASS_DIFF_SHA"
+          } | tee "$ARTIFACT_DIR/CASS-PATCH-IDENTITY.txt"
+
+      - name: Disable SPRD rotation
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("arch/arm64/configs/veux_defconfig")
+          text = path.read_text()
+
+          old = "CONFIG_SPRD_ROTATION_TASK=y"
+          new = "# CONFIG_SPRD_ROTATION_TASK is not set"
+
+          count = text.count(old)
+
+          if count != 1:
+              raise SystemExit(
+                  "SPRD rotation defconfig anchor mismatch: "
+                  f"{count} matches"
+              )
+
+          text = text.replace(old, new, 1)
+
+          path.write_text(text)
+          PY
+
+          if grep -qx \
+            'CONFIG_SPRD_ROTATION_TASK=y' \
+            arch/arm64/configs/veux_defconfig
+          then
+            echo "ERROR: SPRD rotation still enabled"
+            exit 1
+          fi
+
+          if ! grep -qx \
+            '# CONFIG_SPRD_ROTATION_TASK is not set' \
+            arch/arm64/configs/veux_defconfig
+          then
+            echo "ERROR: explicit SPRD rotation disable marker missing"
+            exit 1
+          fi
+
+          echo "SPRD_ROTATION_DISABLED=YES" \
+            | tee "$ARTIFACT_DIR/SPRD-ROTATION-STATE.txt"
+
+          git diff --check \
+            > "$ARTIFACT_DIR/FINAL-GIT-DIFF-CHECK.txt" \
+            2>&1
+
+      - name: Resolve VEUX configuration
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          export PATH="$TOOLCHAIN_DIR/bin:$PATH"
+          export KCFLAGS="-D__ANDROID_COMMON_KERNEL__"
+
+          rm -rf "$OUT_DIR"
+
+          make \
+            O="$OUT_DIR" \
+            ARCH="$ARCH" \
+            LLVM=1 \
+            veux_defconfig \
+            2>&1 \
+            | tee "$ARTIFACT_DIR/config.log"
+
+          CONFIG="$OUT_DIR/.config"
+
+          if [ ! -f "$CONFIG" ]; then
+            echo "ERROR: resolved .config missing"
+            exit 1
+          fi
+
+          if ! grep -qx \
+            'CONFIG_SCHED_CASS=y' \
+            "$CONFIG"
+          then
+            echo "ERROR: CASS unexpectedly disabled"
+            exit 1
+          fi
+
+          if grep -qx \
+            'CONFIG_SPRD_ROTATION_TASK=y' \
+            "$CONFIG"
+          then
+            echo "ERROR: SPRD rotation unexpectedly enabled"
+            exit 1
+          fi
+
+          if ! grep -qx \
+            '# CONFIG_SPRD_ROTATION_TASK is not set' \
+            "$CONFIG"
+          then
+            echo "ERROR: SPRD rotation is not explicitly disabled"
+            exit 1
+          fi
+
+          REQUIRED_CONFIGS=(
+            CONFIG_ARCH_QCOM=y
+            CONFIG_ARCH_HOLI=y
+            CONFIG_ARCH_BLAIR=y
+            CONFIG_WT_QGKI=y
+            CONFIG_LTO_CLANG=y
+            CONFIG_BUILD_ARM64_UNCOMPRESSED_KERNEL=y
+            CONFIG_SCHED_CASS=y
+            CONFIG_CPU_FREQ=y
+            CONFIG_CPU_FREQ_GOV_SCHEDUTIL=y
+            CONFIG_ARM_QCOM_CPUFREQ_HW=y
+          )
+
+          for item in "${REQUIRED_CONFIGS[@]}"; do
+            if ! grep -qx "$item" "$CONFIG"; then
+              echo "ERROR: required config missing: $item"
+              exit 1
+            fi
+          done
+
+          cp \
+            "$CONFIG" \
+            "$ARTIFACT_DIR/resolved.config"
+
+          {
+            grep -E \
+              '^(CONFIG_ARCH_QCOM=|CONFIG_ARCH_HOLI=|CONFIG_ARCH_BLAIR=|CONFIG_WT_QGKI=|CONFIG_LTO_CLANG=|CONFIG_BUILD_ARM64_UNCOMPRESSED_KERNEL=|CONFIG_SCHED_CASS=|CONFIG_SPRD_ROTATION_TASK=|# CONFIG_SPRD_ROTATION_TASK|CONFIG_CPU_FREQ=|CONFIG_CPU_FREQ_GOV_SCHEDUTIL=|CONFIG_ARM_QCOM_CPUFREQ_HW=)' \
+              "$CONFIG" \
+              || true
+          } | tee "$ARTIFACT_DIR/CONFIG-IMPORTANT.txt"
+
+          make \
+            -s \
+            O="$OUT_DIR" \
+            ARCH="$ARCH" \
+            LLVM=1 \
+            kernelrelease \
+            | tee "$ARTIFACT_DIR/kernelrelease.txt"
+
+      - name: Build complete kernel Image and DTBs
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          export PATH="$TOOLCHAIN_DIR/bin:$PATH"
+          export KCFLAGS="-D__ANDROID_COMMON_KERNEL__"
+
+          set +e
+
+          make \
+            -j"$(nproc)" \
+            O="$OUT_DIR" \
+            ARCH="$ARCH" \
+            LLVM=1 \
+            Image \
+            dtbs \
+            2>&1 \
+            | tee "$ARTIFACT_DIR/full-build.log"
+
+          BUILD_RC=${PIPESTATUS[0]}
+
+          set -e
+
+          printf '%s\n' \
+            "$BUILD_RC" \
+            > "$ARTIFACT_DIR/full-build.exit-code"
+
+          if [ "$BUILD_RC" -ne 0 ]; then
+            echo "ERROR: full kernel build failed"
+            exit "$BUILD_RC"
+          fi
+
+      - name: Verify linked kernel state
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          VMLINUX="$OUT_DIR/vmlinux"
+
+          if [ ! -s "$VMLINUX" ]; then
+            echo "ERROR: vmlinux missing"
+            exit 1
+          fi
+
+          "$TOOLCHAIN_DIR/bin/llvm-nm" \
+            "$VMLINUX" \
+            > "$ARTIFACT_DIR/vmlinux-symbols.txt"
+
+          grep -E \
+            '[[:space:]]cass_[A-Za-z0-9_]+' \
+            "$ARTIFACT_DIR/vmlinux-symbols.txt" \
+            > "$ARTIFACT_DIR/vmlinux-cass-symbols.txt" \
+            || true
+
+          CASS_SYMBOL_COUNT="$(
+            wc -l \
+              < "$ARTIFACT_DIR/vmlinux-cass-symbols.txt" \
+              | tr -d ' '
+          )"
+
+          echo "CASS_SYMBOL_COUNT=$CASS_SYMBOL_COUNT" \
+            | tee "$ARTIFACT_DIR/CASS-SYMBOL-COUNT.txt"
+
+          if [ "$CASS_SYMBOL_COUNT" -lt 1 ]; then
+            echo "ERROR: CASS disappeared from linked kernel"
+            exit 1
+          fi
+
+          grep -E \
+            'check_for_task_rotation|try_rotation_task|do_rotation_task|rotation_task_init|set_rotation_enable' \
+            "$ARTIFACT_DIR/vmlinux-symbols.txt" \
+            > "$ARTIFACT_DIR/ROTATION-SYMBOLS.txt" \
+            || true
+
+          ROTATION_SYMBOL_COUNT="$(
+            wc -l \
+              < "$ARTIFACT_DIR/ROTATION-SYMBOLS.txt" \
+              | tr -d ' '
+          )"
+
+          echo "ROTATION_SYMBOL_COUNT=$ROTATION_SYMBOL_COUNT" \
+            | tee "$ARTIFACT_DIR/ROTATION-SYMBOL-COUNT.txt"
+
+          if [ "$ROTATION_SYMBOL_COUNT" -ne 0 ]; then
+            echo "ERROR: SPRD rotation symbols remain linked"
+            cat "$ARTIFACT_DIR/ROTATION-SYMBOLS.txt"
+            exit 1
+          fi
+
+      - name: Verify complete build outputs
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          IMAGE="$OUT_DIR/arch/arm64/boot/Image"
+          VEUX_DTB="$OUT_DIR/arch/arm64/boot/dts/vendor/xiaomi/veux.dtb"
+          VMLINUX="$OUT_DIR/vmlinux"
+
+          if [ ! -s "$IMAGE" ]; then
+            echo "ERROR: kernel Image missing"
+            exit 1
+          fi
+
+          if [ ! -s "$VEUX_DTB" ]; then
+            echo "ERROR: VEUX DTB missing"
+            exit 1
+          fi
+
+          if [ ! -s "$VMLINUX" ]; then
+            echo "ERROR: vmlinux missing"
+            exit 1
+          fi
+
+          "$OUT_DIR/scripts/dtc/dtc" \
+            -I dtb \
+            -O dts \
+            -o /dev/null \
+            "$VEUX_DTB"
+
+          {
+            echo "IMAGE_BYTES=$(stat -c '%s' "$IMAGE")"
+            echo "VEUX_DTB_BYTES=$(stat -c '%s' "$VEUX_DTB")"
+            echo "VMLINUX_BYTES=$(stat -c '%s' "$VMLINUX")"
+            echo
+            sha256sum "$IMAGE"
+            sha256sum "$VEUX_DTB"
+            sha256sum "$VMLINUX"
+          } | tee "$ARTIFACT_DIR/OUTPUT-HASHES.txt"
+
+          echo "VEUX_DTB_PARSE=PASS" \
+            | tee "$ARTIFACT_DIR/DTB-CHECK.txt"
+
+      - name: Audit full build diagnostics
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          LOG="$ARTIFACT_DIR/full-build.log"
+
+          grep -Ei \
+            '(^|[[:space:]])error:' \
+            "$LOG" \
+            > "$ARTIFACT_DIR/ERRORS.txt" \
+            || true
+
+          grep -Ei \
+            '(^|[[:space:]])warning:' \
+            "$LOG" \
+            > "$ARTIFACT_DIR/WARNINGS.txt" \
+            || true
+
+          ERROR_COUNT="$(
+            wc -l \
+              < "$ARTIFACT_DIR/ERRORS.txt" \
+              | tr -d ' '
+          )"
+
+          WARNING_COUNT="$(
+            wc -l \
+              < "$ARTIFACT_DIR/WARNINGS.txt" \
+              | tr -d ' '
+          )"
+
+          {
+            echo "ERROR_COUNT=$ERROR_COUNT"
+            echo "WARNING_COUNT=$WARNING_COUNT"
+          } | tee "$ARTIFACT_DIR/DIAGNOSTICS.txt"
+
+          if [ "$ERROR_COUNT" -ne 0 ]; then
+            echo "ERROR: compiler errors detected"
+            cat "$ARTIFACT_DIR/ERRORS.txt"
+            exit 1
+          fi
+
+          if [ "$WARNING_COUNT" -ne 0 ]; then
+            echo
+            echo "NOTE: successful full build emitted warnings:"
+            cat "$ARTIFACT_DIR/WARNINGS.txt"
+          fi
+
+      - name: Prepare final report
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          IMAGE="$OUT_DIR/arch/arm64/boot/Image"
+          VEUX_DTB="$OUT_DIR/arch/arm64/boot/dts/vendor/xiaomi/veux.dtb"
+
+          cp \
+            "$IMAGE" \
+            "$ARTIFACT_DIR/Image"
+
+          cp \
+            "$VEUX_DTB" \
+            "$ARTIFACT_DIR/veux.dtb"
+
+          IMAGE_SHA="$(
+            sha256sum "$IMAGE" \
+              | awk '{print $1}'
+          )"
+
+          DTB_SHA="$(
+            sha256sum "$VEUX_DTB" \
+              | awk '{print $1}'
+          )"
+
+          CASS_SYMBOL_COUNT="$(
+            awk -F= \
+              '$1=="CASS_SYMBOL_COUNT" {print $2}' \
+              "$ARTIFACT_DIR/CASS-SYMBOL-COUNT.txt"
+          )"
+
+          ROTATION_SYMBOL_COUNT="$(
+            awk -F= \
+              '$1=="ROTATION_SYMBOL_COUNT" {print $2}' \
+              "$ARTIFACT_DIR/ROTATION-SYMBOL-COUNT.txt"
+          )"
+
+          WARNING_COUNT="$(
+            awk -F= \
+              '$1=="WARNING_COUNT" {print $2}' \
+              "$ARTIFACT_DIR/DIAGNOSTICS.txt"
+          )"
+
+          RESTORE_DIFF_SHA="$(
+            awk -F= \
+              '$1=="RESTORE_DIFF_SHA256" {print $2}' \
+              "$ARTIFACT_DIR/LB-CAPACITY-RESTORE-IDENTITY.txt"
+          )"
+
+          {
+            echo "RESULT=PASS"
+            echo "BASE_CANDIDATE_TREE=$EXPECTED_CANDIDATE_TREE"
+            echo "CASS_PATCH_SHA256=$EXPECTED_CASS_DIFF_SHA256"
+            echo "CASS_PATCH_MATCHES_26C_27C_29C=YES"
+            echo "SPRD_ROTATION_DISABLED=YES"
+            echo "ROTATION_SYMBOL_COUNT=$ROTATION_SYMBOL_COUNT"
+            echo "LB_CAPACITY_UNGATED_COMMIT=$LB_CAPACITY_COMMIT"
+            echo "LB_CAPACITY_UNGATED_COMMIT_REVERSED=YES"
+            echo "LB_CAPACITY_RESTORE_DIFF_SHA256=$RESTORE_DIFF_SHA"
+            echo "LB_CAPACITY_NEXT_UPDATE_FIELD=RESTORED"
+            echo "LB_CAPACITY_BALANCE_INTERVAL=RESTORED"
+            echo "LB_CAPACITY_TIME_GATE=RESTORED"
+            echo "LB_CAPACITY_UNCONDITIONAL_REFRESH=REMOVED"
+            echo "CASS_SYMBOL_COUNT=$CASS_SYMBOL_COUNT"
+            echo "FULL_KERNEL_BUILD=PASS"
+            echo "COMPILER_ERRORS=0"
+            echo "COMPILER_WARNINGS=$WARNING_COUNT"
+            echo "IMAGE_CREATED=YES"
+            echo "DTBS_BUILT=YES"
+            echo "VEUX_DTB_PARSE=PASS"
+            echo "IMAGE_SHA256=$IMAGE_SHA"
+            echo "VEUX_DTB_SHA256=$DTB_SHA"
+            echo "RESUKISU_CHANGED=NO"
+            echo "SUSFS_CHANGED=NO"
+            echo "BOOT_IMAGE_CREATED=NO"
+            echo "FLASHABLE_ZIP_CREATED=NO"
+            echo "DEVICE_FLASHED=NO"
+          } | tee "$ARTIFACT_DIR/RESULT.txt"
+
+      - name: Upload LB capacity rate limit full build probe
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: VEUX-LB-Capacity-Rate-Limit-Restore-Full-Build-Probe
+          path: lb-capacity-ratelimit-probe/
+          if-no-files-found: error
+          retention-days: 30
