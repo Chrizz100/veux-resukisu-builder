@@ -1,0 +1,1296 @@
+name: 43P - VEUX CPUFreq Min Max Sysfs Audit
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    env:
+      ARCH: arm64
+
+      COMMON_REF: "android11-5.4.274_r00"
+      STOCK_REF: "veux-r-oss"
+
+      STABILITY_REVERT: "f74e5c1b7c3f3e42f694e5ab524f95f62a0dab80"
+
+      MIN_NOOP_COMMIT: "536504cec86bc49b37f5eae49d439ec4146df00f"
+
+      EXPECTED_CANDIDATE_TREE: "5d25b7e0124d7fb695f3f07b45928fcb5780d0e8"
+
+      ARTIFACT_DIR: ${{ github.workspace }}/cpufreq-min-max-audit
+
+    steps:
+      - name: Prepare audit directory
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p "$ARTIFACT_DIR"
+
+          cat > "$ARTIFACT_DIR/PLAN.txt" <<'EOF'
+          VEUX CPUFreq Min / Max Sysfs Audit
+          ==================================
+
+          Previously closed cumulative items:
+          - CASS MaxFreq/Thermal adaptation
+          - SPRD rotation disabled
+          - standard LB capacity rate limit restored
+          - CONFIG_CPUSETS restored
+          - exact Xiaomi VEUX PELT8 restored
+          - custom HZ100 removed
+          - default HZ250 restored
+          - schedutil lower-step heuristic removed
+          - normal schedutil boost-and-cap UClamp restored
+          - display-coupled deep-idle disable removed
+          - Xiaomi-style sleep_disabled policy restored
+
+          Current checklist items:
+          1. scaling_min_freq writes ignored
+          2. scaling_max_freq values below policy->min clamped to policy->min
+
+          Candidate observation:
+
+              if (&policy->object == &policy->min)
+                  return count;
+
+              ...
+
+              if (&policy->object == &policy->max)
+                  if (val < policy->min)
+                      val = policy->min;
+
+              ret = freq_qos_update_request(...)
+
+          Therefore:
+          - scaling_min_freq writes are silently accepted but ignored.
+          - the min no-op occurs even before sscanf() parses the input.
+          - scaling_max_freq is not a complete no-op.
+          - a requested max below the current min is rewritten to the min.
+
+          Xiaomi VEUX observation:
+          - neither special condition exists
+          - both sysfs writes use normal freq_qos_update_request handling
+
+          Known min-no-op commit:
+          536504cec86bc49b37f5eae49d439ec4146df00f
+          cpufreq: Kill userspace CPU boosting entirely
+
+          Max-clamp commit:
+          - intentionally NOT hardcoded
+          - discover exact currently active commit using git blame
+            on the Candidate 2 `val = policy->min;` line
+
+          Purpose:
+          - reconstruct exact Candidate 2
+          - verify current Candidate semantics
+          - verify exact min-no-op commit
+          - discover and verify max-clamp introducing commit
+          - inspect both parent states
+          - compare Candidate with Xiaomi VEUX
+          - compare Candidate with Android Common 5.4.274
+          - produce a machine-readable behavior matrix
+          - decide whether both are custom Candidate tunings
+
+          AUDIT ONLY.
+
+          No source modification.
+          No kernel build.
+          No boot.img.
+          No flashable ZIP.
+          No device access.
+          No flashing.
+          EOF
+
+      - name: Checkout exact VEUX source
+        uses: actions/checkout@v7
+        with:
+          repository: dereference23/kernel_xiaomi_sm6375
+          ref: "20240619"
+          fetch-depth: 0
+          path: kernel
+          persist-credentials: false
+
+      - name: Recreate exact Candidate 2
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email \
+            "41898282+github-actions[bot]@users.noreply.github.com"
+
+          BASE_SHA="$(git rev-parse HEAD)"
+          BASE_TREE="$(git rev-parse HEAD^{tree})"
+
+          git remote remove android-common 2>/dev/null || true
+
+          git remote add \
+            android-common \
+            https://android.googlesource.com/kernel/common
+
+          git fetch \
+            --no-tags \
+            android-common \
+            "$COMMON_REF"
+
+          COMMON_SHA="$(git rev-parse FETCH_HEAD)"
+
+          git update-ref \
+            refs/remotes/android-common/audit-base \
+            "$COMMON_SHA"
+
+          git merge \
+            --no-edit \
+            "$COMMON_SHA"
+
+          MERGED_SHA="$(git rev-parse HEAD)"
+          MERGED_TREE="$(git rev-parse HEAD^{tree})"
+
+          git cat-file -e \
+            "${STABILITY_REVERT}^{commit}"
+
+          git revert \
+            --no-edit \
+            "$STABILITY_REVERT"
+
+          CANDIDATE_SHA="$(git rev-parse HEAD)"
+          CANDIDATE_TREE="$(git rev-parse HEAD^{tree})"
+
+          KERNEL_VERSION="$(
+            make -s kernelversion
+          )"
+
+          if [ "$KERNEL_VERSION" != "5.4.274" ]; then
+            echo "ERROR: expected Linux 5.4.274"
+            echo "Actual: $KERNEL_VERSION"
+            exit 1
+          fi
+
+          if [ "$CANDIDATE_TREE" != "$EXPECTED_CANDIDATE_TREE" ]; then
+            echo "ERROR: Candidate 2 tree mismatch"
+            echo "Expected: $EXPECTED_CANDIDATE_TREE"
+            echo "Actual:   $CANDIDATE_TREE"
+            exit 1
+          fi
+
+          {
+            echo "BASE_SHA=$BASE_SHA"
+            echo "BASE_TREE=$BASE_TREE"
+            echo "COMMON_SHA=$COMMON_SHA"
+            echo "MERGED_SHA=$MERGED_SHA"
+            echo "MERGED_TREE=$MERGED_TREE"
+            echo "CANDIDATE_SHA=$CANDIDATE_SHA"
+            echo "CANDIDATE_TREE=$CANDIDATE_TREE"
+            echo "KERNEL_VERSION=$KERNEL_VERSION"
+            echo "COMMON_REF=$COMMON_REF"
+            echo "STABILITY_REVERT=$STABILITY_REVERT"
+            echo "MIN_NOOP_COMMIT=$MIN_NOOP_COMMIT"
+          } | tee "$ARTIFACT_DIR/IDENTITY.txt"
+
+      - name: Fetch official Xiaomi VEUX reference
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git remote remove xiaomi 2>/dev/null || true
+
+          git remote add \
+            xiaomi \
+            https://github.com/MiCode/Xiaomi_Kernel_OpenSource.git
+
+          git fetch \
+            --no-tags \
+            xiaomi \
+            "+refs/heads/${STOCK_REF}:refs/remotes/xiaomi/${STOCK_REF}"
+
+          STOCK_SHA="$(
+            git rev-parse "xiaomi/${STOCK_REF}"
+          )"
+
+          {
+            echo "STOCK_REF=$STOCK_REF"
+            echo "STOCK_SHA=$STOCK_SHA"
+          } | tee "$ARTIFACT_DIR/XIAOMI-REFERENCE.txt"
+
+      - name: Extract Candidate Xiaomi and Common CPUFreq sources
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          FILE="drivers/cpufreq/cpufreq.c"
+
+          git show \
+            "HEAD:${FILE}" \
+            > "$ARTIFACT_DIR/candidate-cpufreq.c"
+
+          git show \
+            "xiaomi/${STOCK_REF}:${FILE}" \
+            > "$ARTIFACT_DIR/xiaomi-cpufreq.c"
+
+          git show \
+            "android-common/audit-base:${FILE}" \
+            > "$ARTIFACT_DIR/common-cpufreq.c"
+
+          for SOURCE in \
+            "$ARTIFACT_DIR/candidate-cpufreq.c" \
+            "$ARTIFACT_DIR/xiaomi-cpufreq.c" \
+            "$ARTIFACT_DIR/common-cpufreq.c"
+          do
+            if [ ! -s "$SOURCE" ]; then
+              echo "ERROR: missing CPUFreq source: $SOURCE"
+              exit 1
+            fi
+          done
+
+          {
+            echo "CANDIDATE_CPUFREQ_SHA256=$(
+              sha256sum "$ARTIFACT_DIR/candidate-cpufreq.c" \
+                | awk '{print $1}'
+            )"
+
+            echo "XIAOMI_CPUFREQ_SHA256=$(
+              sha256sum "$ARTIFACT_DIR/xiaomi-cpufreq.c" \
+                | awk '{print $1}'
+            )"
+
+            echo "ANDROID_COMMON_CPUFREQ_SHA256=$(
+              sha256sum "$ARTIFACT_DIR/common-cpufreq.c" \
+                | awk '{print $1}'
+            )"
+          } | tee "$ARTIFACT_DIR/CPUFREQ-SOURCE-HASHES.txt"
+
+      - name: Extract store one macros
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          out = Path(os.environ["ARTIFACT_DIR"])
+
+          sources = {
+              "candidate": out / "candidate-cpufreq.c",
+              "xiaomi": out / "xiaomi-cpufreq.c",
+              "common": out / "common-cpufreq.c",
+          }
+
+          def extract(text):
+              start = text.find(
+                  "#define store_one(file_name, object)"
+              )
+
+              if start < 0:
+                  raise SystemExit(
+                      "ERROR: store_one macro start not found"
+                  )
+
+              end_marker = (
+                  "store_one(scaling_max_freq, max);"
+              )
+
+              end = text.find(
+                  end_marker,
+                  start,
+              )
+
+              if end < 0:
+                  raise SystemExit(
+                      "ERROR: scaling_max_freq store_one marker not found"
+                  )
+
+              end += len(end_marker)
+
+              return text[start:end] + "\n"
+
+          for label, path in sources.items():
+              text = path.read_text(
+                  errors="replace"
+              )
+
+              macro = extract(text)
+
+              (
+                  out /
+                  f"{label}-store-one.c"
+              ).write_text(macro)
+          PY
+
+          {
+            echo "============================================================"
+            echo "CANDIDATE"
+            echo "============================================================"
+            cat "$ARTIFACT_DIR/candidate-store-one.c"
+
+            echo
+            echo "============================================================"
+            echo "XIAOMI"
+            echo "============================================================"
+            cat "$ARTIFACT_DIR/xiaomi-store-one.c"
+
+            echo
+            echo "============================================================"
+            echo "ANDROID COMMON"
+            echo "============================================================"
+            cat "$ARTIFACT_DIR/common-store-one.c"
+          } | tee "$ARTIFACT_DIR/STORE-ONE-CONTEXT.txt"
+
+      - name: Verify exact Candidate min and max behavior
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SOURCE="$ARTIFACT_DIR/candidate-store-one.c"
+
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          text = (
+              Path(os.environ["ARTIFACT_DIR"])
+              / "candidate-store-one.c"
+          ).read_text()
+
+          min_condition = (
+              "if (&policy->object == &policy->min)"
+          )
+
+          parse = (
+              'ret = sscanf(buf, "%lu", &val);'
+          )
+
+          max_condition = (
+              "if (&policy->object == &policy->max)"
+          )
+
+          below_min = (
+              "if (val < policy->min)"
+          )
+
+          clamp = (
+              "val = policy->min;"
+          )
+
+          qos = (
+              "freq_qos_update_request("
+          )
+
+          required = (
+              min_condition,
+              parse,
+              max_condition,
+              below_min,
+              clamp,
+              qos,
+          )
+
+          for token in required:
+              if token not in text:
+                  raise SystemExit(
+                      f"ERROR: Candidate token missing: {token}"
+                  )
+
+          min_pos = text.index(min_condition)
+          parse_pos = text.index(parse)
+          max_pos = text.index(max_condition)
+          below_pos = text.index(below_min)
+          clamp_pos = text.index(clamp)
+          qos_pos = text.index(qos)
+
+          if not (
+              min_pos
+              < parse_pos
+              < max_pos
+              < below_pos
+              < clamp_pos
+              < qos_pos
+          ):
+              raise SystemExit(
+                  "ERROR: Candidate CPUFreq behavior ordering differs"
+              )
+
+          min_slice = text[
+              min_pos:parse_pos
+          ]
+
+          if "return count;" not in min_slice:
+              raise SystemExit(
+                  "ERROR: scaling_min_freq early no-op return missing"
+              )
+
+          max_slice = text[
+              max_pos:qos_pos
+          ]
+
+          if "val = policy->min;" not in max_slice:
+              raise SystemExit(
+                  "ERROR: max-below-min clamp assignment missing"
+              )
+          PY
+
+          {
+            echo "CANDIDATE_SCALING_MIN_WRITE_NOOP=YES"
+            echo "CANDIDATE_MIN_NOOP_BEFORE_PARSE=YES"
+            echo "CANDIDATE_MAX_BELOW_MIN_CLAMP=YES"
+            echo "CANDIDATE_MAX_CLAMP_VALUE=policy->min"
+            echo "CANDIDATE_QOS_UPDATE_PRESENT=YES"
+          } | tee "$ARTIFACT_DIR/CANDIDATE-CPUFREQ-BEHAVIOR.txt"
+
+      - name: Verify Xiaomi standard CPUFreq behavior
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SOURCE="$ARTIFACT_DIR/xiaomi-store-one.c"
+
+          if grep -qF \
+            'if (&policy->object == &policy->min)' \
+            "$SOURCE"
+          then
+            echo "ERROR: Xiaomi unexpectedly contains min no-op"
+            exit 1
+          fi
+
+          if grep -qF \
+            'if (&policy->object == &policy->max)' \
+            "$SOURCE"
+          then
+            echo "ERROR: Xiaomi unexpectedly contains max special-case"
+            exit 1
+          fi
+
+          if grep -qF \
+            'val = policy->min;' \
+            "$SOURCE"
+          then
+            echo "ERROR: Xiaomi unexpectedly contains max/min clamp"
+            exit 1
+          fi
+
+          if ! grep -qF \
+            'ret = sscanf(buf, "%lu", &val);' \
+            "$SOURCE"
+          then
+            echo "ERROR: Xiaomi input parsing missing"
+            exit 1
+          fi
+
+          if ! grep -qF \
+            'freq_qos_update_request(policy->object##_freq_req, val);' \
+            "$SOURCE"
+          then
+            echo "ERROR: Xiaomi standard QoS update missing"
+            exit 1
+          fi
+
+          {
+            echo "XIAOMI_SCALING_MIN_WRITE_NOOP=NO"
+            echo "XIAOMI_MAX_BELOW_MIN_CLAMP=NO"
+            echo "XIAOMI_STANDARD_QOS_WRITE=YES"
+          } | tee "$ARTIFACT_DIR/XIAOMI-CPUFREQ-BEHAVIOR.txt"
+
+      - name: Capture Android Common CPUFreq behavior
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SOURCE="$ARTIFACT_DIR/common-store-one.c"
+
+          MIN_NOOP=0
+          MAX_SPECIAL=0
+          MAX_CLAMP=0
+          QOS_UPDATE=0
+
+          grep -qF \
+            'if (&policy->object == &policy->min)' \
+            "$SOURCE" \
+            && MIN_NOOP=1 \
+            || true
+
+          grep -qF \
+            'if (&policy->object == &policy->max)' \
+            "$SOURCE" \
+            && MAX_SPECIAL=1 \
+            || true
+
+          grep -qF \
+            'val = policy->min;' \
+            "$SOURCE" \
+            && MAX_CLAMP=1 \
+            || true
+
+          grep -qF \
+            'freq_qos_update_request(policy->object##_freq_req, val);' \
+            "$SOURCE" \
+            && QOS_UPDATE=1 \
+            || true
+
+          {
+            echo "ANDROID_COMMON_MIN_SPECIAL=$MIN_NOOP"
+            echo "ANDROID_COMMON_MAX_SPECIAL=$MAX_SPECIAL"
+            echo "ANDROID_COMMON_MAX_CLAMP=$MAX_CLAMP"
+            echo "ANDROID_COMMON_QOS_UPDATE=$QOS_UPDATE"
+          } | tee "$ARTIFACT_DIR/ANDROID-COMMON-CPUFREQ-BEHAVIOR.txt"
+
+      - name: Verify known scaling min no-op commit
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          COMMIT="$MIN_NOOP_COMMIT"
+          FILE="drivers/cpufreq/cpufreq.c"
+
+          git cat-file -e \
+            "${COMMIT}^{commit}"
+
+          if ! git merge-base \
+            --is-ancestor \
+            "$COMMIT" \
+            HEAD
+          then
+            echo "ERROR: min-no-op commit is not a Candidate ancestor"
+            exit 1
+          fi
+
+          mapfile -t FILES < <(
+            git diff-tree \
+              --no-commit-id \
+              --name-only \
+              -r \
+              "$COMMIT"
+          )
+
+          if [ "${#FILES[@]}" -ne 1 ] \
+            || [ "${FILES[0]}" != "$FILE" ]
+          then
+            echo "ERROR: min-no-op commit changed unexpected files"
+            printf '%s\n' "${FILES[@]}"
+            exit 1
+          fi
+
+          git show \
+            --no-ext-diff \
+            --no-color \
+            --format=fuller \
+            "$COMMIT" \
+            > "$ARTIFACT_DIR/MIN-NOOP-COMMIT.txt"
+
+          git show \
+            --format= \
+            --no-ext-diff \
+            --no-color \
+            "$COMMIT" \
+            > "$ARTIFACT_DIR/MIN-NOOP-COMMIT.diff"
+
+          if ! grep -qF \
+            'if (&policy->object == &policy->min)' \
+            "$ARTIFACT_DIR/MIN-NOOP-COMMIT.diff"
+          then
+            echo "ERROR: min condition missing from known commit"
+            exit 1
+          fi
+
+          if ! grep -qF \
+            'return count;' \
+            "$ARTIFACT_DIR/MIN-NOOP-COMMIT.diff"
+          then
+            echo "ERROR: min no-op return missing from known commit"
+            exit 1
+          fi
+
+          MIN_PARENT="$(
+            git rev-parse \
+              "${COMMIT}^"
+          )"
+
+          git show \
+            "${MIN_PARENT}:${FILE}" \
+            > "$ARTIFACT_DIR/min-noop-parent-cpufreq.c"
+
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          out = Path(os.environ["ARTIFACT_DIR"])
+
+          text = (
+              out /
+              "min-noop-parent-cpufreq.c"
+          ).read_text()
+
+          start = text.find(
+              "#define store_one(file_name, object)"
+          )
+
+          end_marker = (
+              "store_one(scaling_max_freq, max);"
+          )
+
+          end = text.find(
+              end_marker,
+              start,
+          )
+
+          if start < 0 or end < 0:
+              raise SystemExit(
+                  "ERROR: parent store_one macro not found"
+              )
+
+          macro = text[
+              start:
+              end + len(end_marker)
+          ]
+
+          (
+              out /
+              "min-noop-parent-store-one.c"
+          ).write_text(
+              macro + "\n"
+          )
+
+          if (
+              "if (&policy->object == &policy->min)"
+              in macro
+          ):
+              raise SystemExit(
+                  "ERROR: min no-op already existed in commit parent"
+              )
+          PY
+
+          {
+            echo "MIN_NOOP_COMMIT=$COMMIT"
+            echo "MIN_NOOP_COMMIT_VERIFIED=YES"
+            echo "MIN_NOOP_PARENT=$MIN_PARENT"
+            echo "MIN_NOOP_PRESENT_IN_PARENT=NO"
+            echo "MIN_NOOP_COMMIT_ONLY_CPUFREQ_C=YES"
+          } | tee "$ARTIFACT_DIR/MIN-NOOP-COMMIT-STATE.txt"
+
+      - name: Discover active max clamp commit by blame
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          FILE="drivers/cpufreq/cpufreq.c"
+
+          mapfile -t CLAMP_LINES < <(
+            grep \
+              -nF \
+              'val = policy->min;' \
+              "$FILE"
+          )
+
+          if [ "${#CLAMP_LINES[@]}" -ne 1 ]; then
+            echo "ERROR: expected exactly one val = policy->min occurrence"
+            printf '%s\n' "${CLAMP_LINES[@]}"
+            exit 1
+          fi
+
+          LINE="$(
+            printf '%s\n' \
+              "${CLAMP_LINES[0]}" \
+              | cut -d: -f1
+          )"
+
+          git blame \
+            --porcelain \
+            -L "${LINE},${LINE}" \
+            HEAD \
+            -- "$FILE" \
+            > "$ARTIFACT_DIR/MAX-CLAMP-BLAME.txt"
+
+          MAX_CLAMP_COMMIT="$(
+            head -n 1 \
+              "$ARTIFACT_DIR/MAX-CLAMP-BLAME.txt" \
+              | awk '{print $1}'
+          )"
+
+          if ! [[
+            "$MAX_CLAMP_COMMIT"
+            =~ ^[0-9a-f]{40}$
+          ]]; then
+            echo "ERROR: invalid max-clamp blame commit"
+            cat "$ARTIFACT_DIR/MAX-CLAMP-BLAME.txt"
+            exit 1
+          fi
+
+          git cat-file -e \
+            "${MAX_CLAMP_COMMIT}^{commit}"
+
+          if ! git merge-base \
+            --is-ancestor \
+            "$MAX_CLAMP_COMMIT" \
+            HEAD
+          then
+            echo "ERROR: max-clamp blame commit is not Candidate ancestor"
+            exit 1
+          fi
+
+          echo "MAX_CLAMP_COMMIT=$MAX_CLAMP_COMMIT" \
+            >> "$GITHUB_ENV"
+
+          {
+            echo "MAX_CLAMP_LINE=$LINE"
+            echo "MAX_CLAMP_COMMIT=$MAX_CLAMP_COMMIT"
+            echo "MAX_CLAMP_DISCOVERY=GIT_BLAME"
+          } | tee "$ARTIFACT_DIR/MAX-CLAMP-DISCOVERY.txt"
+
+      - name: Verify discovered max clamp commit
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          FILE="drivers/cpufreq/cpufreq.c"
+          COMMIT="$MAX_CLAMP_COMMIT"
+
+          mapfile -t FILES < <(
+            git diff-tree \
+              --no-commit-id \
+              --name-only \
+              -r \
+              "$COMMIT"
+          )
+
+          {
+            echo "MAX_CLAMP_COMMIT=$COMMIT"
+            echo "CHANGED_FILE_COUNT=${#FILES[@]}"
+            printf 'CHANGED_FILE=%s\n' "${FILES[@]}"
+          } > "$ARTIFACT_DIR/MAX-CLAMP-COMMIT-FILES.txt"
+
+          if [ "${#FILES[@]}" -ne 1 ] \
+            || [ "${FILES[0]}" != "$FILE" ]
+          then
+            echo "ERROR: discovered max-clamp commit changes unexpected files"
+            cat "$ARTIFACT_DIR/MAX-CLAMP-COMMIT-FILES.txt"
+            exit 1
+          fi
+
+          git show \
+            --no-ext-diff \
+            --no-color \
+            --format=fuller \
+            "$COMMIT" \
+            > "$ARTIFACT_DIR/MAX-CLAMP-COMMIT.txt"
+
+          git show \
+            --format= \
+            --no-ext-diff \
+            --no-color \
+            "$COMMIT" \
+            > "$ARTIFACT_DIR/MAX-CLAMP-COMMIT.diff"
+
+          for TOKEN in \
+            'if (&policy->object == &policy->max)' \
+            'if (val < policy->min)' \
+            'val = policy->min;'
+          do
+            if ! grep -qF \
+              "$TOKEN" \
+              "$ARTIFACT_DIR/MAX-CLAMP-COMMIT.diff"
+            then
+              echo "ERROR: discovered commit lacks expected clamp token:"
+              echo "$TOKEN"
+              exit 1
+            fi
+          done
+
+          MAX_PARENT="$(
+            git rev-parse \
+              "${COMMIT}^"
+          )"
+
+          git show \
+            "${MAX_PARENT}:${FILE}" \
+            > "$ARTIFACT_DIR/max-clamp-parent-cpufreq.c"
+
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          out = Path(os.environ["ARTIFACT_DIR"])
+
+          text = (
+              out /
+              "max-clamp-parent-cpufreq.c"
+          ).read_text()
+
+          start = text.find(
+              "#define store_one(file_name, object)"
+          )
+
+          end_marker = (
+              "store_one(scaling_max_freq, max);"
+          )
+
+          end = text.find(
+              end_marker,
+              start,
+          )
+
+          if start < 0 or end < 0:
+              raise SystemExit(
+                  "ERROR: max parent store_one macro missing"
+              )
+
+          macro = text[
+              start:
+              end + len(end_marker)
+          ]
+
+          (
+              out /
+              "max-clamp-parent-store-one.c"
+          ).write_text(
+              macro + "\n"
+          )
+
+          if (
+              "val = policy->min;"
+              in macro
+          ):
+              raise SystemExit(
+                  "ERROR: max/min clamp already existed in commit parent"
+              )
+          PY
+
+          {
+            echo "MAX_CLAMP_COMMIT=$COMMIT"
+            echo "MAX_CLAMP_COMMIT_VERIFIED=YES"
+            echo "MAX_CLAMP_PARENT=$MAX_PARENT"
+            echo "MAX_CLAMP_PRESENT_IN_PARENT=NO"
+            echo "MAX_CLAMP_COMMIT_ONLY_CPUFREQ_C=YES"
+          } | tee "$ARTIFACT_DIR/MAX-CLAMP-COMMIT-STATE.txt"
+
+      - name: Trace CPUFreq sysfs tuning history
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          {
+            echo "============================================================"
+            echo "scaling_min_freq no-op history"
+            echo "============================================================"
+
+            git log \
+              --all \
+              --date=iso-strict \
+              --pretty=format:'%H%x09%ad%x09%an%x09%s' \
+              -S'if (&policy->object == &policy->min)' \
+              -- drivers/cpufreq/cpufreq.c \
+              || true
+
+            echo
+            echo
+            echo "============================================================"
+            echo "max-below-min clamp history"
+            echo "============================================================"
+
+            git log \
+              --all \
+              --date=iso-strict \
+              --pretty=format:'%H%x09%ad%x09%an%x09%s' \
+              -S'val = policy->min;' \
+              -- drivers/cpufreq/cpufreq.c \
+              || true
+
+          } > "$ARTIFACT_DIR/CPUFREQ-SYSFS-HISTORY.txt"
+
+          cat "$ARTIFACT_DIR/CPUFREQ-SYSFS-HISTORY.txt"
+
+      - name: Compare Candidate with Xiaomi store macro
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          diff \
+            -u \
+            "$ARTIFACT_DIR/xiaomi-store-one.c" \
+            "$ARTIFACT_DIR/candidate-store-one.c" \
+            > "$ARTIFACT_DIR/CANDIDATE-VS-XIAOMI-STORE-ONE.diff" \
+            || true
+
+          cat "$ARTIFACT_DIR/CANDIDATE-VS-XIAOMI-STORE-ONE.diff"
+
+      - name: Compare Candidate with Android Common store macro
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          diff \
+            -u \
+            "$ARTIFACT_DIR/common-store-one.c" \
+            "$ARTIFACT_DIR/candidate-store-one.c" \
+            > "$ARTIFACT_DIR/CANDIDATE-VS-COMMON-STORE-ONE.diff" \
+            || true
+
+          cat "$ARTIFACT_DIR/CANDIDATE-VS-COMMON-STORE-ONE.diff"
+
+      - name: Build CPUFreq behavior matrix
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          out = Path(os.environ["ARTIFACT_DIR"])
+
+          sources = {
+              "CANDIDATE": (
+                  out /
+                  "candidate-store-one.c"
+              ),
+              "XIAOMI": (
+                  out /
+                  "xiaomi-store-one.c"
+              ),
+              "ANDROID_COMMON": (
+                  out /
+                  "common-store-one.c"
+              ),
+          }
+
+          rows = []
+
+          for label, path in sources.items():
+              text = path.read_text(
+                  errors="replace"
+              )
+
+              min_special = int(
+                  "if (&policy->object == &policy->min)"
+                  in text
+              )
+
+              min_early_noop = 0
+
+              if min_special:
+                  min_pos = text.find(
+                      "if (&policy->object == &policy->min)"
+                  )
+
+                  parse_pos = text.find(
+                      'ret = sscanf(buf, "%lu", &val);'
+                  )
+
+                  if (
+                      min_pos >= 0
+                      and parse_pos >= 0
+                      and min_pos < parse_pos
+                      and "return count;"
+                      in text[min_pos:parse_pos]
+                  ):
+                      min_early_noop = 1
+
+              max_special = int(
+                  "if (&policy->object == &policy->max)"
+                  in text
+              )
+
+              max_clamp = int(
+                  "if (val < policy->min)"
+                  in text
+                  and "val = policy->min;"
+                  in text
+              )
+
+              qos_update = int(
+                  "freq_qos_update_request("
+                  "policy->object##_freq_req, val)"
+                  in text
+              )
+
+              normal_min_qos = int(
+                  qos_update == 1
+                  and min_early_noop == 0
+              )
+
+              normal_max_requested_qos = int(
+                  qos_update == 1
+                  and max_clamp == 0
+              )
+
+              rows.append(
+                  (
+                      label,
+                      min_special,
+                      min_early_noop,
+                      max_special,
+                      max_clamp,
+                      qos_update,
+                      normal_min_qos,
+                      normal_max_requested_qos,
+                  )
+              )
+
+          with (
+              out /
+              "CPUFREQ-BEHAVIOR-MATRIX.tsv"
+          ).open("w") as f:
+              f.write(
+                  "source\t"
+                  "min_special\t"
+                  "min_early_noop\t"
+                  "max_special\t"
+                  "max_below_min_clamp\t"
+                  "qos_update_present\t"
+                  "normal_min_qos_write\t"
+                  "normal_max_requested_qos_write\n"
+              )
+
+              for row in rows:
+                  f.write(
+                      "\t".join(
+                          str(value)
+                          for value in row
+                      )
+                      + "\n"
+                  )
+          PY
+
+          cat "$ARTIFACT_DIR/CPUFREQ-BEHAVIOR-MATRIX.tsv"
+
+      - name: Build machine readable conclusion
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          import csv
+          import os
+          from pathlib import Path
+
+          out = Path(os.environ["ARTIFACT_DIR"])
+
+          rows = {}
+
+          with (
+              out /
+              "CPUFREQ-BEHAVIOR-MATRIX.tsv"
+          ).open() as f:
+              reader = csv.DictReader(
+                  f,
+                  delimiter="\t",
+              )
+
+              for row in reader:
+                  rows[row["source"]] = row
+
+          candidate = rows["CANDIDATE"]
+          xiaomi = rows["XIAOMI"]
+          common = rows["ANDROID_COMMON"]
+
+          candidate_min = int(
+              candidate["min_early_noop"]
+          )
+
+          candidate_max = int(
+              candidate["max_below_min_clamp"]
+          )
+
+          xiaomi_min = int(
+              xiaomi["min_early_noop"]
+          )
+
+          xiaomi_max = int(
+              xiaomi["max_below_min_clamp"]
+          )
+
+          common_min = int(
+              common["min_early_noop"]
+          )
+
+          common_max = int(
+              common["max_below_min_clamp"]
+          )
+
+          if (
+              candidate_min == 1
+              and candidate_max == 1
+              and xiaomi_min == 0
+              and xiaomi_max == 0
+              and common_min == 0
+              and common_max == 0
+          ):
+              review = (
+                  "BOTH_CUSTOM_CPUFREQ_SYSFS_TUNINGS_REVIEW"
+              )
+          elif (
+              candidate_min == 1
+              and xiaomi_min == 0
+          ):
+              review = (
+                  "SCALING_MIN_NOOP_CUSTOM_TUNING_REVIEW"
+              )
+          elif (
+              candidate_max == 1
+              and xiaomi_max == 0
+          ):
+              review = (
+                  "SCALING_MAX_CLAMP_CUSTOM_TUNING_REVIEW"
+              )
+          else:
+              review = (
+                  "CPUFREQ_SYSFS_BASELINE_COMPARISON_REVIEW"
+              )
+
+          max_commit = "UNKNOWN"
+
+          discovery = (
+              out /
+              "MAX-CLAMP-DISCOVERY.txt"
+          )
+
+          if discovery.exists():
+              for line in discovery.read_text().splitlines():
+                  if line.startswith(
+                      "MAX_CLAMP_COMMIT="
+                  ):
+                      max_commit = line.split(
+                          "=",
+                          1,
+                      )[1]
+
+          with (
+              out /
+              "RESULT.txt"
+          ).open("w") as f:
+              f.write(
+                  "RESULT=PASS_AUDIT\n"
+              )
+
+              f.write(
+                  "BASE_CANDIDATE_TREE="
+                  "5d25b7e0124d7fb695f3f07b45928fcb5780d0e8\n"
+              )
+
+              f.write(
+                  "MIN_NOOP_COMMIT="
+                  "536504cec86bc49b37f5eae49d439ec4146df00f\n"
+              )
+
+              f.write(
+                  f"MAX_CLAMP_COMMIT={max_commit}\n"
+              )
+
+              f.write(
+                  "MAX_CLAMP_COMMIT_DISCOVERY=GIT_BLAME\n"
+              )
+
+              f.write(
+                  f"CANDIDATE_SCALING_MIN_NOOP={candidate_min}\n"
+              )
+
+              f.write(
+                  f"XIAOMI_SCALING_MIN_NOOP={xiaomi_min}\n"
+              )
+
+              f.write(
+                  f"ANDROID_COMMON_SCALING_MIN_NOOP={common_min}\n"
+              )
+
+              f.write(
+                  f"CANDIDATE_MAX_BELOW_MIN_CLAMP={candidate_max}\n"
+              )
+
+              f.write(
+                  f"XIAOMI_MAX_BELOW_MIN_CLAMP={xiaomi_max}\n"
+              )
+
+              f.write(
+                  f"ANDROID_COMMON_MAX_BELOW_MIN_CLAMP={common_max}\n"
+              )
+
+              f.write(
+                  "CANDIDATE_MIN_NOOP_BEFORE_PARSE=YES\n"
+              )
+
+              f.write(
+                  "XIAOMI_STANDARD_QOS_WRITE=YES\n"
+              )
+
+              f.write(
+                  f"REVIEW_CLASS={review}\n"
+              )
+
+              f.write(
+                  "SOURCE_MODIFIED=NO\n"
+              )
+
+              f.write(
+                  "KERNEL_BUILT=NO\n"
+              )
+
+              f.write(
+                  "IMAGE_CREATED=NO\n"
+              )
+
+              f.write(
+                  "BOOT_IMAGE_CREATED=NO\n"
+              )
+
+              f.write(
+                  "FLASHABLE_ZIP_CREATED=NO\n"
+              )
+
+              f.write(
+                  "DEVICE_FLASHED=NO\n"
+              )
+
+          print(
+              (
+                  out /
+                  "RESULT.txt"
+              ).read_text()
+          )
+          PY
+
+      - name: Verify audit made no source changes
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if ! git diff --quiet; then
+            echo "ERROR: audit unexpectedly modified source"
+
+            git diff \
+              --no-ext-diff \
+              --no-color
+
+            exit 1
+          fi
+
+          echo "SOURCE_INTEGRITY=PASS" \
+            | tee "$ARTIFACT_DIR/SOURCE-INTEGRITY.txt"
+
+      - name: Upload CPUFreq min max audit
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: VEUX-CPUFreq-Min-Max-Sysfs-Audit
+          path: cpufreq-min-max-audit/
+          if-no-files-found: error
+          retention-days: 30
