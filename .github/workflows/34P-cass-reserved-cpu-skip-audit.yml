@@ -1,0 +1,1302 @@
+name: 34P - VEUX CASS Reserved CPU Skip Audit
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    env:
+      ARCH: arm64
+
+      COMMON_REF: "android11-5.4.274_r00"
+      STOCK_REF: "veux-r-oss"
+
+      STABILITY_REVERT: "f74e5c1b7c3f3e42f694e5ab524f95f62a0dab80"
+
+      CASS_RESERVED_COMMIT: "f2dbfe77c889f00bce6626c1890e4b8153ed55a0"
+
+      EXPECTED_CANDIDATE_TREE: "5d25b7e0124d7fb695f3f07b45928fcb5780d0e8"
+
+      ARTIFACT_DIR: ${{ github.workspace }}/cass-reserved-cpu-audit
+
+    steps:
+      - name: Prepare audit directory
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p "$ARTIFACT_DIR"
+
+          cat > "$ARTIFACT_DIR/PLAN.txt" <<'EOF'
+          VEUX CASS Reserved CPU Skip Audit
+          ==================================
+
+          Previous completed corrections:
+          - CASS MaxFreq/Thermal adaptation validated
+          - SPRD task rotation disabled
+          - standard load-balance capacity rate limit restored
+          - CONFIG_CPUSETS restored
+
+          Current historical checklist item:
+          - CASS "Skip reserved CPUs"
+
+          Known commit:
+          f2dbfe77c889f00bce6626c1890e4b8153ed55a0
+          sched/cass: Skip reserved cpus
+
+          That commit adds:
+
+              if (is_reserved(cpu))
+                  continue;
+
+          inside cass_best_cpu().
+
+          Important CASS invariant:
+          - cass_best_cpu() returns best->cpu
+          - candidate storage is stack allocated
+          - curr->cpu is initialized later inside the loop
+          - the source itself warns about skipping a sole allowed CPU
+            before curr->cpu has been initialized
+
+          Purpose of 34P:
+          - reconstruct exact Candidate 2
+          - verify the exact reserved-CPU CASS commit
+          - inspect the commit parent
+          - inspect cass_best_cpu() ordering
+          - inspect best/candidate initialization
+          - inspect all loop exits and fallback paths
+          - inspect is_reserved() definition
+          - inspect who sets and clears CPU reservation state
+          - inspect every scheduler use of is_reserved()
+          - compare reserved-CPU handling with Xiaomi VEUX
+          - compare with Android Common 5.4.274
+          - determine whether an all-reserved allowed mask can leave
+            best->cpu without a valid CASS candidate
+          - make no source modification
+
+          This workflow is AUDIT ONLY.
+
+          It does NOT:
+          - remove the reserved-CPU skip
+          - modify CASS
+          - modify CPUSETS
+          - modify SPRD rotation
+          - modify load-balance capacity handling
+          - build a kernel
+          - create boot.img
+          - create a flashable ZIP
+          - access a phone
+          - flash anything
+          EOF
+
+      - name: Checkout exact VEUX source
+        uses: actions/checkout@v7
+        with:
+          repository: dereference23/kernel_xiaomi_sm6375
+          ref: "20240619"
+          fetch-depth: 0
+          path: kernel
+          persist-credentials: false
+
+      - name: Recreate exact Candidate 2
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email \
+            "41898282+github-actions[bot]@users.noreply.github.com"
+
+          BASE_SHA="$(git rev-parse HEAD)"
+          BASE_TREE="$(git rev-parse HEAD^{tree})"
+
+          git remote remove android-common 2>/dev/null || true
+
+          git remote add \
+            android-common \
+            https://android.googlesource.com/kernel/common
+
+          git fetch \
+            --no-tags \
+            android-common \
+            "$COMMON_REF"
+
+          COMMON_SHA="$(git rev-parse FETCH_HEAD)"
+
+          git update-ref \
+            refs/remotes/android-common/audit-base \
+            "$COMMON_SHA"
+
+          git merge \
+            --no-edit \
+            "$COMMON_SHA"
+
+          MERGED_SHA="$(git rev-parse HEAD)"
+          MERGED_TREE="$(git rev-parse HEAD^{tree})"
+
+          git cat-file -e \
+            "${STABILITY_REVERT}^{commit}"
+
+          git revert \
+            --no-edit \
+            "$STABILITY_REVERT"
+
+          CANDIDATE_SHA="$(git rev-parse HEAD)"
+          CANDIDATE_TREE="$(git rev-parse HEAD^{tree})"
+
+          KERNEL_VERSION="$(
+            make -s kernelversion
+          )"
+
+          if [ "$KERNEL_VERSION" != "5.4.274" ]; then
+            echo "ERROR: expected Linux 5.4.274"
+            echo "Actual: $KERNEL_VERSION"
+            exit 1
+          fi
+
+          if [ "$CANDIDATE_TREE" != "$EXPECTED_CANDIDATE_TREE" ]; then
+            echo "ERROR: Candidate 2 tree mismatch"
+            echo "Expected: $EXPECTED_CANDIDATE_TREE"
+            echo "Actual:   $CANDIDATE_TREE"
+            exit 1
+          fi
+
+          {
+            echo "BASE_SHA=$BASE_SHA"
+            echo "BASE_TREE=$BASE_TREE"
+            echo "COMMON_SHA=$COMMON_SHA"
+            echo "MERGED_SHA=$MERGED_SHA"
+            echo "MERGED_TREE=$MERGED_TREE"
+            echo "CANDIDATE_SHA=$CANDIDATE_SHA"
+            echo "CANDIDATE_TREE=$CANDIDATE_TREE"
+            echo "KERNEL_VERSION=$KERNEL_VERSION"
+            echo "COMMON_REF=$COMMON_REF"
+            echo "STABILITY_REVERT=$STABILITY_REVERT"
+            echo "CASS_RESERVED_COMMIT=$CASS_RESERVED_COMMIT"
+          } | tee "$ARTIFACT_DIR/IDENTITY.txt"
+
+      - name: Fetch official Xiaomi VEUX reference
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git remote remove xiaomi 2>/dev/null || true
+
+          git remote add \
+            xiaomi \
+            https://github.com/MiCode/Xiaomi_Kernel_OpenSource.git
+
+          git fetch \
+            --no-tags \
+            xiaomi \
+            "+refs/heads/${STOCK_REF}:refs/remotes/xiaomi/${STOCK_REF}"
+
+          STOCK_SHA="$(
+            git rev-parse "xiaomi/${STOCK_REF}"
+          )"
+
+          {
+            echo "STOCK_REF=$STOCK_REF"
+            echo "STOCK_SHA=$STOCK_SHA"
+          } | tee "$ARTIFACT_DIR/XIAOMI-REFERENCE.txt"
+
+      - name: Verify exact CASS reserved CPU commit
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git cat-file -e \
+            "${CASS_RESERVED_COMMIT}^{commit}"
+
+          git show \
+            --no-ext-diff \
+            --no-color \
+            --format=fuller \
+            "$CASS_RESERVED_COMMIT" \
+            > "$ARTIFACT_DIR/CASS-RESERVED-COMMIT.txt"
+
+          git show \
+            --format= \
+            --no-ext-diff \
+            --no-color \
+            "$CASS_RESERVED_COMMIT" \
+            > "$ARTIFACT_DIR/CASS-RESERVED-COMMIT.diff"
+
+          cat "$ARTIFACT_DIR/CASS-RESERVED-COMMIT.txt"
+
+          mapfile -t FILES < <(
+            git diff-tree \
+              --no-commit-id \
+              --name-only \
+              -r \
+              "$CASS_RESERVED_COMMIT"
+          )
+
+          if [ "${#FILES[@]}" -ne 1 ]; then
+            echo "ERROR: expected reserved CPU commit to modify one file"
+            printf '%s\n' "${FILES[@]}"
+            exit 1
+          fi
+
+          if [ "${FILES[0]}" != "kernel/sched/cass.c" ]; then
+            echo "ERROR: unexpected file modified by reserved CPU commit"
+            printf '%s\n' "${FILES[@]}"
+            exit 1
+          fi
+
+          if ! git show \
+            --format= \
+            "$CASS_RESERVED_COMMIT" \
+            | grep -qF '+		if (is_reserved(cpu))'
+          then
+            echo "ERROR: expected is_reserved() addition not found"
+            exit 1
+          fi
+
+          if ! git show \
+            --format= \
+            "$CASS_RESERVED_COMMIT" \
+            | grep -qF '+			continue;'
+          then
+            echo "ERROR: expected reserved CPU continue not found"
+            exit 1
+          fi
+
+          echo "CASS_RESERVED_COMMIT_VERIFIED=YES" \
+            | tee "$ARTIFACT_DIR/CASS-RESERVED-COMMIT-STATE.txt"
+
+      - name: Compare CASS before and after reserved CPU commit
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          PARENT="$(
+            git rev-parse \
+              "${CASS_RESERVED_COMMIT}^"
+          )"
+
+          git show \
+            "${PARENT}:kernel/sched/cass.c" \
+            > "$ARTIFACT_DIR/cass-before-reserved-skip.c"
+
+          git show \
+            "${CASS_RESERVED_COMMIT}:kernel/sched/cass.c" \
+            > "$ARTIFACT_DIR/cass-after-reserved-skip.c"
+
+          {
+            echo "PARENT=$PARENT"
+
+            echo
+            echo "============================================================"
+            echo "BEFORE RESERVED CPU SKIP"
+            echo "============================================================"
+
+            grep \
+              -n \
+              -A85 \
+              -B20 \
+              'static int cass_best_cpu' \
+              "$ARTIFACT_DIR/cass-before-reserved-skip.c" \
+              || true
+
+            echo
+            echo "============================================================"
+            echo "AFTER RESERVED CPU SKIP"
+            echo "============================================================"
+
+            grep \
+              -n \
+              -A90 \
+              -B20 \
+              'static int cass_best_cpu' \
+              "$ARTIFACT_DIR/cass-after-reserved-skip.c" \
+              || true
+
+          } > "$ARTIFACT_DIR/CASS-BEFORE-AFTER.txt"
+
+          cat "$ARTIFACT_DIR/CASS-BEFORE-AFTER.txt"
+
+          if grep -qF \
+            'if (is_reserved(cpu))' \
+            "$ARTIFACT_DIR/cass-before-reserved-skip.c"
+          then
+            echo "ERROR: reserved CPU skip unexpectedly existed before commit"
+            exit 1
+          fi
+
+          if ! grep -qF \
+            'if (is_reserved(cpu))' \
+            "$ARTIFACT_DIR/cass-after-reserved-skip.c"
+          then
+            echo "ERROR: reserved CPU skip missing after commit"
+            exit 1
+          fi
+
+      - name: Capture current Candidate 2 CASS selection logic
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          {
+            echo "============================================================"
+            echo "CASS BEST CPU"
+            echo "============================================================"
+
+            grep \
+              -n \
+              -A180 \
+              -B30 \
+              'static int cass_best_cpu' \
+              kernel/sched/cass.c \
+              || true
+
+            echo
+            echo "============================================================"
+            echo "CASS SELECT TASK RQ"
+            echo "============================================================"
+
+            grep \
+              -n \
+              -A90 \
+              -B20 \
+              'static int cass_select_task_rq' \
+              kernel/sched/cass.c \
+              || true
+
+          } > "$ARTIFACT_DIR/CURRENT-CASS-SELECTION.txt"
+
+          cat "$ARTIFACT_DIR/CURRENT-CASS-SELECTION.txt"
+
+      - name: Verify current reserved CPU skip exists
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if ! grep -qF \
+            'if (is_reserved(cpu))' \
+            kernel/sched/cass.c
+          then
+            echo "ERROR: Candidate 2 reserved CPU skip missing"
+            exit 1
+          fi
+
+          if ! grep -A2 -F \
+            'if (is_reserved(cpu))' \
+            kernel/sched/cass.c \
+            | grep -q \
+              'continue;'
+          then
+            echo "ERROR: is_reserved() is not followed by continue"
+            exit 1
+          fi
+
+          {
+            echo "CANDIDATE_RESERVED_CPU_SKIP=YES"
+            echo "CANDIDATE_RESERVED_CPU_ACTION=CONTINUE"
+          } | tee "$ARTIFACT_DIR/CURRENT-RESERVED-SKIP-STATE.txt"
+
+      - name: Analyse CASS candidate initialization ordering
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          import os
+          import re
+          from pathlib import Path
+
+          out = Path(os.environ["ARTIFACT_DIR"])
+          text = Path("kernel/sched/cass.c").read_text()
+
+          marker = "static int cass_best_cpu"
+
+          start = text.find(marker)
+
+          if start < 0:
+              raise SystemExit(
+                  "ERROR: cass_best_cpu() not found"
+              )
+
+          brace = text.find("{", start)
+
+          if brace < 0:
+              raise SystemExit(
+                  "ERROR: cass_best_cpu opening brace not found"
+              )
+
+          depth = 0
+          end = None
+
+          for pos in range(brace, len(text)):
+              ch = text[pos]
+
+              if ch == "{":
+                  depth += 1
+              elif ch == "}":
+                  depth -= 1
+
+                  if depth == 0:
+                      end = pos + 1
+                      break
+
+          if end is None:
+              raise SystemExit(
+                  "ERROR: cass_best_cpu closing brace not found"
+              )
+
+          fn = text[start:end]
+
+          (out / "cass_best_cpu-current.c").write_text(fn)
+
+          tokens = {
+              "stack_candidates":
+                  "struct cass_cpu_cand cands[2], *best = cands;",
+              "loop":
+                  "for_each_cpu_and(cpu, p->cpus_ptr, cpu_active_mask)",
+              "reserved_skip":
+                  "if (is_reserved(cpu))",
+              "reserved_continue":
+                  "continue;",
+              "curr_cpu_init":
+                  "curr->cpu = cpu;",
+              "return_best":
+                  "return best->cpu;",
+          }
+
+          positions = {}
+
+          for name, token in tokens.items():
+              pos = fn.find(token)
+
+              positions[name] = pos
+
+              if pos < 0:
+                  raise SystemExit(
+                      f"ERROR: expected CASS token missing: {name}: {token}"
+                  )
+
+          skip_pos = positions["reserved_skip"]
+
+          continue_pos = fn.find(
+              "continue;",
+              skip_pos,
+          )
+
+          curr_cpu_pos = positions["curr_cpu_init"]
+          return_pos = positions["return_best"]
+
+          cands_decl = (
+              "struct cass_cpu_cand cands[2], *best = cands;"
+          )
+
+          zero_init_patterns = (
+              "struct cass_cpu_cand cands[2] =",
+              "memset(cands",
+              "memset(&cands",
+          )
+
+          cands_zero_initialized = any(
+              pattern in fn
+              for pattern in zero_init_patterns
+          )
+
+          fallback_patterns = (
+              "best->cpu = prev_cpu",
+              "best->cpu = this_cpu",
+              "best->cpu = cpumask_first",
+              "return prev_cpu;",
+              "return this_cpu;",
+              "return cpumask_first",
+          )
+
+          post_loop_text = fn[
+              fn.rfind("}") + 1:
+          ]
+
+          fallback_anywhere = [
+              pattern
+              for pattern in fallback_patterns
+              if pattern in fn
+          ]
+
+          skip_before_curr_cpu = (
+              skip_pos < curr_cpu_pos
+          )
+
+          continue_before_curr_cpu = (
+              continue_pos < curr_cpu_pos
+          )
+
+          return_best_after_loop = (
+              return_pos > curr_cpu_pos
+          )
+
+          potential_invalid_best = (
+              not cands_zero_initialized
+              and skip_before_curr_cpu
+              and continue_before_curr_cpu
+              and return_best_after_loop
+              and not fallback_anywhere
+          )
+
+          with (
+              out /
+              "CASS-CANDIDATE-ORDERING.txt"
+          ).open("w") as f:
+              f.write(
+                  f"STACK_CANDIDATES_POSITION={positions['stack_candidates']}\n"
+              )
+              f.write(
+                  f"LOOP_POSITION={positions['loop']}\n"
+              )
+              f.write(
+                  f"RESERVED_SKIP_POSITION={skip_pos}\n"
+              )
+              f.write(
+                  f"RESERVED_CONTINUE_POSITION={continue_pos}\n"
+              )
+              f.write(
+                  f"CURR_CPU_INIT_POSITION={curr_cpu_pos}\n"
+              )
+              f.write(
+                  f"RETURN_BEST_POSITION={return_pos}\n"
+              )
+              f.write(
+                  "CANDIDATES_ZERO_INITIALIZED="
+                  f"{'YES' if cands_zero_initialized else 'NO'}\n"
+              )
+              f.write(
+                  "RESERVED_SKIP_BEFORE_CURR_CPU_INIT="
+                  f"{'YES' if skip_before_curr_cpu else 'NO'}\n"
+              )
+              f.write(
+                  "RESERVED_CONTINUE_BEFORE_CURR_CPU_INIT="
+                  f"{'YES' if continue_before_curr_cpu else 'NO'}\n"
+              )
+              f.write(
+                  "EXPLICIT_FALLBACK_FOUND="
+                  f"{'YES' if fallback_anywhere else 'NO'}\n"
+              )
+              f.write(
+                  "EXPLICIT_FALLBACK_PATTERNS="
+                  f"{','.join(fallback_anywhere) if fallback_anywhere else 'NONE'}\n"
+              )
+              f.write(
+                  "POTENTIAL_INVALID_BEST_CPU_IF_ALL_CANDIDATES_SKIPPED="
+                  f"{'YES' if potential_invalid_best else 'NO'}\n"
+              )
+
+          print(
+              (out / "CASS-CANDIDATE-ORDERING.txt").read_text()
+          )
+          PY
+
+      - name: Inspect CASS own candidate validity comments
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          {
+            echo "===== comments containing valid CPU / garbage / skipped ====="
+
+            grep \
+              -nE \
+              -A12 \
+              -B12 \
+              'valid CPU|garbage|skipped before|only one CPU|initialized before' \
+              kernel/sched/cass.c \
+              || true
+
+          } > "$ARTIFACT_DIR/CASS-VALIDITY-COMMENTS.txt"
+
+          cat "$ARTIFACT_DIR/CASS-VALIDITY-COMMENTS.txt"
+
+      - name: Locate is_reserved definition and all scheduler uses
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          {
+            echo "============================================================"
+            echo "ALL is_reserved() REFERENCES"
+            echo "============================================================"
+
+            git grep \
+              -nE \
+              '\bis_reserved[[:space:]]*\(' \
+              -- kernel/sched \
+              || true
+
+            echo
+            echo "============================================================"
+            echo "RESERVATION RELATED SYMBOLS"
+            echo "============================================================"
+
+            git grep \
+              -nEi \
+              'reserved|reserve.*cpu|cpu.*reserve' \
+              -- kernel/sched \
+              || true
+
+          } > "$ARTIFACT_DIR/SCHEDULER-RESERVATION-REFERENCES.txt"
+
+          cat "$ARTIFACT_DIR/SCHEDULER-RESERVATION-REFERENCES.txt"
+
+      - name: Capture is_reserved context from scheduler files
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          import os
+          import re
+          import subprocess
+          from pathlib import Path
+
+          out = Path(os.environ["ARTIFACT_DIR"])
+
+          files = subprocess.check_output(
+              [
+                  "git",
+                  "grep",
+                  "-l",
+                  "-E",
+                  r"\bis_reserved[[:space:]]*\(",
+                  "--",
+                  "kernel/sched",
+              ],
+              text=True,
+          ).splitlines()
+
+          blocks = []
+
+          for name in files:
+              path = Path(name)
+
+              lines = path.read_text(
+                  errors="replace"
+              ).splitlines()
+
+              hits = [
+                  idx
+                  for idx, line in enumerate(lines)
+                  if re.search(
+                      r"\bis_reserved\s*\(",
+                      line,
+                  )
+              ]
+
+              for idx in hits:
+                  start = max(0, idx - 30)
+                  end = min(len(lines), idx + 31)
+
+                  blocks.append(
+                      "=" * 78
+                  )
+                  blocks.append(
+                      f"FILE: {name}"
+                  )
+                  blocks.append(
+                      f"LINE: {idx + 1}"
+                  )
+                  blocks.append(
+                      "=" * 78
+                  )
+
+                  for pos in range(start, end):
+                      marker = (
+                          ">>>"
+                          if pos == idx
+                          else "   "
+                      )
+
+                      blocks.append(
+                          f"{marker} "
+                          f"{pos + 1:6d}: "
+                          f"{lines[pos]}"
+                      )
+
+                  blocks.append("")
+
+          (
+              out /
+              "IS-RESERVED-CONTEXT.txt"
+          ).write_text(
+              "\n".join(blocks) + "\n"
+          )
+          PY
+
+          cat "$ARTIFACT_DIR/IS-RESERVED-CONTEXT.txt"
+
+      - name: Trace reservation state writers
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          {
+            echo "============================================================"
+            echo "RESERVED FIELD WRITES"
+            echo "============================================================"
+
+            git grep \
+              -nE \
+              'reserved[[:space:]]*=|WRITE_ONCE\([^,]*reserved|set.*reserved|clear.*reserved' \
+              -- kernel/sched \
+              || true
+
+            echo
+            echo "============================================================"
+            echo "ACTIVE BALANCE / RESERVATION"
+            echo "============================================================"
+
+            git grep \
+              -nE \
+              'active_balance|push_cpu|reserved' \
+              -- kernel/sched/fair.c \
+              kernel/sched/walt.c \
+              kernel/sched/walt.h \
+              kernel/sched/sched.h \
+              2>/dev/null \
+              || true
+
+          } > "$ARTIFACT_DIR/RESERVATION-WRITERS.txt"
+
+          cat "$ARTIFACT_DIR/RESERVATION-WRITERS.txt"
+
+      - name: Compare reservation API presence with Xiaomi and Android Common
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          candidate_is_reserved="$(
+            git grep \
+              -nE \
+              '\bis_reserved[[:space:]]*\(' \
+              HEAD \
+              -- kernel/sched \
+              2>/dev/null \
+              | wc -l \
+              | tr -d ' '
+          )"
+
+          xiaomi_is_reserved="$(
+            git grep \
+              -nE \
+              '\bis_reserved[[:space:]]*\(' \
+              "xiaomi/${STOCK_REF}" \
+              -- kernel/sched \
+              2>/dev/null \
+              | wc -l \
+              | tr -d ' '
+          )"
+
+          common_is_reserved="$(
+            git grep \
+              -nE \
+              '\bis_reserved[[:space:]]*\(' \
+              "android-common/audit-base" \
+              -- kernel/sched \
+              2>/dev/null \
+              | wc -l \
+              | tr -d ' '
+          )"
+
+          candidate_cass="NO"
+          xiaomi_cass="NO"
+          common_cass="NO"
+
+          if git cat-file -e \
+            "HEAD:kernel/sched/cass.c" \
+            2>/dev/null
+          then
+            candidate_cass="YES"
+          fi
+
+          if git cat-file -e \
+            "xiaomi/${STOCK_REF}:kernel/sched/cass.c" \
+            2>/dev/null
+          then
+            xiaomi_cass="YES"
+          fi
+
+          if git cat-file -e \
+            "android-common/audit-base:kernel/sched/cass.c" \
+            2>/dev/null
+          then
+            common_cass="YES"
+          fi
+
+          {
+            echo "CANDIDATE_IS_RESERVED_REFS=$candidate_is_reserved"
+            echo "XIAOMI_IS_RESERVED_REFS=$xiaomi_is_reserved"
+            echo "ANDROID_COMMON_IS_RESERVED_REFS=$common_is_reserved"
+
+            echo "CANDIDATE_CASS_SOURCE=$candidate_cass"
+            echo "XIAOMI_CASS_SOURCE=$xiaomi_cass"
+            echo "ANDROID_COMMON_CASS_SOURCE=$common_cass"
+          } | tee "$ARTIFACT_DIR/RESERVATION-SOURCE-MATRIX.txt"
+
+      - name: Capture Xiaomi reservation handling contexts
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git grep \
+            -nE \
+            '\bis_reserved[[:space:]]*\(' \
+            "xiaomi/${STOCK_REF}" \
+            -- kernel/sched \
+            > "$ARTIFACT_DIR/XIAOMI-IS-RESERVED-HITS.txt" \
+            || true
+
+          cat "$ARTIFACT_DIR/XIAOMI-IS-RESERVED-HITS.txt"
+
+          : > "$ARTIFACT_DIR/XIAOMI-IS-RESERVED-CONTEXT.txt"
+
+          while IFS=: read -r REF FILE LINE REST; do
+            [ -n "${FILE:-}" ] || continue
+            [ -n "${LINE:-}" ] || continue
+
+            START=$((LINE - 25))
+
+            if [ "$START" -lt 1 ]; then
+              START=1
+            fi
+
+            END=$((LINE + 25))
+
+            {
+              echo "============================================================"
+              echo "FILE=$FILE"
+              echo "LINE=$LINE"
+              echo "============================================================"
+
+              git show \
+                "xiaomi/${STOCK_REF}:${FILE}" \
+                | sed -n "${START},${END}p"
+
+              echo
+            } >> "$ARTIFACT_DIR/XIAOMI-IS-RESERVED-CONTEXT.txt"
+
+          done < "$ARTIFACT_DIR/XIAOMI-IS-RESERVED-HITS.txt"
+
+          cat "$ARTIFACT_DIR/XIAOMI-IS-RESERVED-CONTEXT.txt"
+
+      - name: Audit task affinity and active CPU fallback paths
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          {
+            echo "============================================================"
+            echo "CASS cpus_ptr / cpu_active_mask logic"
+            echo "============================================================"
+
+            grep \
+              -nE \
+              -A20 \
+              -B20 \
+              'cpus_ptr|cpu_active_mask|cpumask_intersects|cpumask_first' \
+              kernel/sched/cass.c \
+              || true
+
+            echo
+            echo "============================================================"
+            echo "CASS return paths"
+            echo "============================================================"
+
+            grep \
+              -nE \
+              'return[[:space:]]+' \
+              kernel/sched/cass.c \
+              || true
+
+          } > "$ARTIFACT_DIR/CASS-AFFINITY-FALLBACKS.txt"
+
+          cat "$ARTIFACT_DIR/CASS-AFFINITY-FALLBACKS.txt"
+
+      - name: Model all-candidates-reserved control flow
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          out = Path(os.environ["ARTIFACT_DIR"])
+
+          ordering = {}
+
+          for line in (
+              out /
+              "CASS-CANDIDATE-ORDERING.txt"
+          ).read_text().splitlines():
+              if "=" in line:
+                  key, value = line.split("=", 1)
+                  ordering[key] = value
+
+          skip_before_init = (
+              ordering.get(
+                  "RESERVED_SKIP_BEFORE_CURR_CPU_INIT"
+              )
+              == "YES"
+          )
+
+          candidates_zeroed = (
+              ordering.get(
+                  "CANDIDATES_ZERO_INITIALIZED"
+              )
+              == "YES"
+          )
+
+          fallback = (
+              ordering.get(
+                  "EXPLICIT_FALLBACK_FOUND"
+              )
+              == "YES"
+          )
+
+          source = Path(
+              "kernel/sched/cass.c"
+          ).read_text()
+
+          loop_has_reserved_continue = (
+              "if (is_reserved(cpu))"
+              in source
+              and "continue;"
+              in source[
+                  source.find(
+                      "if (is_reserved(cpu))"
+                  ):
+                  source.find(
+                      "if (is_reserved(cpu))"
+                  ) + 120
+              ]
+          )
+
+          returns_best = (
+              "return best->cpu;"
+              in source
+          )
+
+          all_reserved_risk = (
+              skip_before_init
+              and not candidates_zeroed
+              and not fallback
+              and loop_has_reserved_continue
+              and returns_best
+          )
+
+          with (
+              out /
+              "ALL-RESERVED-CONTROL-FLOW.txt"
+          ).open("w") as f:
+              f.write(
+                  "SCENARIO="
+                  "p->cpus_ptr intersects cpu_active_mask, "
+                  "but every intersecting CPU returns is_reserved(cpu)=true\n"
+              )
+              f.write(
+                  "LOOP_ENTERED=YES\n"
+              )
+              f.write(
+                  "EVERY_ITERATION_CONTINUES_BEFORE_CURR_CPU_INIT="
+                  f"{'YES' if skip_before_init else 'NO'}\n"
+              )
+              f.write(
+                  "CANDIDATE_ARRAY_ZERO_INITIALIZED="
+                  f"{'YES' if candidates_zeroed else 'NO'}\n"
+              )
+              f.write(
+                  "EXPLICIT_POST_LOOP_FALLBACK="
+                  f"{'YES' if fallback else 'NO'}\n"
+              )
+              f.write(
+                  "FUNCTION_RETURNS_BEST_CPU="
+                  f"{'YES' if returns_best else 'NO'}\n"
+              )
+              f.write(
+                  "STATIC_INVALID_BEST_CPU_RISK="
+                  f"{'YES' if all_reserved_risk else 'NO'}\n"
+              )
+
+          print(
+              (out / "ALL-RESERVED-CONTROL-FLOW.txt").read_text()
+          )
+          PY
+
+      - name: Trace reserved CPU CASS history
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          {
+            echo "============================================================"
+            echo "CASS is_reserved history"
+            echo "============================================================"
+
+            git log \
+              --all \
+              --date=iso-strict \
+              --pretty=format:'%H%x09%ad%x09%an%x09%s' \
+              -S'is_reserved(cpu)' \
+              -- kernel/sched/cass.c \
+              || true
+
+            echo
+            echo
+            echo "============================================================"
+            echo "CASS candidate CPU initialization history"
+            echo "============================================================"
+
+            git log \
+              --all \
+              --date=iso-strict \
+              --pretty=format:'%H%x09%ad%x09%an%x09%s' \
+              -S'curr->cpu = cpu' \
+              -- kernel/sched/cass.c \
+              || true
+
+            echo
+            echo
+            echo "============================================================"
+            echo "CASS best->cpu return history"
+            echo "============================================================"
+
+            git log \
+              --all \
+              --date=iso-strict \
+              --pretty=format:'%H%x09%ad%x09%an%x09%s' \
+              -S'return best->cpu' \
+              -- kernel/sched/cass.c \
+              || true
+
+          } > "$ARTIFACT_DIR/CASS-RESERVED-HISTORY.txt"
+
+          cat "$ARTIFACT_DIR/CASS-RESERVED-HISTORY.txt"
+
+      - name: Verify audit made no source changes
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if ! git diff --quiet; then
+            echo "ERROR: audit unexpectedly modified source"
+            git diff --no-ext-diff --no-color
+            exit 1
+          fi
+
+          echo "SOURCE_MODIFIED=NO" \
+            | tee "$ARTIFACT_DIR/SOURCE-INTEGRITY.txt"
+
+      - name: Build machine-readable audit conclusion
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          out = Path(os.environ["ARTIFACT_DIR"])
+
+          ordering = {}
+
+          for line in (
+              out /
+              "CASS-CANDIDATE-ORDERING.txt"
+          ).read_text().splitlines():
+              if "=" in line:
+                  key, value = line.split("=", 1)
+                  ordering[key] = value
+
+          flow = {}
+
+          for line in (
+              out /
+              "ALL-RESERVED-CONTROL-FLOW.txt"
+          ).read_text().splitlines():
+              if "=" in line:
+                  key, value = line.split("=", 1)
+                  flow[key] = value
+
+          matrix = {}
+
+          for line in (
+              out /
+              "RESERVATION-SOURCE-MATRIX.txt"
+          ).read_text().splitlines():
+              if "=" in line:
+                  key, value = line.split("=", 1)
+                  matrix[key] = value
+
+          invalid_risk = (
+              flow.get(
+                  "STATIC_INVALID_BEST_CPU_RISK"
+              )
+              == "YES"
+          )
+
+          skip_before_init = (
+              ordering.get(
+                  "RESERVED_SKIP_BEFORE_CURR_CPU_INIT"
+              )
+              == "YES"
+          )
+
+          explicit_fallback = (
+              ordering.get(
+                  "EXPLICIT_FALLBACK_FOUND"
+              )
+              == "YES"
+          )
+
+          if invalid_risk:
+              review = (
+                  "CASS_RESERVED_CPU_SKIP_FALLBACK_CRITICAL_REVIEW"
+              )
+          elif skip_before_init and not explicit_fallback:
+              review = (
+                  "CASS_RESERVED_CPU_SKIP_ORDERING_REVIEW"
+              )
+          else:
+              review = (
+                  "CASS_RESERVED_CPU_SKIP_NO_STATIC_FALLBACK_RISK"
+              )
+
+          with (
+              out /
+              "RESULT.txt"
+          ).open("w") as f:
+              f.write(
+                  "RESULT=PASS_AUDIT\n"
+              )
+
+              f.write(
+                  "BASE_CANDIDATE_TREE="
+                  "5d25b7e0124d7fb695f3f07b45928fcb5780d0e8\n"
+              )
+
+              f.write(
+                  "CASS_RESERVED_COMMIT="
+                  "f2dbfe77c889f00bce6626c1890e4b8153ed55a0\n"
+              )
+
+              f.write(
+                  "CASS_RESERVED_CPU_SKIP=YES\n"
+              )
+
+              f.write(
+                  "CASS_RESERVED_CPU_ACTION=CONTINUE\n"
+              )
+
+              f.write(
+                  "RESERVED_SKIP_BEFORE_CURR_CPU_INIT="
+                  f"{ordering.get('RESERVED_SKIP_BEFORE_CURR_CPU_INIT', 'UNKNOWN')}\n"
+              )
+
+              f.write(
+                  "CANDIDATES_ZERO_INITIALIZED="
+                  f"{ordering.get('CANDIDATES_ZERO_INITIALIZED', 'UNKNOWN')}\n"
+              )
+
+              f.write(
+                  "EXPLICIT_FALLBACK_FOUND="
+                  f"{ordering.get('EXPLICIT_FALLBACK_FOUND', 'UNKNOWN')}\n"
+              )
+
+              f.write(
+                  "STATIC_INVALID_BEST_CPU_RISK="
+                  f"{flow.get('STATIC_INVALID_BEST_CPU_RISK', 'UNKNOWN')}\n"
+              )
+
+              f.write(
+                  "CANDIDATE_IS_RESERVED_REFS="
+                  f"{matrix.get('CANDIDATE_IS_RESERVED_REFS', 'UNKNOWN')}\n"
+              )
+
+              f.write(
+                  "XIAOMI_IS_RESERVED_REFS="
+                  f"{matrix.get('XIAOMI_IS_RESERVED_REFS', 'UNKNOWN')}\n"
+              )
+
+              f.write(
+                  "ANDROID_COMMON_IS_RESERVED_REFS="
+                  f"{matrix.get('ANDROID_COMMON_IS_RESERVED_REFS', 'UNKNOWN')}\n"
+              )
+
+              f.write(
+                  "CANDIDATE_CASS_SOURCE="
+                  f"{matrix.get('CANDIDATE_CASS_SOURCE', 'UNKNOWN')}\n"
+              )
+
+              f.write(
+                  "XIAOMI_CASS_SOURCE="
+                  f"{matrix.get('XIAOMI_CASS_SOURCE', 'UNKNOWN')}\n"
+              )
+
+              f.write(
+                  "ANDROID_COMMON_CASS_SOURCE="
+                  f"{matrix.get('ANDROID_COMMON_CASS_SOURCE', 'UNKNOWN')}\n"
+              )
+
+              f.write(
+                  f"REVIEW_CLASS={review}\n"
+              )
+
+              f.write(
+                  "SOURCE_MODIFIED=NO\n"
+              )
+
+              f.write(
+                  "KERNEL_BUILT=NO\n"
+              )
+
+              f.write(
+                  "IMAGE_CREATED=NO\n"
+              )
+
+              f.write(
+                  "BOOT_IMAGE_CREATED=NO\n"
+              )
+
+              f.write(
+                  "DEVICE_FLASHED=NO\n"
+              )
+          PY
+
+          cat "$ARTIFACT_DIR/RESULT.txt"
+
+      - name: Upload CASS reserved CPU audit
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: VEUX-CASS-Reserved-CPU-Skip-Audit
+          path: cass-reserved-cpu-audit/
+          if-no-files-found: error
+          retention-days: 30
