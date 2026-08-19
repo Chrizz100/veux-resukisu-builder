@@ -1,0 +1,2105 @@
+name: 44C - VEUX Restore CPUFreq Min Max Sysfs Full Build
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+
+    env:
+      ARCH: arm64
+
+      COMMON_REF: "android11-5.4.274_r00"
+      STOCK_REF: "veux-r-oss"
+
+      STABILITY_REVERT: "f74e5c1b7c3f3e42f694e5ab524f95f62a0dab80"
+      LB_CAPACITY_COMMIT: "2c1495be9eabac845acc8da45f070622d6455091"
+
+      IDLE_SCREEN_COMMIT: "64e34240600a0c90072972a6c3d86f1d6ec85c53"
+      IDLE_EXPOSE_COMMIT: "4ac606c780ae02a075d75a2703be68880761531a"
+      IDLE_NOTIFIER_COMMIT: "8bc9cc6e197c0d1cf166ed94bb53ce41add1c828"
+      IDLE_OPTIMIZE_COMMIT: "1d49e9b3308a7eacd75ed67f4112914e74ee60db"
+
+      CPUFREQ_MIN_COMMIT: "44242207c9afe2b3e7fb5bdc18da42e918043c63"
+      CPUFREQ_MAX_COMMIT: "3a25ef84be1d26cf0ddd526534358febd04529c5"
+
+      EXPECTED_CANDIDATE_TREE: "5d25b7e0124d7fb695f3f07b45928fcb5780d0e8"
+
+      EXPECTED_CPUFREQ_BEFORE_SHA256: "e1fa642651d4cf66fe59bf0eb615974bb403057dad5daeb3b7a8b1e9c06de646"
+      EXPECTED_CPUFREQ_AFTER_SHA256: "9ac85ecaafbdddfb43d2b361183b455448ce400fad1296ae290510ad33039ceb"
+
+      EXPECTED_STORE_ONE_BEFORE_SHA256: "5b85f632ef77eeee55d4b404a08e9d96ec87af0201ba1d634150c3ef418f37e3"
+      EXPECTED_STORE_ONE_AFTER_SHA256: "0bbe18c9eee2059f4d2ec636b604f50bda90b131261e857b0dbc717c512ef28e"
+      EXPECTED_CPUFREQ_TARGETED_DIFF_SHA256: "b431c73a2bfee36e093dc87846c628dd598a84499db66fc12a9930ff948e0b43"
+
+      EXPECTED_IDLE_RESTORE_DIFF_SHA256: "33b144f63893d7a45d6c8e301aacf6ca1faa7a87088c19ab8bfdc1ecb29a0fd5"
+
+      EXPECTED_LPM_AFTER_SHA256: "6805651af0a60905ce04356df3a538be15e94b6c8599a1d35e414d0a50b67094"
+      EXPECTED_CPUIDLE_CORE_AFTER_SHA256: "e7f7fba62ce2bbe82f23c6bfbf5a103161d1c8013b85f7f48e4c036758f6a603"
+      EXPECTED_CPUIDLE_HEADER_AFTER_SHA256: "9149734aa0eef1bba2e7ae16902dfd3aa203f23fe41657ce7df50ab947620506"
+
+      EXPECTED_SCHEDUTIL_BEFORE_SHA256: "9d56491a427ee12f1156ae907c5aa647bf1a1b35bf13c725a08e73ef295274b7"
+      EXPECTED_SCHEDUTIL_AFTER_SHA256: "987c9598f16b22a1e7b343475691687d309122de447494cd1a2b5ea8cbbafffc"
+
+      EXPECTED_CASS_DIFF_SHA256: "67abb81be8c2d7727c3e4c8a92419c9e9a3d97ee3d3e5355d3acabce34adf659"
+
+      EXPECTED_XIAOMI_PELT_SHA256: "bad23ba491cc5d4669936507b392888765aa65fd8063b2a95a492d6b0dca0cb0"
+
+      EXPECTED_HZ_KCONFIG_SHA256: "685e9a79f3dbf17e9bd5b402dfd25ad014886fbe1b6975a0913b3621519cd7fe"
+
+      EXPECTED_VEUX_DTB_SHA256: "42728a6f3d48ae35ac6be4b14ea51bc8a323e77baec2ee544827487378f99d37"
+
+      EXPECTED_WARNING_COUNT: "22"
+
+      CLANG_PREBUILT_COMMIT: "aa2e4a514a6c85eebcc4a27149eaf9244e951a1e"
+
+      TOOLCHAIN_DIR: ${{ github.workspace }}/toolchains/clang-r416183b
+      OUT_DIR: out
+      ARTIFACT_DIR: ${{ github.workspace }}/cpufreq-min-max-restore-full-build
+
+    steps:
+      - name: Prepare probe directory
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p \
+            "$ARTIFACT_DIR" \
+            "$TOOLCHAIN_DIR"
+
+          cat > "$ARTIFACT_DIR/PLAN.txt" <<'EOF'
+          VEUX Restore CPUFreq Min / Max Sysfs Full Build
+          =================================================
+
+          43P3 closed both CPUFreq audits.
+
+          Exact Candidate behavior:
+          - scaling_min_freq is silently accepted but ignored
+          - the no-op occurs before userspace input parsing
+          - scaling_max_freq below policy->min is changed to policy->min
+
+          Xiaomi VEUX:
+          - no scaling_min_freq no-op
+          - no max-below-min clamp
+          - normal freq_qos_update_request() handling
+
+          Android Common 5.4.274:
+          - same relevant store_one() behavior as Xiaomi VEUX
+
+          Active Candidate lineage:
+
+          44242207c9afe2b3e7fb5bdc18da42e918043c63
+          cpufreq: Kill userspace CPU boosting entirely
+
+          3a25ef84be1d26cf0ddd526534358febd04529c5
+          cpufreq: Always respect min freq
+
+          43P3 proved that removing exactly the two Candidate-specific
+          blocks makes store_one() byte-identical to Xiaomi VEUX and
+          Android Common.
+
+          44C performs exactly that targeted correction.
+
+          Cumulative previously validated corrections retained:
+          - CASS MaxFreq/Thermal adaptation
+          - SPRD rotation disabled
+          - standard LB capacity rate limit restored
+          - CONFIG_CPUSETS restored
+          - exact Xiaomi VEUX PELT8 restored
+          - custom HZ100 removed
+          - default HZ250 restored
+          - schedutil 20% lower-step heuristic removed
+          - normal schedutil boost-and-cap UClamp restored
+          - display-coupled deep-idle restriction removed
+          - Xiaomi-style sleep_disabled behavior restored
+
+          No ReSukiSU change.
+          No SUSFS change.
+          No boot.img.
+          No flashable ZIP.
+          No device access.
+          No flashing.
+          EOF
+
+      - name: Install build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          sudo apt-get update
+
+          sudo apt-get install -y --no-install-recommends \
+            bc \
+            bison \
+            build-essential \
+            ca-certificates \
+            cpio \
+            curl \
+            flex \
+            git \
+            libelf-dev \
+            libncurses-dev \
+            libssl-dev \
+            python3 \
+            python-is-python3 \
+            rsync \
+            xz-utils \
+            zstd
+
+      - name: Install exact Android clang-r416183b
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          curl \
+            --fail \
+            --location \
+            --retry 3 \
+            "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/${CLANG_PREBUILT_COMMIT}/clang-r416183b.tar.gz" \
+            -o "${RUNNER_TEMP}/clang-r416183b.tar.gz"
+
+          tar \
+            -xzf "${RUNNER_TEMP}/clang-r416183b.tar.gz" \
+            -C "$TOOLCHAIN_DIR"
+
+          echo "$TOOLCHAIN_DIR/bin" >> "$GITHUB_PATH"
+
+          "$TOOLCHAIN_DIR/bin/clang" --version \
+            | tee "$ARTIFACT_DIR/clang-version.txt"
+
+          "$TOOLCHAIN_DIR/bin/ld.lld" --version \
+            | tee -a "$ARTIFACT_DIR/clang-version.txt"
+
+          if ! "$TOOLCHAIN_DIR/bin/clang" --version \
+            | grep -q 'r416183b'
+          then
+            echo "ERROR: expected clang-r416183b"
+            exit 1
+          fi
+
+          for TOOL in \
+            clang \
+            ld.lld \
+            llvm-ar \
+            llvm-nm \
+            llvm-objcopy \
+            llvm-objdump \
+            llvm-readelf \
+            llvm-size \
+            llvm-strip
+          do
+            if [ ! -x "$TOOLCHAIN_DIR/bin/$TOOL" ]; then
+              echo "ERROR: missing toolchain binary: $TOOL"
+              exit 1
+            fi
+          done
+
+      - name: Checkout exact VEUX source
+        uses: actions/checkout@v7
+        with:
+          repository: dereference23/kernel_xiaomi_sm6375
+          ref: "20240619"
+          fetch-depth: 0
+          path: kernel
+          persist-credentials: false
+
+      - name: Recreate exact Candidate 2
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email \
+            "41898282+github-actions[bot]@users.noreply.github.com"
+
+          BASE_SHA="$(git rev-parse HEAD)"
+          BASE_TREE="$(git rev-parse HEAD^{tree})"
+
+          git remote remove android-common 2>/dev/null || true
+
+          git remote add \
+            android-common \
+            https://android.googlesource.com/kernel/common
+
+          git fetch \
+            --no-tags \
+            android-common \
+            "$COMMON_REF"
+
+          COMMON_SHA="$(git rev-parse FETCH_HEAD)"
+
+          git update-ref \
+            refs/remotes/android-common/audit-base \
+            "$COMMON_SHA"
+
+          git merge \
+            --no-edit \
+            "$COMMON_SHA"
+
+          MERGED_SHA="$(git rev-parse HEAD)"
+          MERGED_TREE="$(git rev-parse HEAD^{tree})"
+
+          git cat-file -e \
+            "${STABILITY_REVERT}^{commit}"
+
+          git revert \
+            --no-edit \
+            "$STABILITY_REVERT"
+
+          CANDIDATE_SHA="$(git rev-parse HEAD)"
+          CANDIDATE_TREE="$(git rev-parse HEAD^{tree})"
+
+          KERNEL_VERSION="$(make -s kernelversion)"
+
+          if [ "$KERNEL_VERSION" != "5.4.274" ]; then
+            echo "ERROR: expected Linux 5.4.274"
+            echo "Actual: $KERNEL_VERSION"
+            exit 1
+          fi
+
+          if [ "$CANDIDATE_TREE" != "$EXPECTED_CANDIDATE_TREE" ]; then
+            echo "ERROR: Candidate 2 tree mismatch"
+            echo "Expected: $EXPECTED_CANDIDATE_TREE"
+            echo "Actual:   $CANDIDATE_TREE"
+            exit 1
+          fi
+
+          echo "CANDIDATE_TIP=$CANDIDATE_SHA" \
+            >> "$GITHUB_ENV"
+
+          echo "COMMON_SHA=$COMMON_SHA" \
+            >> "$GITHUB_ENV"
+
+          {
+            echo "BASE_SHA=$BASE_SHA"
+            echo "BASE_TREE=$BASE_TREE"
+            echo "COMMON_SHA=$COMMON_SHA"
+            echo "MERGED_SHA=$MERGED_SHA"
+            echo "MERGED_TREE=$MERGED_TREE"
+            echo "CANDIDATE_SHA=$CANDIDATE_SHA"
+            echo "CANDIDATE_TREE=$CANDIDATE_TREE"
+            echo "KERNEL_VERSION=$KERNEL_VERSION"
+          } | tee "$ARTIFACT_DIR/IDENTITY.txt"
+
+      - name: Fetch official Xiaomi VEUX reference
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git remote remove xiaomi 2>/dev/null || true
+
+          git remote add \
+            xiaomi \
+            https://github.com/MiCode/Xiaomi_Kernel_OpenSource.git
+
+          git fetch \
+            --no-tags \
+            xiaomi \
+            "+refs/heads/${STOCK_REF}:refs/remotes/xiaomi/${STOCK_REF}"
+
+          STOCK_SHA="$(git rev-parse "xiaomi/${STOCK_REF}")"
+
+          {
+            echo "STOCK_REF=$STOCK_REF"
+            echo "STOCK_SHA=$STOCK_SHA"
+          } | tee "$ARTIFACT_DIR/XIAOMI-REFERENCE.txt"
+
+      - name: Restore Xiaomi idle sleep policy
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          for COMMIT in \
+            "$IDLE_SCREEN_COMMIT" \
+            "$IDLE_EXPOSE_COMMIT" \
+            "$IDLE_NOTIFIER_COMMIT" \
+            "$IDLE_OPTIMIZE_COMMIT"
+          do
+            git cat-file -e \
+              "${COMMIT}^{commit}"
+
+            if ! git merge-base \
+              --is-ancestor \
+              "$COMMIT" \
+              "$CANDIDATE_TIP"
+            then
+              echo "ERROR: idle commit is not Candidate ancestor"
+              echo "COMMIT=$COMMIT"
+              exit 1
+            fi
+          done
+
+          git revert \
+            --no-edit \
+            "$IDLE_OPTIMIZE_COMMIT"
+
+          git revert \
+            --no-edit \
+            "$IDLE_NOTIFIER_COMMIT"
+
+          git revert \
+            --no-edit \
+            "$IDLE_EXPOSE_COMMIT"
+
+          git revert \
+            --no-edit \
+            "$IDLE_SCREEN_COMMIT"
+
+          RESTORED_TIP="$(git rev-parse HEAD)"
+
+          git diff \
+            --no-ext-diff \
+            --no-color \
+            "$CANDIDATE_TIP" \
+            "$RESTORED_TIP" \
+            -- \
+            drivers/cpuidle/cpuidle.c \
+            drivers/cpuidle/lpm-levels.c \
+            include/linux/cpuidle.h \
+            > "$ARTIFACT_DIR/IDLE-SLEEP-RESTORE.diff"
+
+          IDLE_DIFF_SHA="$(
+            sha256sum \
+              "$ARTIFACT_DIR/IDLE-SLEEP-RESTORE.diff" \
+              | awk '{print $1}'
+          )"
+
+          if [ "$IDLE_DIFF_SHA" != "$EXPECTED_IDLE_RESTORE_DIFF_SHA256" ]; then
+            echo "ERROR: idle restore diff mismatch"
+            echo "Expected: $EXPECTED_IDLE_RESTORE_DIFF_SHA256"
+            echo "Actual:   $IDLE_DIFF_SHA"
+            exit 1
+          fi
+
+          LPM_SHA="$(
+            sha256sum drivers/cpuidle/lpm-levels.c \
+              | awk '{print $1}'
+          )"
+
+          CORE_SHA="$(
+            sha256sum drivers/cpuidle/cpuidle.c \
+              | awk '{print $1}'
+          )"
+
+          HEADER_SHA="$(
+            sha256sum include/linux/cpuidle.h \
+              | awk '{print $1}'
+          )"
+
+          [ "$LPM_SHA" = "$EXPECTED_LPM_AFTER_SHA256" ]
+          [ "$CORE_SHA" = "$EXPECTED_CPUIDLE_CORE_AFTER_SHA256" ]
+          [ "$HEADER_SHA" = "$EXPECTED_CPUIDLE_HEADER_AFTER_SHA256" ]
+
+          {
+            echo "IDLE_FEATURE_CHAIN_REVERSED=YES"
+            echo "IDLE_RESTORE_DIFF_SHA256=$IDLE_DIFF_SHA"
+            echo "LPM_AFTER_SHA256=$LPM_SHA"
+            echo "CPUIDLE_CORE_AFTER_SHA256=$CORE_SHA"
+            echo "CPUIDLE_HEADER_AFTER_SHA256=$HEADER_SHA"
+          } | tee "$ARTIFACT_DIR/IDLE-RESTORE-STATE.txt"
+
+      - name: Verify exact active CPUFreq lineage
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          for COMMIT in \
+            "$CPUFREQ_MIN_COMMIT" \
+            "$CPUFREQ_MAX_COMMIT"
+          do
+            git cat-file -e \
+              "${COMMIT}^{commit}"
+
+            if ! git merge-base \
+              --is-ancestor \
+              "$COMMIT" \
+              "$CANDIDATE_TIP"
+            then
+              echo "ERROR: CPUFreq commit is not Candidate ancestor"
+              echo "COMMIT=$COMMIT"
+              exit 1
+            fi
+          done
+
+          MAX_PARENT="$(
+            git rev-parse \
+              "${CPUFREQ_MAX_COMMIT}^"
+          )"
+
+          if [ "$MAX_PARENT" != "$CPUFREQ_MIN_COMMIT" ]; then
+            echo "ERROR: max-clamp commit parent is not min-noop commit"
+            echo "Expected: $CPUFREQ_MIN_COMMIT"
+            echo "Actual:   $MAX_PARENT"
+            exit 1
+          fi
+
+          {
+            echo "CPUFREQ_MIN_COMMIT=$CPUFREQ_MIN_COMMIT"
+            echo "CPUFREQ_MAX_COMMIT=$CPUFREQ_MAX_COMMIT"
+            echo "CPUFREQ_MIN_COMMIT_ANCESTOR=YES"
+            echo "CPUFREQ_MAX_COMMIT_ANCESTOR=YES"
+            echo "CPUFREQ_MAX_PARENT_EQUALS_MIN_COMMIT=YES"
+          } | tee "$ARTIFACT_DIR/CPUFREQ-LINEAGE.txt"
+
+      - name: Restore standard CPUFreq min max sysfs behavior
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SOURCE="drivers/cpufreq/cpufreq.c"
+
+          BEFORE_SHA="$(
+            sha256sum "$SOURCE" \
+              | awk '{print $1}'
+          )"
+
+          if [ "$BEFORE_SHA" != "$EXPECTED_CPUFREQ_BEFORE_SHA256" ]; then
+            echo "ERROR: Candidate cpufreq.c baseline mismatch"
+            echo "Expected: $EXPECTED_CPUFREQ_BEFORE_SHA256"
+            echo "Actual:   $BEFORE_SHA"
+            exit 1
+          fi
+
+          python3 - <<'PY'
+          import difflib
+          import hashlib
+          import os
+          from pathlib import Path
+
+          source = Path(
+              "drivers/cpufreq/cpufreq.c"
+          )
+
+          text = source.read_text(
+              encoding="utf-8"
+          )
+
+          start_marker = (
+              "#define store_one(file_name, object)"
+          )
+
+          end_marker = (
+              "store_one(scaling_max_freq, max);"
+          )
+
+          start = text.find(start_marker)
+
+          if start < 0:
+              raise SystemExit(
+                  "ERROR: store_one macro start missing"
+              )
+
+          end = text.find(
+              end_marker,
+              start,
+          )
+
+          if end < 0:
+              raise SystemExit(
+                  "ERROR: store_one macro end missing"
+              )
+
+          end += len(end_marker)
+
+          candidate_macro = text[start:end]
+
+          if end < len(text) and text[end] == "\n":
+              candidate_macro += "\n"
+
+          expected_before = os.environ[
+              "EXPECTED_STORE_ONE_BEFORE_SHA256"
+          ]
+
+          macro_sha = hashlib.sha256(
+              candidate_macro.encode("utf-8")
+          ).hexdigest()
+
+          if macro_sha != expected_before:
+              raise SystemExit(
+                  "ERROR: Candidate store_one hash mismatch\n"
+                  f"Expected: {expected_before}\n"
+                  f"Actual:   {macro_sha}"
+              )
+
+          lines = candidate_macro.splitlines(
+              keepends=True
+          )
+
+          def unique_line(token):
+              matches = [
+                  i
+                  for i, line in enumerate(lines)
+                  if token in line
+              ]
+
+              if len(matches) != 1:
+                  raise SystemExit(
+                      f"ERROR: expected one match for {token}, "
+                      f"got {len(matches)}"
+                  )
+
+              return matches[0]
+
+          min_condition = unique_line(
+              "if (&policy->object == &policy->min)"
+          )
+
+          parse_line = unique_line(
+              'ret = sscanf(buf, "%lu", &val);'
+          )
+
+          max_condition = unique_line(
+              "if (&policy->object == &policy->max)"
+          )
+
+          qos_line = unique_line(
+              "freq_qos_update_request("
+          )
+
+          if not (
+              min_condition
+              < parse_line
+              < max_condition
+              < qos_line
+          ):
+              raise SystemExit(
+                  "ERROR: unexpected Candidate store_one ordering"
+              )
+
+          min_block = "".join(
+              lines[
+                  min_condition:
+                  parse_line
+              ]
+          )
+
+          max_block = "".join(
+              lines[
+                  max_condition:
+                  qos_line
+              ]
+          )
+
+          if "return count;" not in min_block:
+              raise SystemExit(
+                  "ERROR: scaling_min_freq no-op return missing"
+              )
+
+          if "if (val < policy->min)" not in max_block:
+              raise SystemExit(
+                  "ERROR: scaling_max_freq below-min test missing"
+              )
+
+          if "val = policy->min;" not in max_block:
+              raise SystemExit(
+                  "ERROR: scaling_max_freq clamp assignment missing"
+              )
+
+          sanitized_lines = (
+              lines[:min_condition]
+              + lines[parse_line:max_condition]
+              + lines[qos_line:]
+          )
+
+          sanitized_macro = "".join(
+              sanitized_lines
+          )
+
+          expected_after = os.environ[
+              "EXPECTED_STORE_ONE_AFTER_SHA256"
+          ]
+
+          sanitized_sha = hashlib.sha256(
+              sanitized_macro.encode("utf-8")
+          ).hexdigest()
+
+          if sanitized_sha != expected_after:
+              raise SystemExit(
+                  "ERROR: sanitized store_one hash mismatch\n"
+                  f"Expected: {expected_after}\n"
+                  f"Actual:   {sanitized_sha}"
+              )
+
+          diff = "".join(
+              difflib.unified_diff(
+                  candidate_macro.splitlines(
+                      keepends=True
+                  ),
+                  sanitized_macro.splitlines(
+                      keepends=True
+                  ),
+                  fromfile="candidate-store-one.c",
+                  tofile="candidate-store-one-sanitized.c",
+              )
+          )
+
+          diff_sha = hashlib.sha256(
+              diff.encode("utf-8")
+          ).hexdigest()
+
+          expected_diff = os.environ[
+              "EXPECTED_CPUFREQ_TARGETED_DIFF_SHA256"
+          ]
+
+          if diff_sha != expected_diff:
+              raise SystemExit(
+                  "ERROR: targeted CPUFreq diff hash mismatch\n"
+                  f"Expected: {expected_diff}\n"
+                  f"Actual:   {diff_sha}"
+              )
+
+          corrected = (
+              text[:start]
+              + sanitized_macro
+              + text[
+                  start + len(candidate_macro):
+              ]
+          )
+
+          corrected_sha = hashlib.sha256(
+              corrected.encode("utf-8")
+          ).hexdigest()
+
+          expected_full = os.environ[
+              "EXPECTED_CPUFREQ_AFTER_SHA256"
+          ]
+
+          if corrected_sha != expected_full:
+              raise SystemExit(
+                  "ERROR: corrected cpufreq.c hash mismatch\n"
+                  f"Expected: {expected_full}\n"
+                  f"Actual:   {corrected_sha}"
+              )
+
+          source.write_text(
+              corrected,
+              encoding="utf-8"
+          )
+
+          out = Path(
+              os.environ["ARTIFACT_DIR"]
+          )
+
+          (
+              out /
+              "CPUFREQ-TARGETED-CORRECTION.diff"
+          ).write_text(
+              diff,
+              encoding="utf-8"
+          )
+
+          (
+              out /
+              "CPUFREQ-MIN-NOOP-BLOCK.c"
+          ).write_text(
+              min_block,
+              encoding="utf-8"
+          )
+
+          (
+              out /
+              "CPUFREQ-MAX-CLAMP-BLOCK.c"
+          ).write_text(
+              max_block,
+              encoding="utf-8"
+          )
+
+          (
+              out /
+              "CPUFREQ-STORE-ONE-AFTER.c"
+          ).write_text(
+              sanitized_macro,
+              encoding="utf-8"
+          )
+          PY
+
+          AFTER_SHA="$(
+            sha256sum "$SOURCE" \
+              | awk '{print $1}'
+          )"
+
+          if [ "$AFTER_SHA" != "$EXPECTED_CPUFREQ_AFTER_SHA256" ]; then
+            echo "ERROR: final corrected cpufreq.c hash mismatch"
+            exit 1
+          fi
+
+          if grep -qF \
+            'if (&policy->object == &policy->min)' \
+            "$ARTIFACT_DIR/CPUFREQ-STORE-ONE-AFTER.c"
+          then
+            echo "ERROR: scaling_min_freq no-op remains"
+            exit 1
+          fi
+
+          if grep -qF \
+            'if (&policy->object == &policy->max)' \
+            "$ARTIFACT_DIR/CPUFREQ-STORE-ONE-AFTER.c"
+          then
+            echo "ERROR: scaling_max_freq special-case remains"
+            exit 1
+          fi
+
+          if grep -qF \
+            'val = policy->min;' \
+            "$ARTIFACT_DIR/CPUFREQ-STORE-ONE-AFTER.c"
+          then
+            echo "ERROR: scaling_max_freq clamp remains"
+            exit 1
+          fi
+
+          grep -qF \
+            'ret = sscanf(buf, "%lu", &val);' \
+            "$ARTIFACT_DIR/CPUFREQ-STORE-ONE-AFTER.c"
+
+          grep -qF \
+            'freq_qos_update_request(policy->object##_freq_req, val);' \
+            "$ARTIFACT_DIR/CPUFREQ-STORE-ONE-AFTER.c"
+
+          {
+            echo "CPUFREQ_BEFORE_SHA256=$BEFORE_SHA"
+            echo "CPUFREQ_AFTER_SHA256=$AFTER_SHA"
+            echo "STORE_ONE_BEFORE_SHA256=$EXPECTED_STORE_ONE_BEFORE_SHA256"
+            echo "STORE_ONE_AFTER_SHA256=$EXPECTED_STORE_ONE_AFTER_SHA256"
+            echo "TARGETED_DIFF_SHA256=$EXPECTED_CPUFREQ_TARGETED_DIFF_SHA256"
+            echo "SCALING_MIN_WRITE_NOOP_REMOVED=YES"
+            echo "SCALING_MAX_BELOW_MIN_CLAMP_REMOVED=YES"
+            echo "STANDARD_CPUFREQ_QOS_WRITE_RESTORED=YES"
+          } | tee "$ARTIFACT_DIR/CPUFREQ-RESTORE-STATE.txt"
+
+      - name: Verify corrected store one matches Xiaomi and Common
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git show \
+            "xiaomi/${STOCK_REF}:drivers/cpufreq/cpufreq.c" \
+            > "$ARTIFACT_DIR/xiaomi-cpufreq.c"
+
+          git show \
+            "${COMMON_SHA}:drivers/cpufreq/cpufreq.c" \
+            > "$ARTIFACT_DIR/common-cpufreq.c"
+
+          python3 - <<'PY'
+          import hashlib
+          import os
+          from pathlib import Path
+
+          out = Path(os.environ["ARTIFACT_DIR"])
+
+          actual = Path(
+              "drivers/cpufreq/cpufreq.c"
+          ).read_text(
+              encoding="utf-8"
+          )
+
+          xiaomi = (
+              out /
+              "xiaomi-cpufreq.c"
+          ).read_text(
+              encoding="utf-8"
+          )
+
+          common = (
+              out /
+              "common-cpufreq.c"
+          ).read_text(
+              encoding="utf-8"
+          )
+
+          def extract(text):
+              start_marker = (
+                  "#define store_one(file_name, object)"
+              )
+
+              end_marker = (
+                  "store_one(scaling_max_freq, max);"
+              )
+
+              start = text.find(
+                  start_marker
+              )
+
+              if start < 0:
+                  raise SystemExit(
+                      "ERROR: store_one start missing"
+                  )
+
+              end = text.find(
+                  end_marker,
+                  start,
+              )
+
+              if end < 0:
+                  raise SystemExit(
+                      "ERROR: store_one end missing"
+                  )
+
+              end += len(end_marker)
+
+              macro = text[
+                  start:end
+              ]
+
+              if (
+                  end < len(text)
+                  and text[end] == "\n"
+              ):
+                  macro += "\n"
+
+              return macro
+
+          actual_macro = extract(actual)
+          xiaomi_macro = extract(xiaomi)
+          common_macro = extract(common)
+
+          if actual_macro != xiaomi_macro:
+              raise SystemExit(
+                  "ERROR: corrected store_one != Xiaomi"
+              )
+
+          if actual_macro != common_macro:
+              raise SystemExit(
+                  "ERROR: corrected store_one != Android Common"
+              )
+
+          expected = os.environ[
+              "EXPECTED_STORE_ONE_AFTER_SHA256"
+          ]
+
+          sha = hashlib.sha256(
+              actual_macro.encode("utf-8")
+          ).hexdigest()
+
+          if sha != expected:
+              raise SystemExit(
+                  "ERROR: corrected store_one baseline hash mismatch"
+              )
+
+          (
+              out /
+              "CPUFREQ-BASELINE-MATCH.txt"
+          ).write_text(
+              "\n".join(
+                  [
+                      "CORRECTED_STORE_ONE_EQUALS_XIAOMI=YES",
+                      "CORRECTED_STORE_ONE_EQUALS_ANDROID_COMMON=YES",
+                      f"CORRECTED_STORE_ONE_SHA256={sha}",
+                  ]
+              )
+              + "\n",
+              encoding="utf-8",
+          )
+          PY
+
+          cat "$ARTIFACT_DIR/CPUFREQ-BASELINE-MATCH.txt"
+
+      - name: Restore standard schedutil behavior
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SOURCE="kernel/sched/cpufreq_schedutil.c"
+
+          BEFORE_SHA="$(
+            sha256sum "$SOURCE" \
+              | awk '{print $1}'
+          )"
+
+          if [ "$BEFORE_SHA" != "$EXPECTED_SCHEDUTIL_BEFORE_SHA256" ]; then
+            echo "ERROR: schedutil Candidate baseline mismatch"
+            exit 1
+          fi
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path(
+              "kernel/sched/cpufreq_schedutil.c"
+          )
+
+          text = path.read_text()
+
+          declaration = (
+              "\tunsigned int idx, l_freq, h_freq;\n"
+          )
+
+          if text.count(declaration) != 1:
+              raise SystemExit(
+                  "ERROR: schedutil declaration anchor mismatch"
+              )
+
+          text = text.replace(
+              declaration,
+              "",
+              1,
+          )
+
+          old_frequency_block = """\
+          \tl_freq = cpufreq_driver_resolve_freq(policy, freq);
+          \tidx = cpufreq_frequency_table_target(policy, freq, CPUFREQ_RELATION_H);
+          \th_freq = policy->freq_table[idx].frequency;
+          \th_freq = clamp(h_freq, policy->min, policy->max);
+          \tif (l_freq <= h_freq || l_freq == policy->min)
+          \t\treturn l_freq;
+
+          \t/*
+          \t * Use the frequency step below if the calculated frequency is <20%
+          \t * higher than it.
+          \t */
+          \tif (mult_frac(100, freq - h_freq, l_freq - h_freq) < 20)
+          \t\treturn h_freq;
+
+          \treturn l_freq;
+          """
+
+          standard_frequency_block = """\
+          \treturn cpufreq_driver_resolve_freq(policy, freq);
+          """
+
+          if text.count(old_frequency_block) != 1:
+              raise SystemExit(
+                  "ERROR: schedutil lower-step block mismatch"
+              )
+
+          text = text.replace(
+              old_frequency_block,
+              standard_frequency_block,
+              1,
+          )
+
+          cap_only = (
+              "\tif (type == FREQUENCY_UTIL && "
+              "uclamp_rq_util_with(rq, util, p) < util)\n"
+          )
+
+          normal = (
+              "\tif (type == FREQUENCY_UTIL)\n"
+          )
+
+          if text.count(cap_only) != 1:
+              raise SystemExit(
+                  "ERROR: schedutil UClamp anchor mismatch"
+              )
+
+          text = text.replace(
+              cap_only,
+              normal,
+              1,
+          )
+
+          path.write_text(text)
+          PY
+
+          AFTER_SHA="$(
+            sha256sum "$SOURCE" \
+              | awk '{print $1}'
+          )"
+
+          if [ "$AFTER_SHA" != "$EXPECTED_SCHEDUTIL_AFTER_SHA256" ]; then
+            echo "ERROR: restored schedutil hash mismatch"
+            exit 1
+          fi
+
+          {
+            echo "SCHEDUTIL_BEFORE_SHA256=$BEFORE_SHA"
+            echo "SCHEDUTIL_AFTER_SHA256=$AFTER_SHA"
+            echo "LOWER_STEP_20_PERCENT_REMOVED=YES"
+            echo "NORMAL_BOOST_CAP_UCLAMP_RESTORED=YES"
+          } | tee "$ARTIFACT_DIR/SCHEDUTIL-STATE.txt"
+
+      - name: Remove custom HZ100
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          DEFCONFIG="arch/arm64/configs/veux_defconfig"
+
+          COUNT="$(
+            grep -xc \
+              'CONFIG_HZ_100=y' \
+              "$DEFCONFIG" \
+              || true
+          )"
+
+          if [ "$COUNT" -ne 1 ]; then
+            echo "ERROR: expected exactly one CONFIG_HZ_100=y"
+            exit 1
+          fi
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path(
+              "arch/arm64/configs/veux_defconfig"
+          )
+
+          text = path.read_text()
+
+          target = "CONFIG_HZ_100=y\n"
+
+          if text.count(target) != 1:
+              raise SystemExit(
+                  "ERROR: HZ100 line count mismatch"
+              )
+
+          path.write_text(
+              text.replace(
+                  target,
+                  "",
+                  1,
+              )
+          )
+          PY
+
+          if grep -qE \
+            '^CONFIG_HZ_(100|250|300|1000)=y$' \
+            "$DEFCONFIG"
+          then
+            echo "ERROR: explicit HZ selection remains"
+            exit 1
+          fi
+
+          echo "CONFIG_HZ_100_REMOVED=YES" \
+            | tee "$ARTIFACT_DIR/HZ-STATE.txt"
+
+      - name: Restore standard load balance capacity rate limit
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git cat-file -e \
+            "${LB_CAPACITY_COMMIT}^{commit}"
+
+          git show \
+            --format= \
+            --binary \
+            "$LB_CAPACITY_COMMIT" \
+            > "$ARTIFACT_DIR/LB-CAPACITY-ORIGINAL.patch"
+
+          git apply \
+            --reverse \
+            --check \
+            "$ARTIFACT_DIR/LB-CAPACITY-ORIGINAL.patch"
+
+          git apply \
+            --reverse \
+            "$ARTIFACT_DIR/LB-CAPACITY-ORIGINAL.patch"
+
+          grep -qF \
+            'time_after_eq(jiffies, sg->sgc->next_update)' \
+            kernel/sched/fair.c
+
+          grep -qF \
+            'next_update;' \
+            kernel/sched/sched.h
+
+          git diff \
+            --no-ext-diff \
+            --no-color \
+            -- \
+            kernel/sched/fair.c \
+            kernel/sched/sched.h \
+            > "$ARTIFACT_DIR/LB-CAPACITY-RESTORE.diff"
+
+          LB_DIFF_SHA="$(
+            sha256sum \
+              "$ARTIFACT_DIR/LB-CAPACITY-RESTORE.diff" \
+              | awk '{print $1}'
+          )"
+
+          {
+            echo "LB_CAPACITY_COMMIT_REVERSED=YES"
+            echo "LB_CAPACITY_TIME_GATE=RESTORED"
+            echo "LB_CAPACITY_RESTORE_DIFF_SHA256=$LB_DIFF_SHA"
+          } | tee "$ARTIFACT_DIR/LB-CAPACITY-STATE.txt"
+
+      - name: Apply proven CASS MaxFreq Thermal patch
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path(
+              "kernel/sched/cass.c"
+          )
+
+          text = path.read_text()
+
+          old = """\
+          \tunsigned long cap;
+          \tunsigned long cap_max;
+          \tunsigned long eff_util;
+          """
+
+          new = """\
+          \tunsigned long cap;
+          \tunsigned long cap_max;
+          \tunsigned long cap_no_therm;
+          \tunsigned long cap_orig;
+          \tunsigned long eff_util;
+          """
+
+          if text.count(old) != 1:
+              raise SystemExit(
+                  "ERROR: CASS struct anchor mismatch"
+              )
+
+          text = text.replace(
+              old,
+              new,
+              1,
+          )
+
+          old = """\
+          \tc->cap = c->cap_max - min(c->hard_util, c->cap_max - 1);
+          """
+
+          new = """\
+          \tc->cap = c->cap_max - min(c->hard_util, c->cap_max - 1);
+
+          \t/*
+          \t * Keep a non-throttled capacity denominator for relative load
+          \t * balancing, matching the original CASS capacity separation.
+          \t */
+          \tc->cap_no_therm =
+          \t\tc->cap_orig - min(c->hard_util, c->cap_orig - 1);
+          """
+
+          if text.count(old) != 1:
+              raise SystemExit(
+                  "ERROR: CASS capacity anchor mismatch"
+              )
+
+          text = text.replace(
+              old,
+              new,
+              1,
+          )
+
+          old = """\
+          \t\t/* Get the original, maximum _possible_ capacity of this CPU */
+          \t\tcurr->cap_max = arch_scale_cpu_capacity(cpu);
+          """
+
+          new = """\
+          \t\t/* Get the original, maximum possible capacity of this CPU. */
+          \t\tcurr->cap_orig = arch_scale_cpu_capacity(cpu);
+
+          \t\t/* Account for the current maximum allowed CPU frequency. */
+          \t\tcurr->cap_max =
+          \t\t\tcurr->cap_orig *
+          \t\t\tarch_scale_max_freq_capacity(NULL, cpu) >>
+          \t\t\tSCHED_CAPACITY_SHIFT;
+
+          \t\t/* Keep all later capacity divisions well-defined. */
+          \t\tcurr->cap_max = max(curr->cap_max, 1UL);
+          """
+
+          if text.count(old) != 1:
+              raise SystemExit(
+                  "ERROR: CASS cap_max anchor mismatch"
+              )
+
+          text = text.replace(
+              old,
+              new,
+              1,
+          )
+
+          old = """\
+          \t\tcurr->util =
+          \t\t\tcurr->util * SCHED_CAPACITY_SCALE / curr->cap;
+          """
+
+          new = """\
+          \t\tcurr->util =
+          \t\t\tcurr->util * SCHED_CAPACITY_SCALE /
+          \t\t\tcurr->cap_no_therm;
+          """
+
+          if text.count(old) != 1:
+              raise SystemExit(
+                  "ERROR: CASS util anchor mismatch"
+              )
+
+          text = text.replace(
+              old,
+              new,
+              1,
+          )
+
+          path.write_text(text)
+          PY
+
+          git diff \
+            --no-ext-diff \
+            --no-color \
+            -- kernel/sched/cass.c \
+            > "$ARTIFACT_DIR/CASS-PATCH.diff"
+
+          CASS_SHA="$(
+            sha256sum \
+              "$ARTIFACT_DIR/CASS-PATCH.diff" \
+              | awk '{print $1}'
+          )"
+
+          if [ "$CASS_SHA" != "$EXPECTED_CASS_DIFF_SHA256" ]; then
+            echo "ERROR: CASS patch differs from proven version"
+            exit 1
+          fi
+
+          {
+            echo "CASS_PATCH=PASS"
+            echo "CASS_DIFF_SHA256=$CASS_SHA"
+            echo "CAP_ORIG_RESTORED=YES"
+            echo "CAP_NO_THERM_RESTORED=YES"
+            echo "CAP_MAX_USES_MAX_FREQ_SCALE=YES"
+          } | tee "$ARTIFACT_DIR/CASS-STATE.txt"
+
+      - name: Restore cumulative VEUX defconfig
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path(
+              "arch/arm64/configs/veux_defconfig"
+          )
+
+          text = path.read_text()
+
+          rotation_old = (
+              "CONFIG_SPRD_ROTATION_TASK=y"
+          )
+
+          rotation_new = (
+              "# CONFIG_SPRD_ROTATION_TASK is not set"
+          )
+
+          if text.count(rotation_old) != 1:
+              raise SystemExit(
+                  "ERROR: SPRD rotation anchor mismatch"
+              )
+
+          text = text.replace(
+              rotation_old,
+              rotation_new,
+              1,
+          )
+
+          if "CONFIG_CPUSETS=y" in text:
+              raise SystemExit(
+                  "ERROR: CPUSETS unexpectedly already present"
+              )
+
+          old = """\
+          CONFIG_CGROUP_FREEZER=y
+          CONFIG_CGROUP_CPUACCT=y
+          """
+
+          new = """\
+          CONFIG_CGROUP_FREEZER=y
+          CONFIG_CPUSETS=y
+          CONFIG_CGROUP_CPUACCT=y
+          """
+
+          if text.count(old) != 1:
+              raise SystemExit(
+                  "ERROR: CPUSETS anchor mismatch"
+              )
+
+          text = text.replace(
+              old,
+              new,
+              1,
+          )
+
+          path.write_text(text)
+          PY
+
+          grep -qx \
+            '# CONFIG_SPRD_ROTATION_TASK is not set' \
+            arch/arm64/configs/veux_defconfig
+
+          grep -qx \
+            'CONFIG_CPUSETS=y' \
+            arch/arm64/configs/veux_defconfig
+
+      - name: Restore exact Xiaomi VEUX PELT8
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          HEADER="kernel/sched/sched-pelt.h"
+
+          git show \
+            "xiaomi/${STOCK_REF}:kernel/sched/sched-pelt.h" \
+            > "$HEADER"
+
+          HEADER_SHA="$(
+            sha256sum "$HEADER" \
+              | awk '{print $1}'
+          )"
+
+          if [ "$HEADER_SHA" != "$EXPECTED_XIAOMI_PELT_SHA256" ]; then
+            echo "ERROR: Xiaomi PELT header hash mismatch"
+            exit 1
+          fi
+
+          grep -qx \
+            '#define LOAD_AVG_PERIOD 8' \
+            "$HEADER"
+
+          grep -qx \
+            '#define LOAD_AVG_MAX 12336' \
+            "$HEADER"
+
+          {
+            echo "PELT_PERIOD=8"
+            echo "LOAD_AVG_MAX=12336"
+            echo "PELT_HEADER_SHA256=$HEADER_SHA"
+            echo "EXACT_XIAOMI_HEADER=YES"
+          } | tee "$ARTIFACT_DIR/PELT8-STATE.txt"
+
+      - name: Verify complete cumulative source state
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          CPUFREQ="drivers/cpufreq/cpufreq.c"
+          SUGOV="kernel/sched/cpufreq_schedutil.c"
+          LPM="drivers/cpuidle/lpm-levels.c"
+          CORE="drivers/cpuidle/cpuidle.c"
+          HEADER="include/linux/cpuidle.h"
+          DEFCONFIG="arch/arm64/configs/veux_defconfig"
+
+          HZ_SHA="$(
+            sha256sum kernel/Kconfig.hz \
+              | awk '{print $1}'
+          )"
+
+          if [ "$HZ_SHA" != "$EXPECTED_HZ_KCONFIG_SHA256" ]; then
+            echo "ERROR: HZ Kconfig hash mismatch"
+            exit 1
+          fi
+
+          grep -qF \
+            'default HZ_250' \
+            kernel/Kconfig.hz
+
+          if grep -qE \
+            '^CONFIG_HZ_(100|250|300|1000)=y$' \
+            "$DEFCONFIG"
+          then
+            echo "ERROR: explicit HZ selection remains"
+            exit 1
+          fi
+
+          grep -qx \
+            'CONFIG_CPUSETS=y' \
+            "$DEFCONFIG"
+
+          grep -qx \
+            '# CONFIG_SPRD_ROTATION_TASK is not set' \
+            "$DEFCONFIG"
+
+          grep -qF \
+            'time_after_eq(jiffies, sg->sgc->next_update)' \
+            kernel/sched/fair.c
+
+          grep -qF \
+            'arch_scale_max_freq_capacity(NULL, cpu)' \
+            kernel/sched/cass.c
+
+          grep -qF \
+            'curr->cap_no_therm' \
+            kernel/sched/cass.c
+
+          grep -qx \
+            '#define LOAD_AVG_PERIOD 8' \
+            kernel/sched/sched-pelt.h
+
+          if grep -qF \
+            'mult_frac(100, freq - h_freq, l_freq - h_freq) < 20' \
+            "$SUGOV"
+          then
+            echo "ERROR: schedutil lower-step heuristic remains"
+            exit 1
+          fi
+
+          if grep -qF \
+            'uclamp_rq_util_with(rq, util, p) < util' \
+            "$SUGOV"
+          then
+            echo "ERROR: schedutil cap-only UClamp remains"
+            exit 1
+          fi
+
+          grep -qF \
+            'return cpufreq_driver_resolve_freq(policy, freq);' \
+            "$SUGOV"
+
+          if grep -qF \
+            'if (&policy->object == &policy->min)' \
+            "$CPUFREQ"
+          then
+            echo "ERROR: CPUFreq min no-op remains"
+            exit 1
+          fi
+
+          if grep -qF \
+            'if (&policy->object == &policy->max)' \
+            "$CPUFREQ"
+          then
+            echo "ERROR: CPUFreq max special-case remains"
+            exit 1
+          fi
+
+          if grep -qF \
+            'val = policy->min;' \
+            "$CPUFREQ"
+          then
+            echo "ERROR: CPUFreq max/min clamp remains"
+            exit 1
+          fi
+
+          grep -qF \
+            'freq_qos_update_request(policy->object##_freq_req, val);' \
+            "$CPUFREQ"
+
+          grep -qF \
+            'static bool sleep_disabled;' \
+            "$LPM"
+
+          grep -qF \
+            'module_param_named(sleep_disabled, sleep_disabled, bool, 0664);' \
+            "$LPM"
+
+          for TOKEN in \
+            'lpm_drm_panel_notify' \
+            'goodix_get_panel' \
+            'drm_panel_notifier_register' \
+            'bool lpm_sleep_disabled(void)'
+          do
+            if grep -qF "$TOKEN" "$LPM"; then
+              echo "ERROR: custom idle token remains: $TOKEN"
+              exit 1
+            fi
+          done
+
+          if grep -qF \
+            'lpm_sleep_disabled' \
+            "$CORE"
+          then
+            echo "ERROR: lpm_sleep_disabled remains in cpuidle core"
+            exit 1
+          fi
+
+          if grep -qF \
+            'lpm_sleep_disabled' \
+            "$HEADER"
+          then
+            echo "ERROR: lpm_sleep_disabled remains in cpuidle header"
+            exit 1
+          fi
+
+          if grep -qF \
+            'update_cpumask(cs, trialcs, "0-7")' \
+            kernel/cgroup/cpuset.c
+          then
+            echo "ERROR: hardcoded CPUSET mask remains"
+            exit 1
+          fi
+
+          grep -qF \
+            'update_cpumask(cs, trialcs, buf)' \
+            kernel/cgroup/cpuset.c
+
+          git diff --check \
+            > "$ARTIFACT_DIR/GIT-DIFF-CHECK.txt" \
+            2>&1
+
+          {
+            echo "CUMULATIVE_SOURCE_CHECK=PASS"
+            echo "CPUFREQ_MIN_NOOP=REMOVED"
+            echo "CPUFREQ_MAX_BELOW_MIN_CLAMP=REMOVED"
+            echo "CPUFREQ_STANDARD_QOS_WRITE=YES"
+            echo "DISPLAY_COUPLED_SLEEP_POLICY=REMOVED"
+            echo "SCHEDUTIL_STANDARD=YES"
+            echo "CASS_MAXFREQ=YES"
+            echo "SPRD_ROTATION_DISABLED=YES"
+            echo "LB_CAPACITY_RATE_LIMIT=YES"
+            echo "CPUSETS_ENABLED=YES"
+            echo "PELT8_XIAOMI=YES"
+            echo "VEUX_DEFCONFIG_EXPLICIT_HZ=NO"
+          } | tee "$ARTIFACT_DIR/CUMULATIVE-SOURCE-STATE.txt"
+
+      - name: Resolve VEUX configuration
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          export PATH="$TOOLCHAIN_DIR/bin:$PATH"
+          export KCFLAGS="-D__ANDROID_COMMON_KERNEL__"
+
+          rm -rf "$OUT_DIR"
+
+          make \
+            O="$OUT_DIR" \
+            ARCH="$ARCH" \
+            LLVM=1 \
+            veux_defconfig \
+            2>&1 \
+            | tee "$ARTIFACT_DIR/config.log"
+
+          CONFIG="$OUT_DIR/.config"
+
+          if [ ! -f "$CONFIG" ]; then
+            echo "ERROR: resolved .config missing"
+            exit 1
+          fi
+
+          REQUIRED=(
+            CONFIG_ARCH_QCOM=y
+            CONFIG_ARCH_HOLI=y
+            CONFIG_ARCH_BLAIR=y
+            CONFIG_WT_QGKI=y
+            CONFIG_LTO_CLANG=y
+            CONFIG_BUILD_ARM64_UNCOMPRESSED_KERNEL=y
+            CONFIG_SCHED_CASS=y
+            CONFIG_CPUSETS=y
+            CONFIG_HZ_250=y
+            CONFIG_HZ=250
+            CONFIG_CPU_FREQ=y
+            CONFIG_CPU_FREQ_GOV_SCHEDUTIL=y
+            CONFIG_ARM_QCOM_CPUFREQ_HW=y
+            CONFIG_CPU_IDLE=y
+            CONFIG_ARM_QCOM_LPM_CPUIDLE=y
+            CONFIG_DRM=y
+            CONFIG_DRM_PANEL=y
+          )
+
+          for ITEM in "${REQUIRED[@]}"; do
+            if ! grep -qx \
+              "$ITEM" \
+              "$CONFIG"
+            then
+              echo "ERROR: required config missing: $ITEM"
+              exit 1
+            fi
+          done
+
+          if grep -qx \
+            'CONFIG_HZ_100=y' \
+            "$CONFIG"
+          then
+            echo "ERROR: HZ100 remains enabled"
+            exit 1
+          fi
+
+          grep -qx \
+            '# CONFIG_SPRD_ROTATION_TASK is not set' \
+            "$CONFIG"
+
+          cp \
+            "$CONFIG" \
+            "$ARTIFACT_DIR/resolved.config"
+
+          {
+            grep -E \
+              '^(CONFIG_HZ_|# CONFIG_HZ_|CONFIG_HZ=|CONFIG_SCHED_CASS=|CONFIG_CPUSETS=|CONFIG_SPRD_ROTATION_TASK=|# CONFIG_SPRD_ROTATION_TASK|CONFIG_CPU_FREQ=|CONFIG_CPU_FREQ_GOV_SCHEDUTIL=|CONFIG_ARM_QCOM_CPUFREQ_HW=|CONFIG_CPU_IDLE=|CONFIG_ARM_QCOM_LPM_CPUIDLE=|CONFIG_DRM=|CONFIG_DRM_PANEL=)' \
+              "$CONFIG" \
+              || true
+          } | tee "$ARTIFACT_DIR/CONFIG-IMPORTANT.txt"
+
+          make \
+            -s \
+            O="$OUT_DIR" \
+            ARCH="$ARCH" \
+            LLVM=1 \
+            kernelrelease \
+            | tee "$ARTIFACT_DIR/kernelrelease.txt"
+
+      - name: Build complete kernel Image and DTBs
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          export PATH="$TOOLCHAIN_DIR/bin:$PATH"
+          export KCFLAGS="-D__ANDROID_COMMON_KERNEL__"
+
+          set +e
+
+          make \
+            -j"$(nproc)" \
+            O="$OUT_DIR" \
+            ARCH="$ARCH" \
+            LLVM=1 \
+            Image \
+            dtbs \
+            2>&1 \
+            | tee "$ARTIFACT_DIR/full-build.log"
+
+          BUILD_RC=${PIPESTATUS[0]}
+
+          set -e
+
+          echo "$BUILD_RC" \
+            > "$ARTIFACT_DIR/full-build.exit-code"
+
+          if [ "$BUILD_RC" -ne 0 ]; then
+            echo "ERROR: full kernel build failed"
+            exit "$BUILD_RC"
+          fi
+
+      - name: Verify compiled CPUFreq object
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          OBJ="$OUT_DIR/drivers/cpufreq/cpufreq.o"
+
+          if [ ! -s "$OBJ" ]; then
+            echo "ERROR: cpufreq.o missing"
+            exit 1
+          fi
+
+          {
+            echo "CPUFREQ_OBJECT_BUILT=YES"
+            echo "CPUFREQ_OBJECT_BYTES=$(stat -c '%s' "$OBJ")"
+            echo "CPUFREQ_OBJECT_SHA256=$(
+              sha256sum "$OBJ" \
+                | awk '{print $1}'
+            )"
+          } | tee "$ARTIFACT_DIR/CPUFREQ-OBJECT-STATE.txt"
+
+      - name: Verify linked cumulative kernel
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          VMLINUX="$OUT_DIR/vmlinux"
+          CPUSET_OBJ="$OUT_DIR/kernel/cgroup/cpuset.o"
+
+          if [ ! -s "$VMLINUX" ]; then
+            echo "ERROR: vmlinux missing"
+            exit 1
+          fi
+
+          if [ ! -s "$CPUSET_OBJ" ]; then
+            echo "ERROR: cpuset.o missing"
+            exit 1
+          fi
+
+          "$TOOLCHAIN_DIR/bin/llvm-nm" \
+            "$VMLINUX" \
+            > "$ARTIFACT_DIR/vmlinux-symbols.txt"
+
+          grep -E \
+            '[[:space:]]cass_[A-Za-z0-9_]+' \
+            "$ARTIFACT_DIR/vmlinux-symbols.txt" \
+            > "$ARTIFACT_DIR/vmlinux-cass-symbols.txt" \
+            || true
+
+          CASS_SYMBOL_COUNT="$(
+            wc -l \
+              < "$ARTIFACT_DIR/vmlinux-cass-symbols.txt" \
+              | tr -d ' '
+          )"
+
+          if [ "$CASS_SYMBOL_COUNT" -lt 1 ]; then
+            echo "ERROR: CASS symbols missing"
+            exit 1
+          fi
+
+          grep -E \
+            'check_for_task_rotation|try_rotation_task|do_rotation_task|rotation_task_init|set_rotation_enable' \
+            "$ARTIFACT_DIR/vmlinux-symbols.txt" \
+            > "$ARTIFACT_DIR/ROTATION-SYMBOLS.txt" \
+            || true
+
+          ROTATION_SYMBOL_COUNT="$(
+            wc -l \
+              < "$ARTIFACT_DIR/ROTATION-SYMBOLS.txt" \
+              | tr -d ' '
+          )"
+
+          if [ "$ROTATION_SYMBOL_COUNT" -ne 0 ]; then
+            echo "ERROR: SPRD rotation symbols remain linked"
+            exit 1
+          fi
+
+          grep -Ei \
+            '[[:space:]][A-Za-z0-9_]*cpuset[A-Za-z0-9_]*$' \
+            "$ARTIFACT_DIR/vmlinux-symbols.txt" \
+            > "$ARTIFACT_DIR/vmlinux-cpuset-symbols.txt" \
+            || true
+
+          CPUSET_SYMBOL_COUNT="$(
+            wc -l \
+              < "$ARTIFACT_DIR/vmlinux-cpuset-symbols.txt" \
+              | tr -d ' '
+          )"
+
+          if [ "$CPUSET_SYMBOL_COUNT" -lt 1 ]; then
+            echo "ERROR: CPUSET symbols missing"
+            exit 1
+          fi
+
+          grep -E \
+            '[[:space:]]lpm_sleep_disabled$' \
+            "$ARTIFACT_DIR/vmlinux-symbols.txt" \
+            > "$ARTIFACT_DIR/LPM-SLEEP-SYMBOLS.txt" \
+            || true
+
+          LPM_SLEEP_SYMBOL_COUNT="$(
+            wc -l \
+              < "$ARTIFACT_DIR/LPM-SLEEP-SYMBOLS.txt" \
+              | tr -d ' '
+          )"
+
+          if [ "$LPM_SLEEP_SYMBOL_COUNT" -ne 0 ]; then
+            echo "ERROR: lpm_sleep_disabled remains linked"
+            exit 1
+          fi
+
+          {
+            echo "CASS_SYMBOL_COUNT=$CASS_SYMBOL_COUNT"
+            echo "ROTATION_SYMBOL_COUNT=$ROTATION_SYMBOL_COUNT"
+            echo "CPUSET_SYMBOL_COUNT=$CPUSET_SYMBOL_COUNT"
+            echo "LPM_SLEEP_DISABLED_SYMBOL_COUNT=$LPM_SLEEP_SYMBOL_COUNT"
+          } | tee "$ARTIFACT_DIR/LINKED-KERNEL-STATE.txt"
+
+      - name: Verify complete build outputs
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          IMAGE="$OUT_DIR/arch/arm64/boot/Image"
+          VEUX_DTB="$OUT_DIR/arch/arm64/boot/dts/vendor/xiaomi/veux.dtb"
+          VMLINUX="$OUT_DIR/vmlinux"
+
+          for FILE in \
+            "$IMAGE" \
+            "$VEUX_DTB" \
+            "$VMLINUX"
+          do
+            if [ ! -s "$FILE" ]; then
+              echo "ERROR: build output missing: $FILE"
+              exit 1
+            fi
+          done
+
+          "$OUT_DIR/scripts/dtc/dtc" \
+            -I dtb \
+            -O dts \
+            -o /dev/null \
+            "$VEUX_DTB"
+
+          DTB_SHA="$(
+            sha256sum "$VEUX_DTB" \
+              | awk '{print $1}'
+          )"
+
+          if [ "$DTB_SHA" != "$EXPECTED_VEUX_DTB_SHA256" ]; then
+            echo "ERROR: VEUX DTB unexpectedly changed"
+            echo "Expected: $EXPECTED_VEUX_DTB_SHA256"
+            echo "Actual:   $DTB_SHA"
+            exit 1
+          fi
+
+          {
+            echo "IMAGE_BYTES=$(stat -c '%s' "$IMAGE")"
+            echo "VEUX_DTB_BYTES=$(stat -c '%s' "$VEUX_DTB")"
+            echo "VMLINUX_BYTES=$(stat -c '%s' "$VMLINUX")"
+
+            echo
+            sha256sum "$IMAGE"
+            sha256sum "$VEUX_DTB"
+            sha256sum "$VMLINUX"
+          } | tee "$ARTIFACT_DIR/OUTPUT-HASHES.txt"
+
+          echo "VEUX_DTB_PARSE=PASS" \
+            | tee "$ARTIFACT_DIR/DTB-CHECK.txt"
+
+      - name: Audit compiler diagnostics
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          LOG="$ARTIFACT_DIR/full-build.log"
+
+          grep -Ei \
+            '(^|[[:space:]])error:' \
+            "$LOG" \
+            > "$ARTIFACT_DIR/ERRORS.txt" \
+            || true
+
+          grep -Ei \
+            '(^|[[:space:]])warning:' \
+            "$LOG" \
+            > "$ARTIFACT_DIR/WARNINGS.txt" \
+            || true
+
+          grep -E \
+            'drivers/cpufreq/cpufreq\.c:.*warning:' \
+            "$LOG" \
+            > "$ARTIFACT_DIR/CPUFREQ-CORE-WARNINGS.txt" \
+            || true
+
+          grep -Ei \
+            '(drivers/cpuidle/cpuidle\.c|drivers/cpuidle/lpm-levels\.c):.*warning:' \
+            "$LOG" \
+            > "$ARTIFACT_DIR/IDLE-WARNINGS.txt" \
+            || true
+
+          ERROR_COUNT="$(
+            wc -l \
+              < "$ARTIFACT_DIR/ERRORS.txt" \
+              | tr -d ' '
+          )"
+
+          WARNING_COUNT="$(
+            wc -l \
+              < "$ARTIFACT_DIR/WARNINGS.txt" \
+              | tr -d ' '
+          )"
+
+          CPUFREQ_WARNING_COUNT="$(
+            wc -l \
+              < "$ARTIFACT_DIR/CPUFREQ-CORE-WARNINGS.txt" \
+              | tr -d ' '
+          )"
+
+          IDLE_WARNING_COUNT="$(
+            wc -l \
+              < "$ARTIFACT_DIR/IDLE-WARNINGS.txt" \
+              | tr -d ' '
+          )"
+
+          if [ "$ERROR_COUNT" -ne 0 ]; then
+            echo "ERROR: compiler errors detected"
+            cat "$ARTIFACT_DIR/ERRORS.txt"
+            exit 1
+          fi
+
+          if [ "$WARNING_COUNT" -ne "$EXPECTED_WARNING_COUNT" ]; then
+            echo "ERROR: warning count changed"
+            echo "Expected: $EXPECTED_WARNING_COUNT"
+            echo "Actual:   $WARNING_COUNT"
+            cat "$ARTIFACT_DIR/WARNINGS.txt"
+            exit 1
+          fi
+
+          if [ "$CPUFREQ_WARNING_COUNT" -ne 0 ]; then
+            echo "ERROR: drivers/cpufreq/cpufreq.c emitted warnings"
+            cat "$ARTIFACT_DIR/CPUFREQ-CORE-WARNINGS.txt"
+            exit 1
+          fi
+
+          if [ "$IDLE_WARNING_COUNT" -ne 0 ]; then
+            echo "ERROR: idle source emitted warnings"
+            cat "$ARTIFACT_DIR/IDLE-WARNINGS.txt"
+            exit 1
+          fi
+
+          {
+            echo "ERROR_COUNT=$ERROR_COUNT"
+            echo "WARNING_COUNT=$WARNING_COUNT"
+            echo "CPUFREQ_CORE_WARNING_COUNT=$CPUFREQ_WARNING_COUNT"
+            echo "IDLE_WARNING_COUNT=$IDLE_WARNING_COUNT"
+          } | tee "$ARTIFACT_DIR/DIAGNOSTICS.txt"
+
+      - name: Prepare final 44C report
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          IMAGE="$OUT_DIR/arch/arm64/boot/Image"
+          VEUX_DTB="$OUT_DIR/arch/arm64/boot/dts/vendor/xiaomi/veux.dtb"
+          VMLINUX="$OUT_DIR/vmlinux"
+
+          cp \
+            "$IMAGE" \
+            "$ARTIFACT_DIR/Image"
+
+          cp \
+            "$VEUX_DTB" \
+            "$ARTIFACT_DIR/veux.dtb"
+
+          IMAGE_SHA="$(
+            sha256sum "$IMAGE" \
+              | awk '{print $1}'
+          )"
+
+          DTB_SHA="$(
+            sha256sum "$VEUX_DTB" \
+              | awk '{print $1}'
+          )"
+
+          VMLINUX_SHA="$(
+            sha256sum "$VMLINUX" \
+              | awk '{print $1}'
+          )"
+
+          WARNING_COUNT="$(
+            awk -F= \
+              '$1=="WARNING_COUNT" {print $2}' \
+              "$ARTIFACT_DIR/DIAGNOSTICS.txt"
+          )"
+
+          CASS_SYMBOL_COUNT="$(
+            awk -F= \
+              '$1=="CASS_SYMBOL_COUNT" {print $2}' \
+              "$ARTIFACT_DIR/LINKED-KERNEL-STATE.txt"
+          )"
+
+          ROTATION_SYMBOL_COUNT="$(
+            awk -F= \
+              '$1=="ROTATION_SYMBOL_COUNT" {print $2}' \
+              "$ARTIFACT_DIR/LINKED-KERNEL-STATE.txt"
+          )"
+
+          CPUSET_SYMBOL_COUNT="$(
+            awk -F= \
+              '$1=="CPUSET_SYMBOL_COUNT" {print $2}' \
+              "$ARTIFACT_DIR/LINKED-KERNEL-STATE.txt"
+          )"
+
+          LPM_SLEEP_SYMBOL_COUNT="$(
+            awk -F= \
+              '$1=="LPM_SLEEP_DISABLED_SYMBOL_COUNT" {print $2}' \
+              "$ARTIFACT_DIR/LINKED-KERNEL-STATE.txt"
+          )"
+
+          CPUFREQ_OBJ_SHA="$(
+            awk -F= \
+              '$1=="CPUFREQ_OBJECT_SHA256" {print $2}' \
+              "$ARTIFACT_DIR/CPUFREQ-OBJECT-STATE.txt"
+          )"
+
+          LB_DIFF_SHA="$(
+            awk -F= \
+              '$1=="LB_CAPACITY_RESTORE_DIFF_SHA256" {print $2}' \
+              "$ARTIFACT_DIR/LB-CAPACITY-STATE.txt"
+          )"
+
+          {
+            echo "RESULT=PASS"
+            echo "BASE_CANDIDATE_TREE=$EXPECTED_CANDIDATE_TREE"
+
+            echo "CPUFREQ_MIN_COMMIT=$CPUFREQ_MIN_COMMIT"
+            echo "CPUFREQ_MAX_COMMIT=$CPUFREQ_MAX_COMMIT"
+            echo "CPUFREQ_MIN_COMMIT_ANCESTOR=YES"
+            echo "CPUFREQ_MAX_COMMIT_ANCESTOR=YES"
+            echo "CPUFREQ_MAX_PARENT_EQUALS_MIN_COMMIT=YES"
+
+            echo "CPUFREQ_BEFORE_SHA256=$EXPECTED_CPUFREQ_BEFORE_SHA256"
+            echo "CPUFREQ_AFTER_SHA256=$EXPECTED_CPUFREQ_AFTER_SHA256"
+            echo "STORE_ONE_BEFORE_SHA256=$EXPECTED_STORE_ONE_BEFORE_SHA256"
+            echo "STORE_ONE_AFTER_SHA256=$EXPECTED_STORE_ONE_AFTER_SHA256"
+            echo "CPUFREQ_TARGETED_DIFF_SHA256=$EXPECTED_CPUFREQ_TARGETED_DIFF_SHA256"
+
+            echo "SCALING_MIN_WRITE_NOOP_REMOVED=YES"
+            echo "SCALING_MAX_BELOW_MIN_CLAMP_REMOVED=YES"
+            echo "STANDARD_CPUFREQ_QOS_WRITE_RESTORED=YES"
+            echo "CORRECTED_STORE_ONE_EQUALS_XIAOMI=YES"
+            echo "CORRECTED_STORE_ONE_EQUALS_ANDROID_COMMON=YES"
+            echo "CPUFREQ_OBJECT_BUILT=YES"
+            echo "CPUFREQ_OBJECT_SHA256=$CPUFREQ_OBJ_SHA"
+
+            echo "IDLE_FEATURE_CHAIN_REVERSED=YES"
+            echo "DISPLAY_COUPLED_SLEEP_POLICY_REMOVED=YES"
+            echo "SCREEN_ON_FORCED_WFI_REMOVED=YES"
+            echo "SLEEP_DISABLED_DEFAULT_FALSE=YES"
+            echo "SLEEP_DISABLED_PARAM_0664=YES"
+            echo "LPM_SLEEP_DISABLED_SYMBOL_COUNT=$LPM_SLEEP_SYMBOL_COUNT"
+
+            echo "SCHEDUTIL_BEFORE_SHA256=$EXPECTED_SCHEDUTIL_BEFORE_SHA256"
+            echo "SCHEDUTIL_AFTER_SHA256=$EXPECTED_SCHEDUTIL_AFTER_SHA256"
+            echo "LOWER_STEP_20_PERCENT_REMOVED=YES"
+            echo "NORMAL_BOOST_CAP_UCLAMP_RESTORED=YES"
+
+            echo "CASS_PATCH_SHA256=$EXPECTED_CASS_DIFF_SHA256"
+            echo "CASS_PATCH_MATCHES_PROVEN_VERSION=YES"
+            echo "CASS_SYMBOL_COUNT=$CASS_SYMBOL_COUNT"
+
+            echo "SPRD_ROTATION_DISABLED=YES"
+            echo "ROTATION_SYMBOL_COUNT=$ROTATION_SYMBOL_COUNT"
+
+            echo "LB_CAPACITY_UNGATED_COMMIT=$LB_CAPACITY_COMMIT"
+            echo "LB_CAPACITY_UNGATED_COMMIT_REVERSED=YES"
+            echo "LB_CAPACITY_RESTORE_DIFF_SHA256=$LB_DIFF_SHA"
+            echo "LB_CAPACITY_TIME_GATE=RESTORED"
+
+            echo "CPUSETS_ENABLED=YES"
+            echo "CPUSET_HARDCODED_0_7=NO"
+            echo "CPUSET_SYMBOL_COUNT=$CPUSET_SYMBOL_COUNT"
+
+            echo "PELT_RESTORED_PERIOD=8"
+            echo "PELT_RESTORE_SOURCE=XIAOMI_VEUX"
+            echo "PELT_HEADER_SHA256=$EXPECTED_XIAOMI_PELT_SHA256"
+
+            echo "CONFIG_HZ_100_REMOVED=YES"
+            echo "VEUX_DEFCONFIG_EXPLICIT_HZ=NO"
+            echo "HZ_KCONFIG_DEFAULT=250"
+            echo "HZ_RESOLVED_CHOICE=250"
+            echo "CONFIG_HZ=250"
+
+            echo "FULL_KERNEL_BUILD=PASS"
+            echo "COMPILER_ERRORS=0"
+            echo "COMPILER_WARNINGS=$WARNING_COUNT"
+            echo "CPUFREQ_CORE_COMPILER_WARNINGS=0"
+            echo "IDLE_COMPILER_WARNINGS=0"
+
+            echo "IMAGE_CREATED=YES"
+            echo "DTBS_BUILT=YES"
+            echo "VEUX_DTB_PARSE=PASS"
+            echo "IMAGE_SHA256=$IMAGE_SHA"
+            echo "VMLINUX_SHA256=$VMLINUX_SHA"
+            echo "VEUX_DTB_SHA256=$DTB_SHA"
+
+            echo "RESUKISU_CHANGED=NO"
+            echo "SUSFS_CHANGED=NO"
+            echo "BOOT_IMAGE_CREATED=NO"
+            echo "FLASHABLE_ZIP_CREATED=NO"
+            echo "DEVICE_FLASHED=NO"
+          } | tee "$ARTIFACT_DIR/RESULT.txt"
+
+      - name: Upload CPUFreq min max restore full build
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: VEUX-CPUFreq-Min-Max-Restore-Full-Build
+          path: cpufreq-min-max-restore-full-build/
+          if-no-files-found: error
+          retention-days: 30
