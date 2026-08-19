@@ -1,0 +1,1215 @@
+name: 43P3 - VEUX CPUFreq Min Max Lineage Closure
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    env:
+      COMMON_REF: "android11-5.4.274_r00"
+      STOCK_REF: "veux-r-oss"
+
+      STABILITY_REVERT: "f74e5c1b7c3f3e42f694e5ab524f95f62a0dab80"
+
+      EXPECTED_CANDIDATE_TREE: "5d25b7e0124d7fb695f3f07b45928fcb5780d0e8"
+
+      EXPECTED_MIN_COMMIT: "44242207c9afe2b3e7fb5bdc18da42e918043c63"
+      EXPECTED_MAX_COMMIT: "3a25ef84be1d26cf0ddd526534358febd04529c5"
+
+      PREVIOUSLY_ASSUMED_MIN_COMMIT: "536504cec86bc49b37f5eae49d439ec4146df00f"
+
+      ARTIFACT_DIR: ${{ github.workspace }}/cpufreq-min-max-lineage-closure
+
+    steps:
+      - name: Prepare audit directory
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p "$ARTIFACT_DIR"
+
+          cat > "$ARTIFACT_DIR/PLAN.txt" <<'EOF'
+          VEUX CPUFreq Min / Max Lineage Closure
+          =======================================
+
+          43P and 43P2 already proved:
+
+          Candidate:
+          - scaling_min_freq writes are silently ignored
+          - the min no-op occurs before userspace input parsing
+          - scaling_max_freq below policy->min is clamped upward
+
+          Xiaomi VEUX:
+          - no scaling_min_freq no-op
+          - no scaling_max_freq below-min clamp
+
+          Android Common 5.4.274:
+          - no scaling_min_freq no-op
+          - no scaling_max_freq below-min clamp
+
+          Xiaomi VEUX and Android Common have byte-identical
+          store_one() macros.
+
+          Removing exactly the two Candidate-specific blocks produces
+          a store_one() macro byte-identical to both baselines.
+
+          43P2 also captured the live git-blame commits:
+
+          min no-op:
+          44242207c9afe2b3e7fb5bdc18da42e918043c63
+          "cpufreq: Kill userspace CPU boosting entirely"
+
+          max clamp:
+          3a25ef84be1d26cf0ddd526534358febd04529c5
+          "cpufreq: Always respect min freq"
+
+          43P2 then stopped because of malformed multiline Bash [[ ]].
+
+          43P3 closes only the missing lineage/provenance checks.
+
+          AUDIT ONLY.
+
+          No source modification.
+          No kernel build.
+          No boot image.
+          No flashable ZIP.
+          No device access.
+          No flashing.
+          EOF
+
+      - name: Checkout exact VEUX source
+        uses: actions/checkout@v7
+        with:
+          repository: dereference23/kernel_xiaomi_sm6375
+          ref: "20240619"
+          fetch-depth: 0
+          path: kernel
+          persist-credentials: false
+
+      - name: Recreate exact Candidate 2
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email \
+            "41898282+github-actions[bot]@users.noreply.github.com"
+
+          BASE_SHA="$(git rev-parse HEAD)"
+          BASE_TREE="$(git rev-parse HEAD^{tree})"
+
+          git remote remove android-common 2>/dev/null || true
+
+          git remote add \
+            android-common \
+            https://android.googlesource.com/kernel/common
+
+          git fetch \
+            --no-tags \
+            android-common \
+            "$COMMON_REF"
+
+          COMMON_SHA="$(git rev-parse FETCH_HEAD)"
+
+          git merge \
+            --no-edit \
+            "$COMMON_SHA"
+
+          MERGED_SHA="$(git rev-parse HEAD)"
+          MERGED_TREE="$(git rev-parse HEAD^{tree})"
+
+          git cat-file -e \
+            "${STABILITY_REVERT}^{commit}"
+
+          git revert \
+            --no-edit \
+            "$STABILITY_REVERT"
+
+          CANDIDATE_SHA="$(git rev-parse HEAD)"
+          CANDIDATE_TREE="$(git rev-parse HEAD^{tree})"
+
+          KERNEL_VERSION="$(make -s kernelversion)"
+
+          if [ "$KERNEL_VERSION" != "5.4.274" ]; then
+            echo "ERROR: expected Linux 5.4.274"
+            echo "Actual: $KERNEL_VERSION"
+            exit 1
+          fi
+
+          if [ "$CANDIDATE_TREE" != "$EXPECTED_CANDIDATE_TREE" ]; then
+            echo "ERROR: Candidate 2 tree mismatch"
+            echo "Expected: $EXPECTED_CANDIDATE_TREE"
+            echo "Actual:   $CANDIDATE_TREE"
+            exit 1
+          fi
+
+          {
+            echo "BASE_SHA=$BASE_SHA"
+            echo "BASE_TREE=$BASE_TREE"
+            echo "COMMON_SHA=$COMMON_SHA"
+            echo "MERGED_SHA=$MERGED_SHA"
+            echo "MERGED_TREE=$MERGED_TREE"
+            echo "CANDIDATE_SHA=$CANDIDATE_SHA"
+            echo "CANDIDATE_TREE=$CANDIDATE_TREE"
+            echo "KERNEL_VERSION=$KERNEL_VERSION"
+            echo "COMMON_REF=$COMMON_REF"
+            echo "STABILITY_REVERT=$STABILITY_REVERT"
+          } | tee "$ARTIFACT_DIR/IDENTITY.txt"
+
+          {
+            echo "COMMON_SHA=$COMMON_SHA"
+            echo "CANDIDATE_SHA=$CANDIDATE_SHA"
+          } >> "$GITHUB_ENV"
+
+      - name: Fetch official Xiaomi VEUX reference
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git remote remove xiaomi 2>/dev/null || true
+
+          git remote add \
+            xiaomi \
+            https://github.com/MiCode/Xiaomi_Kernel_OpenSource.git
+
+          git fetch \
+            --no-tags \
+            xiaomi \
+            "+refs/heads/${STOCK_REF}:refs/remotes/xiaomi/${STOCK_REF}"
+
+          STOCK_SHA="$(git rev-parse "xiaomi/${STOCK_REF}")"
+
+          {
+            echo "STOCK_REF=$STOCK_REF"
+            echo "STOCK_SHA=$STOCK_SHA"
+          } | tee "$ARTIFACT_DIR/XIAOMI-REFERENCE.txt"
+
+          echo "STOCK_SHA=$STOCK_SHA" >> "$GITHUB_ENV"
+
+      - name: Reconfirm exact CPUFreq behavior
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          FILE="drivers/cpufreq/cpufreq.c"
+
+          git show \
+            "HEAD:${FILE}" \
+            > "$ARTIFACT_DIR/candidate-cpufreq.c"
+
+          git show \
+            "xiaomi/${STOCK_REF}:${FILE}" \
+            > "$ARTIFACT_DIR/xiaomi-cpufreq.c"
+
+          git show \
+            "${COMMON_SHA}:${FILE}" \
+            > "$ARTIFACT_DIR/common-cpufreq.c"
+
+          python3 - <<'PY'
+          import difflib
+          import hashlib
+          import os
+          from pathlib import Path
+
+          out = Path(os.environ["ARTIFACT_DIR"])
+
+          candidate_full = (
+              out / "candidate-cpufreq.c"
+          ).read_text(encoding="utf-8")
+
+          xiaomi_full = (
+              out / "xiaomi-cpufreq.c"
+          ).read_text(encoding="utf-8")
+
+          common_full = (
+              out / "common-cpufreq.c"
+          ).read_text(encoding="utf-8")
+
+          def extract_store_one(text):
+              start_marker = "#define store_one(file_name, object)"
+              end_marker = "store_one(scaling_max_freq, max);"
+
+              start = text.find(start_marker)
+
+              if start < 0:
+                  raise SystemExit(
+                      "ERROR: store_one start not found"
+                  )
+
+              end = text.find(
+                  end_marker,
+                  start,
+              )
+
+              if end < 0:
+                  raise SystemExit(
+                      "ERROR: store_one end not found"
+                  )
+
+              end += len(end_marker)
+
+              macro = text[start:end]
+
+              if end < len(text) and text[end] == "\n":
+                  macro += "\n"
+
+              return macro
+
+          candidate = extract_store_one(candidate_full)
+          xiaomi = extract_store_one(xiaomi_full)
+          common = extract_store_one(common_full)
+
+          min_condition = (
+              "if (&policy->object == &policy->min)"
+          )
+
+          min_return = "return count;"
+
+          parse_token = (
+              'ret = sscanf(buf, "%lu", &val);'
+          )
+
+          max_condition = (
+              "if (&policy->object == &policy->max)"
+          )
+
+          below_min = "if (val < policy->min)"
+          clamp_token = "val = policy->min;"
+
+          qos_token = (
+              "freq_qos_update_request("
+              "policy->object##_freq_req, val)"
+          )
+
+          for token in (
+              min_condition,
+              parse_token,
+              max_condition,
+              below_min,
+              clamp_token,
+              qos_token,
+          ):
+              if token not in candidate:
+                  raise SystemExit(
+                      f"ERROR: Candidate token missing: {token}"
+                  )
+
+          if candidate.count(min_condition) != 1:
+              raise SystemExit(
+                  "ERROR: unexpected Candidate min condition count"
+              )
+
+          if candidate.count(max_condition) != 1:
+              raise SystemExit(
+                  "ERROR: unexpected Candidate max condition count"
+              )
+
+          if candidate.count(clamp_token) != 1:
+              raise SystemExit(
+                  "ERROR: unexpected Candidate clamp count"
+              )
+
+          for label, baseline in (
+              ("XIAOMI", xiaomi),
+              ("ANDROID_COMMON", common),
+          ):
+              for forbidden in (
+                  min_condition,
+                  max_condition,
+                  below_min,
+                  clamp_token,
+              ):
+                  if forbidden in baseline:
+                      raise SystemExit(
+                          f"ERROR: {label} unexpectedly contains "
+                          f"{forbidden}"
+                      )
+
+              if parse_token not in baseline:
+                  raise SystemExit(
+                      f"ERROR: {label} parser missing"
+                  )
+
+              if qos_token not in baseline:
+                  raise SystemExit(
+                      f"ERROR: {label} QoS update missing"
+                  )
+
+          if xiaomi != common:
+              raise SystemExit(
+                  "ERROR: Xiaomi and Android Common store_one differ"
+              )
+
+          lines = candidate.splitlines(
+              keepends=True
+          )
+
+          def unique_line(token, start=0):
+              matches = [
+                  i
+                  for i in range(start, len(lines))
+                  if token in lines[i]
+              ]
+
+              if len(matches) != 1:
+                  raise SystemExit(
+                      f"ERROR: expected one match for {token}; "
+                      f"got {len(matches)}"
+                  )
+
+              return matches[0]
+
+          min_i = unique_line(min_condition)
+          parse_i = unique_line(parse_token)
+          max_i = unique_line(max_condition)
+          qos_i = unique_line(qos_token)
+
+          if not (
+              min_i < parse_i < max_i < qos_i
+          ):
+              raise SystemExit(
+                  "ERROR: unexpected store_one ordering"
+              )
+
+          min_block = "".join(
+              lines[min_i:parse_i]
+          )
+
+          max_block = "".join(
+              lines[max_i:qos_i]
+          )
+
+          if min_return not in min_block:
+              raise SystemExit(
+                  "ERROR: min no-op return missing"
+              )
+
+          if below_min not in max_block:
+              raise SystemExit(
+                  "ERROR: max below-min test missing"
+              )
+
+          if clamp_token not in max_block:
+              raise SystemExit(
+                  "ERROR: max clamp assignment missing"
+              )
+
+          sanitized = "".join(
+              lines[:min_i]
+              + lines[parse_i:max_i]
+              + lines[qos_i:]
+          )
+
+          if sanitized != xiaomi:
+              raise SystemExit(
+                  "ERROR: sanitized macro != Xiaomi"
+              )
+
+          if sanitized != common:
+              raise SystemExit(
+                  "ERROR: sanitized macro != Android Common"
+              )
+
+          (out / "candidate-store-one.c").write_text(
+              candidate,
+              encoding="utf-8",
+          )
+
+          (out / "xiaomi-store-one.c").write_text(
+              xiaomi,
+              encoding="utf-8",
+          )
+
+          (out / "common-store-one.c").write_text(
+              common,
+              encoding="utf-8",
+          )
+
+          (
+              out / "candidate-store-one-sanitized.c"
+          ).write_text(
+              sanitized,
+              encoding="utf-8",
+          )
+
+          (
+              out / "TARGETED-MIN-NOOP-BLOCK.c"
+          ).write_text(
+              min_block,
+              encoding="utf-8",
+          )
+
+          (
+              out / "TARGETED-MAX-CLAMP-BLOCK.c"
+          ).write_text(
+              max_block,
+              encoding="utf-8",
+          )
+
+          diff = "".join(
+              difflib.unified_diff(
+                  candidate.splitlines(
+                      keepends=True
+                  ),
+                  sanitized.splitlines(
+                      keepends=True
+                  ),
+                  fromfile="candidate-store-one.c",
+                  tofile="candidate-store-one-sanitized.c",
+              )
+          )
+
+          (
+              out / "TARGETED-STORE-ONE-CORRECTION.diff"
+          ).write_text(
+              diff,
+              encoding="utf-8",
+          )
+
+          candidate_sha = hashlib.sha256(
+              candidate.encode("utf-8")
+          ).hexdigest()
+
+          sanitized_sha = hashlib.sha256(
+              sanitized.encode("utf-8")
+          ).hexdigest()
+
+          baseline_sha = hashlib.sha256(
+              xiaomi.encode("utf-8")
+          ).hexdigest()
+
+          result = [
+              "CANDIDATE_SCALING_MIN_WRITE_NOOP=YES",
+              "CANDIDATE_MIN_NOOP_BEFORE_PARSE=YES",
+              "CANDIDATE_MAX_BELOW_MIN_CLAMP=YES",
+              "CANDIDATE_MAX_CLAMP_VALUE=policy->min",
+              "XIAOMI_SCALING_MIN_WRITE_NOOP=NO",
+              "XIAOMI_MAX_BELOW_MIN_CLAMP=NO",
+              "ANDROID_COMMON_SCALING_MIN_WRITE_NOOP=NO",
+              "ANDROID_COMMON_MAX_BELOW_MIN_CLAMP=NO",
+              "XIAOMI_STORE_ONE_EQUALS_ANDROID_COMMON=YES",
+              "TARGETED_CORRECTION_BLOCK_COUNT=2",
+              "SANITIZED_STORE_ONE_EQUALS_XIAOMI=YES",
+              "SANITIZED_STORE_ONE_EQUALS_ANDROID_COMMON=YES",
+              f"CANDIDATE_STORE_ONE_SHA256={candidate_sha}",
+              f"SANITIZED_STORE_ONE_SHA256={sanitized_sha}",
+              f"BASELINE_STORE_ONE_SHA256={baseline_sha}",
+          ]
+
+          (
+              out / "TARGETED-CORRECTION-PROOF.txt"
+          ).write_text(
+              "\n".join(result) + "\n",
+              encoding="utf-8",
+          )
+          PY
+
+          cat "$ARTIFACT_DIR/TARGETED-CORRECTION-PROOF.txt"
+
+      - name: Locate exact live tuning lines
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          source = Path(
+              "drivers/cpufreq/cpufreq.c"
+          )
+
+          lines = source.read_text(
+              encoding="utf-8"
+          ).splitlines()
+
+          start = None
+          end = None
+
+          for i, line in enumerate(lines):
+              if (
+                  "#define store_one(file_name, object)"
+                  in line
+              ):
+                  start = i
+                  break
+
+          if start is None:
+              raise SystemExit(
+                  "ERROR: store_one start not found"
+              )
+
+          for i in range(start, len(lines)):
+              if (
+                  "store_one(scaling_max_freq, max);"
+                  in lines[i]
+              ):
+                  end = i
+                  break
+
+          if end is None:
+              raise SystemExit(
+                  "ERROR: store_one end not found"
+              )
+
+          segment = lines[start:end + 1]
+
+          def matches(token):
+              return [
+                  start + i
+                  for i, line in enumerate(segment)
+                  if token in line
+              ]
+
+          min_condition = matches(
+              "if (&policy->object == &policy->min)"
+          )
+
+          parse_line = matches(
+              'ret = sscanf(buf, "%lu", &val);'
+          )
+
+          max_condition = matches(
+              "if (&policy->object == &policy->max)"
+          )
+
+          clamp_line = matches(
+              "val = policy->min;"
+          )
+
+          if len(min_condition) != 1:
+              raise SystemExit(
+                  "ERROR: min condition count != 1"
+              )
+
+          if len(parse_line) != 1:
+              raise SystemExit(
+                  "ERROR: parser line count != 1"
+              )
+
+          if len(max_condition) != 1:
+              raise SystemExit(
+                  "ERROR: max condition count != 1"
+              )
+
+          if len(clamp_line) != 1:
+              raise SystemExit(
+                  "ERROR: clamp line count != 1"
+              )
+
+          min_condition = min_condition[0]
+          parse_line = parse_line[0]
+          max_condition = max_condition[0]
+          clamp_line = clamp_line[0]
+
+          min_returns = [
+              i
+              for i in range(
+                  min_condition + 1,
+                  parse_line,
+              )
+              if "return count;" in lines[i]
+          ]
+
+          if len(min_returns) != 1:
+              raise SystemExit(
+                  "ERROR: min no-op return count != 1"
+              )
+
+          min_return = min_returns[0]
+
+          if not (
+              min_condition
+              < min_return
+              < parse_line
+              < max_condition
+              < clamp_line
+          ):
+              raise SystemExit(
+                  "ERROR: live line ordering unexpected"
+              )
+
+          out = Path(os.environ["ARTIFACT_DIR"])
+
+          (
+              out / "LIVE-TUNING-LINES.txt"
+          ).write_text(
+              "\n".join(
+                  [
+                      f"STORE_ONE_START_LINE={start + 1}",
+                      f"MIN_CONDITION_LINE={min_condition + 1}",
+                      f"MIN_NOOP_RETURN_LINE={min_return + 1}",
+                      f"PARSE_LINE={parse_line + 1}",
+                      f"MAX_CONDITION_LINE={max_condition + 1}",
+                      f"MAX_CLAMP_LINE={clamp_line + 1}",
+                      f"STORE_ONE_END_LINE={end + 1}",
+                  ]
+              )
+              + "\n",
+              encoding="utf-8",
+          )
+
+          with Path(
+              os.environ["GITHUB_ENV"]
+          ).open(
+              "a",
+              encoding="utf-8",
+          ) as f:
+              f.write(
+                  f"MIN_BLAME_LINE={min_return + 1}\n"
+              )
+              f.write(
+                  f"MAX_BLAME_LINE={clamp_line + 1}\n"
+              )
+          PY
+
+          cat "$ARTIFACT_DIR/LIVE-TUNING-LINES.txt"
+
+      - name: Discover and verify active commits
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          FILE="drivers/cpufreq/cpufreq.c"
+
+          git blame \
+            --porcelain \
+            -L "${MIN_BLAME_LINE},${MIN_BLAME_LINE}" \
+            HEAD \
+            -- "$FILE" \
+            > "$ARTIFACT_DIR/MIN-NOOP-BLAME.txt"
+
+          git blame \
+            --porcelain \
+            -L "${MAX_BLAME_LINE},${MAX_BLAME_LINE}" \
+            HEAD \
+            -- "$FILE" \
+            > "$ARTIFACT_DIR/MAX-CLAMP-BLAME.txt"
+
+          MIN_ACTIVE_COMMIT="$(
+            awk 'NR == 1 { print $1 }' \
+              "$ARTIFACT_DIR/MIN-NOOP-BLAME.txt"
+          )"
+
+          MAX_ACTIVE_COMMIT="$(
+            awk 'NR == 1 { print $1 }' \
+              "$ARTIFACT_DIR/MAX-CLAMP-BLAME.txt"
+          )"
+
+          if [ "${#MIN_ACTIVE_COMMIT}" -ne 40 ]; then
+            echo "ERROR: invalid min commit length"
+            exit 1
+          fi
+
+          case "$MIN_ACTIVE_COMMIT" in
+            *[!0-9a-f]*)
+              echo "ERROR: invalid min commit characters"
+              exit 1
+              ;;
+          esac
+
+          if [ "${#MAX_ACTIVE_COMMIT}" -ne 40 ]; then
+            echo "ERROR: invalid max commit length"
+            exit 1
+          fi
+
+          case "$MAX_ACTIVE_COMMIT" in
+            *[!0-9a-f]*)
+              echo "ERROR: invalid max commit characters"
+              exit 1
+              ;;
+          esac
+
+          if [ "$MIN_ACTIVE_COMMIT" != "$EXPECTED_MIN_COMMIT" ]; then
+            echo "ERROR: min active commit mismatch"
+            echo "Expected: $EXPECTED_MIN_COMMIT"
+            echo "Actual:   $MIN_ACTIVE_COMMIT"
+            exit 1
+          fi
+
+          if [ "$MAX_ACTIVE_COMMIT" != "$EXPECTED_MAX_COMMIT" ]; then
+            echo "ERROR: max active commit mismatch"
+            echo "Expected: $EXPECTED_MAX_COMMIT"
+            echo "Actual:   $MAX_ACTIVE_COMMIT"
+            exit 1
+          fi
+
+          git cat-file -e \
+            "${MIN_ACTIVE_COMMIT}^{commit}"
+
+          git cat-file -e \
+            "${MAX_ACTIVE_COMMIT}^{commit}"
+
+          if ! git merge-base \
+            --is-ancestor \
+            "$MIN_ACTIVE_COMMIT" \
+            HEAD
+          then
+            echo "ERROR: min active commit is not Candidate ancestor"
+            exit 1
+          fi
+
+          if ! git merge-base \
+            --is-ancestor \
+            "$MAX_ACTIVE_COMMIT" \
+            HEAD
+          then
+            echo "ERROR: max active commit is not Candidate ancestor"
+            exit 1
+          fi
+
+          {
+            echo "MIN_ACTIVE_COMMIT=$MIN_ACTIVE_COMMIT"
+            echo "MAX_ACTIVE_COMMIT=$MAX_ACTIVE_COMMIT"
+          } >> "$GITHUB_ENV"
+
+          {
+            echo "MIN_NOOP_ACTIVE_COMMIT=$MIN_ACTIVE_COMMIT"
+            echo "MIN_NOOP_ACTIVE_COMMIT_ANCESTOR=YES"
+            echo "MAX_CLAMP_ACTIVE_COMMIT=$MAX_ACTIVE_COMMIT"
+            echo "MAX_CLAMP_ACTIVE_COMMIT_ANCESTOR=YES"
+          } | tee "$ARTIFACT_DIR/ACTIVE-LINEAGE.txt"
+
+      - name: Capture reachable history and active commits
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          FILE="drivers/cpufreq/cpufreq.c"
+
+          git log \
+            --date=iso-strict \
+            --pretty=format:'%H%x09%ad%x09%an%x09%s' \
+            -S'if (&policy->object == &policy->min)' \
+            HEAD \
+            -- "$FILE" \
+            > "$ARTIFACT_DIR/MIN-NOOP-REACHABLE-HISTORY.txt"
+
+          git log \
+            --date=iso-strict \
+            --pretty=format:'%H%x09%ad%x09%an%x09%s' \
+            -S'val = policy->min;' \
+            HEAD \
+            -- "$FILE" \
+            > "$ARTIFACT_DIR/MAX-CLAMP-REACHABLE-HISTORY.txt"
+
+          git show \
+            --no-ext-diff \
+            --no-color \
+            --format=fuller \
+            "$MIN_ACTIVE_COMMIT" \
+            > "$ARTIFACT_DIR/MIN-NOOP-ACTIVE-COMMIT.txt"
+
+          git show \
+            --no-ext-diff \
+            --no-color \
+            --format=fuller \
+            "$MAX_ACTIVE_COMMIT" \
+            > "$ARTIFACT_DIR/MAX-CLAMP-ACTIVE-COMMIT.txt"
+
+          git show \
+            --no-ext-diff \
+            --no-color \
+            --format= \
+            "$MIN_ACTIVE_COMMIT" \
+            -- "$FILE" \
+            > "$ARTIFACT_DIR/MIN-NOOP-ACTIVE-COMMIT.diff"
+
+          git show \
+            --no-ext-diff \
+            --no-color \
+            --format= \
+            "$MAX_ACTIVE_COMMIT" \
+            -- "$FILE" \
+            > "$ARTIFACT_DIR/MAX-CLAMP-ACTIVE-COMMIT.diff"
+
+      - name: Verify active commit parents
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          FILE="drivers/cpufreq/cpufreq.c"
+
+          MIN_PARENT_LINE="$(
+            git rev-list \
+              --parents \
+              -n 1 \
+              "$MIN_ACTIVE_COMMIT"
+          )"
+
+          MAX_PARENT_LINE="$(
+            git rev-list \
+              --parents \
+              -n 1 \
+              "$MAX_ACTIVE_COMMIT"
+          )"
+
+          MIN_FIELD_COUNT="$(
+            printf '%s\n' "$MIN_PARENT_LINE" \
+              | awk '{ print NF }'
+          )"
+
+          MAX_FIELD_COUNT="$(
+            printf '%s\n' "$MAX_PARENT_LINE" \
+              | awk '{ print NF }'
+          )"
+
+          if [ "$MIN_FIELD_COUNT" -ne 2 ]; then
+            echo "ERROR: min active commit is not single-parent"
+            echo "$MIN_PARENT_LINE"
+            exit 1
+          fi
+
+          if [ "$MAX_FIELD_COUNT" -ne 2 ]; then
+            echo "ERROR: max active commit is not single-parent"
+            echo "$MAX_PARENT_LINE"
+            exit 1
+          fi
+
+          MIN_PARENT="$(
+            printf '%s\n' "$MIN_PARENT_LINE" \
+              | awk '{ print $2 }'
+          )"
+
+          MAX_PARENT="$(
+            printf '%s\n' "$MAX_PARENT_LINE" \
+              | awk '{ print $2 }'
+          )"
+
+          git show \
+            "${MIN_PARENT}:${FILE}" \
+            > "$ARTIFACT_DIR/min-parent-cpufreq.c"
+
+          git show \
+            "${MAX_PARENT}:${FILE}" \
+            > "$ARTIFACT_DIR/max-parent-cpufreq.c"
+
+          git show \
+            "${MIN_ACTIVE_COMMIT}:${FILE}" \
+            > "$ARTIFACT_DIR/min-active-cpufreq.c"
+
+          git show \
+            "${MAX_ACTIVE_COMMIT}:${FILE}" \
+            > "$ARTIFACT_DIR/max-active-cpufreq.c"
+
+          {
+            echo "MIN_ACTIVE_COMMIT=$MIN_ACTIVE_COMMIT"
+            echo "MIN_PARENT=$MIN_PARENT"
+            echo "MAX_ACTIVE_COMMIT=$MAX_ACTIVE_COMMIT"
+            echo "MAX_PARENT=$MAX_PARENT"
+          } | tee "$ARTIFACT_DIR/ACTIVE-PARENTS.txt"
+
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          out = Path(os.environ["ARTIFACT_DIR"])
+
+          def extract(path):
+              text = path.read_text(
+                  encoding="utf-8"
+              )
+
+              start_marker = "#define store_one(file_name, object)"
+              end_marker = "store_one(scaling_max_freq, max);"
+
+              start = text.find(start_marker)
+
+              if start < 0:
+                  raise SystemExit(
+                      f"ERROR: store_one start missing: {path}"
+                  )
+
+              end = text.find(
+                  end_marker,
+                  start,
+              )
+
+              if end < 0:
+                  raise SystemExit(
+                      f"ERROR: store_one end missing: {path}"
+                  )
+
+              end += len(end_marker)
+
+              result = text[start:end]
+
+              if end < len(text) and text[end] == "\n":
+                  result += "\n"
+
+              return result
+
+          min_parent = extract(
+              out / "min-parent-cpufreq.c"
+          )
+
+          min_active = extract(
+              out / "min-active-cpufreq.c"
+          )
+
+          max_parent = extract(
+              out / "max-parent-cpufreq.c"
+          )
+
+          max_active = extract(
+              out / "max-active-cpufreq.c"
+          )
+
+          min_token = (
+              "if (&policy->object == &policy->min)"
+          )
+
+          max_token = "val = policy->min;"
+
+          if min_token in min_parent:
+              raise SystemExit(
+                  "ERROR: min no-op already present in min parent"
+              )
+
+          if min_token not in min_active:
+              raise SystemExit(
+                  "ERROR: min no-op missing from active min commit"
+              )
+
+          if max_token in max_parent:
+              raise SystemExit(
+                  "ERROR: max clamp already present in max parent"
+              )
+
+          if max_token not in max_active:
+              raise SystemExit(
+                  "ERROR: max clamp missing from active max commit"
+              )
+
+          if max_parent != min_active:
+              raise SystemExit(
+                  "ERROR: max commit parent store_one does not "
+                  "equal min active store_one"
+              )
+
+          (
+              out / "MIN-PARENT-store-one.c"
+          ).write_text(
+              min_parent,
+              encoding="utf-8",
+          )
+
+          (
+              out / "MIN-ACTIVE-store-one.c"
+          ).write_text(
+              min_active,
+              encoding="utf-8",
+          )
+
+          (
+              out / "MAX-PARENT-store-one.c"
+          ).write_text(
+              max_parent,
+              encoding="utf-8",
+          )
+
+          (
+              out / "MAX-ACTIVE-store-one.c"
+          ).write_text(
+              max_active,
+              encoding="utf-8",
+          )
+
+          (
+              out / "PARENT-INTRODUCTION-PROOF.txt"
+          ).write_text(
+              "\n".join(
+                  [
+                      "MIN_NOOP_ABSENT_IN_PARENT=YES",
+                      "MIN_NOOP_PRESENT_IN_ACTIVE_COMMIT=YES",
+                      "MAX_CLAMP_ABSENT_IN_PARENT=YES",
+                      "MAX_CLAMP_PRESENT_IN_ACTIVE_COMMIT=YES",
+                      "MAX_PARENT_STORE_ONE_EQUALS_MIN_ACTIVE=YES",
+                  ]
+              )
+              + "\n",
+              encoding="utf-8",
+          )
+          PY
+
+          cat "$ARTIFACT_DIR/PARENT-INTRODUCTION-PROOF.txt"
+
+      - name: Recheck previous hardcoded commit assumption
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          {
+            echo "PREVIOUSLY_ASSUMED_MIN_COMMIT=$PREVIOUSLY_ASSUMED_MIN_COMMIT"
+            echo "ACTIVE_MIN_COMMIT=$MIN_ACTIVE_COMMIT"
+
+            if [ \
+              "$PREVIOUSLY_ASSUMED_MIN_COMMIT" = \
+              "$MIN_ACTIVE_COMMIT" \
+            ]; then
+              echo "PREVIOUS_ASSUMPTION_EQUALS_ACTIVE_LINEAGE=YES"
+            else
+              echo "PREVIOUS_ASSUMPTION_EQUALS_ACTIVE_LINEAGE=NO"
+            fi
+
+            if git cat-file -e \
+              "${PREVIOUSLY_ASSUMED_MIN_COMMIT}^{commit}" \
+              2>/dev/null
+            then
+              echo "PREVIOUS_ASSUMED_COMMIT_AVAILABLE_LOCALLY=YES"
+
+              if git merge-base \
+                --is-ancestor \
+                "$PREVIOUSLY_ASSUMED_MIN_COMMIT" \
+                HEAD
+              then
+                echo "PREVIOUS_ASSUMED_COMMIT_ANCESTOR=YES"
+              else
+                echo "PREVIOUS_ASSUMED_COMMIT_ANCESTOR=NO"
+              fi
+            else
+              echo "PREVIOUS_ASSUMED_COMMIT_AVAILABLE_LOCALLY=NO"
+              echo "PREVIOUS_ASSUMED_COMMIT_ANCESTOR=NOT_TESTED"
+            fi
+          } | tee "$ARTIFACT_DIR/PREVIOUS-COMMIT-ASSUMPTION.txt"
+
+      - name: Verify source tree integrity
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if ! git diff --quiet; then
+            echo "ERROR: audit modified tracked source"
+
+            git diff \
+              --no-ext-diff \
+              --no-color
+
+            exit 1
+          fi
+
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "ERROR: unexpected kernel worktree files"
+
+            git status --short
+
+            exit 1
+          fi
+
+          {
+            echo "SOURCE_INTEGRITY=PASS"
+            echo "TRACKED_SOURCE_DIFF=NONE"
+            echo "WORKTREE_STATUS=CLEAN"
+          } | tee "$ARTIFACT_DIR/SOURCE-INTEGRITY.txt"
+
+      - name: Build final audit result
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          PROOF="$ARTIFACT_DIR/TARGETED-CORRECTION-PROOF.txt"
+          PARENT_PROOF="$ARTIFACT_DIR/PARENT-INTRODUCTION-PROOF.txt"
+
+          for REQUIRED in \
+            'CANDIDATE_SCALING_MIN_WRITE_NOOP=YES' \
+            'CANDIDATE_MIN_NOOP_BEFORE_PARSE=YES' \
+            'CANDIDATE_MAX_BELOW_MIN_CLAMP=YES' \
+            'XIAOMI_SCALING_MIN_WRITE_NOOP=NO' \
+            'XIAOMI_MAX_BELOW_MIN_CLAMP=NO' \
+            'ANDROID_COMMON_SCALING_MIN_WRITE_NOOP=NO' \
+            'ANDROID_COMMON_MAX_BELOW_MIN_CLAMP=NO' \
+            'XIAOMI_STORE_ONE_EQUALS_ANDROID_COMMON=YES' \
+            'TARGETED_CORRECTION_BLOCK_COUNT=2' \
+            'SANITIZED_STORE_ONE_EQUALS_XIAOMI=YES' \
+            'SANITIZED_STORE_ONE_EQUALS_ANDROID_COMMON=YES'
+          do
+            if ! grep -qFx \
+              "$REQUIRED" \
+              "$PROOF"
+            then
+              echo "ERROR: missing behavior proof:"
+              echo "$REQUIRED"
+              exit 1
+            fi
+          done
+
+          for REQUIRED in \
+            'MIN_NOOP_ABSENT_IN_PARENT=YES' \
+            'MIN_NOOP_PRESENT_IN_ACTIVE_COMMIT=YES' \
+            'MAX_CLAMP_ABSENT_IN_PARENT=YES' \
+            'MAX_CLAMP_PRESENT_IN_ACTIVE_COMMIT=YES' \
+            'MAX_PARENT_STORE_ONE_EQUALS_MIN_ACTIVE=YES'
+          do
+            if ! grep -qFx \
+              "$REQUIRED" \
+              "$PARENT_PROOF"
+            then
+              echo "ERROR: missing lineage proof:"
+              echo "$REQUIRED"
+              exit 1
+            fi
+          done
+
+          cat > "$ARTIFACT_DIR/RESULT.txt" <<EOF
+          RESULT=PASS_AUDIT
+          BASE_CANDIDATE_TREE=$EXPECTED_CANDIDATE_TREE
+          KERNEL_VERSION=5.4.274
+          MIN_NOOP_ACTIVE_COMMIT=$MIN_ACTIVE_COMMIT
+          MIN_NOOP_EXPECTED_COMMIT=$EXPECTED_MIN_COMMIT
+          MIN_NOOP_ACTIVE_COMMIT_ANCESTOR=YES
+          MIN_NOOP_ABSENT_IN_PARENT=YES
+          MIN_NOOP_PRESENT_IN_ACTIVE_COMMIT=YES
+          MAX_CLAMP_ACTIVE_COMMIT=$MAX_ACTIVE_COMMIT
+          MAX_CLAMP_EXPECTED_COMMIT=$EXPECTED_MAX_COMMIT
+          MAX_CLAMP_ACTIVE_COMMIT_ANCESTOR=YES
+          MAX_CLAMP_ABSENT_IN_PARENT=YES
+          MAX_CLAMP_PRESENT_IN_ACTIVE_COMMIT=YES
+          MAX_PARENT_STORE_ONE_EQUALS_MIN_ACTIVE=YES
+          CANDIDATE_SCALING_MIN_NOOP=YES
+          CANDIDATE_MIN_NOOP_BEFORE_PARSE=YES
+          CANDIDATE_MAX_BELOW_MIN_CLAMP=YES
+          XIAOMI_SCALING_MIN_NOOP=NO
+          XIAOMI_MAX_BELOW_MIN_CLAMP=NO
+          ANDROID_COMMON_SCALING_MIN_NOOP=NO
+          ANDROID_COMMON_MAX_BELOW_MIN_CLAMP=NO
+          XIAOMI_STORE_ONE_EQUALS_ANDROID_COMMON=YES
+          TARGETED_CORRECTION_BLOCK_COUNT=2
+          SANITIZED_STORE_ONE_EQUALS_XIAOMI=YES
+          SANITIZED_STORE_ONE_EQUALS_ANDROID_COMMON=YES
+          PREVIOUS_HARDCODED_COMMIT_USED_AS_ANCESTRY_ASSERTION=NO
+          REVIEW_CLASS=BOTH_CUSTOM_CPUFREQ_SYSFS_TUNINGS_CONFIRMED
+          SOURCE_INTEGRITY=PASS
+          SOURCE_MODIFIED=NO
+          KERNEL_BUILT=NO
+          IMAGE_CREATED=NO
+          BOOT_IMAGE_CREATED=NO
+          FLASHABLE_ZIP_CREATED=NO
+          DEVICE_FLASHED=NO
+          EOF
+
+          cat "$ARTIFACT_DIR/RESULT.txt"
+
+      - name: Upload CPUFreq lineage closure audit
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: VEUX-CPUFreq-Min-Max-Lineage-Closure
+          path: cpufreq-min-max-lineage-closure/
+          if-no-files-found: error
+          retention-days: 30
