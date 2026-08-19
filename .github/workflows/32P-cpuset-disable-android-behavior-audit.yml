@@ -1,0 +1,937 @@
+name: 32P - VEUX CPUSET Disable Android Behaviour Audit
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    env:
+      ARCH: arm64
+
+      COMMON_REF: "android11-5.4.274_r00"
+      STOCK_REF: "veux-r-oss"
+
+      STABILITY_REVERT: "f74e5c1b7c3f3e42f694e5ab524f95f62a0dab80"
+
+      CPUSET_DISABLE_COMMIT: "4cc1bd1b6496238d1d80a7a2d47aaee0df0a23d5"
+
+      EXPECTED_CANDIDATE_TREE: "5d25b7e0124d7fb695f3f07b45928fcb5780d0e8"
+
+      CLANG_PREBUILT_COMMIT: "aa2e4a514a6c85eebcc4a27149eaf9244e951a1e"
+
+      TOOLCHAIN_DIR: ${{ github.workspace }}/toolchains/clang-r416183b
+      OUT_DIR: out
+      ARTIFACT_DIR: ${{ github.workspace }}/cpuset-audit
+
+    steps:
+      - name: Prepare audit directory
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p \
+            "$ARTIFACT_DIR" \
+            "$TOOLCHAIN_DIR"
+
+          cat > "$ARTIFACT_DIR/PLAN.txt" <<'EOF'
+          VEUX CPUSET Disable / Android Behaviour Audit
+          ==============================================
+
+          Established before 32P:
+          - Candidate 2 contains CASS.
+          - CASS MaxFreq/Thermal adaptation is compile proven.
+          - SPRD task rotation can be disabled cleanly.
+          - standard load-balance capacity rate limiting can be restored.
+          - 31C resolved .config contains:
+              # CONFIG_CPUSETS is not set
+
+          Additional known source change:
+          - commit 4cc1bd1b6496238d1d80a7a2d47aaee0df0a23d5
+          - title: cpuset: Effectively disable it
+          - it replaces the cpuset CPU mask supplied by userspace
+            with the hardcoded mask "0-7".
+
+          Purpose of 32P:
+          - reconstruct exact Candidate 2
+          - prove the resolved CPUSETS configuration
+          - identify why CONFIG_CPUSETS is disabled
+          - trace its VEUX defconfig history
+          - inspect the hardcoded "0-7" cpuset source modification
+          - compare Candidate 2 cpuset behaviour with:
+              * official Xiaomi VEUX
+              * Android Common 5.4.274
+          - inspect CPUSET-related config fragments in all three trees
+          - determine whether this is an intentional Android behaviour change
+          - make no source modification
+
+          This workflow is AUDIT ONLY.
+
+          It does NOT:
+          - enable CPUSETS
+          - revert the hardcoded cpuset patch
+          - apply the CASS patch
+          - disable SPRD rotation
+          - restore LB capacity rate limiting
+          - build a kernel
+          - create boot.img
+          - create a flashable ZIP
+          - access a phone
+          - flash anything
+          EOF
+
+      - name: Install audit dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          sudo apt-get update
+
+          sudo apt-get install -y --no-install-recommends \
+            bc \
+            bison \
+            build-essential \
+            ca-certificates \
+            curl \
+            flex \
+            git \
+            libelf-dev \
+            libncurses-dev \
+            libssl-dev \
+            python3 \
+            python-is-python3 \
+            xz-utils
+
+      - name: Install exact Android clang-r416183b
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          curl \
+            --fail \
+            --location \
+            --retry 3 \
+            "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/${CLANG_PREBUILT_COMMIT}/clang-r416183b.tar.gz" \
+            -o "${RUNNER_TEMP}/clang-r416183b.tar.gz"
+
+          tar \
+            -xzf "${RUNNER_TEMP}/clang-r416183b.tar.gz" \
+            -C "$TOOLCHAIN_DIR"
+
+          echo "$TOOLCHAIN_DIR/bin" >> "$GITHUB_PATH"
+
+          "$TOOLCHAIN_DIR/bin/clang" --version \
+            | tee "$ARTIFACT_DIR/clang-version.txt"
+
+          "$TOOLCHAIN_DIR/bin/ld.lld" --version \
+            | tee -a "$ARTIFACT_DIR/clang-version.txt"
+
+          if ! "$TOOLCHAIN_DIR/bin/clang" --version \
+            | grep -q 'r416183b'
+          then
+            echo "ERROR: expected clang-r416183b"
+            exit 1
+          fi
+
+      - name: Checkout exact VEUX source
+        uses: actions/checkout@v7
+        with:
+          repository: dereference23/kernel_xiaomi_sm6375
+          ref: "20240619"
+          fetch-depth: 0
+          path: kernel
+          persist-credentials: false
+
+      - name: Recreate exact Candidate 2
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email \
+            "41898282+github-actions[bot]@users.noreply.github.com"
+
+          BASE_SHA="$(git rev-parse HEAD)"
+          BASE_TREE="$(git rev-parse HEAD^{tree})"
+
+          git remote remove android-common 2>/dev/null || true
+
+          git remote add \
+            android-common \
+            https://android.googlesource.com/kernel/common
+
+          git fetch \
+            --no-tags \
+            android-common \
+            "$COMMON_REF"
+
+          COMMON_SHA="$(git rev-parse FETCH_HEAD)"
+
+          git update-ref \
+            refs/remotes/android-common/audit-base \
+            "$COMMON_SHA"
+
+          git merge \
+            --no-edit \
+            "$COMMON_SHA"
+
+          MERGED_SHA="$(git rev-parse HEAD)"
+          MERGED_TREE="$(git rev-parse HEAD^{tree})"
+
+          git cat-file -e \
+            "${STABILITY_REVERT}^{commit}"
+
+          git revert \
+            --no-edit \
+            "$STABILITY_REVERT"
+
+          CANDIDATE_SHA="$(git rev-parse HEAD)"
+          CANDIDATE_TREE="$(git rev-parse HEAD^{tree})"
+
+          KERNEL_VERSION="$(
+            make -s kernelversion
+          )"
+
+          if [ "$KERNEL_VERSION" != "5.4.274" ]; then
+            echo "ERROR: expected Linux 5.4.274"
+            echo "Actual: $KERNEL_VERSION"
+            exit 1
+          fi
+
+          if [ "$CANDIDATE_TREE" != "$EXPECTED_CANDIDATE_TREE" ]; then
+            echo "ERROR: Candidate 2 tree mismatch"
+            echo "Expected: $EXPECTED_CANDIDATE_TREE"
+            echo "Actual:   $CANDIDATE_TREE"
+            exit 1
+          fi
+
+          {
+            echo "BASE_SHA=$BASE_SHA"
+            echo "BASE_TREE=$BASE_TREE"
+            echo "COMMON_SHA=$COMMON_SHA"
+            echo "MERGED_SHA=$MERGED_SHA"
+            echo "MERGED_TREE=$MERGED_TREE"
+            echo "CANDIDATE_SHA=$CANDIDATE_SHA"
+            echo "CANDIDATE_TREE=$CANDIDATE_TREE"
+            echo "KERNEL_VERSION=$KERNEL_VERSION"
+            echo "COMMON_REF=$COMMON_REF"
+            echo "STABILITY_REVERT=$STABILITY_REVERT"
+            echo "CPUSET_DISABLE_COMMIT=$CPUSET_DISABLE_COMMIT"
+          } | tee "$ARTIFACT_DIR/IDENTITY.txt"
+
+      - name: Fetch official Xiaomi VEUX reference
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git remote remove xiaomi 2>/dev/null || true
+
+          git remote add \
+            xiaomi \
+            https://github.com/MiCode/Xiaomi_Kernel_OpenSource.git
+
+          git fetch \
+            --no-tags \
+            xiaomi \
+            "+refs/heads/${STOCK_REF}:refs/remotes/xiaomi/${STOCK_REF}"
+
+          STOCK_SHA="$(
+            git rev-parse "xiaomi/${STOCK_REF}"
+          )"
+
+          {
+            echo "STOCK_REF=$STOCK_REF"
+            echo "STOCK_SHA=$STOCK_SHA"
+          } | tee "$ARTIFACT_DIR/XIAOMI-REFERENCE.txt"
+
+      - name: Resolve exact Candidate 2 VEUX config
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          export PATH="$TOOLCHAIN_DIR/bin:$PATH"
+          export KCFLAGS="-D__ANDROID_COMMON_KERNEL__"
+
+          rm -rf "$OUT_DIR"
+
+          make \
+            O="$OUT_DIR" \
+            ARCH="$ARCH" \
+            LLVM=1 \
+            veux_defconfig \
+            2>&1 \
+            | tee "$ARTIFACT_DIR/config.log"
+
+          CONFIG="$OUT_DIR/.config"
+
+          if [ ! -f "$CONFIG" ]; then
+            echo "ERROR: resolved .config missing"
+            exit 1
+          fi
+
+          cp \
+            "$CONFIG" \
+            "$ARTIFACT_DIR/resolved.config"
+
+          {
+            echo "===== Candidate resolved cgroup/cpuset config ====="
+
+            grep -E \
+              '^(CONFIG_CGROUPS=|CONFIG_CGROUP_SCHED=|CONFIG_CPUSETS=|# CONFIG_CPUSETS|CONFIG_CGROUP_CPUACCT=|CONFIG_UCLAMP_TASK_GROUP=)' \
+              "$CONFIG" \
+              || true
+          } | tee "$ARTIFACT_DIR/CANDIDATE-CPUSET-CONFIG.txt"
+
+          if grep -qx \
+            'CONFIG_CPUSETS=y' \
+            "$CONFIG"
+          then
+            echo "CPUSETS_RESOLVED=ENABLED" \
+              | tee "$ARTIFACT_DIR/CANDIDATE-CPUSET-STATE.txt"
+          elif grep -qx \
+            '# CONFIG_CPUSETS is not set' \
+            "$CONFIG"
+          then
+            echo "CPUSETS_RESOLVED=DISABLED" \
+              | tee "$ARTIFACT_DIR/CANDIDATE-CPUSET-STATE.txt"
+          else
+            echo "CPUSETS_RESOLVED=UNKNOWN" \
+              | tee "$ARTIFACT_DIR/CANDIDATE-CPUSET-STATE.txt"
+          fi
+
+      - name: Inspect VEUX defconfig CPUSET state
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          {
+            echo "===== Candidate VEUX defconfig ====="
+
+            grep -nE \
+              'CGROUP|CPUSET|UCLAMP' \
+              arch/arm64/configs/veux_defconfig \
+              || true
+
+            echo
+            echo "===== direct CONFIG_CPUSETS occurrence ====="
+
+            if grep -n \
+              'CONFIG_CPUSETS' \
+              arch/arm64/configs/veux_defconfig
+            then
+              :
+            else
+              echo "CONFIG_CPUSETS_NOT_EXPLICIT_IN_VEUX_DEFCONFIG"
+            fi
+          } | tee "$ARTIFACT_DIR/VEUX-DEFCONFIG-CPUSET.txt"
+
+      - name: Trace CONFIG_CPUSETS VEUX defconfig history
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          {
+            echo "============================================================"
+            echo "CONFIG_CPUSETS history in veux_defconfig"
+            echo "============================================================"
+
+            git log \
+              --all \
+              --date=iso-strict \
+              --pretty=format:'%H%x09%ad%x09%an%x09%s' \
+              -S'CONFIG_CPUSETS' \
+              -- arch/arm64/configs/veux_defconfig \
+              || true
+
+            echo
+            echo
+            echo "============================================================"
+            echo "CGROUP / CPUSET related defconfig commits"
+            echo "============================================================"
+
+            git log \
+              --all \
+              --date=iso-strict \
+              --pretty=format:'%H%x09%ad%x09%an%x09%s' \
+              -G'CPUSETS|CGROUPS|CGROUP_SCHED' \
+              -- arch/arm64/configs/veux_defconfig \
+              || true
+          } > "$ARTIFACT_DIR/VEUX-CPUSET-CONFIG-HISTORY.txt"
+
+          cat "$ARTIFACT_DIR/VEUX-CPUSET-CONFIG-HISTORY.txt"
+
+      - name: Verify hardcoded cpuset source modification
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SOURCE="kernel/cgroup/cpuset.c"
+
+          if [ ! -f "$SOURCE" ]; then
+            echo "ERROR: cpuset.c missing"
+            exit 1
+          fi
+
+          {
+            echo "===== cpuset_write_resmask context ====="
+
+            grep \
+              -n \
+              -A45 \
+              -B15 \
+              'cpuset_write_resmask' \
+              "$SOURCE" \
+              || true
+
+            echo
+            echo "===== update_cpumask calls ====="
+
+            grep \
+              -n \
+              'update_cpumask' \
+              "$SOURCE" \
+              || true
+          } | tee "$ARTIFACT_DIR/CANDIDATE-CPUSET-SOURCE.txt"
+
+          if grep -qF \
+            'update_cpumask(cs, trialcs, "0-7")' \
+            "$SOURCE"
+          then
+            echo "HARDCODED_CPUSET_MASK=YES" \
+              | tee "$ARTIFACT_DIR/CANDIDATE-CPUSET-SOURCE-STATE.txt"
+          else
+            echo "HARDCODED_CPUSET_MASK=NO" \
+              | tee "$ARTIFACT_DIR/CANDIDATE-CPUSET-SOURCE-STATE.txt"
+          fi
+
+      - name: Verify cpuset disable commit
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git cat-file -e \
+            "${CPUSET_DISABLE_COMMIT}^{commit}"
+
+          git show \
+            --no-ext-diff \
+            --no-color \
+            --stat \
+            --oneline \
+            "$CPUSET_DISABLE_COMMIT" \
+            > "$ARTIFACT_DIR/CPUSET-DISABLE-COMMIT.txt"
+
+          git show \
+            --no-ext-diff \
+            --no-color \
+            --format=fuller \
+            "$CPUSET_DISABLE_COMMIT" \
+            > "$ARTIFACT_DIR/CPUSET-DISABLE-COMMIT-FULL.txt"
+
+          cat "$ARTIFACT_DIR/CPUSET-DISABLE-COMMIT-FULL.txt"
+
+          mapfile -t FILES < <(
+            git diff-tree \
+              --no-commit-id \
+              --name-only \
+              -r \
+              "$CPUSET_DISABLE_COMMIT"
+          )
+
+          if [ "${#FILES[@]}" -ne 1 ]; then
+            echo "ERROR: expected cpuset disable commit to modify one file"
+            exit 1
+          fi
+
+          if [ "${FILES[0]}" != "kernel/cgroup/cpuset.c" ]; then
+            echo "ERROR: unexpected file in cpuset disable commit"
+            printf '%s\n' "${FILES[@]}"
+            exit 1
+          fi
+
+      - name: Compare cpuset function with commit parent
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          PARENT="$(
+            git rev-parse \
+              "${CPUSET_DISABLE_COMMIT}^"
+          )"
+
+          git show \
+            "${PARENT}:kernel/cgroup/cpuset.c" \
+            > "$ARTIFACT_DIR/cpuset-before-disable.c"
+
+          git show \
+            "${CPUSET_DISABLE_COMMIT}:kernel/cgroup/cpuset.c" \
+            > "$ARTIFACT_DIR/cpuset-after-disable.c"
+
+          {
+            echo "PARENT=$PARENT"
+            echo
+
+            echo "===== BEFORE cpuset disable commit ====="
+
+            grep \
+              -n \
+              -A20 \
+              -B10 \
+              'case FILE_CPULIST' \
+              "$ARTIFACT_DIR/cpuset-before-disable.c" \
+              || true
+
+            echo
+            echo "===== AFTER cpuset disable commit ====="
+
+            grep \
+              -n \
+              -A20 \
+              -B10 \
+              'case FILE_CPULIST' \
+              "$ARTIFACT_DIR/cpuset-after-disable.c" \
+              || true
+          } | tee "$ARTIFACT_DIR/CPUSET-BEFORE-AFTER.txt"
+
+          if ! grep -qF \
+            'update_cpumask(cs, trialcs, buf)' \
+            "$ARTIFACT_DIR/cpuset-before-disable.c"
+          then
+            echo "ERROR: normal userspace mask handling missing before commit"
+            exit 1
+          fi
+
+          if ! grep -qF \
+            'update_cpumask(cs, trialcs, "0-7")' \
+            "$ARTIFACT_DIR/cpuset-after-disable.c"
+          then
+            echo "ERROR: hardcoded 0-7 behaviour missing after commit"
+            exit 1
+          fi
+
+      - name: Compare Candidate cpuset source with Xiaomi and Android Common
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git show \
+            HEAD:kernel/cgroup/cpuset.c \
+            > "$ARTIFACT_DIR/candidate-cpuset.c"
+
+          git show \
+            "xiaomi/${STOCK_REF}:kernel/cgroup/cpuset.c" \
+            > "$ARTIFACT_DIR/xiaomi-cpuset.c"
+
+          git show \
+            "android-common/audit-base:kernel/cgroup/cpuset.c" \
+            > "$ARTIFACT_DIR/common-cpuset.c"
+
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          out = Path(os.environ["ARTIFACT_DIR"])
+
+          sources = {
+              "CANDIDATE": out / "candidate-cpuset.c",
+              "XIAOMI": out / "xiaomi-cpuset.c",
+              "ANDROID_COMMON": out / "common-cpuset.c",
+          }
+
+          rows = []
+
+          for label, path in sources.items():
+              text = path.read_text(errors="replace")
+
+              normal = (
+                  'update_cpumask(cs, trialcs, buf)'
+                  in text
+              )
+
+              hardcoded = (
+                  'update_cpumask(cs, trialcs, "0-7")'
+                  in text
+              )
+
+              rows.append(
+                  (
+                      label,
+                      int(normal),
+                      int(hardcoded),
+                  )
+              )
+
+          with (
+              out / "CPUSET-SOURCE-MATRIX.tsv"
+          ).open("w") as f:
+              f.write(
+                  "source\t"
+                  "userspace_mask_buf\t"
+                  "hardcoded_0_7\n"
+              )
+
+              for row in rows:
+                  f.write(
+                      f"{row[0]}\t"
+                      f"{row[1]}\t"
+                      f"{row[2]}\n"
+                  )
+          PY
+
+          cat "$ARTIFACT_DIR/CPUSET-SOURCE-MATRIX.tsv"
+
+      - name: Capture Xiaomi and Android Common cpuset write contexts
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          for LABEL in xiaomi common; do
+            FILE="$ARTIFACT_DIR/${LABEL}-cpuset.c"
+
+            {
+              echo "============================================================"
+              echo "$LABEL"
+              echo "============================================================"
+
+              grep \
+                -n \
+                -A25 \
+                -B12 \
+                'case FILE_CPULIST' \
+                "$FILE" \
+                || true
+            } > "$ARTIFACT_DIR/${LABEL^^}-CPUSET-WRITE-CONTEXT.txt"
+
+            cat "$ARTIFACT_DIR/${LABEL^^}-CPUSET-WRITE-CONTEXT.txt"
+          done
+
+      - name: Audit CPUSETS configuration references across trees
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          {
+            echo "============================================================"
+            echo "CANDIDATE CONFIG_CPUSETS REFERENCES"
+            echo "============================================================"
+
+            git grep \
+              -n \
+              'CONFIG_CPUSETS' \
+              HEAD \
+              -- \
+              arch/arm64/configs \
+              2>/dev/null \
+              || true
+
+            echo
+            echo "============================================================"
+            echo "XIAOMI VEUX CONFIG_CPUSETS REFERENCES"
+            echo "============================================================"
+
+            git grep \
+              -n \
+              'CONFIG_CPUSETS' \
+              "xiaomi/${STOCK_REF}" \
+              -- \
+              arch/arm64/configs \
+              2>/dev/null \
+              || true
+
+            echo
+            echo "============================================================"
+            echo "ANDROID COMMON CONFIG_CPUSETS REFERENCES"
+            echo "============================================================"
+
+            git grep \
+              -n \
+              'CONFIG_CPUSETS' \
+              "android-common/audit-base" \
+              -- \
+              arch/arm64/configs \
+              2>/dev/null \
+              || true
+
+          } > "$ARTIFACT_DIR/ALL-CONFIG-CPUSET-REFERENCES.txt"
+
+          cat "$ARTIFACT_DIR/ALL-CONFIG-CPUSET-REFERENCES.txt"
+
+      - name: Inspect CPUSETS Kconfig definition
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          {
+            echo "===== CPUSETS Kconfig definition ====="
+
+            git grep \
+              -n \
+              -A12 \
+              -B5 \
+              '^config CPUSETS' \
+              -- \
+              init \
+              kernel \
+              2>/dev/null \
+              || true
+
+            echo
+            echo "===== CPUSETS source compile references ====="
+
+            git grep \
+              -nE \
+              'CONFIG_CPUSETS|cpuset\.o' \
+              -- \
+              init \
+              kernel \
+              2>/dev/null \
+              || true
+          } > "$ARTIFACT_DIR/CPUSETS-KCONFIG.txt"
+
+          cat "$ARTIFACT_DIR/CPUSETS-KCONFIG.txt"
+
+      - name: Trace hardcoded cpuset behaviour history
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          {
+            echo "============================================================"
+            echo "History of hardcoded 0-7 mask"
+            echo "============================================================"
+
+            git log \
+              --all \
+              --date=iso-strict \
+              --pretty=format:'%H%x09%ad%x09%an%x09%s' \
+              -S'update_cpumask(cs, trialcs, "0-7")' \
+              -- kernel/cgroup/cpuset.c \
+              || true
+
+            echo
+            echo
+            echo "============================================================"
+            echo "History of normal userspace mask path"
+            echo "============================================================"
+
+            git log \
+              --all \
+              --date=iso-strict \
+              --pretty=format:'%H%x09%ad%x09%an%x09%s' \
+              -S'update_cpumask(cs, trialcs, buf)' \
+              -- kernel/cgroup/cpuset.c \
+              || true
+
+          } > "$ARTIFACT_DIR/CPUSET-SOURCE-HISTORY.txt"
+
+          cat "$ARTIFACT_DIR/CPUSET-SOURCE-HISTORY.txt"
+
+      - name: Compare complete cpuset source with Xiaomi
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git diff \
+            --no-index \
+            --no-ext-diff \
+            -- \
+            "$ARTIFACT_DIR/xiaomi-cpuset.c" \
+            "$ARTIFACT_DIR/candidate-cpuset.c" \
+            > "$ARTIFACT_DIR/CANDIDATE-VS-XIAOMI-CPUSET.diff" \
+            || true
+
+          DIFF_BYTES="$(
+            stat -c '%s' \
+              "$ARTIFACT_DIR/CANDIDATE-VS-XIAOMI-CPUSET.diff"
+          )"
+
+          echo "CANDIDATE_XIAOMI_CPUSET_DIFF_BYTES=$DIFF_BYTES" \
+            | tee "$ARTIFACT_DIR/CPUSET-DIFF-SUMMARY.txt"
+
+      - name: Build machine-readable cpuset audit result
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          import csv
+          import os
+          from pathlib import Path
+
+          out = Path(os.environ["ARTIFACT_DIR"])
+
+          config_state = (
+              out /
+              "CANDIDATE-CPUSET-STATE.txt"
+          ).read_text().strip().split("=", 1)[1]
+
+          rows = {}
+
+          with (
+              out /
+              "CPUSET-SOURCE-MATRIX.tsv"
+          ).open() as f:
+              reader = csv.DictReader(
+                  f,
+                  delimiter="\t",
+              )
+
+              for row in reader:
+                  rows[row["source"]] = row
+
+          candidate_hardcoded = int(
+              rows["CANDIDATE"]["hardcoded_0_7"]
+          )
+
+          xiaomi_hardcoded = int(
+              rows["XIAOMI"]["hardcoded_0_7"]
+          )
+
+          common_hardcoded = int(
+              rows["ANDROID_COMMON"]["hardcoded_0_7"]
+          )
+
+          candidate_buf = int(
+              rows["CANDIDATE"]["userspace_mask_buf"]
+          )
+
+          xiaomi_buf = int(
+              rows["XIAOMI"]["userspace_mask_buf"]
+          )
+
+          common_buf = int(
+              rows["ANDROID_COMMON"]["userspace_mask_buf"]
+          )
+
+          if (
+              config_state == "DISABLED"
+              and candidate_hardcoded == 1
+              and xiaomi_hardcoded == 0
+              and common_hardcoded == 0
+          ):
+              review = (
+                  "CPUSET_DISABLED_AND_SOURCE_OVERRIDDEN_REVIEW"
+              )
+          elif (
+              candidate_hardcoded == 1
+              and xiaomi_hardcoded == 0
+          ):
+              review = (
+                  "CPUSET_SOURCE_OVERRIDE_REVIEW"
+              )
+          elif config_state == "DISABLED":
+              review = (
+                  "CPUSET_CONFIG_DISABLED_REVIEW"
+              )
+          else:
+              review = (
+                  "CPUSET_NO_CRITICAL_DIFFERENCE_FOUND"
+              )
+
+          with (
+              out /
+              "RESULT.txt"
+          ).open("w") as f:
+              f.write(
+                  "RESULT=PASS_AUDIT\n"
+              )
+
+              f.write(
+                  "BASE_CANDIDATE_TREE="
+                  "5d25b7e0124d7fb695f3f07b45928fcb5780d0e8\n"
+              )
+
+              f.write(
+                  "CPUSETS_RESOLVED="
+                  f"{config_state}\n"
+              )
+
+              f.write(
+                  "CANDIDATE_USERSPACE_MASK_BUF="
+                  f"{candidate_buf}\n"
+              )
+
+              f.write(
+                  "CANDIDATE_HARDCODED_0_7="
+                  f"{candidate_hardcoded}\n"
+              )
+
+              f.write(
+                  "XIAOMI_USERSPACE_MASK_BUF="
+                  f"{xiaomi_buf}\n"
+              )
+
+              f.write(
+                  "XIAOMI_HARDCODED_0_7="
+                  f"{xiaomi_hardcoded}\n"
+              )
+
+              f.write(
+                  "ANDROID_COMMON_USERSPACE_MASK_BUF="
+                  f"{common_buf}\n"
+              )
+
+              f.write(
+                  "ANDROID_COMMON_HARDCODED_0_7="
+                  f"{common_hardcoded}\n"
+              )
+
+              f.write(
+                  "CPUSET_DISABLE_COMMIT="
+                  "4cc1bd1b6496238d1d80a7a2d47aaee0df0a23d5\n"
+              )
+
+              f.write(
+                  f"REVIEW_CLASS={review}\n"
+              )
+
+              f.write(
+                  "SOURCE_MODIFIED=NO\n"
+              )
+
+              f.write(
+                  "KERNEL_BUILT=NO\n"
+              )
+
+              f.write(
+                  "IMAGE_CREATED=NO\n"
+              )
+
+              f.write(
+                  "BOOT_IMAGE_CREATED=NO\n"
+              )
+
+              f.write(
+                  "DEVICE_FLASHED=NO\n"
+              )
+          PY
+
+          cat "$ARTIFACT_DIR/RESULT.txt"
+
+      - name: Upload CPUSET Android behaviour audit
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: VEUX-CPUSET-Disable-Android-Behaviour-Audit
+          path: cpuset-audit/
+          if-no-files-found: error
+          retention-days: 30
