@@ -1,0 +1,1024 @@
+name: 39P - VEUX Schedutil Boost and Lower Step Audit
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    env:
+      COMMON_REF: "android11-5.4.274_r00"
+      STOCK_REF: "veux-r-oss"
+
+      STABILITY_REVERT: "f74e5c1b7c3f3e42f694e5ab524f95f62a0dab80"
+
+      SUGOV_LOWER_STEP_COMMIT: "51e62843d6d11f5fa61a590f5d381a1739ad4dde"
+      SUGOV_DISABLE_BOOST_COMMIT: "074143c7d36d6abfca64be0872a5045d33db5f9e"
+
+      EXPECTED_CANDIDATE_TREE: "5d25b7e0124d7fb695f3f07b45928fcb5780d0e8"
+
+      ARTIFACT_DIR: ${{ github.workspace }}/schedutil-tuning-audit
+
+    steps:
+      - name: Prepare audit directory
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p "$ARTIFACT_DIR"
+
+          cat > "$ARTIFACT_DIR/PLAN.txt" <<'EOF'
+          VEUX Schedutil Boost / Lower Frequency Step Audit
+          =================================================
+
+          Previously closed items:
+          - CASS MaxFreq/Thermal adaptation
+          - SPRD rotation disabled
+          - LB CPU-capacity rate limit restored
+          - CONFIG_CPUSETS restored
+          - CASS reserved CPU issue rendered inactive
+          - Xiaomi VEUX PELT8 restored
+          - custom HZ100 removed
+          - resolved HZ returned to default HZ250
+
+          Current checklist items:
+          1. schedutil frequency boosting disabled/limited
+          2. schedutil may select the frequency step below its target
+
+          Known custom commits:
+
+          51e62843d6d11f5fa61a590f5d381a1739ad4dde
+          cpufreq: schedutil: Use the frequency below the target if they're close
+
+          074143c7d36d6abfca64be0872a5045d33db5f9e
+          cpufreq: schedutil: Disable frequency boosting
+
+          Purpose:
+          - reconstruct exact Candidate 2
+          - verify both exact commits
+          - inspect their parent states
+          - inspect current Candidate behaviour
+          - compare with official Xiaomi VEUX
+          - compare with Android Common 5.4.274
+          - determine whether each change is custom schedutil tuning
+
+          This workflow is AUDIT ONLY.
+
+          No source modification.
+          No kernel build.
+          No boot.img.
+          No flashable ZIP.
+          No device access.
+          No flashing.
+          EOF
+
+      - name: Checkout exact VEUX source
+        uses: actions/checkout@v7
+        with:
+          repository: dereference23/kernel_xiaomi_sm6375
+          ref: "20240619"
+          fetch-depth: 0
+          path: kernel
+          persist-credentials: false
+
+      - name: Recreate exact Candidate 2
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email \
+            "41898282+github-actions[bot]@users.noreply.github.com"
+
+          BASE_SHA="$(git rev-parse HEAD)"
+          BASE_TREE="$(git rev-parse HEAD^{tree})"
+
+          git remote remove android-common 2>/dev/null || true
+
+          git remote add \
+            android-common \
+            https://android.googlesource.com/kernel/common
+
+          git fetch \
+            --no-tags \
+            android-common \
+            "$COMMON_REF"
+
+          COMMON_SHA="$(git rev-parse FETCH_HEAD)"
+
+          git update-ref \
+            refs/remotes/android-common/audit-base \
+            "$COMMON_SHA"
+
+          git merge \
+            --no-edit \
+            "$COMMON_SHA"
+
+          MERGED_SHA="$(git rev-parse HEAD)"
+          MERGED_TREE="$(git rev-parse HEAD^{tree})"
+
+          git cat-file -e \
+            "${STABILITY_REVERT}^{commit}"
+
+          git revert \
+            --no-edit \
+            "$STABILITY_REVERT"
+
+          CANDIDATE_SHA="$(git rev-parse HEAD)"
+          CANDIDATE_TREE="$(git rev-parse HEAD^{tree})"
+
+          KERNEL_VERSION="$(
+            make -s kernelversion
+          )"
+
+          if [ "$KERNEL_VERSION" != "5.4.274" ]; then
+            echo "ERROR: expected Linux 5.4.274"
+            echo "Actual: $KERNEL_VERSION"
+            exit 1
+          fi
+
+          if [ "$CANDIDATE_TREE" != "$EXPECTED_CANDIDATE_TREE" ]; then
+            echo "ERROR: Candidate 2 tree mismatch"
+            echo "Expected: $EXPECTED_CANDIDATE_TREE"
+            echo "Actual:   $CANDIDATE_TREE"
+            exit 1
+          fi
+
+          {
+            echo "BASE_SHA=$BASE_SHA"
+            echo "BASE_TREE=$BASE_TREE"
+            echo "COMMON_SHA=$COMMON_SHA"
+            echo "MERGED_SHA=$MERGED_SHA"
+            echo "MERGED_TREE=$MERGED_TREE"
+            echo "CANDIDATE_SHA=$CANDIDATE_SHA"
+            echo "CANDIDATE_TREE=$CANDIDATE_TREE"
+            echo "KERNEL_VERSION=$KERNEL_VERSION"
+            echo "COMMON_REF=$COMMON_REF"
+            echo "STABILITY_REVERT=$STABILITY_REVERT"
+            echo "SUGOV_LOWER_STEP_COMMIT=$SUGOV_LOWER_STEP_COMMIT"
+            echo "SUGOV_DISABLE_BOOST_COMMIT=$SUGOV_DISABLE_BOOST_COMMIT"
+          } | tee "$ARTIFACT_DIR/IDENTITY.txt"
+
+      - name: Fetch official Xiaomi VEUX reference
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git remote remove xiaomi 2>/dev/null || true
+
+          git remote add \
+            xiaomi \
+            https://github.com/MiCode/Xiaomi_Kernel_OpenSource.git
+
+          git fetch \
+            --no-tags \
+            xiaomi \
+            "+refs/heads/${STOCK_REF}:refs/remotes/xiaomi/${STOCK_REF}"
+
+          STOCK_SHA="$(
+            git rev-parse "xiaomi/${STOCK_REF}"
+          )"
+
+          {
+            echo "STOCK_REF=$STOCK_REF"
+            echo "STOCK_SHA=$STOCK_SHA"
+          } | tee "$ARTIFACT_DIR/XIAOMI-REFERENCE.txt"
+
+      - name: Verify schedutil lower-step commit
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          COMMIT="$SUGOV_LOWER_STEP_COMMIT"
+
+          git cat-file -e \
+            "${COMMIT}^{commit}"
+
+          git show \
+            --no-ext-diff \
+            --no-color \
+            --format=fuller \
+            "$COMMIT" \
+            > "$ARTIFACT_DIR/LOWER-STEP-COMMIT.txt"
+
+          git show \
+            --format= \
+            --no-ext-diff \
+            --no-color \
+            "$COMMIT" \
+            > "$ARTIFACT_DIR/LOWER-STEP-COMMIT.diff"
+
+          mapfile -t FILES < <(
+            git diff-tree \
+              --no-commit-id \
+              --name-only \
+              -r \
+              "$COMMIT"
+          )
+
+          if [ "${#FILES[@]}" -ne 1 ]; then
+            echo "ERROR: lower-step commit does not modify exactly one file"
+            printf '%s\n' "${FILES[@]}"
+            exit 1
+          fi
+
+          if [ "${FILES[0]}" != "kernel/sched/cpufreq_schedutil.c" ]; then
+            echo "ERROR: lower-step commit modified unexpected file"
+            printf '%s\n' "${FILES[@]}"
+            exit 1
+          fi
+
+          DIFF="$ARTIFACT_DIR/LOWER-STEP-COMMIT.diff"
+
+          for TOKEN in \
+            'unsigned int idx, l_freq, h_freq;' \
+            'idx = cpufreq_frequency_table_target(policy, freq, CPUFREQ_RELATION_H);' \
+            'if (mult_frac(100, freq - h_freq, l_freq - h_freq) < 20)' \
+            'return h_freq;'
+          do
+            if ! grep -qF "$TOKEN" "$DIFF"; then
+              echo "ERROR: expected lower-step token missing: $TOKEN"
+              exit 1
+            fi
+          done
+
+          {
+            echo "LOWER_STEP_COMMIT_VERIFIED=YES"
+            echo "LOWER_STEP_COMMIT=$COMMIT"
+            echo "LOWER_STEP_FILE=kernel/sched/cpufreq_schedutil.c"
+            echo "LOWER_STEP_THRESHOLD_PERCENT=20"
+          } | tee "$ARTIFACT_DIR/LOWER-STEP-COMMIT-STATE.txt"
+
+      - name: Verify schedutil boost-disable commit
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          COMMIT="$SUGOV_DISABLE_BOOST_COMMIT"
+
+          git cat-file -e \
+            "${COMMIT}^{commit}"
+
+          git show \
+            --no-ext-diff \
+            --no-color \
+            --format=fuller \
+            "$COMMIT" \
+            > "$ARTIFACT_DIR/DISABLE-BOOST-COMMIT.txt"
+
+          git show \
+            --format= \
+            --no-ext-diff \
+            --no-color \
+            "$COMMIT" \
+            > "$ARTIFACT_DIR/DISABLE-BOOST-COMMIT.diff"
+
+          mapfile -t FILES < <(
+            git diff-tree \
+              --no-commit-id \
+              --name-only \
+              -r \
+              "$COMMIT"
+          )
+
+          if [ "${#FILES[@]}" -ne 1 ]; then
+            echo "ERROR: boost-disable commit does not modify exactly one file"
+            printf '%s\n' "${FILES[@]}"
+            exit 1
+          fi
+
+          if [ "${FILES[0]}" != "kernel/sched/cpufreq_schedutil.c" ]; then
+            echo "ERROR: boost-disable commit modified unexpected file"
+            printf '%s\n' "${FILES[@]}"
+            exit 1
+          fi
+
+          DIFF="$ARTIFACT_DIR/DISABLE-BOOST-COMMIT.diff"
+
+          if ! grep -qF \
+            '+	if (type == FREQUENCY_UTIL && uclamp_rq_util_with(rq, util, p) < util)' \
+            "$DIFF"
+          then
+            echo "ERROR: expected boost-disable condition missing"
+            exit 1
+          fi
+
+          if ! grep -qF \
+            -- '-	if (type == FREQUENCY_UTIL)' \
+            "$DIFF"
+          then
+            echo "ERROR: original unconditional FREQUENCY_UTIL clamp removal missing"
+            exit 1
+          fi
+
+          {
+            echo "DISABLE_BOOST_COMMIT_VERIFIED=YES"
+            echo "DISABLE_BOOST_COMMIT=$COMMIT"
+            echo "DISABLE_BOOST_FILE=kernel/sched/cpufreq_schedutil.c"
+          } | tee "$ARTIFACT_DIR/DISABLE-BOOST-COMMIT-STATE.txt"
+
+      - name: Capture commit parent states
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          LOWER_PARENT="$(
+            git rev-parse \
+              "${SUGOV_LOWER_STEP_COMMIT}^"
+          )"
+
+          BOOST_PARENT="$(
+            git rev-parse \
+              "${SUGOV_DISABLE_BOOST_COMMIT}^"
+          )"
+
+          git show \
+            "${LOWER_PARENT}:kernel/sched/cpufreq_schedutil.c" \
+            > "$ARTIFACT_DIR/lower-step-parent.c"
+
+          git show \
+            "${SUGOV_LOWER_STEP_COMMIT}:kernel/sched/cpufreq_schedutil.c" \
+            > "$ARTIFACT_DIR/lower-step-after.c"
+
+          git show \
+            "${BOOST_PARENT}:kernel/sched/cpufreq_schedutil.c" \
+            > "$ARTIFACT_DIR/boost-parent.c"
+
+          git show \
+            "${SUGOV_DISABLE_BOOST_COMMIT}:kernel/sched/cpufreq_schedutil.c" \
+            > "$ARTIFACT_DIR/boost-after.c"
+
+          if ! grep -qF \
+            'return cpufreq_driver_resolve_freq(policy, freq);' \
+            "$ARTIFACT_DIR/lower-step-parent.c"
+          then
+            echo "ERROR: standard lower-step parent return path missing"
+            exit 1
+          fi
+
+          if grep -qF \
+            'mult_frac(100, freq - h_freq, l_freq - h_freq) < 20' \
+            "$ARTIFACT_DIR/lower-step-parent.c"
+          then
+            echo "ERROR: lower-step heuristic already existed in parent"
+            exit 1
+          fi
+
+          if ! grep -qF \
+            'mult_frac(100, freq - h_freq, l_freq - h_freq) < 20' \
+            "$ARTIFACT_DIR/lower-step-after.c"
+          then
+            echo "ERROR: lower-step heuristic missing after commit"
+            exit 1
+          fi
+
+          if ! grep -qF \
+            'if (type == FREQUENCY_UTIL)' \
+            "$ARTIFACT_DIR/boost-parent.c"
+          then
+            echo "ERROR: boost parent FREQUENCY_UTIL path missing"
+            exit 1
+          fi
+
+          if grep -qF \
+            'if (type == FREQUENCY_UTIL && uclamp_rq_util_with(rq, util, p) < util)' \
+            "$ARTIFACT_DIR/boost-parent.c"
+          then
+            echo "ERROR: boost-disable logic already existed in parent"
+            exit 1
+          fi
+
+          if ! grep -qF \
+            'if (type == FREQUENCY_UTIL && uclamp_rq_util_with(rq, util, p) < util)' \
+            "$ARTIFACT_DIR/boost-after.c"
+          then
+            echo "ERROR: boost-disable logic missing after commit"
+            exit 1
+          fi
+
+          {
+            echo "LOWER_STEP_PARENT=$LOWER_PARENT"
+            echo "LOWER_STEP_PARENT_STANDARD_RESOLVE=YES"
+            echo "LOWER_STEP_PARENT_20_PERCENT_HEURISTIC=NO"
+            echo "BOOST_PARENT=$BOOST_PARENT"
+            echo "BOOST_PARENT_NORMAL_UCLAMP=YES"
+            echo "BOOST_PARENT_CAP_ONLY_UCLAMP=NO"
+          } | tee "$ARTIFACT_DIR/COMMIT-PARENT-STATES.txt"
+
+      - name: Extract Candidate Xiaomi and Common schedutil sources
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git show \
+            HEAD:kernel/sched/cpufreq_schedutil.c \
+            > "$ARTIFACT_DIR/candidate-cpufreq_schedutil.c"
+
+          git show \
+            "xiaomi/${STOCK_REF}:kernel/sched/cpufreq_schedutil.c" \
+            > "$ARTIFACT_DIR/xiaomi-cpufreq_schedutil.c"
+
+          git show \
+            "android-common/audit-base:kernel/sched/cpufreq_schedutil.c" \
+            > "$ARTIFACT_DIR/common-cpufreq_schedutil.c"
+
+          for FILE in \
+            "$ARTIFACT_DIR/candidate-cpufreq_schedutil.c" \
+            "$ARTIFACT_DIR/xiaomi-cpufreq_schedutil.c" \
+            "$ARTIFACT_DIR/common-cpufreq_schedutil.c"
+          do
+            if [ ! -s "$FILE" ]; then
+              echo "ERROR: schedutil source missing: $FILE"
+              exit 1
+            fi
+          done
+
+      - name: Extract relevant schedutil functions
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          out = Path(os.environ["ARTIFACT_DIR"])
+
+          sources = {
+              "candidate": out / "candidate-cpufreq_schedutil.c",
+              "xiaomi": out / "xiaomi-cpufreq_schedutil.c",
+              "common": out / "common-cpufreq_schedutil.c",
+          }
+
+          def extract_function(text, marker):
+              start = text.find(marker)
+
+              if start < 0:
+                  raise RuntimeError(
+                      f"function marker not found: {marker}"
+                  )
+
+              brace = text.find("{", start)
+
+              if brace < 0:
+                  raise RuntimeError(
+                      f"opening brace not found: {marker}"
+                  )
+
+              depth = 0
+              end = None
+
+              for pos in range(brace, len(text)):
+                  char = text[pos]
+
+                  if char == "{":
+                      depth += 1
+                  elif char == "}":
+                      depth -= 1
+
+                      if depth == 0:
+                          end = pos + 1
+                          break
+
+              if end is None:
+                  raise RuntimeError(
+                      f"closing brace not found: {marker}"
+                  )
+
+              return text[start:end] + "\n"
+
+          for label, path in sources.items():
+              text = path.read_text(
+                  errors="replace"
+              )
+
+              get_next = extract_function(
+                  text,
+                  "static unsigned int get_next_freq",
+              )
+
+              util = extract_function(
+                  text,
+                  "unsigned long schedutil_cpu_util",
+              )
+
+              (
+                  out /
+                  f"{label}-get_next_freq.c"
+              ).write_text(get_next)
+
+              (
+                  out /
+                  f"{label}-schedutil_cpu_util.c"
+              ).write_text(util)
+          PY
+
+      - name: Build schedutil behaviour matrix
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          out = Path(os.environ["ARTIFACT_DIR"])
+
+          sources = {
+              "CANDIDATE": (
+                  out / "candidate-get_next_freq.c",
+                  out / "candidate-schedutil_cpu_util.c",
+              ),
+              "XIAOMI": (
+                  out / "xiaomi-get_next_freq.c",
+                  out / "xiaomi-schedutil_cpu_util.c",
+              ),
+              "ANDROID_COMMON": (
+                  out / "common-get_next_freq.c",
+                  out / "common-schedutil_cpu_util.c",
+              ),
+          }
+
+          rows = []
+
+          for label, paths in sources.items():
+              get_next = paths[0].read_text(
+                  errors="replace"
+              )
+
+              util = paths[1].read_text(
+                  errors="replace"
+              )
+
+              lower_step = int(
+                  "mult_frac(100, freq - h_freq, l_freq - h_freq) < 20"
+                  in get_next
+              )
+
+              frequency_table_target = int(
+                  "cpufreq_frequency_table_target(policy, freq, CPUFREQ_RELATION_H)"
+                  in get_next
+              )
+
+              normal_resolve = int(
+                  "return cpufreq_driver_resolve_freq(policy, freq);"
+                  in get_next
+              )
+
+              cap_only_uclamp = int(
+                  "type == FREQUENCY_UTIL && "
+                  "uclamp_rq_util_with(rq, util, p) < util"
+                  in util
+              )
+
+              normal_uclamp = int(
+                  "if (type == FREQUENCY_UTIL)"
+                  in util
+                  and not cap_only_uclamp
+                  and "uclamp_rq_util_with(rq, util, p)"
+                  in util
+              )
+
+              rows.append(
+                  (
+                      label,
+                      lower_step,
+                      frequency_table_target,
+                      normal_resolve,
+                      cap_only_uclamp,
+                      normal_uclamp,
+                  )
+              )
+
+          with (
+              out / "SCHEDUTIL-MATRIX.tsv"
+          ).open("w") as f:
+              f.write(
+                  "source\t"
+                  "lower_step_20pct\t"
+                  "frequency_table_target\t"
+                  "direct_driver_resolve_return\t"
+                  "cap_only_uclamp\t"
+                  "normal_boost_cap_uclamp\n"
+              )
+
+              for row in rows:
+                  f.write(
+                      "\t".join(
+                          str(value)
+                          for value in row
+                      )
+                      + "\n"
+                  )
+          PY
+
+          cat "$ARTIFACT_DIR/SCHEDUTIL-MATRIX.tsv"
+
+      - name: Verify Candidate current custom behaviours
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SOURCE="kernel/sched/cpufreq_schedutil.c"
+
+          if ! grep -qF \
+            'mult_frac(100, freq - h_freq, l_freq - h_freq) < 20' \
+            "$SOURCE"
+          then
+            echo "ERROR: Candidate lower-step heuristic missing"
+            exit 1
+          fi
+
+          if ! grep -qF \
+            'if (type == FREQUENCY_UTIL && uclamp_rq_util_with(rq, util, p) < util)' \
+            "$SOURCE"
+          then
+            echo "ERROR: Candidate cap-only UClamp logic missing"
+            exit 1
+          fi
+
+          {
+            echo "CANDIDATE_LOWER_STEP_20_PERCENT=YES"
+            echo "CANDIDATE_UCLAMP_BOOST_DISABLED=YES"
+          } | tee "$ARTIFACT_DIR/CANDIDATE-SCHEDUTIL-STATE.txt"
+
+      - name: Verify Xiaomi device baseline
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SOURCE="$ARTIFACT_DIR/xiaomi-cpufreq_schedutil.c"
+
+          if grep -qF \
+            'mult_frac(100, freq - h_freq, l_freq - h_freq) < 20' \
+            "$SOURCE"
+          then
+            echo "ERROR: Xiaomi unexpectedly contains 20% lower-step heuristic"
+            exit 1
+          fi
+
+          if ! grep -qF \
+            'return cpufreq_driver_resolve_freq(policy, freq);' \
+            "$SOURCE"
+          then
+            echo "ERROR: Xiaomi standard frequency resolution path missing"
+            exit 1
+          fi
+
+          if grep -qF \
+            'if (type == FREQUENCY_UTIL && uclamp_rq_util_with(rq, util, p) < util)' \
+            "$SOURCE"
+          then
+            echo "ERROR: Xiaomi unexpectedly contains cap-only UClamp"
+            exit 1
+          fi
+
+          if ! grep -qF \
+            'if (type == FREQUENCY_UTIL)' \
+            "$SOURCE"
+          then
+            echo "ERROR: Xiaomi FREQUENCY_UTIL UClamp path missing"
+            exit 1
+          fi
+
+          if ! grep -qF \
+            'util = uclamp_rq_util_with(rq, util, p);' \
+            "$SOURCE"
+          then
+            echo "ERROR: Xiaomi normal UClamp application missing"
+            exit 1
+          fi
+
+          {
+            echo "XIAOMI_LOWER_STEP_20_PERCENT=NO"
+            echo "XIAOMI_DIRECT_DRIVER_RESOLVE=YES"
+            echo "XIAOMI_UCLAMP_BOOST_CAP_NORMAL=YES"
+            echo "XIAOMI_UCLAMP_CAP_ONLY=NO"
+          } | tee "$ARTIFACT_DIR/XIAOMI-SCHEDUTIL-STATE.txt"
+
+      - name: Capture Android Common schedutil state
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SOURCE="$ARTIFACT_DIR/common-cpufreq_schedutil.c"
+
+          {
+            echo "===== Android Common get_next_freq ====="
+            cat "$ARTIFACT_DIR/common-get_next_freq.c"
+
+            echo
+            echo "===== Android Common schedutil_cpu_util ====="
+            cat "$ARTIFACT_DIR/common-schedutil_cpu_util.c"
+
+          } > "$ARTIFACT_DIR/ANDROID-COMMON-SCHEDUTIL-CONTEXT.txt"
+
+          cat "$ARTIFACT_DIR/ANDROID-COMMON-SCHEDUTIL-CONTEXT.txt"
+
+      - name: Compare Candidate functions with Xiaomi
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          diff \
+            -u \
+            "$ARTIFACT_DIR/xiaomi-get_next_freq.c" \
+            "$ARTIFACT_DIR/candidate-get_next_freq.c" \
+            > "$ARTIFACT_DIR/CANDIDATE-VS-XIAOMI-GET-NEXT-FREQ.diff" \
+            || true
+
+          diff \
+            -u \
+            "$ARTIFACT_DIR/xiaomi-schedutil_cpu_util.c" \
+            "$ARTIFACT_DIR/candidate-schedutil_cpu_util.c" \
+            > "$ARTIFACT_DIR/CANDIDATE-VS-XIAOMI-CPU-UTIL.diff" \
+            || true
+
+          {
+            echo "===== Candidate vs Xiaomi get_next_freq ====="
+            cat "$ARTIFACT_DIR/CANDIDATE-VS-XIAOMI-GET-NEXT-FREQ.diff"
+
+            echo
+            echo "===== Candidate vs Xiaomi schedutil_cpu_util ====="
+            cat "$ARTIFACT_DIR/CANDIDATE-VS-XIAOMI-CPU-UTIL.diff"
+
+          } > "$ARTIFACT_DIR/CANDIDATE-VS-XIAOMI-SCHEDUTIL.txt"
+
+          cat "$ARTIFACT_DIR/CANDIDATE-VS-XIAOMI-SCHEDUTIL.txt"
+
+      - name: Compare Candidate functions with Android Common
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          diff \
+            -u \
+            "$ARTIFACT_DIR/common-get_next_freq.c" \
+            "$ARTIFACT_DIR/candidate-get_next_freq.c" \
+            > "$ARTIFACT_DIR/CANDIDATE-VS-COMMON-GET-NEXT-FREQ.diff" \
+            || true
+
+          diff \
+            -u \
+            "$ARTIFACT_DIR/common-schedutil_cpu_util.c" \
+            "$ARTIFACT_DIR/candidate-schedutil_cpu_util.c" \
+            > "$ARTIFACT_DIR/CANDIDATE-VS-COMMON-CPU-UTIL.diff" \
+            || true
+
+      - name: Trace both schedutil tunings
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          {
+            echo "============================================================"
+            echo "20% lower-step heuristic history"
+            echo "============================================================"
+
+            git log \
+              --all \
+              --date=iso-strict \
+              --pretty=format:'%H%x09%ad%x09%an%x09%s' \
+              -S'mult_frac(100, freq - h_freq, l_freq - h_freq) < 20' \
+              -- kernel/sched/cpufreq_schedutil.c \
+              || true
+
+            echo
+            echo
+            echo "============================================================"
+            echo "cap-only UClamp history"
+            echo "============================================================"
+
+            git log \
+              --all \
+              --date=iso-strict \
+              --pretty=format:'%H%x09%ad%x09%an%x09%s' \
+              -S'uclamp_rq_util_with(rq, util, p) < util' \
+              -- kernel/sched/cpufreq_schedutil.c \
+              || true
+
+          } > "$ARTIFACT_DIR/SCHEDUTIL-TUNING-HISTORY.txt"
+
+          cat "$ARTIFACT_DIR/SCHEDUTIL-TUNING-HISTORY.txt"
+
+      - name: Build machine-readable conclusion
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          import csv
+          import os
+          from pathlib import Path
+
+          out = Path(os.environ["ARTIFACT_DIR"])
+
+          rows = {}
+
+          with (
+              out / "SCHEDUTIL-MATRIX.tsv"
+          ).open() as f:
+              reader = csv.DictReader(
+                  f,
+                  delimiter="\t",
+              )
+
+              for row in reader:
+                  rows[row["source"]] = row
+
+          candidate = rows["CANDIDATE"]
+          xiaomi = rows["XIAOMI"]
+          common = rows["ANDROID_COMMON"]
+
+          candidate_lower = int(
+              candidate["lower_step_20pct"]
+          )
+
+          xiaomi_lower = int(
+              xiaomi["lower_step_20pct"]
+          )
+
+          common_lower = int(
+              common["lower_step_20pct"]
+          )
+
+          candidate_cap_only = int(
+              candidate["cap_only_uclamp"]
+          )
+
+          xiaomi_cap_only = int(
+              xiaomi["cap_only_uclamp"]
+          )
+
+          common_cap_only = int(
+              common["cap_only_uclamp"]
+          )
+
+          xiaomi_normal_uclamp = int(
+              xiaomi["normal_boost_cap_uclamp"]
+          )
+
+          common_normal_uclamp = int(
+              common["normal_boost_cap_uclamp"]
+          )
+
+          if (
+              candidate_lower == 1
+              and xiaomi_lower == 0
+              and common_lower == 0
+              and candidate_cap_only == 1
+              and xiaomi_cap_only == 0
+              and common_cap_only == 0
+          ):
+              review = (
+                  "BOTH_CUSTOM_SCHEDUTIL_TUNINGS_REVIEW"
+              )
+          elif (
+              candidate_lower == 1
+              and xiaomi_lower == 0
+          ):
+              review = (
+                  "LOWER_STEP_CUSTOM_TUNING_REVIEW"
+              )
+          elif (
+              candidate_cap_only == 1
+              and xiaomi_cap_only == 0
+          ):
+              review = (
+                  "UCLAMP_BOOST_DISABLE_CUSTOM_TUNING_REVIEW"
+              )
+          else:
+              review = (
+                  "SCHEDUTIL_BASELINE_COMPARISON_REVIEW"
+              )
+
+          with (
+              out / "RESULT.txt"
+          ).open("w") as f:
+              f.write(
+                  "RESULT=PASS_AUDIT\n"
+              )
+
+              f.write(
+                  "BASE_CANDIDATE_TREE="
+                  "5d25b7e0124d7fb695f3f07b45928fcb5780d0e8\n"
+              )
+
+              f.write(
+                  "LOWER_STEP_COMMIT="
+                  "51e62843d6d11f5fa61a590f5d381a1739ad4dde\n"
+              )
+
+              f.write(
+                  "DISABLE_BOOST_COMMIT="
+                  "074143c7d36d6abfca64be0872a5045d33db5f9e\n"
+              )
+
+              f.write(
+                  f"CANDIDATE_LOWER_STEP_20_PERCENT={candidate_lower}\n"
+              )
+
+              f.write(
+                  f"XIAOMI_LOWER_STEP_20_PERCENT={xiaomi_lower}\n"
+              )
+
+              f.write(
+                  f"ANDROID_COMMON_LOWER_STEP_20_PERCENT={common_lower}\n"
+              )
+
+              f.write(
+                  f"CANDIDATE_CAP_ONLY_UCLAMP={candidate_cap_only}\n"
+              )
+
+              f.write(
+                  f"XIAOMI_CAP_ONLY_UCLAMP={xiaomi_cap_only}\n"
+              )
+
+              f.write(
+                  f"ANDROID_COMMON_CAP_ONLY_UCLAMP={common_cap_only}\n"
+              )
+
+              f.write(
+                  f"XIAOMI_NORMAL_BOOST_CAP_UCLAMP={xiaomi_normal_uclamp}\n"
+              )
+
+              f.write(
+                  f"ANDROID_COMMON_NORMAL_BOOST_CAP_UCLAMP={common_normal_uclamp}\n"
+              )
+
+              f.write(
+                  f"REVIEW_CLASS={review}\n"
+              )
+
+              f.write(
+                  "SOURCE_MODIFIED=NO\n"
+              )
+
+              f.write(
+                  "KERNEL_BUILT=NO\n"
+              )
+
+              f.write(
+                  "IMAGE_CREATED=NO\n"
+              )
+
+              f.write(
+                  "BOOT_IMAGE_CREATED=NO\n"
+              )
+
+              f.write(
+                  "DEVICE_FLASHED=NO\n"
+              )
+
+          print(
+              (out / "RESULT.txt").read_text()
+          )
+          PY
+
+      - name: Verify audit made no source changes
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if ! git diff --quiet; then
+            echo "ERROR: audit unexpectedly modified source"
+
+            git diff \
+              --no-ext-diff \
+              --no-color
+
+            exit 1
+          fi
+
+          echo "SOURCE_INTEGRITY=PASS" \
+            | tee "$ARTIFACT_DIR/SOURCE-INTEGRITY.txt"
+
+      - name: Upload schedutil tuning audit
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: VEUX-Schedutil-Boost-Lower-Step-Audit
+          path: schedutil-tuning-audit/
+          if-no-files-found: error
+          retention-days: 30
