@@ -1,0 +1,912 @@
+name: 47 - VEUX 46C9 Boot v3 Repack Runtime and QEMU Early-Boot Audit
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  W18_ARTIFACT_NAME: "veux-os1.0.12.0-workflow18-stock-rom-audit-3"
+  W46C9_ARTIFACT_NAME: "VEUX-46C9-Final-Cumulative-ReSukiSU-SUSFS-Independent-Cross-Run-Verifier-Artifact-Fix-1"
+
+  STOCK_BOOT_BYTES: "134217728"
+  STOCK_BOOT_SHA256: "ac6522e4eed55782dd2ae61362e9d345d01a1f229c87333818511d5537fa79c5"
+  STOCK_KERNEL_BYTES: "45480448"
+  STOCK_KERNEL_SHA256: "6e513b3652aa1de599c26b6aaeefef12dac569daf8648bbb67de99932782c50b"
+  STOCK_RAMDISK_BYTES: "22061278"
+  STOCK_RAMDISK_SHA256: "0bc8b54373b5501818e8b252517419786db207771047b6def7ec9bc89beb607a"
+
+  STOCK_VENDOR_BOOT_SHA256: "583e1f4c0e09c2267cda88bd48a8b4f56cf5c5e034fbda7b25bd65aa86385425"
+  STOCK_DTBO_SHA256: "e9f3bae2c5417ff297162f1e7d2652ee98b347488fdf091d61daa986fbfb7690"
+  STOCK_VBMETA_SHA256: "62a5b1a94c2247c786e8148b9d9d0aea943b57b1034b3fd82d9cac9a85fcde97"
+
+  W46C9_IMAGE_BYTES: "29843968"
+  W46C9_IMAGE_SHA256: "41d79cc66653ac75c390eb21c23029d921f9a0a2ef683c5d65a0edbb745bbce1"
+  W46C9_DTB_BYTES: "275689"
+  W46C9_DTB_SHA256: "42728a6f3d48ae35ac6be4b14ea51bc8a323e77baec2ee544827487378f99d37"
+  W46C9_CONFIG_BYTES: "157405"
+  W46C9_CONFIG_SHA256: "d7cd955abd59da45804acc9c5e450cf8fc953da3e66bbc274212b40ee9a0b372"
+  W46C9_KERNEL_RELEASE: "5.4.274~positron/4b671233"
+
+  EXPECTED_DRYRUN_BOOT_SHA256: "af3f0f9451398faad0a6734024160c6375630ff21d0e9d56e6db91a17bcf3dc5"
+  EXPECTED_DRYRUN_EMBEDDED_AVB_DIGEST: "4827594ae1346c6a5c7ab6e0a7ec6cebb404f0b074357faeeb49662025272c3a"
+  EXPECTED_NEW_RAMDISK_OFFSET: "29851648"
+  EXPECTED_NEW_PAYLOAD_END: "51916800"
+
+jobs:
+  audit:
+    name: Boot-v3 runtime simulation and QEMU early-boot attempt
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+
+    env:
+      WORK: ${{ github.workspace }}/workflow47
+      INPUTS: ${{ github.workspace }}/workflow47/inputs
+      W18: ${{ github.workspace }}/workflow47/inputs/w18
+      W46: ${{ github.workspace }}/workflow47/inputs/w46c9
+      OUTPUT: ${{ github.workspace }}/workflow47/output
+
+    steps:
+      - name: Prepare simulation workspace
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -rf "$WORK"
+          mkdir -p "$INPUTS" "$W18" "$W46" "$OUTPUT"
+
+          cat > "$OUTPUT/SCOPE.txt" <<'EOF'
+          VEUX Workflow 47
+          ================
+
+          PURPOSE:
+          Re-run the proven Workflow-19/20R/21R style boot-path simulation
+          against the current deterministic Workflow-46C9 kernel.
+
+          TEST LAYERS:
+          1. Verify exact Workflow-46C9 Image and exact Workflow-18 stock ROM inputs.
+          2. Reconstruct a Boot-v3 dry-run partition by replacing ONLY the stock
+             kernel payload with the exact 46C9 Image.
+          3. Preserve stock ramdisk byte-for-byte.
+          4. Preserve Boot-v3 metadata other than kernel_size.
+          5. Regenerate the embedded algorithm-NONE AVB boot hash descriptor/footer.
+          6. Confirm stock vendor_boot, dtbo and top-level vbmeta are untouched.
+          7. Confirm the stock signed top-level vbmeta no longer hashes the changed
+             boot partition (expected for a modified boot on an unlocked device).
+          8. Simulate bootloader hand-off by extracting the new Image/ramdisk again.
+          9. Attempt early ARM64 execution with qemu-system-aarch64 on generic "virt".
+
+          QEMU LIMIT:
+          QEMU "virt" is NOT a POCO X4 Pro / Qualcomm SM6375 emulator.
+          A QEMU timeout, missing serial output, or later platform/rootfs panic does
+          NOT prove that the kernel cannot boot on VEUX. An immediate QEMU image-load
+          failure does indicate a malformed ARM64 Image and is treated as hard failure.
+
+          NO PHONE CONNECTED.
+          NO PHYSICAL PARTITION ACCESS.
+          NO FLASH.
+          NO FASTBOOT.
+          NO ADB.
+          NO vendor_boot MODIFICATION.
+          NO dtbo MODIFICATION.
+          NO top-level vbmeta MODIFICATION.
+
+          The generated dry-run boot image is audit material only:
+          DO NOT FLASH.
+          EOF
+
+      - name: Install audit and QEMU dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            file \
+            jq \
+            lz4 \
+            python3 \
+            qemu-system-arm \
+            unzip
+
+          command -v qemu-system-aarch64
+          qemu-system-aarch64 --version | tee "$OUTPUT/QEMU-VERSION.txt"
+
+      - name: Download exact Workflow 18 and 46C9 artifacts
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          ALL="$WORK/artifacts.ndjson"
+          : > "$ALL"
+
+          page=1
+          while :; do
+            PAGE_JSON="$WORK/artifacts-page-${page}.json"
+
+            curl \
+              --fail \
+              --silent \
+              --show-error \
+              --retry 3 \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts?per_page=100&page=${page}" \
+              -o "$PAGE_JSON"
+
+            COUNT="$(jq '.artifacts | length' "$PAGE_JSON")"
+            jq -c '.artifacts[]' "$PAGE_JSON" >> "$ALL"
+
+            if [ "$COUNT" -lt 100 ]; then
+              break
+            fi
+
+            page=$((page + 1))
+            [ "$page" -le 20 ] || {
+              echo "ERROR: artifact pagination safety limit reached"
+              exit 1
+            }
+          done
+
+          download_exact_artifact() {
+            local NAME="$1"
+            local DEST="$2"
+            local META="$3"
+
+            local MATCHES COUNT SELECTED URL ID
+
+            MATCHES="$(
+              jq -s \
+                --arg NAME "$NAME" \
+                '[.[] | select(.name == $NAME and .expired == false)] | sort_by(.created_at)' \
+                "$ALL"
+            )"
+
+            COUNT="$(jq 'length' <<< "$MATCHES")"
+
+            [ "$COUNT" -ge 1 ] || {
+              echo "ERROR: artifact not found or expired: $NAME"
+              exit 1
+            }
+
+            SELECTED="$(jq '.[-1]' <<< "$MATCHES")"
+            URL="$(jq -r '.archive_download_url' <<< "$SELECTED")"
+            ID="$(jq -r '.id' <<< "$SELECTED")"
+
+            jq . <<< "$SELECTED" > "$META"
+
+            echo "Downloading: $NAME"
+            echo "Artifact ID: $ID"
+
+            curl \
+              --fail \
+              --location \
+              --silent \
+              --show-error \
+              --retry 3 \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "$URL" \
+              -o "$DEST"
+
+            unzip -t "$DEST" > "${DEST}.ziptest.txt"
+          }
+
+          download_exact_artifact \
+            "$W18_ARTIFACT_NAME" \
+            "$INPUTS/w18-artifact.zip" \
+            "$OUTPUT/W18-ARTIFACT-METADATA.json"
+
+          download_exact_artifact \
+            "$W46C9_ARTIFACT_NAME" \
+            "$INPUTS/w46c9-artifact.zip" \
+            "$OUTPUT/W46C9-ARTIFACT-METADATA.json"
+
+          {
+            echo "W18_ARTIFACT=$W18_ARTIFACT_NAME"
+            echo "W18_OUTER_ZIP_SHA256=$(sha256sum "$INPUTS/w18-artifact.zip" | awk '{print $1}')"
+            echo "W46C9_ARTIFACT=$W46C9_ARTIFACT_NAME"
+            echo "W46C9_OUTER_ZIP_SHA256=$(sha256sum "$INPUTS/w46c9-artifact.zip" | awk '{print $1}')"
+          } > "$OUTPUT/INPUT-ARTIFACTS.txt"
+
+      - name: Verify exact Workflow 18 stock images
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          unzip -q "$INPUTS/w18-artifact.zip" -d "$W18"
+
+          if [ -f "$W18/SHA256SUMS" ]; then
+            (
+              cd "$W18"
+              sha256sum -c SHA256SUMS
+            ) > "$OUTPUT/W18-SHA256SUMS.verify.txt"
+          fi
+
+          STOCK="$W18/stock_images/stock_boot.img"
+          VENDOR="$W18/stock_images/stock_vendor_boot.img"
+          DTBO="$W18/stock_images/stock_dtbo.img"
+          VBMETA="$W18/stock_images/stock_vbmeta.img"
+
+          test -f "$STOCK"
+          test -f "$VENDOR"
+          test -f "$DTBO"
+          test -f "$VBMETA"
+
+          test "$(stat -c '%s' "$STOCK")" = "$STOCK_BOOT_BYTES"
+          test "$(sha256sum "$STOCK" | awk '{print $1}')" = "$STOCK_BOOT_SHA256"
+          test "$(sha256sum "$VENDOR" | awk '{print $1}')" = "$STOCK_VENDOR_BOOT_SHA256"
+          test "$(sha256sum "$DTBO" | awk '{print $1}')" = "$STOCK_DTBO_SHA256"
+          test "$(sha256sum "$VBMETA" | awk '{print $1}')" = "$STOCK_VBMETA_SHA256"
+
+          if [ -f "$W18/audit/WORKFLOW18-SUMMARY.txt" ]; then
+            grep -Fxq \
+              'RESULT: PASS_READ_ONLY_REPRODUCED_FROM_FASTBOOT_ROM' \
+              "$W18/audit/WORKFLOW18-SUMMARY.txt"
+            cp "$W18/audit/WORKFLOW18-SUMMARY.txt" "$OUTPUT/W18-WORKFLOW-SUMMARY.txt"
+          fi
+
+          {
+            echo "W18_STOCK_INPUT=PASS"
+            echo "STOCK_BOOT_BYTES=$STOCK_BOOT_BYTES"
+            echo "STOCK_BOOT_SHA256=$STOCK_BOOT_SHA256"
+            echo "STOCK_VENDOR_BOOT_SHA256=$STOCK_VENDOR_BOOT_SHA256"
+            echo "STOCK_DTBO_SHA256=$STOCK_DTBO_SHA256"
+            echo "STOCK_VBMETA_SHA256=$STOCK_VBMETA_SHA256"
+          } > "$OUTPUT/W18-INPUT-GATE.txt"
+
+      - name: Verify exact Workflow 46C9 kernel artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          unzip -q "$INPUTS/w46c9-artifact.zip" -d "$W46"
+
+          test -f "$W46/Image"
+          test -f "$W46/veux.dtb"
+          test -f "$W46/final.config"
+          test -f "$W46/kernelrelease.txt"
+          test -f "$W46/RESULT.txt"
+          test -f "$W46/CROSS-RUN-VERIFICATION.txt"
+
+          test "$(stat -c '%s' "$W46/Image")" = "$W46C9_IMAGE_BYTES"
+          test "$(sha256sum "$W46/Image" | awk '{print $1}')" = "$W46C9_IMAGE_SHA256"
+
+          test "$(stat -c '%s' "$W46/veux.dtb")" = "$W46C9_DTB_BYTES"
+          test "$(sha256sum "$W46/veux.dtb" | awk '{print $1}')" = "$W46C9_DTB_SHA256"
+
+          test "$(stat -c '%s' "$W46/final.config")" = "$W46C9_CONFIG_BYTES"
+          test "$(sha256sum "$W46/final.config" | awk '{print $1}')" = "$W46C9_CONFIG_SHA256"
+
+          test "$(tr -d '\r\n' < "$W46/kernelrelease.txt")" = "$W46C9_KERNEL_RELEASE"
+
+          grep -Fxq 'RESULT=PASS' "$W46/RESULT.txt"
+          grep -Fxq 'CROSS_RUN_REPRODUCIBILITY=PASS' "$W46/CROSS-RUN-VERIFICATION.txt"
+
+          python3 - "$W46/Image" "$OUTPUT/W46C9-ARM64-HEADER.txt" <<'PY'
+          import struct
+          import sys
+          from pathlib import Path
+
+          data = Path(sys.argv[1]).read_bytes()
+          out = Path(sys.argv[2])
+
+          if len(data) < 64:
+              raise SystemExit("ERROR: Image too small")
+
+          text_offset, image_size, flags = struct.unpack_from("<QQQ", data, 8)
+          magic, res5 = struct.unpack_from("<II", data, 56)
+
+          if text_offset != 0x80000:
+              raise SystemExit(f"ERROR: unexpected text_offset {text_offset:#x}")
+          if image_size != 38825984:
+              raise SystemExit(f"ERROR: unexpected ARM64 image_size {image_size}")
+          if flags != 0xA:
+              raise SystemExit(f"ERROR: unexpected ARM64 flags {flags:#x}")
+          if magic != 0x644D5241:
+              raise SystemExit(f"ERROR: unexpected ARM64 magic {magic:#x}")
+          if res5 != 0x40:
+              raise SystemExit(f"ERROR: unexpected ARM64 res5 {res5:#x}")
+
+          out.write_text(
+              "\n".join([
+                  "W46C9_ARM64_IMAGE_HEADER=PASS",
+                  f"text_offset=0x{text_offset:x}",
+                  f"image_size={image_size}",
+                  f"flags=0x{flags:x}",
+                  f"magic=0x{magic:x}",
+                  f"res5=0x{res5:x}",
+                  "",
+              ]),
+              encoding="utf-8",
+          )
+          PY
+
+          {
+            echo "W46C9_INPUT=PASS"
+            echo "IMAGE_BYTES=$W46C9_IMAGE_BYTES"
+            echo "IMAGE_SHA256=$W46C9_IMAGE_SHA256"
+            echo "DTB_SHA256=$W46C9_DTB_SHA256"
+            echo "CONFIG_SHA256=$W46C9_CONFIG_SHA256"
+            echo "KERNEL_RELEASE=$W46C9_KERNEL_RELEASE"
+          } > "$OUTPUT/W46C9-INPUT-GATE.txt"
+
+      - name: Reconstruct exact Boot v3 dry-run with 46C9 Image
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cat > "$WORK/repack46c9.py" <<'PY'
+          import hashlib
+          import json
+          import struct
+          import sys
+          from pathlib import Path
+
+          stock_path = Path(sys.argv[1])
+          image_path = Path(sys.argv[2])
+          vbmeta_path = Path(sys.argv[3])
+          vendor_path = Path(sys.argv[4])
+          dtbo_path = Path(sys.argv[5])
+          out_path = Path(sys.argv[6])
+          report_path = Path(sys.argv[7])
+          ramdisk_out = Path(sys.argv[8])
+
+          stock = stock_path.read_bytes()
+          image = image_path.read_bytes()
+          top_vbmeta = vbmeta_path.read_bytes()
+          vendor = vendor_path.read_bytes()
+          dtbo = dtbo_path.read_bytes()
+
+          def sha(data):
+              return hashlib.sha256(data).hexdigest()
+
+          def align(value, size=4096):
+              return (value + size - 1) // size * size
+
+          def need(condition, message):
+              if not condition:
+                  raise SystemExit("ERROR: " + message)
+
+          def parse_footer(data):
+              raw = data[-64:]
+              need(raw[:4] == b"AVBf", "AVB footer magic")
+              major, minor = struct.unpack_from(">II", raw, 4)
+              original, offset, size = struct.unpack_from(">QQQ", raw, 12)
+              need(offset + size <= len(data) - 64, "AVB footer geometry")
+              return {
+                  "major": major,
+                  "minor": minor,
+                  "original": original,
+                  "offset": offset,
+                  "size": size,
+                  "raw": raw,
+                  "vbmeta": data[offset:offset + size],
+              }
+
+          def parse_vbmeta(vb):
+              need(vb[:4] == b"AVB0", "AVB0 magic")
+              auth_size, aux_size = struct.unpack_from(">QQ", vb, 12)
+              algorithm_type = struct.unpack_from(">I", vb, 28)[0]
+              values = struct.unpack_from(">QQQQQQQQQQQ", vb, 32)
+              descriptors_offset = values[8]
+              descriptors_size = values[9]
+              flags, rollback_location = struct.unpack_from(">II", vb, 120)
+              release = vb[128:176].split(b"\0", 1)[0].decode("ascii", "replace")
+
+              aux_start = 256 + auth_size
+              pos = aux_start + descriptors_offset
+              end = pos + descriptors_size
+              need(end <= aux_start + aux_size, "AVB descriptor geometry")
+
+              descriptors = []
+              while pos < end:
+                  tag, following = struct.unpack_from(">QQ", vb, pos)
+                  raw = vb[pos:pos + 16 + following]
+                  need(len(raw) == 16 + following, "truncated AVB descriptor")
+
+                  item = {"tag": tag, "offset": pos, "raw": raw}
+
+                  if tag == 2:
+                      image_size = struct.unpack_from(">Q", raw, 16)[0]
+                      algorithm = raw[24:56].split(b"\0", 1)[0].decode("ascii", "replace")
+                      name_len, salt_len, digest_len, dflags = struct.unpack_from(">IIII", raw, 56)
+
+                      q = 132
+                      partition = raw[q:q + name_len].decode("ascii", "replace")
+                      q += name_len
+                      salt = raw[q:q + salt_len]
+                      q += salt_len
+                      digest = raw[q:q + digest_len]
+
+                      item.update({
+                          "type": "hash",
+                          "image_size": image_size,
+                          "hash_algorithm": algorithm,
+                          "partition": partition,
+                          "salt": salt,
+                          "digest": digest,
+                          "digest_offset": pos + q,
+                          "digest_len": digest_len,
+                          "image_size_offset": pos + 16,
+                          "flags": dflags,
+                      })
+                  else:
+                      item["type"] = "other"
+
+                  descriptors.append(item)
+                  pos += 16 + following
+
+              need(pos == end, "AVB descriptor parse end")
+
+              return {
+                  "algorithm_type": algorithm_type,
+                  "flags": flags,
+                  "rollback_index_location": rollback_location,
+                  "release": release,
+                  "descriptors": descriptors,
+              }
+
+          def get_hash_descriptor(info, partition):
+              found = [
+                  x for x in info["descriptors"]
+                  if x.get("type") == "hash" and x.get("partition") == partition
+              ]
+              need(len(found) == 1, f"one hash descriptor for {partition}")
+              return found[0]
+
+          def verify_hash_descriptor(data, descriptor):
+              need(descriptor["hash_algorithm"] == "sha256", "hash algorithm")
+              need(descriptor["image_size"] <= len(data), "hash image_size")
+              calculated = hashlib.sha256(
+                  descriptor["salt"] + data[:descriptor["image_size"]]
+              ).digest()
+              return calculated == descriptor["digest"], calculated
+
+          need(len(stock) == 134217728, "stock boot partition size")
+          need(sha(stock) == "ac6522e4eed55782dd2ae61362e9d345d01a1f229c87333818511d5537fa79c5", "stock boot hash")
+          need(sha(image) == "41d79cc66653ac75c390eb21c23029d921f9a0a2ef683c5d65a0edbb745bbce1", "46C9 Image hash")
+          need(sha(vendor) == "583e1f4c0e09c2267cda88bd48a8b4f56cf5c5e034fbda7b25bd65aa86385425", "vendor_boot hash")
+          need(sha(dtbo) == "e9f3bae2c5417ff297162f1e7d2652ee98b347488fdf091d61daa986fbfb7690", "dtbo hash")
+          need(sha(top_vbmeta) == "62a5b1a94c2247c786e8148b9d9d0aea943b57b1034b3fd82d9cac9a85fcde97", "top vbmeta hash")
+
+          need(stock[:8] == b"ANDROID!", "boot magic")
+
+          kernel_size, ramdisk_size, os_raw, header_size = struct.unpack_from("<4I", stock, 8)
+          reserved = struct.unpack_from("<4I", stock, 24)
+          header_version = struct.unpack_from("<I", stock, 40)[0]
+
+          need(kernel_size == 45480448, "stock kernel size")
+          need(ramdisk_size == 22061278, "stock ramdisk size")
+          need(header_size == 1580, "header size")
+          need(header_version == 3, "boot header v3")
+          need(reserved == (0, 0, 0, 0), "reserved header fields")
+          need(all(v == 0 for v in stock[header_size:4096]), "header padding")
+
+          stock_ramdisk_offset = 4096 + align(kernel_size)
+          stock_payload_end = stock_ramdisk_offset + align(ramdisk_size)
+          stock_kernel = stock[4096:4096 + kernel_size]
+          ramdisk = stock[stock_ramdisk_offset:stock_ramdisk_offset + ramdisk_size]
+
+          need(sha(stock_kernel) == "6e513b3652aa1de599c26b6aaeefef12dac569daf8648bbb67de99932782c50b", "stock kernel hash")
+          need(sha(ramdisk) == "0bc8b54373b5501818e8b252517419786db207771047b6def7ec9bc89beb607a", "stock ramdisk hash")
+          need(ramdisk[:4] == bytes.fromhex("02214c18"), "legacy LZ4 ramdisk")
+
+          ramdisk_out.write_bytes(ramdisk)
+
+          stock_footer = parse_footer(stock)
+          need(stock_footer["major"] == 1 and stock_footer["minor"] == 0, "AVB footer version")
+          need(stock_footer["original"] == stock_payload_end, "stock original image size")
+          need(stock_footer["offset"] == stock_payload_end, "stock vbmeta offset")
+          need(stock_footer["size"] == 896, "embedded vbmeta size")
+
+          stock_embedded = parse_vbmeta(stock_footer["vbmeta"])
+          need(stock_embedded["algorithm_type"] == 0, "embedded vbmeta algorithm NONE")
+
+          stock_boot_desc = get_hash_descriptor(stock_embedded, "boot")
+          stock_ok, stock_calc = verify_hash_descriptor(stock, stock_boot_desc)
+          need(stock_ok, "stock embedded boot descriptor verifies")
+
+          new_ramdisk_offset = 4096 + align(len(image))
+          new_payload_end = new_ramdisk_offset + align(len(ramdisk))
+
+          need(new_ramdisk_offset == 29851648, "new ramdisk offset")
+          need(new_payload_end == 51916800, "new payload end")
+
+          output = bytearray(len(stock))
+          header = bytearray(stock[:4096])
+          struct.pack_into("<I", header, 8, len(image))
+          output[:4096] = header
+
+          output[4096:4096 + len(image)] = image
+          output[new_ramdisk_offset:new_ramdisk_offset + len(ramdisk)] = ramdisk
+
+          new_vbmeta = bytearray(stock_footer["vbmeta"])
+          struct.pack_into(
+              ">Q",
+              new_vbmeta,
+              stock_boot_desc["image_size_offset"],
+              new_payload_end,
+          )
+
+          new_digest = hashlib.sha256(
+              stock_boot_desc["salt"] + bytes(output[:new_payload_end])
+          ).digest()
+
+          new_vbmeta[
+              stock_boot_desc["digest_offset"]:
+              stock_boot_desc["digest_offset"] + stock_boot_desc["digest_len"]
+          ] = new_digest
+
+          output[
+              new_payload_end:
+              new_payload_end + len(new_vbmeta)
+          ] = new_vbmeta
+
+          new_footer = bytearray(stock_footer["raw"])
+          struct.pack_into(">Q", new_footer, 12, new_payload_end)
+          struct.pack_into(">Q", new_footer, 20, new_payload_end)
+          output[-64:] = new_footer
+
+          dryrun = bytes(output)
+          out_path.write_bytes(dryrun)
+
+          need(sha(dryrun) == "af3f0f9451398faad0a6734024160c6375630ff21d0e9d56e6db91a17bcf3dc5", "dry-run deterministic hash")
+          need(new_digest.hex() == "4827594ae1346c6a5c7ab6e0a7ec6cebb404f0b074357faeeb49662025272c3a", "dry-run embedded digest")
+
+          dry_footer = parse_footer(dryrun)
+          dry_embedded = parse_vbmeta(dry_footer["vbmeta"])
+          dry_desc = get_hash_descriptor(dry_embedded, "boot")
+          dry_ok, dry_calc = verify_hash_descriptor(dryrun, dry_desc)
+          need(dry_ok, "dry-run embedded boot descriptor verifies")
+          need(dry_calc == new_digest, "independent dry-run digest match")
+
+          need(dryrun[12:4096] == stock[12:4096], "Boot-v3 metadata after kernel_size unchanged")
+          need(dryrun[4096:4096 + len(image)] == image, "46C9 Image embedded byte-for-byte")
+          need(
+              dryrun[new_ramdisk_offset:new_ramdisk_offset + len(ramdisk)] == ramdisk,
+              "stock ramdisk preserved byte-for-byte",
+          )
+          need(
+              all(v == 0 for v in dryrun[4096 + len(image):new_ramdisk_offset]),
+              "kernel alignment padding zero",
+          )
+          need(
+              all(v == 0 for v in dryrun[new_ramdisk_offset + len(ramdisk):new_payload_end]),
+              "ramdisk alignment padding zero",
+          )
+          need(
+              all(v == 0 for v in dryrun[new_payload_end + 896:-64]),
+              "unused boot partition zero-filled",
+          )
+
+          top = parse_vbmeta(top_vbmeta)
+          need(top["algorithm_type"] == 1, "stock top-level vbmeta algorithm type")
+
+          top_boot = get_hash_descriptor(top, "boot")
+          top_vendor = get_hash_descriptor(top, "vendor_boot")
+          top_dtbo = get_hash_descriptor(top, "dtbo")
+
+          stock_top_ok, _ = verify_hash_descriptor(stock, top_boot)
+          dry_top_ok, _ = verify_hash_descriptor(dryrun, top_boot)
+          vendor_top_ok, _ = verify_hash_descriptor(vendor, top_vendor)
+          dtbo_top_ok, _ = verify_hash_descriptor(dtbo, top_dtbo)
+
+          need(stock_top_ok, "top-level vbmeta verifies stock boot")
+          need(not dry_top_ok, "stock top-level vbmeta must not verify changed boot")
+          need(vendor_top_ok, "top-level vbmeta verifies untouched vendor_boot")
+          need(dtbo_top_ok, "top-level vbmeta verifies untouched dtbo")
+
+          report = {
+              "result": "PASS_46C9_BOOT_V3_DRYRUN",
+              "stock_boot": {
+                  "bytes": len(stock),
+                  "sha256": sha(stock),
+                  "kernel_bytes": kernel_size,
+                  "ramdisk_bytes": ramdisk_size,
+                  "header_version": header_version,
+                  "header_size": header_size,
+              },
+              "custom_kernel": {
+                  "bytes": len(image),
+                  "sha256": sha(image),
+              },
+              "dryrun_boot": {
+                  "bytes": len(dryrun),
+                  "sha256": sha(dryrun),
+                  "new_ramdisk_offset": new_ramdisk_offset,
+                  "new_payload_end": new_payload_end,
+                  "embedded_avb_digest": new_digest.hex(),
+                  "embedded_avb_descriptor_verifies": dry_ok,
+              },
+              "preservation": {
+                  "stock_ramdisk_sha256": sha(ramdisk),
+                  "boot_metadata_after_kernel_size_identical": True,
+                  "vendor_boot_unchanged": True,
+                  "dtbo_unchanged": True,
+                  "top_level_vbmeta_unchanged": True,
+              },
+              "top_level_vbmeta_relationship": {
+                  "stock_boot_verifies": stock_top_ok,
+                  "custom_dryrun_boot_verifies": dry_top_ok,
+                  "vendor_boot_verifies": vendor_top_ok,
+                  "dtbo_verifies": dtbo_top_ok,
+                  "custom_boot_mismatch_expected": True,
+              },
+          }
+
+          report_path.write_text(
+              json.dumps(report, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          PY
+
+          python3 \
+            "$WORK/repack46c9.py" \
+            "$W18/stock_images/stock_boot.img" \
+            "$W46/Image" \
+            "$W18/stock_images/stock_vbmeta.img" \
+            "$W18/stock_images/stock_vendor_boot.img" \
+            "$W18/stock_images/stock_dtbo.img" \
+            "$OUTPUT/DO_NOT_FLASH_46C9_boot_v3_dryrun.img" \
+            "$OUTPUT/BOOT-V3-DRYRUN.json" \
+            "$OUTPUT/stock-ramdisk.lz4"
+
+          jq -e \
+            --arg SHA "$EXPECTED_DRYRUN_BOOT_SHA256" \
+            --arg DIGEST "$EXPECTED_DRYRUN_EMBEDDED_AVB_DIGEST" \
+            '
+              .result == "PASS_46C9_BOOT_V3_DRYRUN"
+              and .dryrun_boot.sha256 == $SHA
+              and .dryrun_boot.embedded_avb_digest == $DIGEST
+              and .dryrun_boot.embedded_avb_descriptor_verifies == true
+              and .preservation.boot_metadata_after_kernel_size_identical == true
+              and .preservation.vendor_boot_unchanged == true
+              and .preservation.dtbo_unchanged == true
+              and .preservation.top_level_vbmeta_unchanged == true
+              and .top_level_vbmeta_relationship.stock_boot_verifies == true
+              and .top_level_vbmeta_relationship.custom_dryrun_boot_verifies == false
+              and .top_level_vbmeta_relationship.vendor_boot_verifies == true
+              and .top_level_vbmeta_relationship.dtbo_verifies == true
+              and .top_level_vbmeta_relationship.custom_boot_mismatch_expected == true
+            ' \
+            "$OUTPUT/BOOT-V3-DRYRUN.json" \
+            >/dev/null
+
+          {
+            echo "BOOT_V3_DRYRUN=PASS"
+            echo "DRYRUN_BOOT_BYTES=$(stat -c '%s' "$OUTPUT/DO_NOT_FLASH_46C9_boot_v3_dryrun.img")"
+            echo "DRYRUN_BOOT_SHA256=$(sha256sum "$OUTPUT/DO_NOT_FLASH_46C9_boot_v3_dryrun.img" | awk '{print $1}')"
+            echo "EMBEDDED_AVB_DIGEST=$EXPECTED_DRYRUN_EMBEDDED_AVB_DIGEST"
+            echo "STOCK_RAMDISK_SHA256=$(sha256sum "$OUTPUT/stock-ramdisk.lz4" | awk '{print $1}')"
+            echo "TOP_LEVEL_STOCK_VBMETA_MATCHES_CUSTOM_BOOT=NO_EXPECTED"
+            echo "FLASHED=NO"
+          } > "$OUTPUT/BOOT-V3-DRYRUN.txt"
+
+      - name: Simulate bootloader hand-off from reconstructed boot image
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - \
+            "$OUTPUT/DO_NOT_FLASH_46C9_boot_v3_dryrun.img" \
+            "$W46/Image" \
+            "$OUTPUT/stock-ramdisk.lz4" \
+            "$OUTPUT/BOOTLOADER-HANDOFF.txt" <<'PY'
+          import hashlib
+          import struct
+          import sys
+          from pathlib import Path
+
+          boot = Path(sys.argv[1]).read_bytes()
+          expected_image = Path(sys.argv[2]).read_bytes()
+          expected_ramdisk = Path(sys.argv[3]).read_bytes()
+          report = Path(sys.argv[4])
+
+          def sha(data):
+              return hashlib.sha256(data).hexdigest()
+
+          def align(value, size=4096):
+              return (value + size - 1) // size * size
+
+          if boot[:8] != b"ANDROID!":
+              raise SystemExit("ERROR: missing Android boot magic")
+
+          kernel_size, ramdisk_size, _, header_size = struct.unpack_from("<4I", boot, 8)
+          header_version = struct.unpack_from("<I", boot, 40)[0]
+
+          if header_version != 3 or header_size != 1580:
+              raise SystemExit("ERROR: unexpected Boot-v3 header")
+
+          kernel = boot[4096:4096 + kernel_size]
+          ramdisk_offset = 4096 + align(kernel_size)
+          ramdisk = boot[ramdisk_offset:ramdisk_offset + ramdisk_size]
+
+          if kernel != expected_image:
+              raise SystemExit("ERROR: bootloader-extracted kernel differs from 46C9 Image")
+          if ramdisk != expected_ramdisk:
+              raise SystemExit("ERROR: bootloader-extracted ramdisk differs from stock ramdisk")
+
+          text_offset, arm_image_size, flags = struct.unpack_from("<QQQ", kernel, 8)
+          magic, res5 = struct.unpack_from("<II", kernel, 56)
+
+          if text_offset != 0x80000:
+              raise SystemExit("ERROR: ARM64 text offset")
+          if flags != 0xA:
+              raise SystemExit("ERROR: ARM64 flags")
+          if magic != 0x644D5241:
+              raise SystemExit("ERROR: ARM64 Image magic")
+
+          report.write_text(
+              "\n".join([
+                  "BOOTLOADER_HANDOFF_SIMULATION=PASS",
+                  f"boot_header_version={header_version}",
+                  f"kernel_size={kernel_size}",
+                  f"kernel_sha256={sha(kernel)}",
+                  f"ramdisk_size={ramdisk_size}",
+                  f"ramdisk_sha256={sha(ramdisk)}",
+                  f"ramdisk_offset={ramdisk_offset}",
+                  f"arm64_text_offset=0x{text_offset:x}",
+                  f"arm64_image_size={arm_image_size}",
+                  f"arm64_flags=0x{flags:x}",
+                  f"arm64_magic=0x{magic:x}",
+                  f"arm64_res5=0x{res5:x}",
+                  "",
+              ]),
+              encoding="utf-8",
+          )
+          PY
+
+          grep -Fxq 'BOOTLOADER_HANDOFF_SIMULATION=PASS' "$OUTPUT/BOOTLOADER-HANDOFF.txt"
+
+      - name: Attempt QEMU ARM64 early kernel boot
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          QEMU_LOG="$OUTPUT/QEMU-EARLY-BOOT.log"
+          QEMU_STATUS="$OUTPUT/QEMU-EARLY-BOOT-STATUS.txt"
+
+          set +e
+          timeout --signal=TERM --kill-after=5s 30s \
+            qemu-system-aarch64 \
+              -machine virt,gic-version=2 \
+              -cpu cortex-a57 \
+              -smp 4 \
+              -m 2048 \
+              -nographic \
+              -no-reboot \
+              -kernel "$W46/Image" \
+              -initrd "$OUTPUT/stock-ramdisk.lz4" \
+              -append "console=ttyAMA0 earlycon=pl011,0x09000000 loglevel=8 printk.time=1 panic=-1" \
+            > "$QEMU_LOG" 2>&1
+          QEMU_RC=$?
+          set -e
+
+          printf '%s\n' "$QEMU_RC" > "$OUTPUT/QEMU-EARLY-BOOT.exit-code"
+
+          if grep -Eqi \
+            'Could not load kernel|failed to load kernel|invalid.*kernel|Error loading kernel' \
+            "$QEMU_LOG"
+          then
+            {
+              echo "QEMU_EARLY_BOOT=INCONCLUSIVE_QEMU_LOADER_REJECTED"
+              echo "QEMU_EXIT_CODE=$QEMU_RC"
+              echo "INTERPRETATION=Generic QEMU rejected or could not load the vendor-targeted Image."
+              echo "EXPECTED_LIMIT=The ARM64 header is independently hard-gated before this optional QEMU probe."
+              echo "VEUX_BOOT_FAILURE_CLAIM=NO"
+            } > "$QEMU_STATUS"
+          elif grep -Eqi \
+            'Linux version|Booting Linux|Kernel panic|Unable to mount root fs|Run /init as init process|Freeing unused kernel memory|Machine model|Calibrating delay loop' \
+            "$QEMU_LOG"
+          then
+            {
+              echo "QEMU_EARLY_BOOT=PASS_KERNEL_EXECUTION_EVIDENCE"
+              echo "QEMU_EXIT_CODE=$QEMU_RC"
+              echo "INTERPRETATION=The generic QEMU ARM64 machine reached observable kernel execution."
+              echo "VEUX_BOOT_CLAIM=NO"
+            } > "$QEMU_STATUS"
+          else
+            {
+              echo "QEMU_EARLY_BOOT=INCONCLUSIVE_NO_SERIAL_EVIDENCE"
+              echo "QEMU_EXIT_CODE=$QEMU_RC"
+              echo "INTERPRETATION=No generic-QEMU kernel serial evidence was observed."
+              echo "EXPECTED_LIMIT=The 46C9 kernel targets Qualcomm SM6375/VEUX, not QEMU virt."
+              echo "VEUX_BOOT_FAILURE_CLAIM=NO"
+            } > "$QEMU_STATUS"
+          fi
+
+          cat "$QEMU_STATUS"
+
+      - name: Build boot-stage simulation verdict
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          DRY_SHA="$(sha256sum "$OUTPUT/DO_NOT_FLASH_46C9_boot_v3_dryrun.img" | awk '{print $1}')"
+          RAM_SHA="$(sha256sum "$OUTPUT/stock-ramdisk.lz4" | awk '{print $1}')"
+          QEMU_RESULT="$(grep '^QEMU_EARLY_BOOT=' "$OUTPUT/QEMU-EARLY-BOOT-STATUS.txt" | cut -d= -f2-)"
+
+          test "$DRY_SHA" = "$EXPECTED_DRYRUN_BOOT_SHA256"
+          test "$RAM_SHA" = "$STOCK_RAMDISK_SHA256"
+
+          cat > "$OUTPUT/BOOT-STAGE-VERDICT.txt" <<EOF
+          WORKFLOW=47
+          RESULT=PASS_BOOT_PATH_SIMULATION
+
+          INPUT_46C9_IMAGE=PASS
+          INPUT_STOCK_BOOT=PASS
+          ARM64_IMAGE_HEADER=PASS
+          BOOT_V3_REPACK=PASS
+          STOCK_RAMDISK_PRESERVED=PASS
+          EMBEDDED_BOOT_AVB_DESCRIPTOR=PASS
+          VENDOR_BOOT_UNTOUCHED=PASS
+          DTBO_UNTOUCHED=PASS
+          TOP_LEVEL_VBMETA_UNTOUCHED=PASS
+          STOCK_TOP_LEVEL_VBMETA_MATCHES_MODIFIED_BOOT=NO_EXPECTED
+          BOOTLOADER_HANDOFF_SIMULATION=PASS
+          QEMU_EARLY_BOOT=$QEMU_RESULT
+
+          DRYRUN_BOOT_SHA256=$DRY_SHA
+          46C9_IMAGE_SHA256=$W46C9_IMAGE_SHA256
+          STOCK_RAMDISK_SHA256=$RAM_SHA
+          KERNEL_RELEASE=$W46C9_KERNEL_RELEASE
+
+          DEVICE_ACCESSED=NO
+          DEVICE_FLASHED=NO
+          FASTBOOT_USED=NO
+          ADB_USED=NO
+
+          IMPORTANT:
+          PASS_BOOT_PATH_SIMULATION does not equal proof of a real POCO X4 Pro boot.
+          The real VEUX device remains the final boot-compatibility test.
+          EOF
+
+          grep -Fxq 'RESULT=PASS_BOOT_PATH_SIMULATION' "$OUTPUT/BOOT-STAGE-VERDICT.txt"
+          grep -Fxq 'BOOTLOADER_HANDOFF_SIMULATION=PASS' "$OUTPUT/BOOT-STAGE-VERDICT.txt"
+
+      - name: Final audit hashes
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          (
+            cd "$OUTPUT"
+            find . -maxdepth 1 -type f ! -name 'SHA256SUMS' -print0 \
+              | LC_ALL=C sort -z \
+              | xargs -0 sha256sum \
+              > SHA256SUMS
+          )
+
+          {
+            echo "RESULT=PASS"
+            echo "WORKFLOW=47"
+            echo "BOOT_PATH_SIMULATION=PASS"
+            echo "BOOT_V3_DRYRUN_SHA256=$EXPECTED_DRYRUN_BOOT_SHA256"
+            echo "W46C9_IMAGE_SHA256=$W46C9_IMAGE_SHA256"
+            echo "STOCK_BOOT_SHA256=$STOCK_BOOT_SHA256"
+            echo "NO_DEVICE_ACCESS=YES"
+            echo "NO_FLASH=YES"
+          } > "$OUTPUT/RESULT.txt"
+
+          (
+            cd "$OUTPUT"
+            sha256sum -c SHA256SUMS > SHA256SUMS.verify.txt
+          )
+
+      - name: Upload Workflow 47 simulation evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: VEUX-47-46C9-Boot-v3-Runtime-QEMU-Early-Boot-Audit-${{ github.run_number }}
+          path: workflow47/output/
+          if-no-files-found: error
+          include-hidden-files: true
+          retention-days: 30
+          compression-level: 0
