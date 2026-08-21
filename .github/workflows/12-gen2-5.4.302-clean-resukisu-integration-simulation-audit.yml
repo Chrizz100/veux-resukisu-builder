@@ -1,0 +1,435 @@
+name: 12 - GEN2 5.4.302 Clean ReSukiSU Integration Simulation Audit
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout pinned GEN2 kernel source with full history
+        uses: actions/checkout@v6
+        with:
+          repository: dereference23/kernel_xiaomi_sm6375
+          ref: f4b8a13a43a130a9aab83cc985ce4d4421291ae6
+          path: kernel-src
+          fetch-depth: 0
+
+      - name: Checkout pinned ReSukiSU reference
+        uses: actions/checkout@v6
+        with:
+          repository: ReSukiSU/ReSukiSU
+          ref: faccf4c5edc7be37776216e7d43dd3dca0239331
+          path: resukisu
+          fetch-depth: 1
+
+      - name: Verify exact pins and pristine project source
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test "$(git -C kernel-src rev-parse HEAD)" = \
+            "f4b8a13a43a130a9aab83cc985ce4d4421291ae6"
+
+          test "$(git -C resukisu rev-parse HEAD)" = \
+            "faccf4c5edc7be37776216e7d43dd3dca0239331"
+
+          git -C kernel-src diff --exit-code
+          git -C kernel-src diff --cached --exit-code
+
+      - name: Record exact ReSukiSU setup contract
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          {
+            echo "RESUKISU_COMMIT=$(git -C resukisu rev-parse HEAD)"
+            echo
+            echo "=== kernel/setup.sh ==="
+            cat resukisu/kernel/setup.sh
+            echo
+            echo "=== Kconfig hooking choice ==="
+            grep -n -A 55 -B 8 \
+              'choice' \
+              resukisu/kernel/Kconfig \
+              | sed -n '1,140p'
+          } | tee resukisu-setup-contract.txt
+
+      - name: Prepare exact legacy-removal patches
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          INCLUDE_COMMIT='1c1b2124991bcaf7c93cad5e460e9b9dfb32e4ed'
+          HOOK_COMMIT='3f95a98681655eeb1b928e001d30e00072ae0d8b'
+
+          mkdir -p reverse-patches
+
+          git -C kernel-src show \
+            --format= \
+            "$INCLUDE_COMMIT" \
+            -- drivers/Kconfig drivers/Makefile \
+            > reverse-patches/include-kernelsu.patch
+
+          git -C kernel-src show \
+            --format= \
+            "$HOOK_COMMIT" \
+            -- fs/devpts/inode.c fs/exec.c fs/namespace.c \
+               fs/open.c fs/read_write.c fs/stat.c \
+            > reverse-patches/legacy-hooks.patch
+
+          git -C kernel-src apply \
+            --reverse \
+            --check \
+            "$GITHUB_WORKSPACE/reverse-patches/include-kernelsu.patch"
+
+          git -C kernel-src apply \
+            --reverse \
+            --check \
+            "$GITHUB_WORKSPACE/reverse-patches/legacy-hooks.patch"
+
+          echo "LEGACY_REMOVAL_REVERSE_CHECK=CLEAN" \
+            | tee legacy-removal-precheck.txt
+
+      - name: Create isolated clean integration simulation worktree
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SIM="$RUNNER_TEMP/gen2-resukisu-sim"
+          rm -rf "$SIM"
+
+          git -C kernel-src worktree add \
+            --detach \
+            "$SIM" \
+            f4b8a13a43a130a9aab83cc985ce4d4421291ae6
+
+          echo "$SIM" > simulation-worktree.path
+
+      - name: Remove legacy KernelSU only inside simulation
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SIM="$(cat simulation-worktree.path)"
+
+          git -C "$SIM" apply \
+            --reverse \
+            "$GITHUB_WORKSPACE/reverse-patches/include-kernelsu.patch"
+
+          git -C "$SIM" apply \
+            --reverse \
+            "$GITHUB_WORKSPACE/reverse-patches/legacy-hooks.patch"
+
+          rm -rf "$SIM/drivers/kernelsu"
+
+          if git -C "$SIM" grep -q -I -E \
+            'CONFIG_KSU|ksu_handle_|ksu_[A-Za-z0-9_]+_hook|KernelSU|kernelsu' \
+            -- ':!.github/**'; then
+            echo "CLEAN_PRE_RESUKISU_KSU_FOOTPRINT=NO"
+            git -C "$SIM" grep -n -I -E \
+              'CONFIG_KSU|ksu_handle_|ksu_[A-Za-z0-9_]+_hook|KernelSU|kernelsu' \
+              -- ':!.github/**' || true
+            exit 1
+          fi
+
+          echo "CLEAN_PRE_RESUKISU_KSU_FOOTPRINT=YES" \
+            | tee clean-pre-resukisu-state.txt
+
+      - name: Install pinned ReSukiSU in simulation using setup contract
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SIM="$(cat simulation-worktree.path)"
+          PIN='faccf4c5edc7be37776216e7d43dd3dca0239331'
+
+          git clone \
+            --no-local \
+            "$GITHUB_WORKSPACE/resukisu" \
+            "$SIM/KernelSU"
+
+          git -C "$SIM/KernelSU" checkout --detach "$PIN"
+
+          test "$(git -C "$SIM/KernelSU" rev-parse HEAD)" = "$PIN"
+
+          ln -s ../KernelSU/kernel "$SIM/drivers/kernelsu"
+
+          printf '\nobj-$(CONFIG_KSU) += kernelsu/\n' \
+            >> "$SIM/drivers/Makefile"
+
+          sed -i \
+            '/^endmenu$/i source "drivers/kernelsu/Kconfig"' \
+            "$SIM/drivers/Kconfig"
+
+          {
+            echo "RESUKISU_SETUP_SIMULATION=PASS"
+            echo "RESUKISU_COMMIT=$(git -C "$SIM/KernelSU" rev-parse HEAD)"
+            echo "DRIVERS_KERNELSU_TYPE=$(stat -c %F "$SIM/drivers/kernelsu")"
+            echo "DRIVERS_KERNELSU_TARGET=$(readlink "$SIM/drivers/kernelsu")"
+            echo
+            echo "=== drivers/Kconfig integration ==="
+            grep -n -C 3 \
+              'drivers/kernelsu/Kconfig' \
+              "$SIM/drivers/Kconfig"
+            echo
+            echo "=== drivers/Makefile integration ==="
+            grep -n -C 3 \
+              'CONFIG_KSU' \
+              "$SIM/drivers/Makefile"
+          } | tee resukisu-setup-simulation.txt
+
+      - name: Verify ReSukiSU symlink and source identity
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SIM="$(cat simulation-worktree.path)"
+
+          test -L "$SIM/drivers/kernelsu"
+          test "$(readlink "$SIM/drivers/kernelsu")" = "../KernelSU/kernel"
+          test -f "$SIM/drivers/kernelsu/Kconfig"
+          test -f "$SIM/drivers/kernelsu/Kbuild"
+          test -f "$SIM/drivers/kernelsu/Makefile"
+
+          cmp \
+            "$SIM/drivers/kernelsu/Kconfig" \
+            "$SIM/KernelSU/kernel/Kconfig"
+
+          cmp \
+            "$SIM/drivers/kernelsu/Kbuild" \
+            "$SIM/KernelSU/kernel/Kbuild"
+
+          echo "RESUKISU_SYMLINK_IDENTITY=PASS" \
+            | tee resukisu-symlink-identity.txt
+
+      - name: Resolve baseline VEUX config with clean ReSukiSU wiring
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SIM="$(cat simulation-worktree.path)"
+
+          rm -rf "$SIM/out"
+
+          make \
+            -C "$SIM" \
+            O="$SIM/out" \
+            ARCH=arm64 \
+            veux_defconfig
+
+          test -f "$SIM/out/.config"
+
+          {
+            echo "=== ReSukiSU default state after plain veux_defconfig ==="
+            grep -E \
+              '^(CONFIG_KSU|CONFIG_KSU_TRACEPOINT_HOOK|CONFIG_KSU_MANUAL_HOOK|CONFIG_KSU_SUSFS)=' \
+              "$SIM/out/.config" || true
+
+            grep -E \
+              '^# (CONFIG_KSU|CONFIG_KSU_TRACEPOINT_HOOK|CONFIG_KSU_MANUAL_HOOK|CONFIG_KSU_SUSFS) is not set$' \
+              "$SIM/out/.config" || true
+          } | tee resukisu-default-config-state.txt
+
+      - name: Resolve target ReSukiSU SUSFS Inline config only
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SIM="$(cat simulation-worktree.path)"
+
+          "$SIM/scripts/config" \
+            --file "$SIM/out/.config" \
+            -e KSU \
+            -e KSU_SUSFS \
+            -d KSU_TRACEPOINT_HOOK \
+            -d KSU_MANUAL_HOOK
+
+          make \
+            -C "$SIM" \
+            O="$SIM/out" \
+            ARCH=arm64 \
+            olddefconfig
+
+          {
+            echo "=== Target ReSukiSU/SUSFS-inline config ==="
+            grep -E \
+              '^(CONFIG_KSU|CONFIG_KSU_TRACEPOINT_HOOK|CONFIG_KSU_MANUAL_HOOK|CONFIG_KSU_SUSFS|CONFIG_THREAD_INFO_IN_TASK|CONFIG_64BIT)=' \
+              "$SIM/out/.config" || true
+
+            grep -E \
+              '^# (CONFIG_KSU_TRACEPOINT_HOOK|CONFIG_KSU_MANUAL_HOOK|CONFIG_KSU_SUSFS) is not set$' \
+              "$SIM/out/.config" || true
+          } | tee resukisu-susfs-target-config.txt
+
+          grep -q '^CONFIG_KSU=y$' "$SIM/out/.config"
+          grep -q '^CONFIG_KSU_SUSFS=y$' "$SIM/out/.config"
+          grep -q '^CONFIG_64BIT=y$' "$SIM/out/.config"
+          grep -q '^CONFIG_THREAD_INFO_IN_TASK=y$' "$SIM/out/.config"
+
+          if grep -q '^CONFIG_KSU_TRACEPOINT_HOOK=y$' "$SIM/out/.config"; then
+            echo "ERROR=TRACEPOINT_MODE_UNEXPECTEDLY_ENABLED"
+            exit 1
+          fi
+
+          if grep -q '^CONFIG_KSU_MANUAL_HOOK=y$' "$SIM/out/.config"; then
+            echo "ERROR=MANUAL_MODE_UNEXPECTEDLY_ENABLED"
+            exit 1
+          fi
+
+          cp "$SIM/out/.config" \
+            GEN2_12_RESUKISU_SUSFS_TARGET_CONFIG.txt
+
+      - name: Audit hook state before SUSFS kernel-side port
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SIM="$(cat simulation-worktree.path)"
+
+          required_present=0
+          required_absent=0
+          incompatible_present=0
+
+          {
+            echo "=== ReSukiSU SUSFS required inline hooks ==="
+
+            while IFS='|' read -r symbol file; do
+              if grep -wq "$symbol" "$SIM/$file"; then
+                echo "REQUIRED_PRESENT=$symbol FILE=$file"
+                required_present=$((required_present + 1))
+              else
+                echo "REQUIRED_ABSENT=$symbol FILE=$file"
+                required_absent=$((required_absent + 1))
+              fi
+            done <<'EOF'
+          ksu_handle_setresuid|kernel/sys.c
+          ksu_handle_execveat|fs/exec.c
+          ksu_handle_faccessat|fs/open.c
+          ksu_handle_sys_read|fs/read_write.c
+          ksu_handle_stat|fs/stat.c
+          ksu_handle_sys_reboot|kernel/reboot.c
+          ksu_handle_input_handle_event|drivers/input/input.c
+          EOF
+
+            echo
+            echo "=== Explicitly incompatible legacy hooks ==="
+
+            while IFS='|' read -r symbol file; do
+              if grep -wq "$symbol" "$SIM/$file"; then
+                echo "INCOMPATIBLE_PRESENT=$symbol FILE=$file"
+                incompatible_present=$((incompatible_present + 1))
+              else
+                echo "INCOMPATIBLE_ABSENT=$symbol FILE=$file"
+              fi
+            done <<'EOF'
+          ksu_vfs_read_hook|fs/read_write.c
+          ksu_input_hook|drivers/input/input.c
+          ksu_execveat_hook|fs/exec.c
+          ksu_init_rc_hook|fs/read_write.c
+          ksu_init_rc_hook|fs/stat.c
+          EOF
+
+            echo
+            echo "REQUIRED_HOOKS_PRESENT=$required_present"
+            echo "REQUIRED_HOOKS_ABSENT=$required_absent"
+            echo "INCOMPATIBLE_LEGACY_HOOKS_PRESENT=$incompatible_present"
+
+            if [ "$required_present" -eq 0 ] \
+              && [ "$required_absent" -eq 7 ] \
+              && [ "$incompatible_present" -eq 0 ]; then
+              echo "READY_FOR_FRESH_SUSFS_KERNEL_HOOK_PORT=YES"
+            else
+              echo "READY_FOR_FRESH_SUSFS_KERNEL_HOOK_PORT=NO"
+            fi
+          } | tee pre-susfs-hook-port-state.txt
+
+      - name: Record simulated ReSukiSU integration delta
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SIM="$(cat simulation-worktree.path)"
+
+          {
+            echo "=== Simulation status ==="
+            git -C "$SIM" status --short \
+              --untracked-files=all
+
+            echo
+            echo "=== Tracked integration delta ==="
+            git -C "$SIM" diff -- \
+              drivers/Kconfig drivers/Makefile \
+              fs/devpts/inode.c fs/exec.c fs/namespace.c \
+              fs/open.c fs/read_write.c fs/stat.c
+
+            echo
+            echo "=== ReSukiSU checkout identity ==="
+            git -C "$SIM/KernelSU" show -s \
+              --format='COMMIT=%H%nDATE=%cI%nSUBJECT=%s'
+
+            echo
+            echo "=== ReSukiSU kernel file count ==="
+            find "$SIM/KernelSU/kernel" -type f \
+              | wc -l
+          } | tee resukisu-integration-delta.txt
+
+      - name: Verify original project source remained untouched
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git -C kernel-src diff --exit-code
+          git -C kernel-src diff --cached --exit-code
+          test -z "$(git -C kernel-src status --porcelain)"
+
+          echo "ORIGINAL_PROJECT_SOURCE_UNTOUCHED=YES" \
+            | tee original-source-status.txt
+
+      - name: Write final audit file
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          {
+            echo "AUDIT=GEN2_12_CLEAN_RESUKISU_INTEGRATION_SIMULATION"
+            echo "RESULT=PASS"
+            echo "GEN2_12_CLEAN_RESUKISU_INTEGRATION_SIMULATION_AUDIT=PASS"
+            echo "KERNEL_COMMIT=$(git -C kernel-src rev-parse HEAD)"
+            echo "RESUKISU_COMMIT=$(git -C resukisu rev-parse HEAD)"
+            echo "TEMPORARY_SIMULATION_ONLY=YES"
+            echo "ORIGINAL_PROJECT_SOURCE_UNTOUCHED=YES"
+            echo "NO_KERNEL_BUILD_PERFORMED=YES"
+            echo "NO_PROJECT_PATCH_APPLIED=YES"
+            echo
+            cat resukisu-symlink-identity.txt
+            echo
+            cat resukisu-susfs-target-config.txt
+            echo
+            cat pre-susfs-hook-port-state.txt
+          } | tee GEN2_12_CLEAN_RESUKISU_INTEGRATION_SIMULATION_AUDIT.txt
+
+      - name: Upload final audit artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: GEN2_12_CLEAN_RESUKISU_INTEGRATION_SIMULATION_AUDIT
+          path: |
+            GEN2_12_CLEAN_RESUKISU_INTEGRATION_SIMULATION_AUDIT.txt
+            resukisu-setup-contract.txt
+            legacy-removal-precheck.txt
+            clean-pre-resukisu-state.txt
+            resukisu-setup-simulation.txt
+            resukisu-symlink-identity.txt
+            resukisu-default-config-state.txt
+            resukisu-susfs-target-config.txt
+            GEN2_12_RESUKISU_SUSFS_TARGET_CONFIG.txt
+            pre-susfs-hook-port-state.txt
+            resukisu-integration-delta.txt
+            original-source-status.txt
+          if-no-files-found: warn
+          retention-days: 30
