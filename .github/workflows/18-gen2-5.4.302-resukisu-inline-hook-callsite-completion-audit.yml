@@ -1,0 +1,751 @@
+name: 18 - GEN2 5.4.302 ReSukiSU Inline Hook Callsite Completion Audit
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout pinned GEN2 kernel source with full history
+        uses: actions/checkout@v6
+        with:
+          repository: dereference23/kernel_xiaomi_sm6375
+          ref: f4b8a13a43a130a9aab83cc985ce4d4421291ae6
+          path: kernel-src
+          fetch-depth: 0
+
+      - name: Checkout pinned ReSukiSU reference
+        uses: actions/checkout@v6
+        with:
+          repository: ReSukiSU/ReSukiSU
+          ref: faccf4c5edc7be37776216e7d43dd3dca0239331
+          path: resukisu
+          fetch-depth: 1
+
+      - name: Fetch pinned SUSFS reference history
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git clone https://gitlab.com/simonpunk/susfs4ksu.git susfs
+          git -C susfs fetch origin gki-android12-5.10
+
+          for sha in \
+            4003ecf2d01c6d13fa8edf6c4f2607365738dc3d \
+            be08face56c347e7ba9c4fb420c2463598a14f5d \
+            86bb893e9a103b97d17045306f35eb239a623f2a \
+            c5723cc09c19786fcb701d25a8097e2edbee412a \
+            3c14ad549f826b1f53878ec8c12253efebeed75a
+          do
+            git -C susfs cat-file -e "${sha}^{commit}"
+          done
+
+          test "$(git -C kernel-src rev-parse HEAD)" = \
+            "f4b8a13a43a130a9aab83cc985ce4d4421291ae6"
+
+          test "$(git -C resukisu rev-parse HEAD)" = \
+            "faccf4c5edc7be37776216e7d43dd3dca0239331"
+
+          echo "SOURCE_PINS=PASS" | tee source-pin-status.txt
+
+      - name: Prepare exact legacy KernelSU removal patches
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          INCLUDE_COMMIT='1c1b2124991bcaf7c93cad5e460e9b9dfb32e4ed'
+          HOOK_COMMIT='3f95a98681655eeb1b928e001d30e00072ae0d8b'
+
+          mkdir -p reverse-patches
+
+          git -C kernel-src show \
+            --format= \
+            "$INCLUDE_COMMIT" \
+            -- drivers/Kconfig drivers/Makefile \
+            > reverse-patches/include-kernelsu.patch
+
+          git -C kernel-src show \
+            --format= \
+            "$HOOK_COMMIT" \
+            -- fs/devpts/inode.c fs/exec.c fs/namespace.c \
+               fs/open.c fs/read_write.c fs/stat.c \
+            > reverse-patches/legacy-hooks.patch
+
+          git -C kernel-src apply \
+            --reverse \
+            --check \
+            "$GITHUB_WORKSPACE/reverse-patches/include-kernelsu.patch"
+
+          git -C kernel-src apply \
+            --reverse \
+            --check \
+            "$GITHUB_WORKSPACE/reverse-patches/legacy-hooks.patch"
+
+      - name: Create isolated hook-completion worktree
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SIM="$RUNNER_TEMP/gen2-inline-hook-stage"
+          rm -rf "$SIM"
+
+          git -C kernel-src worktree add \
+            --detach \
+            "$SIM" \
+            f4b8a13a43a130a9aab83cc985ce4d4421291ae6
+
+          echo "$SIM" > kernel-simulation.path
+
+      - name: Remove legacy KernelSU in temporary worktree
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SIM="$(cat kernel-simulation.path)"
+
+          git -C "$SIM" apply \
+            --reverse \
+            "$GITHUB_WORKSPACE/reverse-patches/include-kernelsu.patch"
+
+          git -C "$SIM" apply \
+            --reverse \
+            "$GITHUB_WORKSPACE/reverse-patches/legacy-hooks.patch"
+
+          rm -rf "$SIM/drivers/kernelsu"
+
+          echo "LEGACY_KERNELSU_REMOVAL=PASS" \
+            | tee legacy-removal-state.txt
+
+      - name: Install exactly pinned ReSukiSU
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SIM="$(cat kernel-simulation.path)"
+          PIN='faccf4c5edc7be37776216e7d43dd3dca0239331'
+
+          git clone \
+            --no-local \
+            "$GITHUB_WORKSPACE/resukisu" \
+            "$SIM/KernelSU"
+
+          git -C "$SIM/KernelSU" checkout --detach "$PIN"
+
+          test "$(git -C "$SIM/KernelSU" rev-parse HEAD)" = "$PIN"
+
+          ln -s ../KernelSU/kernel "$SIM/drivers/kernelsu"
+
+          printf '\nobj-$(CONFIG_KSU) += kernelsu/\n' \
+            >> "$SIM/drivers/Makefile"
+
+          sed -i \
+            '/^endmenu$/i source "drivers/kernelsu/Kconfig"' \
+            "$SIM/drivers/Kconfig"
+
+          echo "PINNED_RESUKISU_INTEGRATION=PASS" \
+            | tee resukisu-integration-state.txt
+
+      - name: Materialize SUSFS v2.2 plus four OPEN_REDIRECT fixes
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          BASE='4003ecf2d01c6d13fa8edf6c4f2607365738dc3d'
+          FIX="$RUNNER_TEMP/susfs-v220-four-fix-hooks"
+
+          rm -rf "$FIX"
+
+          git -C susfs worktree add \
+            --detach \
+            "$FIX" \
+            "$BASE"
+
+          for sha in \
+            be08face56c347e7ba9c4fb420c2463598a14f5d \
+            86bb893e9a103b97d17045306f35eb239a623f2a \
+            c5723cc09c19786fcb701d25a8097e2edbee412a \
+            3c14ad549f826b1f53878ec8c12253efebeed75a
+          do
+            git -C "$FIX" cherry-pick --no-commit "$sha"
+          done
+
+          echo "$FIX" > susfs-fixset.path
+
+          echo "SUSFS_FIXSET_MATERIALIZATION=PASS" \
+            | tee susfs-fixset-state.txt
+
+      - name: Stage standalone SUSFS files
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SIM="$(cat kernel-simulation.path)"
+          FIX="$(cat susfs-fixset.path)"
+
+          install -m 0644 \
+            "$FIX/kernel_patches/fs/susfs.c" \
+            "$SIM/fs/susfs.c"
+
+          install -m 0644 \
+            "$FIX/kernel_patches/include/linux/susfs.h" \
+            "$SIM/include/linux/susfs.h"
+
+          install -m 0644 \
+            "$FIX/kernel_patches/include/linux/susfs_def.h" \
+            "$SIM/include/linux/susfs_def.h"
+
+          echo "STANDALONE_SUSFS_FILES_STAGED=PASS" \
+            | tee standalone-susfs-state.txt
+
+      - name: Reproduce Workflow 17 partial SUSFS application
+        shell: bash
+        run: |
+          set -uo pipefail
+
+          SIM="$(cat kernel-simulation.path)"
+          FIX="$(cat susfs-fixset.path)"
+          PATCH="$FIX/kernel_patches/50_add_susfs_in_gki-android12-5.10.patch"
+
+          git -C "$SIM" apply \
+            --reject \
+            --whitespace=nowarn \
+            "$PATCH" \
+            > workflow17-apply.log 2>&1 || true
+
+          find "$SIM" \
+            -path "$SIM/KernelSU" -prune -o \
+            -type f -name '*.rej' -print \
+            | sort \
+            > workflow17-rejects-absolute.txt
+
+          sed "s#^$SIM/##" \
+            workflow17-rejects-absolute.txt \
+            > workflow17-rejects.txt
+
+          echo "WORKFLOW17_PARTIAL_STAGE_REPRODUCED=YES" \
+            | tee workflow17-stage-state.txt
+
+      - name: Record callsite-aware hook state before completion
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SIM="$(cat kernel-simulation.path)"
+
+          python3 - <<'PY'
+          import re
+          from pathlib import Path
+
+          sim = Path(Path("kernel-simulation.path").read_text().strip())
+
+          specs = [
+              ("ksu_handle_setresuid", "kernel/sys.c"),
+              ("ksu_handle_execveat", "fs/exec.c"),
+              ("ksu_handle_faccessat", "fs/open.c"),
+              ("ksu_handle_sys_read", "fs/read_write.c"),
+              ("ksu_handle_stat", "fs/stat.c"),
+              ("ksu_handle_sys_reboot", "kernel/reboot.c"),
+              ("ksu_handle_input_handle_event", "drivers/input/input.c"),
+          ]
+
+          def classify(sym, rel):
+              text = (sim / rel).read_text(encoding="utf-8", errors="replace")
+              lines = text.splitlines()
+
+              refs = []
+              declarations = []
+              callsites = []
+
+              for no, line in enumerate(lines, 1):
+                  if sym not in line:
+                      continue
+
+                  refs.append(no)
+                  stripped = line.strip()
+
+                  if stripped.startswith("extern "):
+                      declarations.append(no)
+                      continue
+
+                  # Function declarations split over lines can start with a return type.
+                  if re.match(
+                      rf"^(?:static\s+)?(?:inline\s+)?(?:__attribute__\(\([^)]+\)\)\s+)?"
+                      rf"(?:int|long|void|bool|ssize_t|u32)\s+{re.escape(sym)}\s*\(",
+                      stripped,
+                  ):
+                      declarations.append(no)
+                      continue
+
+                  if re.search(rf"\b{re.escape(sym)}\s*\(", line):
+                      callsites.append(no)
+
+              return refs, declarations, callsites
+
+          out = []
+          functional = 0
+
+          for sym, rel in specs:
+              refs, declarations, callsites = classify(sym, rel)
+
+              if callsites:
+                  state = "FUNCTIONAL_CALLSITE_PRESENT"
+                  functional += 1
+              elif refs:
+                  state = "REFERENCE_ONLY_NO_CALLSITE"
+              else:
+                  state = "ABSENT"
+
+              out += [
+                  f"SYMBOL={sym}",
+                  f"FILE={rel}",
+                  f"STATE={state}",
+                  "REFERENCE_LINES=" + (
+                      ",".join(map(str, refs)) if refs else "NONE"
+                  ),
+                  "DECLARATION_LINES=" + (
+                      ",".join(map(str, declarations)) if declarations else "NONE"
+                  ),
+                  "CALLSITE_LINES=" + (
+                      ",".join(map(str, callsites)) if callsites else "NONE"
+                  ),
+                  "",
+              ]
+
+          out.append(f"FUNCTIONAL_REQUIRED_HOOK_CALLSITES={functional}")
+          out.append(f"MISSING_FUNCTIONAL_REQUIRED_HOOK_CALLSITES={7-functional}")
+
+          Path("hook-callsite-state-before.txt").write_text(
+              "\n".join(out) + "\n", encoding="utf-8"
+          )
+          PY
+
+          cat hook-callsite-state-before.txt
+
+      - name: Complete three missing functional hook callsites for exact 5.4.302 APIs
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SIM="$(cat kernel-simulation.path)"
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          sim = Path(Path("kernel-simulation.path").read_text().strip())
+
+          def read(rel):
+              return (sim / rel).read_text(encoding="utf-8")
+
+          def write(rel, text):
+              (sim / rel).write_text(text, encoding="utf-8")
+
+          def replace_once(text, old, new, label):
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(
+                      f"{label}: expected exactly one anchor, found {count}"
+                  )
+              return text.replace(old, new, 1)
+
+          # ------------------------------------------------------------
+          # 1) kernel/sys.c :: __sys_setresuid()
+          # Exact GEN2 5.4.302 API:
+          # long __sys_setresuid(uid_t ruid, uid_t euid, uid_t suid)
+          # ------------------------------------------------------------
+          rel = "kernel/sys.c"
+          text = read(rel)
+
+          call = "(void)ksu_handle_setresuid(ruid, euid, suid);"
+
+          if call not in text:
+              anchor = "\tkuid_t kruid, keuid, ksuid;\n"
+              replacement = (
+                  anchor
+                  + "\n#ifdef CONFIG_KSU_SUSFS\n"
+                  + "\t(void)ksu_handle_setresuid(ruid, euid, suid);\n"
+                  + "#endif\n"
+              )
+              text = replace_once(
+                  text, anchor, replacement,
+                  "kernel/sys.c setresuid callsite"
+              )
+
+          write(rel, text)
+
+          # ------------------------------------------------------------
+          # 2) fs/open.c :: do_faccessat()
+          # Exact GEN2 5.4.302 API:
+          # long do_faccessat(int dfd, const char __user *filename, int mode)
+          # No flags parameter exists here; pass NULL exactly as old GEN2 hook did.
+          # ------------------------------------------------------------
+          rel = "fs/open.c"
+          text = read(rel)
+
+          include_block = (
+              "#ifdef CONFIG_KSU_SUSFS\n"
+              "#include <linux/susfs_def.h>\n"
+              "#endif\n"
+          )
+
+          if include_block not in text:
+              anchor = "#include <linux/compat.h>\n"
+              text = replace_once(
+                  text,
+                  anchor,
+                  anchor + include_block,
+                  "fs/open.c SUSFS include"
+              )
+
+          decl_block = (
+              "#ifdef CONFIG_KSU_SUSFS\n"
+              "extern struct static_key_true ksu_su_compat_enabled;\n"
+              "extern bool __ksu_is_allow_uid_for_current(uid_t uid);\n"
+              "extern int ksu_handle_faccessat(int *dfd, "
+              "const char __user **filename_user, int *mode, int *flags);\n"
+              "#endif\n"
+          )
+
+          if "extern struct static_key_true ksu_su_compat_enabled;" not in text:
+              anchor = (
+                  "/*\n"
+                  " * access() needs to use the real uid/gid, not the effective uid/gid.\n"
+              )
+              text = replace_once(
+                  text,
+                  anchor,
+                  decl_block + "\n" + anchor,
+                  "fs/open.c KSU declarations"
+              )
+
+          hook_call = "ksu_handle_faccessat(&dfd, &filename, &mode, NULL);"
+
+          if hook_call not in text:
+              anchor = "\tunsigned int lookup_flags = LOOKUP_FOLLOW;\n"
+              replacement = (
+                  anchor
+                  + "\n#ifdef CONFIG_KSU_SUSFS\n"
+                  + "\tif (likely(susfs_is_current_proc_umounted()))\n"
+                  + "\t\tgoto orig_flow;\n\n"
+                  + "\tif (static_branch_likely(&ksu_su_compat_enabled)) {\n"
+                  + "\t\tif (unlikely(__ksu_is_allow_uid_for_current(current_uid().val)))\n"
+                  + "\t\t\tksu_handle_faccessat(&dfd, &filename, &mode, NULL);\n"
+                  + "\t}\n\n"
+                  + "orig_flow:\n"
+                  + "#endif\n"
+              )
+              text = replace_once(
+                  text, anchor, replacement,
+                  "fs/open.c faccessat callsite"
+              )
+
+          write(rel, text)
+
+          # ------------------------------------------------------------
+          # 3) fs/stat.c :: vfs_statx()
+          # Exact GEN2 5.4.302 API:
+          # int vfs_statx(int dfd, const char __user *filename, int flags,
+          #               struct kstat *stat, u32 request_mask)
+          # ------------------------------------------------------------
+          rel = "fs/stat.c"
+          text = read(rel)
+
+          decl_block = (
+              "#ifdef CONFIG_KSU_SUSFS\n"
+              "extern struct static_key_true ksu_su_compat_enabled;\n"
+              "extern bool __ksu_is_allow_uid_for_current(uid_t uid);\n"
+              "extern int ksu_handle_stat(int *dfd, "
+              "const char __user **filename_user, int *flags);\n"
+              "#endif\n"
+          )
+
+          if "extern int ksu_handle_stat(int *dfd" not in text:
+              anchor = "/**\n * vfs_statx - Get basic and extra attributes by filename\n"
+              text = replace_once(
+                  text,
+                  anchor,
+                  decl_block + "\n" + anchor,
+                  "fs/stat.c KSU declarations"
+              )
+
+          hook_call = "ksu_handle_stat(&dfd, &filename, &flags);"
+
+          if hook_call not in text:
+              anchor = "\tunsigned int lookup_flags = LOOKUP_FOLLOW | LOOKUP_AUTOMOUNT;\n"
+              replacement = (
+                  anchor
+                  + "\n#ifdef CONFIG_KSU_SUSFS\n"
+                  + "\tif (likely(susfs_is_current_proc_umounted()))\n"
+                  + "\t\tgoto orig_flow;\n\n"
+                  + "\tif (static_branch_likely(&ksu_su_compat_enabled)) {\n"
+                  + "\t\tif (unlikely(__ksu_is_allow_uid_for_current(current_uid().val)))\n"
+                  + "\t\t\tksu_handle_stat(&dfd, &filename, &flags);\n"
+                  + "\t}\n\n"
+                  + "orig_flow:\n"
+                  + "#endif\n"
+              )
+              text = replace_once(
+                  text, anchor, replacement,
+                  "fs/stat.c stat callsite"
+              )
+
+          write(rel, text)
+          PY
+
+          echo "THREE_MISSING_HOOK_CALLSITES_STAGED=PASS" \
+            | tee hook-completion-state.txt
+
+      - name: Verify all seven required hooks by functional callsite not symbol presence
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SIM="$(cat kernel-simulation.path)"
+
+          python3 - <<'PY'
+          import re
+          from pathlib import Path
+
+          sim = Path(Path("kernel-simulation.path").read_text().strip())
+
+          specs = [
+              ("ksu_handle_setresuid", "kernel/sys.c"),
+              ("ksu_handle_execveat", "fs/exec.c"),
+              ("ksu_handle_faccessat", "fs/open.c"),
+              ("ksu_handle_sys_read", "fs/read_write.c"),
+              ("ksu_handle_stat", "fs/stat.c"),
+              ("ksu_handle_sys_reboot", "kernel/reboot.c"),
+              ("ksu_handle_input_handle_event", "drivers/input/input.c"),
+          ]
+
+          out = []
+          functional = 0
+
+          for sym, rel in specs:
+              text = (sim / rel).read_text(
+                  encoding="utf-8", errors="replace"
+              )
+              call_lines = []
+
+              for no, line in enumerate(text.splitlines(), 1):
+                  if not re.search(rf"\b{re.escape(sym)}\s*\(", line):
+                      continue
+
+                  stripped = line.strip()
+
+                  if stripped.startswith("extern "):
+                      continue
+
+                  if re.match(
+                      rf"^(?:static\s+)?(?:inline\s+)?"
+                      rf"(?:__attribute__\(\([^)]+\)\)\s+)?"
+                      rf"(?:int|long|void|bool|ssize_t|u32)\s+"
+                      rf"{re.escape(sym)}\s*\(",
+                      stripped,
+                  ):
+                      continue
+
+                  call_lines.append(no)
+
+              if call_lines:
+                  functional += 1
+                  state = "FUNCTIONAL_CALLSITE_PRESENT"
+              else:
+                  state = "MISSING_FUNCTIONAL_CALLSITE"
+
+              out += [
+                  f"SYMBOL={sym}",
+                  f"FILE={rel}",
+                  f"STATE={state}",
+                  "CALLSITE_LINES=" + (
+                      ",".join(map(str, call_lines))
+                      if call_lines else "NONE"
+                  ),
+                  "",
+              ]
+
+          out += [
+              f"FUNCTIONAL_REQUIRED_HOOK_CALLSITES={functional}",
+              f"MISSING_FUNCTIONAL_REQUIRED_HOOK_CALLSITES={7-functional}",
+          ]
+
+          Path("hook-callsite-state-after.txt").write_text(
+              "\n".join(out) + "\n", encoding="utf-8"
+          )
+          PY
+
+          cat hook-callsite-state-after.txt
+
+          grep -q '^FUNCTIONAL_REQUIRED_HOOK_CALLSITES=7$' \
+            hook-callsite-state-after.txt
+
+          grep -q '^MISSING_FUNCTIONAL_REQUIRED_HOOK_CALLSITES=0$' \
+            hook-callsite-state-after.txt
+
+      - name: Verify no incompatible legacy hook callsites remain
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SIM="$(cat kernel-simulation.path)"
+
+          count=0
+
+          {
+            for spec in \
+              'ksu_vfs_read_hook:fs/read_write.c' \
+              'ksu_input_hook:drivers/input/input.c' \
+              'ksu_execveat_hook:fs/exec.c' \
+              'ksu_init_rc_hook:fs/read_write.c' \
+              'ksu_init_rc_hook:fs/stat.c'
+            do
+              symbol="${spec%%:*}"
+              file="${spec#*:}"
+
+              if grep -wq "$symbol" "$SIM/$file"; then
+                echo "INCOMPATIBLE_PRESENT=$symbol FILE=$file"
+                count=$((count + 1))
+              else
+                echo "INCOMPATIBLE_ABSENT=$symbol FILE=$file"
+              fi
+            done
+
+            echo "INCOMPATIBLE_LEGACY_HOOK_REFERENCES=$count"
+          } | tee incompatible-hook-state.txt
+
+          grep -q '^INCOMPATIBLE_LEGACY_HOOK_REFERENCES=0$' \
+            incompatible-hook-state.txt
+
+      - name: Preserve exact three-hook completion delta
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SIM="$(cat kernel-simulation.path)"
+
+          git -C "$SIM" diff \
+            --check \
+            > hook-completion-diff-check.txt
+
+          {
+            echo "=== Exact completed hook contexts ==="
+
+            grep -n -C 12 \
+              'ksu_handle_setresuid(ruid, euid, suid)' \
+              "$SIM/kernel/sys.c"
+
+            echo
+            grep -n -C 16 \
+              'ksu_handle_faccessat(&dfd, &filename, &mode, NULL)' \
+              "$SIM/fs/open.c"
+
+            echo
+            grep -n -C 16 \
+              'ksu_handle_stat(&dfd, &filename, &flags)' \
+              "$SIM/fs/stat.c"
+          } | tee completed-hook-contexts.txt
+
+          git -C "$SIM" diff \
+            --binary \
+            -- kernel/sys.c fs/open.c fs/stat.c \
+            > GEN2_18_REQUIRED_INLINE_HOOK_COMPLETION.patch
+
+          test -s GEN2_18_REQUIRED_INLINE_HOOK_COMPLETION.patch
+
+      - name: Inventory remaining SUSFS reject files after hook completion
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SIM="$(cat kernel-simulation.path)"
+
+          find "$SIM" \
+            -path "$SIM/KernelSU" -prune -o \
+            -type f -name '*.rej' -print \
+            | sed "s#^$SIM/##" \
+            | sort \
+            > remaining-reject-files.txt
+
+          {
+            echo "REMAINING_REJECT_FILE_COUNT=$(wc -l < remaining-reject-files.txt)"
+            echo
+            cat remaining-reject-files.txt
+            echo
+            echo "NOTE=.rej files are preserved from the original 5.10 patch application."
+            echo "NOTE=Some hook hunks in those .rej files are now semantically resolved by this workflow."
+            echo "NOTE=Remaining SUSFS feature semantics are not yet declared complete."
+          } | tee remaining-reject-state.txt
+
+      - name: Verify original pinned GEN2 source remained untouched
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git -C kernel-src diff --exit-code
+          git -C kernel-src diff --cached --exit-code
+          test -z "$(git -C kernel-src status --porcelain)"
+
+          echo "ORIGINAL_PROJECT_SOURCE_UNTOUCHED=YES" \
+            | tee original-source-status.txt
+
+      - name: Write final audit file
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          {
+            echo "AUDIT=GEN2_18_RESUKISU_INLINE_HOOK_CALLSITE_COMPLETION"
+            echo "RESULT=PASS"
+            echo "GEN2_18_RESUKISU_INLINE_HOOK_CALLSITE_COMPLETION_AUDIT=PASS"
+            echo "KERNEL_COMMIT=$(git -C kernel-src rev-parse HEAD)"
+            echo "RESUKISU_COMMIT=$(git -C resukisu rev-parse HEAD)"
+            echo "SUSFS_BASE=4003ecf2d01c6d13fa8edf6c4f2607365738dc3d"
+            echo "OPEN_REDIRECT_REFERENCE=V220_PLUS_FOUR_SELECTED_FIXES"
+            echo "TEMPORARY_WORKTREE_MODIFIED=YES"
+            echo "ORIGINAL_PROJECT_SOURCE_UNTOUCHED=YES"
+            echo "NO_KERNEL_BUILD_PERFORMED=YES"
+            echo
+            echo "=== Before ==="
+            cat hook-callsite-state-before.txt
+            echo
+            echo "=== After ==="
+            cat hook-callsite-state-after.txt
+            echo
+            cat incompatible-hook-state.txt
+            echo
+            echo "SEMANTIC_SUSFS_PORT_COMPLETE=NO"
+            echo "READY_FOR_KERNEL_BUILD=NO"
+            echo "NEXT_STEP=RESOLVE_REMAINING_SUSFS_FEATURE_REJECTS_IN_SEMANTIC_BATCHES"
+          } | tee GEN2_18_RESUKISU_INLINE_HOOK_CALLSITE_COMPLETION_AUDIT.txt
+
+      - name: Upload final audit artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: GEN2_18_RESUKISU_INLINE_HOOK_CALLSITE_COMPLETION_AUDIT
+          path: |
+            GEN2_18_RESUKISU_INLINE_HOOK_CALLSITE_COMPLETION_AUDIT.txt
+            source-pin-status.txt
+            legacy-removal-state.txt
+            resukisu-integration-state.txt
+            susfs-fixset-state.txt
+            standalone-susfs-state.txt
+            workflow17-stage-state.txt
+            workflow17-apply.log
+            workflow17-rejects.txt
+            hook-callsite-state-before.txt
+            hook-completion-state.txt
+            hook-callsite-state-after.txt
+            incompatible-hook-state.txt
+            completed-hook-contexts.txt
+            hook-completion-diff-check.txt
+            GEN2_18_REQUIRED_INLINE_HOOK_COMPLETION.patch
+            remaining-reject-files.txt
+            remaining-reject-state.txt
+            original-source-status.txt
+          if-no-files-found: warn
+          retention-days: 30
