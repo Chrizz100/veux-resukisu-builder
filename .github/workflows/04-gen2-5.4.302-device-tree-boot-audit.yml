@@ -1,0 +1,135 @@
+name: 04 - GEN2 5.4.302 Device Tree and Boot Structure Audit
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout pinned GEN2 kernel source
+        uses: actions/checkout@v6
+        with:
+          repository: dereference23/kernel_xiaomi_sm6375
+          ref: f4b8a13a43a130a9aab83cc985ce4d4421291ae6
+          path: kernel-src
+          fetch-depth: 1
+
+      - name: Checkout current VEUX device tree
+        uses: actions/checkout@v6
+        with:
+          repository: xiaomi-sm6375-devs/android_device_xiaomi_veux
+          ref: lineage-23.2
+          path: device-veux
+          fetch-depth: 1
+
+      - name: Checkout current SM6375 common device tree
+        uses: actions/checkout@v6
+        with:
+          repository: xiaomi-sm6375-devs/android_device_xiaomi_sm6375-common
+          ref: lineage-23.2
+          path: device-common
+          fetch-depth: 1
+
+      - name: Verify VEUX kernel selection
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test -f device-veux/BoardConfig.mk
+          grep -F 'TARGET_BOOTLOADER_BOARD_NAME := veux' device-veux/BoardConfig.mk
+          grep -F 'TARGET_KERNEL_CONFIG := veux_defconfig' device-veux/BoardConfig.mk
+
+      - name: Verify current boot image structure
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          FILE="device-common/BoardConfigCommon.mk"
+          test -f "$FILE"
+
+          grep -F 'TARGET_KERNEL_SOURCE := kernel/xiaomi/sm6375' "$FILE"
+          grep -F 'TARGET_KERNEL_NO_GCC := true' "$FILE"
+          grep -F 'BOARD_KERNEL_IMAGE_NAME := Image' "$FILE"
+          grep -F 'BOARD_KERNEL_PAGESIZE := 4096' "$FILE"
+          grep -F 'BOARD_KERNEL_SEPARATED_DTBO := true' "$FILE"
+          grep -F 'BOARD_BOOT_HEADER_VERSION := 3' "$FILE"
+          grep -F 'BOARD_INCLUDE_DTB_IN_BOOTIMG := true' "$FILE"
+          grep -F 'BOARD_RAMDISK_USE_LZ4 := true' "$FILE"
+
+          echo
+          echo "=== A/B partition declarations ==="
+          grep -n -E \
+            'AB_OTA_PARTITIONS|boot|dtbo|vendor_boot|vbmeta' \
+            "$FILE" | head -80
+
+      - name: Verify VEUX DTB and DTBO targets
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          DTS_DIR="kernel-src/arch/arm64/boot/dts/vendor/xiaomi"
+
+          test -f "$DTS_DIR/veux.dts"
+          test -f "$DTS_DIR/veux-overlay.dts"
+          test -f "$DTS_DIR/Makefile"
+
+          echo "=== VEUX DT Makefile entries ==="
+          grep -n -E \
+            'veux|CONFIG_BUILD_ARM64_DT_OVERLAY|CONFIG_ARCH_BLAIR|dtbo-|dtb-' \
+            "$DTS_DIR/Makefile"
+
+          grep -F 'veux-overlay.dtbo' "$DTS_DIR/Makefile"
+          grep -F 'veux-overlay.dtbo-base := veux.dtb' "$DTS_DIR/Makefile"
+          grep -F 'veux.dtb' "$DTS_DIR/Makefile"
+
+      - name: Write consolidated audit report
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          {
+            echo "GEN2_KERNEL_COMMIT=$(git -C kernel-src rev-parse HEAD)"
+            echo "VEUX_DEVICE_COMMIT=$(git -C device-veux rev-parse HEAD)"
+            echo "SM6375_COMMON_COMMIT=$(git -C device-common rev-parse HEAD)"
+            echo
+            echo "=== VEUX BoardConfig ==="
+            grep -E 'TARGET_BOOTLOADER_BOARD_NAME|TARGET_KERNEL_CONFIG' \
+              device-veux/BoardConfig.mk
+            echo
+            echo "=== SM6375 boot structure ==="
+            grep -E \
+              'TARGET_KERNEL_SOURCE|TARGET_KERNEL_NO_GCC|BOARD_KERNEL_IMAGE_NAME|BOARD_KERNEL_PAGESIZE|BOARD_KERNEL_SEPARATED_DTBO|BOARD_BOOT_HEADER_VERSION|BOARD_INCLUDE_DTB_IN_BOOTIMG|BOARD_RAMDISK_USE_LZ4|BOARD_MOVE_RECOVERY_RESOURCES_TO_VENDOR_BOOT' \
+              device-common/BoardConfigCommon.mk
+            echo
+            echo "RESULT=PASS"
+            echo "GEN2_DEVICE_TREE_BOOT_AUDIT=PASS"
+          } | tee device-tree-boot-audit.txt
+
+      - name: Verify kernel source remained untouched
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd kernel-src
+          git diff --exit-code
+          git diff --cached --exit-code
+
+      - name: Write final device tree and boot audit file
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp device-tree-boot-audit.txt GEN2_04_DEVICE_TREE_BOOT_AUDIT.txt
+
+      - name: Upload device tree audit
+        uses: actions/upload-artifact@v4
+        with:
+          name: GEN2_04_DEVICE_TREE_BOOT_AUDIT
+          path: |
+            GEN2_04_DEVICE_TREE_BOOT_AUDIT.txt
+            device-tree-boot-audit.txt
+          if-no-files-found: error
+          retention-days: 30
