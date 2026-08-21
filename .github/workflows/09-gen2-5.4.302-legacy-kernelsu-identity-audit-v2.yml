@@ -1,0 +1,337 @@
+name: 09 - GEN2 5.4.302 Legacy KernelSU Identity Audit
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout pinned GEN2 kernel source with full history
+        uses: actions/checkout@v6
+        with:
+          repository: dereference23/kernel_xiaomi_sm6375
+          ref: f4b8a13a43a130a9aab83cc985ce4d4421291ae6
+          path: kernel-src
+          fetch-depth: 0
+
+      - name: Checkout pinned ReSukiSU reference
+        uses: actions/checkout@v6
+        with:
+          repository: ReSukiSU/ReSukiSU
+          ref: faccf4c5edc7be37776216e7d43dd3dca0239331
+          path: resukisu
+          fetch-depth: 1
+
+      - name: Verify exact source pins
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test "$(git -C kernel-src rev-parse HEAD)" = \
+            "f4b8a13a43a130a9aab83cc985ce4d4421291ae6"
+
+          test "$(git -C resukisu rev-parse HEAD)" = \
+            "faccf4c5edc7be37776216e7d43dd3dca0239331"
+
+      - name: Audit legacy KernelSU Kconfig and build state
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          {
+            echo "=== drivers/kernelsu/Kconfig ==="
+            cat kernel-src/drivers/kernelsu/Kconfig
+
+            echo
+            echo "=== drivers/kernelsu/Makefile ==="
+            cat kernel-src/drivers/kernelsu/Makefile
+
+            echo
+            echo "=== drivers integration ==="
+            grep -n -C 3 -E \
+              'kernelsu|CONFIG_KSU' \
+              kernel-src/drivers/Kconfig kernel-src/drivers/Makefile || true
+
+            echo
+            echo "=== veux_defconfig KSU declarations ==="
+            grep -n -E \
+              'CONFIG_KSU|KERNELSU' \
+              kernel-src/arch/arm64/configs/veux_defconfig || true
+
+            echo
+            echo "=== Build-default interpretation ==="
+            if grep -qE '^[[:space:]]*default[[:space:]]+y' \
+              kernel-src/drivers/kernelsu/Kconfig; then
+              echo "KSU_KCONFIG_DEFAULT_Y=YES"
+            else
+              echo "KSU_KCONFIG_DEFAULT_Y=NO"
+            fi
+          } | tee legacy-kernelsu-config-state.txt
+
+      - name: Audit history of embedded legacy KernelSU tree
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          {
+            echo "=== History touching drivers/kernelsu ==="
+            git -C kernel-src log \
+              --all \
+              --date=iso-strict \
+              --format='%H %ad %an <%ae> %s' \
+              -- drivers/kernelsu \
+              | sed -n '1,300p'
+
+            echo
+            echo "=== Oldest reachable commits touching drivers/kernelsu ==="
+            git -C kernel-src log \
+              --all \
+              --reverse \
+              --date=iso-strict \
+              --format='%H %ad %an <%ae> %s' \
+              -- drivers/kernelsu \
+              | sed -n '1,80p'
+
+            echo
+            echo "=== History changing KSU_VERSION ==="
+            git -C kernel-src log \
+              --all \
+              --date=iso-strict \
+              --format='%H %ad %s' \
+              -S'KSU_VERSION=' \
+              -- drivers/kernelsu/Makefile \
+              | sed -n '1,120p' || true
+
+            echo
+            echo "=== History changing legacy bool hook names ==="
+            for symbol in \
+              ksu_vfs_read_hook \
+              ksu_execveat_hook \
+              ksu_input_hook
+            do
+              echo "--- $symbol ---"
+              git -C kernel-src log \
+                --all \
+                --date=iso-strict \
+                --format='%H %ad %s' \
+                -S"$symbol" \
+                -- drivers/kernelsu fs drivers/input \
+                | sed -n '1,100p' || true
+            done
+          } | tee legacy-kernelsu-history.txt
+
+      - name: Audit exact KernelSU hook-addition commit
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          HOOK_COMMIT='3f95a98681655eeb1b928e001d30e00072ae0d8b'
+          git -C kernel-src cat-file -e "${HOOK_COMMIT}^{commit}"
+
+          {
+            echo "HOOK_COMMIT=$HOOK_COMMIT"
+            git -C kernel-src show -s \
+              --format='DATE=%cI%nAUTHOR=%an <%ae>%nSUBJECT=%s%nPARENTS=%P%nBODY=%b' \
+              "$HOOK_COMMIT"
+
+            echo
+            echo "=== Commit stat ==="
+            git -C kernel-src show --stat --oneline "$HOOK_COMMIT"
+
+            echo
+            echo "=== Commit file list ==="
+            git -C kernel-src show \
+              --name-status \
+              --format= \
+              "$HOOK_COMMIT"
+
+            echo
+            echo "=== Hook-related diff ==="
+            git -C kernel-src show \
+              --format= \
+              "$HOOK_COMMIT" \
+              -- fs/exec.c fs/open.c fs/read_write.c fs/stat.c \
+                 kernel/sys.c kernel/reboot.c drivers/input/input.c \
+              | sed -n '1,1400p'
+          } | tee legacy-kernelsu-hook-commit.txt
+
+      - name: Audit current embedded KernelSU source identity markers
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          {
+            echo "=== Version and identity markers ==="
+            grep -RIn -E \
+              'KSU_VERSION|KERNEL_SU_VERSION|VERSION_CODE|GIT_VERSION|KernelSU version|Manager package|EXPECTED_SIZE|EXPECTED_HASH' \
+              kernel-src/drivers/kernelsu \
+              2>/dev/null | sed -n '1,500p' || true
+
+            echo
+            echo "=== setup.sh upstream URL and behavior ==="
+            sed -n '1,140p' kernel-src/drivers/kernelsu/setup.sh
+
+            echo
+            echo "=== Embedded file inventory ==="
+            find kernel-src/drivers/kernelsu \
+              -type f \
+              -printf '%P\n' \
+              | sort
+          } | tee legacy-kernelsu-identity-markers.txt
+
+      - name: Calculate embedded KernelSU content manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          (
+            cd kernel-src/drivers/kernelsu
+            find . -type f -print0 \
+              | sort -z \
+              | xargs -0 sha256sum
+          ) | tee legacy-kernelsu-file-sha256.txt
+
+          sha256sum legacy-kernelsu-file-sha256.txt \
+            | tee legacy-kernelsu-manifest-sha256.txt
+
+      - name: Compare old hook contract against pinned ReSukiSU SUSFS contract
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          {
+            echo "=== ReSukiSU SUSFS incompatible hook names ==="
+            grep -n -E \
+              'check_ksu_hook_incompatible' \
+              resukisu/kernel/tools/inline_hook_check.mk
+
+            echo
+            echo "=== Those incompatible names currently present in GEN2 ==="
+            for spec in \
+              'ksu_vfs_read_hook:fs/read_write.c' \
+              'ksu_input_hook:drivers/input/input.c' \
+              'ksu_execveat_hook:fs/exec.c' \
+              'ksu_init_rc_hook:fs/read_write.c' \
+              'ksu_init_rc_hook:fs/stat.c'
+            do
+              symbol="${spec%%:*}"
+              file="${spec#*:}"
+              if grep -wq "$symbol" "kernel-src/$file"; then
+                echo "INCOMPATIBLE_PRESENT=$symbol FILE=$file"
+              else
+                echo "INCOMPATIBLE_ABSENT=$symbol FILE=$file"
+              fi
+            done
+
+            echo
+            echo "=== Required ReSukiSU SUSFS hooks currently present ==="
+            for spec in \
+              'ksu_handle_setresuid:kernel/sys.c' \
+              'ksu_handle_execveat:fs/exec.c' \
+              'ksu_handle_faccessat:fs/open.c' \
+              'ksu_handle_sys_read:fs/read_write.c' \
+              'ksu_handle_stat:fs/stat.c' \
+              'ksu_handle_sys_reboot:kernel/reboot.c' \
+              'ksu_handle_input_handle_event:drivers/input/input.c'
+            do
+              symbol="${spec%%:*}"
+              file="${spec#*:}"
+              if grep -wq "$symbol" "kernel-src/$file"; then
+                echo "REQUIRED_PRESENT=$symbol FILE=$file"
+              else
+                echo "REQUIRED_ABSENT=$symbol FILE=$file"
+              fi
+            done
+          } | tee old-vs-resukisu-hook-contract.txt
+
+      - name: Audit whether legacy KernelSU is enabled in raw VEUX baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if grep -q '^CONFIG_KSU=' \
+            kernel-src/arch/arm64/configs/veux_defconfig; then
+            RAW_DEFCONFIG_KSU_LINE="$(
+              grep -m1 '^CONFIG_KSU=' \
+                kernel-src/arch/arm64/configs/veux_defconfig
+            )"
+          else
+            RAW_DEFCONFIG_KSU_LINE='ABSENT'
+          fi
+
+          if grep -qE '^[[:space:]]*default[[:space:]]+y' \
+            kernel-src/drivers/kernelsu/Kconfig; then
+            KCONFIG_DEFAULT='Y'
+          else
+            KCONFIG_DEFAULT='N_OR_NONE'
+          fi
+
+          {
+            echo "RAW_VEUX_DEFCONFIG_KSU=$RAW_DEFCONFIG_KSU_LINE"
+            echo "LEGACY_KSU_KCONFIG_DEFAULT=$KCONFIG_DEFAULT"
+            echo "NOTE=This is a source-level baseline classification, not a compiled-runtime claim."
+          } | tee legacy-kernelsu-baseline-enable-state.txt
+
+      - name: Write final audit file
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          KSU_VERSION_LINE="$(
+            grep -m1 -E 'KSU_VERSION[[:space:]]*=' \
+              kernel-src/drivers/kernelsu/Makefile || true
+          )"
+
+          {
+            echo "AUDIT=GEN2_09_LEGACY_KERNELSU_IDENTITY"
+            echo "WORKFLOW_REVISION=V2_SIGPIPE_SAFE"
+            echo "RESULT=PASS"
+            echo "GEN2_09_LEGACY_KERNELSU_IDENTITY_AUDIT=PASS"
+            echo "KERNEL_COMMIT=$(git -C kernel-src rev-parse HEAD)"
+            echo "RESUKISU_COMMIT=$(git -C resukisu rev-parse HEAD)"
+            echo "LEGACY_KERNELSU_PATH=drivers/kernelsu"
+            echo "LEGACY_KERNELSU_VERSION_LINE=$KSU_VERSION_LINE"
+            echo "NO_SOURCE_CHANGE=YES"
+            echo "NO_PATCH_APPLIED=YES"
+            echo "NO_KERNEL_BUILD_PERFORMED=YES"
+            echo
+            cat legacy-kernelsu-baseline-enable-state.txt
+            echo
+            echo "=== Old vs ReSukiSU hook contract ==="
+            cat old-vs-resukisu-hook-contract.txt
+          } | tee GEN2_09_LEGACY_KERNELSU_IDENTITY_AUDIT.txt
+
+      - name: Verify source trees remained untouched
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          for repo in kernel-src resukisu; do
+            git -C "$repo" diff --exit-code
+            git -C "$repo" diff --cached --exit-code
+          done
+
+          echo "READ_ONLY_SOURCE_AUDIT=YES"
+
+      - name: Upload final audit artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: GEN2_09_LEGACY_KERNELSU_IDENTITY_AUDIT
+          path: |
+            GEN2_09_LEGACY_KERNELSU_IDENTITY_AUDIT.txt
+            legacy-kernelsu-config-state.txt
+            legacy-kernelsu-history.txt
+            legacy-kernelsu-hook-commit.txt
+            legacy-kernelsu-identity-markers.txt
+            legacy-kernelsu-file-sha256.txt
+            legacy-kernelsu-manifest-sha256.txt
+            old-vs-resukisu-hook-contract.txt
+            legacy-kernelsu-baseline-enable-state.txt
+          if-no-files-found: error
+          retention-days: 30
