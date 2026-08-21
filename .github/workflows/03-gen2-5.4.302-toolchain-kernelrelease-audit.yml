@@ -1,0 +1,139 @@
+name: 03 - GEN2 5.4.302 Toolchain and Kernelrelease Audit
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout pinned GEN2 kernel source
+        uses: actions/checkout@v6
+        with:
+          repository: dereference23/kernel_xiaomi_sm6375
+          ref: f4b8a13a43a130a9aab83cc985ce4d4421291ae6
+          path: kernel-src
+          fetch-depth: 1
+
+      - name: Install audit prerequisites
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            bc bison flex libssl-dev libelf-dev \
+            curl ca-certificates xz-utils
+
+      - name: Fetch and identify exact r416183b toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p toolchain
+          curl -fL --retry 3 \
+            'https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/a20a080107a36d82289e257345bfb9a0acb180cc/clang-r416183b.tar.gz' \
+            -o /tmp/clang-r416183b.tar.gz
+
+          tar -xzf /tmp/clang-r416183b.tar.gz -C toolchain
+
+          {
+            echo "=== AndroidVersion.txt ==="
+            cat toolchain/AndroidVersion.txt 2>/dev/null || true
+            echo
+            echo "=== clang --version ==="
+            toolchain/bin/clang --version
+            echo
+            echo "=== ld.lld --version ==="
+            toolchain/bin/ld.lld --version
+          } | tee toolchain-versions.txt
+
+      - name: Audit declared build flags
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd kernel-src
+
+          {
+            echo "=== build.config.common ==="
+            cat build.config.common
+            echo
+            echo "=== build.config.msm.common ==="
+            cat build.config.msm.common
+            echo
+            echo "=== localversion ==="
+            cat localversion
+            echo
+            echo "=== setlocalversion SCM logic ==="
+            grep -n -E \
+              'scm_version|git rev-parse|head|printf|LOCALVERSION' \
+              scripts/setlocalversion || true
+          } | tee "$GITHUB_WORKSPACE/toolchain-build-config-audit.txt"
+
+      - name: Resolve exact GEN2 kernelrelease without compiling
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          export PATH="$GITHUB_WORKSPACE/toolchain/bin:$PATH"
+
+          cd kernel-src
+          rm -rf out
+
+          make \
+            O=out \
+            ARCH=arm64 \
+            LLVM=1 \
+            LLVM_IAS=1 \
+            veux_defconfig
+
+          {
+            echo "COMMIT=$(git rev-parse HEAD)"
+            echo "SHORT_COMMIT=$(git rev-parse --short=8 HEAD)"
+            echo "KERNELVERSION=$(make -s O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 kernelversion)"
+            echo "KERNELRELEASE=$(make -s O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 kernelrelease)"
+            echo "CONFIG_LOCALVERSION=$(grep '^CONFIG_LOCALVERSION=' out/.config || true)"
+            echo "LOCALVERSION_FILE=$(cat localversion)"
+          } | tee "$GITHUB_WORKSPACE/kernelrelease-audit.txt"
+
+      - name: Verify no tracked source changes
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd kernel-src
+          git diff --exit-code
+          git diff --cached --exit-code
+          echo "RESULT=PASS"
+          echo "GEN2_TOOLCHAIN_KERNELRELEASE_AUDIT=PASS"
+
+      - name: Write final toolchain and kernelrelease audit file
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          {
+            echo "AUDIT=GEN2_03_TOOLCHAIN_KERNELRELEASE"
+            echo "RESULT=PASS"
+            echo "GEN2_TOOLCHAIN_KERNELRELEASE_AUDIT=PASS"
+            echo "SOURCE_COMMIT=$(git -C kernel-src rev-parse HEAD)"
+            echo "NO_KERNEL_BUILD_PERFORMED=YES"
+            echo
+            cat toolchain-versions.txt
+            echo
+            cat kernelrelease-audit.txt
+          } | tee GEN2_03_TOOLCHAIN_KERNELRELEASE_AUDIT.txt
+
+      - name: Upload toolchain audit artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: GEN2_03_TOOLCHAIN_KERNELRELEASE_AUDIT
+          path: |
+            GEN2_03_TOOLCHAIN_KERNELRELEASE_AUDIT.txt
+            toolchain-versions.txt
+            toolchain-build-config-audit.txt
+            kernelrelease-audit.txt
+          if-no-files-found: error
+          retention-days: 30
