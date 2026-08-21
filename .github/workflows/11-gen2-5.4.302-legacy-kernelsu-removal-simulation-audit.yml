@@ -1,0 +1,397 @@
+name: 11 - GEN2 5.4.302 Legacy KernelSU Removal Simulation Audit
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout pinned GEN2 kernel source with full history
+        uses: actions/checkout@v6
+        with:
+          repository: dereference23/kernel_xiaomi_sm6375
+          ref: f4b8a13a43a130a9aab83cc985ce4d4421291ae6
+          path: kernel-src
+          fetch-depth: 0
+
+      - name: Checkout pinned ReSukiSU reference
+        uses: actions/checkout@v6
+        with:
+          repository: ReSukiSU/ReSukiSU
+          ref: faccf4c5edc7be37776216e7d43dd3dca0239331
+          path: resukisu
+          fetch-depth: 1
+
+      - name: Verify exact pins and pristine project source
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test "$(git -C kernel-src rev-parse HEAD)" = \
+            "f4b8a13a43a130a9aab83cc985ce4d4421291ae6"
+
+          test "$(git -C resukisu rev-parse HEAD)" = \
+            "faccf4c5edc7be37776216e7d43dd3dca0239331"
+
+          git -C kernel-src diff --exit-code
+          git -C kernel-src diff --cached --exit-code
+
+      - name: Record exact current legacy KernelSU footprint
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          {
+            echo "=== Embedded legacy KernelSU directory ==="
+            find kernel-src/drivers/kernelsu -type f -printf '%P\n' | sort
+
+            echo
+            echo "=== Current references outside drivers/kernelsu ==="
+            git -C kernel-src grep -n -I -E \
+              'CONFIG_KSU|ksu_handle_|ksu_[A-Za-z0-9_]+_hook|KernelSU|kernelsu' \
+              -- \
+              ':!drivers/kernelsu/**' \
+              ':!.github/**' \
+              || true
+
+            echo
+            echo "=== Files outside drivers/kernelsu with current KSU references ==="
+            git -C kernel-src grep -l -I -E \
+              'CONFIG_KSU|ksu_handle_|ksu_[A-Za-z0-9_]+_hook|KernelSU|kernelsu' \
+              -- \
+              ':!drivers/kernelsu/**' \
+              ':!.github/**' \
+              | sort || true
+          } | tee current-legacy-ksu-footprint.txt
+
+      - name: Verify exact current hook and include commits
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          INCLUDE_COMMIT='1c1b2124991bcaf7c93cad5e460e9b9dfb32e4ed'
+          HOOK_COMMIT='3f95a98681655eeb1b928e001d30e00072ae0d8b'
+
+          git -C kernel-src cat-file -e "${INCLUDE_COMMIT}^{commit}"
+          git -C kernel-src cat-file -e "${HOOK_COMMIT}^{commit}"
+
+          {
+            for sha in "$INCLUDE_COMMIT" "$HOOK_COMMIT"; do
+              echo "================================================================"
+              echo "COMMIT=$sha"
+              git -C kernel-src show -s \
+                --format='DATE=%cI%nSUBJECT=%s%nPARENTS=%P' \
+                "$sha"
+
+              echo
+              echo "--- files ---"
+              git -C kernel-src show --name-status --format= "$sha"
+              echo
+            done
+          } | tee removal-source-commits.txt
+
+      - name: Check reverse applicability without modifying project source
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          INCLUDE_COMMIT='1c1b2124991bcaf7c93cad5e460e9b9dfb32e4ed'
+          HOOK_COMMIT='3f95a98681655eeb1b928e001d30e00072ae0d8b'
+
+          mkdir -p reverse-patches
+
+          git -C kernel-src show \
+            --format= \
+            "$INCLUDE_COMMIT" \
+            -- drivers/Kconfig drivers/Makefile \
+            > reverse-patches/include-kernelsu.patch
+
+          git -C kernel-src show \
+            --format= \
+            "$HOOK_COMMIT" \
+            -- fs/devpts/inode.c fs/exec.c fs/namespace.c \
+               fs/open.c fs/read_write.c fs/stat.c \
+            > reverse-patches/legacy-hooks.patch
+
+          {
+            echo "=== Reverse applicability to current pinned HEAD ==="
+
+            if git -C kernel-src apply \
+              --reverse \
+              --check \
+              "$GITHUB_WORKSPACE/reverse-patches/include-kernelsu.patch"; then
+              echo "INCLUDE_REVERSE_APPLY_CHECK=CLEAN"
+            else
+              echo "INCLUDE_REVERSE_APPLY_CHECK=NOT_CLEAN"
+            fi
+
+            if git -C kernel-src apply \
+              --reverse \
+              --check \
+              "$GITHUB_WORKSPACE/reverse-patches/legacy-hooks.patch"; then
+              echo "HOOK_REVERSE_APPLY_CHECK=CLEAN"
+            else
+              echo "HOOK_REVERSE_APPLY_CHECK=NOT_CLEAN"
+            fi
+          } | tee reverse-applicability.txt
+
+      - name: Create isolated removal simulation worktree
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SIM="$RUNNER_TEMP/gen2-ksu-removal-sim"
+          rm -rf "$SIM"
+
+          git -C kernel-src worktree add \
+            --detach \
+            "$SIM" \
+            f4b8a13a43a130a9aab83cc985ce4d4421291ae6
+
+          echo "$SIM" > simulation-worktree.path
+
+      - name: Simulate removal of legacy external integration only
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SIM="$(cat simulation-worktree.path)"
+
+          git -C "$SIM" apply \
+            --reverse \
+            "$GITHUB_WORKSPACE/reverse-patches/include-kernelsu.patch"
+
+          git -C "$SIM" apply \
+            --reverse \
+            "$GITHUB_WORKSPACE/reverse-patches/legacy-hooks.patch"
+
+          {
+            echo "=== External KSU references after reversing include + hook commits ==="
+            git -C "$SIM" grep -n -I -E \
+              'CONFIG_KSU|ksu_handle_|ksu_[A-Za-z0-9_]+_hook|KernelSU|kernelsu' \
+              -- \
+              ':!drivers/kernelsu/**' \
+              ':!.github/**' \
+              || true
+          } | tee after-external-removal.txt
+
+      - name: Simulate removal of embedded legacy KernelSU directory
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SIM="$(cat simulation-worktree.path)"
+
+          rm -rf "$SIM/drivers/kernelsu"
+
+          {
+            echo "=== Any KSU footprint after complete simulated legacy removal ==="
+            git -C "$SIM" grep -n -I -E \
+              'CONFIG_KSU|ksu_handle_|ksu_[A-Za-z0-9_]+_hook|KernelSU|kernelsu' \
+              -- \
+              ':!.github/**' \
+              || true
+          } | tee after-complete-removal.txt
+
+          if git -C "$SIM" grep -q -I -E \
+            'CONFIG_KSU|ksu_handle_|ksu_[A-Za-z0-9_]+_hook|KernelSU|kernelsu' \
+            -- \
+            ':!.github/**'; then
+            echo "RESIDUAL_KSU_FOOTPRINT=YES"
+          else
+            echo "RESIDUAL_KSU_FOOTPRINT=NO"
+          fi | tee residual-footprint-status.txt
+
+      - name: Resolve VEUX defconfig in isolated clean simulation
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SIM="$(cat simulation-worktree.path)"
+
+          rm -rf "$SIM/out"
+
+          make \
+            -C "$SIM" \
+            O="$SIM/out" \
+            ARCH=arm64 \
+            veux_defconfig
+
+          test -f "$SIM/out/.config"
+
+          {
+            echo "DEFCONFIG_RESOLUTION_AFTER_LEGACY_REMOVAL=PASS"
+            echo
+            echo "=== KSU config after complete simulated legacy removal ==="
+            grep -n -E \
+              'CONFIG_KSU|KERNELSU' \
+              "$SIM/out/.config" || true
+
+            echo
+            echo "=== Baseline critical config remains resolvable ==="
+            grep -E \
+              '^(CONFIG_CPUSETS|CONFIG_SCHED_CASS|CONFIG_SPRD_ROTATION_TASK|CONFIG_HZ|CONFIG_HZ_100|CONFIG_CPU_FREQ|CONFIG_CPU_IDLE|CONFIG_LTO|CONFIG_LTO_CLANG|CONFIG_QGKI|CONFIG_WT_QGKI|CONFIG_SECURITY_SELINUX)=' \
+              "$SIM/out/.config" || true
+          } | tee clean-defconfig-resolution.txt
+
+      - name: Validate simulated removal delta
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SIM="$(cat simulation-worktree.path)"
+
+          git -C "$SIM" diff --check
+
+          {
+            echo "=== Simulated removal changed paths ==="
+            git -C "$SIM" status --short
+
+            echo
+            echo "=== Simulated removal diff stat ==="
+            git -C "$SIM" diff --stat
+
+            echo
+            echo "=== Simulated removal diff numstat ==="
+            git -C "$SIM" diff --numstat
+          } | tee simulated-removal-delta.txt
+
+          git -C "$SIM" diff \
+            --binary \
+            > GEN2_11_PROPOSED_LEGACY_KERNELSU_REMOVAL.patch
+
+          test -s GEN2_11_PROPOSED_LEGACY_KERNELSU_REMOVAL.patch
+
+      - name: Check proposed removal patch against fresh pinned tree
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          CHECK="$RUNNER_TEMP/gen2-ksu-removal-check"
+          rm -rf "$CHECK"
+
+          git -C kernel-src worktree add \
+            --detach \
+            "$CHECK" \
+            f4b8a13a43a130a9aab83cc985ce4d4421291ae6
+
+          git -C "$CHECK" apply \
+            --check \
+            "$GITHUB_WORKSPACE/GEN2_11_PROPOSED_LEGACY_KERNELSU_REMOVAL.patch"
+
+          echo "PROPOSED_REMOVAL_PATCH_APPLY_CHECK=CLEAN" \
+            | tee proposed-patch-check.txt
+
+      - name: Compare simulated clean tree against ReSukiSU SUSFS hook preconditions
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SIM="$(cat simulation-worktree.path)"
+
+          {
+            echo "=== ReSukiSU incompatible old hooks after simulated clean removal ==="
+
+            for spec in \
+              'ksu_vfs_read_hook:fs/read_write.c' \
+              'ksu_input_hook:drivers/input/input.c' \
+              'ksu_execveat_hook:fs/exec.c' \
+              'ksu_init_rc_hook:fs/read_write.c' \
+              'ksu_init_rc_hook:fs/stat.c'
+            do
+              symbol="${spec%%:*}"
+              file="${spec#*:}"
+
+              if grep -wq "$symbol" "$SIM/$file"; then
+                echo "INCOMPATIBLE_PRESENT=$symbol FILE=$file"
+              else
+                echo "INCOMPATIBLE_ABSENT=$symbol FILE=$file"
+              fi
+            done
+
+            echo
+            echo "=== Existing required ReSukiSU hooks after legacy removal ==="
+
+            for spec in \
+              'ksu_handle_setresuid:kernel/sys.c' \
+              'ksu_handle_execveat:fs/exec.c' \
+              'ksu_handle_faccessat:fs/open.c' \
+              'ksu_handle_sys_read:fs/read_write.c' \
+              'ksu_handle_stat:fs/stat.c' \
+              'ksu_handle_sys_reboot:kernel/reboot.c' \
+              'ksu_handle_input_handle_event:drivers/input/input.c'
+            do
+              symbol="${spec%%:*}"
+              file="${spec#*:}"
+
+              if grep -wq "$symbol" "$SIM/$file"; then
+                echo "REQUIRED_PRESENT=$symbol FILE=$file"
+              else
+                echo "REQUIRED_ABSENT=$symbol FILE=$file"
+              fi
+            done
+          } | tee clean-tree-resukisu-preconditions.txt
+
+      - name: Verify original checked out project source remained untouched
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git -C kernel-src diff --exit-code
+          git -C kernel-src diff --cached --exit-code
+
+          test -z "$(git -C kernel-src status --porcelain)"
+
+          echo "ORIGINAL_PROJECT_SOURCE_UNTOUCHED=YES" \
+            | tee original-source-status.txt
+
+      - name: Write final audit file
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          {
+            echo "AUDIT=GEN2_11_LEGACY_KERNELSU_REMOVAL_SIMULATION"
+            echo "RESULT=PASS"
+            echo "GEN2_11_LEGACY_KERNELSU_REMOVAL_SIMULATION_AUDIT=PASS"
+            echo "KERNEL_COMMIT=$(git -C kernel-src rev-parse HEAD)"
+            echo "RESUKISU_COMMIT=$(git -C resukisu rev-parse HEAD)"
+            echo "TEMPORARY_SIMULATION_ONLY=YES"
+            echo "ORIGINAL_PROJECT_SOURCE_UNTOUCHED=YES"
+            echo "NO_KERNEL_BUILD_PERFORMED=YES"
+            echo "NO_PROJECT_PATCH_APPLIED=YES"
+            echo
+            cat reverse-applicability.txt
+            cat residual-footprint-status.txt
+            cat proposed-patch-check.txt
+            echo
+            echo "=== Clean-tree ReSukiSU preconditions ==="
+            cat clean-tree-resukisu-preconditions.txt
+          } | tee GEN2_11_LEGACY_KERNELSU_REMOVAL_SIMULATION_AUDIT.txt
+
+      - name: Upload final audit artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: GEN2_11_LEGACY_KERNELSU_REMOVAL_SIMULATION_AUDIT
+          path: |
+            GEN2_11_LEGACY_KERNELSU_REMOVAL_SIMULATION_AUDIT.txt
+            current-legacy-ksu-footprint.txt
+            removal-source-commits.txt
+            reverse-applicability.txt
+            after-external-removal.txt
+            after-complete-removal.txt
+            residual-footprint-status.txt
+            clean-defconfig-resolution.txt
+            simulated-removal-delta.txt
+            GEN2_11_PROPOSED_LEGACY_KERNELSU_REMOVAL.patch
+            proposed-patch-check.txt
+            clean-tree-resukisu-preconditions.txt
+            original-source-status.txt
+          if-no-files-found: warn
+          retention-days: 30
