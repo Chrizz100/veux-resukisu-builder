@@ -1,0 +1,296 @@
+name: 06 - GEN2 5.4.302 Build Path and SUSFS Post-v2.2 Audit
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout pinned GEN2 kernel source
+        uses: actions/checkout@v6
+        with:
+          repository: dereference23/kernel_xiaomi_sm6375
+          ref: f4b8a13a43a130a9aab83cc985ce4d4421291ae6
+          path: kernel-src
+          fetch-depth: 1
+
+      - name: Checkout current VEUX device tree
+        uses: actions/checkout@v6
+        with:
+          repository: xiaomi-sm6375-devs/android_device_xiaomi_veux
+          ref: lineage-23.2
+          path: device-veux
+          fetch-depth: 1
+
+      - name: Checkout current SM6375 common device tree
+        uses: actions/checkout@v6
+        with:
+          repository: xiaomi-sm6375-devs/android_device_xiaomi_sm6375-common
+          ref: lineage-23.2
+          path: device-common
+          fetch-depth: 1
+
+      - name: Checkout pinned ReSukiSU reference
+        uses: actions/checkout@v6
+        with:
+          repository: ReSukiSU/ReSukiSU
+          ref: faccf4c5edc7be37776216e7d43dd3dca0239331
+          path: resukisu
+          fetch-depth: 1
+
+      - name: Fetch SUSFS v2.2.0 and current 5.10 branch
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SUSFS_REPO='https://gitlab.com/simonpunk/susfs4ksu.git'
+          SUSFS_V220='4003ecf2d01c6d13fa8edf6c4f2607365738dc3d'
+
+          git clone \
+            --no-checkout \
+            "$SUSFS_REPO" \
+            susfs
+
+          git -C susfs fetch origin "$SUSFS_V220"
+          git -C susfs fetch origin gki-android12-5.10
+
+          git -C susfs checkout --detach "$SUSFS_V220"
+
+          echo "SUSFS_V220=$(git -C susfs rev-parse HEAD)"
+          echo "SUSFS_CURRENT=$(git -C susfs rev-parse origin/gki-android12-5.10)"
+
+      - name: Audit effective kernel build path and config fragments
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          {
+            echo "=== Kernel build.config files ==="
+            find kernel-src -maxdepth 2 -type f -name 'build.config*' -print | sort
+
+            echo
+            echo "=== Defconfig / fragment / merge references in kernel source ==="
+            grep -RIn -E \
+              'merge_config|android-base\.config|CONFIG_MODULES|CONFIG_MODVERSIONS|POST_DEFCONFIG_CMDS|DEFCONFIG|KCONFIG|FRAGMENT|BUILD_CONFIG' \
+              kernel-src/build.config* \
+              kernel-src/build \
+              kernel-src/scripts \
+              2>/dev/null | head -500 || true
+
+            echo
+            echo "=== VEUX/common device-tree kernel build references ==="
+            grep -RIn -E \
+              'TARGET_KERNEL_CONFIG|TARGET_KERNEL_SOURCE|TARGET_KERNEL_ADDITIONAL_FLAGS|TARGET_KERNEL_CLANG_COMPILE|TARGET_KERNEL_NO_GCC|BOARD_KERNEL_IMAGE_NAME|BOARD_VENDOR_KERNEL_MODULES|BOARD_VENDOR_RAMDISK_KERNEL_MODULES|BOARD_SYSTEM_KERNEL_MODULES|MODULES|MODVERSIONS|KERNEL_MODULE' \
+              device-veux device-common \
+              2>/dev/null | head -500 || true
+
+            echo
+            echo "=== Raw veux_defconfig module-related declarations ==="
+            grep -n -E \
+              'CONFIG_MODULES|CONFIG_MODVERSIONS|CONFIG_MODULE_COMPRESS|CONFIG_MODULE_COMPRESS_XZ' \
+              kernel-src/arch/arm64/configs/veux_defconfig || true
+
+            echo
+            echo "=== Android base module requirements ==="
+            grep -n -E \
+              '^(CONFIG_MODULES|CONFIG_MODVERSIONS)=' \
+              kernel-src/kernel/configs/android-base.config || true
+          } | tee build-path-module-audit.txt
+
+      - name: Audit ReSukiSU integration modes without modifying kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          {
+            echo "RESUKISU_COMMIT=$(git -C resukisu rev-parse HEAD)"
+            echo
+            echo "=== ReSukiSU Kbuild mode selection ==="
+            sed -n '130,220p' resukisu/kernel/Kbuild || true
+
+            echo
+            echo "=== ReSukiSU manual hook checker ==="
+            cat resukisu/kernel/tools/manual_hook_check.mk 2>/dev/null || true
+
+            echo
+            echo "=== ReSukiSU inline hook checker ==="
+            cat resukisu/kernel/tools/inline_hook_check.mk 2>/dev/null || true
+
+            echo
+            echo "=== KSU/SUSFS config references ==="
+            grep -RIn -E \
+              'CONFIG_KSU_MANUAL_HOOK|CONFIG_KSU_SUSFS|CONFIG_KSU_TRACEPOINT_HOOK|KSU_SUSFS' \
+              resukisu/kernel \
+              2>/dev/null | head -400 || true
+          } | tee resukisu-integration-mode-audit.txt
+
+      - name: Audit SUSFS v2.2.0 OPEN_REDIRECT synchronization
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git -C susfs checkout --detach 4003ecf2d01c6d13fa8edf6c4f2607365738dc3d
+
+          {
+            echo "=== SUSFS v2.2.0 OPEN_REDIRECT synchronization ==="
+            grep -n -E \
+              'DEFINE.*SRCU.*open_redirect|srcu_read_lock.*open_redirect|srcu_read_unlock.*open_redirect|synchronize_rcu|synchronize_srcu' \
+              susfs/kernel_patches/fs/susfs.c || true
+
+            echo
+            echo "=== SUSFS v2.2.0 task_mmu/VMA padding markers ==="
+            grep -n -E \
+              'task_mmu|show_map_vma|VMA_PAD_START|show_map_pad_vma|SUS_MAP' \
+              susfs/kernel_patches/50_add_susfs_in_gki-android12-5.10.patch \
+              | head -260 || true
+          } | tee susfs-v220-openredirect-taskmmu-audit.txt
+
+      - name: Audit all post-v2.2 SUSFS kernel changes
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          V220='4003ecf2d01c6d13fa8edf6c4f2607365738dc3d'
+          CURRENT='origin/gki-android12-5.10'
+
+          {
+            echo "V220=$V220"
+            echo "CURRENT=$(git -C susfs rev-parse "$CURRENT")"
+            echo
+
+            echo "=== All post-v2.2 commits touching kernel_patches ==="
+            git -C susfs log \
+              --reverse \
+              --format='%H %cI %s' \
+              "$V220..$CURRENT" \
+              -- kernel_patches
+
+            echo
+            echo "=== OPEN_REDIRECT/SRCU related post-v2.2 commits ==="
+            while IFS= read -r sha; do
+              if git -C susfs show --format= --no-ext-diff "$sha" -- kernel_patches \
+                   | grep -qiE 'OPEN_REDIRECT|open_redirect|synchronize_srcu|synchronize_rcu|srcu_read_lock|srcu_read_unlock'; then
+                git -C susfs show -s --format='%H %cI %s' "$sha"
+              fi
+            done < <(
+              git -C susfs rev-list --reverse "$V220..$CURRENT" -- kernel_patches
+            )
+
+            echo
+            echo "=== task_mmu/SUS_MAP related post-v2.2 commits ==="
+            while IFS= read -r sha; do
+              if git -C susfs show --format= --no-ext-diff "$sha" -- kernel_patches \
+                   | grep -qiE 'task_mmu|show_map_vma|SUS_MAP|VMA_PAD_START|show_map_pad_vma'; then
+                git -C susfs show -s --format='%H %cI %s' "$sha"
+              fi
+            done < <(
+              git -C susfs rev-list --reverse "$V220..$CURRENT" -- kernel_patches
+            )
+          } | tee susfs-post-v220-commit-audit.txt
+
+      - name: Verify be08fac UAF fix semantics
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          FIX_SHA="$(git -C susfs rev-list origin/gki-android12-5.10 \
+            | grep '^be08fac' \
+            | head -1 || true)"
+
+          if [ -z "$FIX_SHA" ]; then
+            FIX_SHA="$(git -C susfs log origin/gki-android12-5.10 \
+              --format='%H %s' \
+              | awk '/OPEN_REDIRECT: Fix potential UAF bug/ {print $1; exit}')"
+          fi
+
+          test -n "$FIX_SHA"
+
+          {
+            echo "UAF_FIX_COMMIT=$FIX_SHA"
+            git -C susfs show -s --format='DATE=%cI%nSUBJECT=%s' "$FIX_SHA"
+            echo
+            echo "=== UAF fix diff ==="
+            git -C susfs show \
+              --format= \
+              --no-ext-diff \
+              "$FIX_SHA" \
+              -- kernel_patches/fs/susfs.c
+          } | tee susfs-be08fac-uaf-fix-audit.txt
+
+          grep -F 'synchronize_srcu(&susfs_srcu_open_redirect)' \
+            susfs-be08fac-uaf-fix-audit.txt
+
+      - name: Audit immediate OPEN_REDIRECT follow-up fixes
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          {
+            for prefix in be08fac 86bb893 c5723cc 3c14ad5; do
+              sha="$(git -C susfs rev-list origin/gki-android12-5.10 \
+                | grep "^${prefix}" \
+                | head -1 || true)"
+
+              if [ -n "$sha" ]; then
+                echo "=== $sha ==="
+                git -C susfs show -s --format='%H%n%cI%n%s' "$sha"
+                git -C susfs show --stat --oneline "$sha" -- kernel_patches
+                echo
+              fi
+            done
+          } | tee susfs-openredirect-followup-audit.txt
+
+      - name: Write final audit file
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          {
+            echo "AUDIT=GEN2_06_BUILD_PATH_SUSFS_POST_V220"
+            echo "RESULT=PASS"
+            echo "GEN2_06_BUILD_PATH_SUSFS_POST_V220_AUDIT=PASS"
+            echo "KERNEL_COMMIT=$(git -C kernel-src rev-parse HEAD)"
+            echo "RESUKISU_COMMIT=$(git -C resukisu rev-parse HEAD)"
+            echo "SUSFS_V220_COMMIT=4003ecf2d01c6d13fa8edf6c4f2607365738dc3d"
+            echo "SUSFS_CURRENT_COMMIT=$(git -C susfs rev-parse origin/gki-android12-5.10)"
+            echo "NO_PATCH_APPLIED=YES"
+            echo "NO_KERNEL_BUILD_PERFORMED=YES"
+            echo
+            echo "=== UAF fix ==="
+            cat susfs-be08fac-uaf-fix-audit.txt
+            echo
+            echo "=== Immediate OPEN_REDIRECT follow-ups ==="
+            cat susfs-openredirect-followup-audit.txt
+          } | tee GEN2_06_BUILD_PATH_SUSFS_POST_V220_AUDIT.txt
+
+      - name: Verify checked-out source trees remained untouched
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          for repo in kernel-src device-veux device-common resukisu; do
+            git -C "$repo" diff --exit-code
+            git -C "$repo" diff --cached --exit-code
+          done
+
+          echo "READ_ONLY_SOURCE_AUDIT=YES"
+
+      - name: Upload final audit artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: GEN2_06_BUILD_PATH_SUSFS_POST_V220_AUDIT
+          path: |
+            GEN2_06_BUILD_PATH_SUSFS_POST_V220_AUDIT.txt
+            build-path-module-audit.txt
+            resukisu-integration-mode-audit.txt
+            susfs-v220-openredirect-taskmmu-audit.txt
+            susfs-post-v220-commit-audit.txt
+            susfs-be08fac-uaf-fix-audit.txt
+            susfs-openredirect-followup-audit.txt
+          if-no-files-found: error
+          retention-days: 30
