@@ -1,0 +1,697 @@
+name: 17 - GEN2 5.4.302 SUSFS Port Staging and Reject Map Audit
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout pinned GEN2 kernel source with full history
+        uses: actions/checkout@v6
+        with:
+          repository: dereference23/kernel_xiaomi_sm6375
+          ref: f4b8a13a43a130a9aab83cc985ce4d4421291ae6
+          path: kernel-src
+          fetch-depth: 0
+
+      - name: Checkout pinned ReSukiSU reference
+        uses: actions/checkout@v6
+        with:
+          repository: ReSukiSU/ReSukiSU
+          ref: faccf4c5edc7be37776216e7d43dd3dca0239331
+          path: resukisu
+          fetch-depth: 1
+
+      - name: Fetch SUSFS history and verify exact references
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git clone https://gitlab.com/simonpunk/susfs4ksu.git susfs
+          git -C susfs fetch origin gki-android12-5.10
+
+          for sha in \
+            4003ecf2d01c6d13fa8edf6c4f2607365738dc3d \
+            be08face56c347e7ba9c4fb420c2463598a14f5d \
+            86bb893e9a103b97d17045306f35eb239a623f2a \
+            c5723cc09c19786fcb701d25a8097e2edbee412a \
+            3c14ad549f826b1f53878ec8c12253efebeed75a
+          do
+            git -C susfs cat-file -e "${sha}^{commit}"
+          done
+
+          test "$(git -C kernel-src rev-parse HEAD)" = \
+            "f4b8a13a43a130a9aab83cc985ce4d4421291ae6"
+
+          test "$(git -C resukisu rev-parse HEAD)" = \
+            "faccf4c5edc7be37776216e7d43dd3dca0239331"
+
+          echo "SOURCE_PINS=PASS" | tee source-pin-status.txt
+
+      - name: Prove three SID prototypes are not call-site dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          import re
+          from pathlib import Path
+
+          root = Path("resukisu/kernel")
+          symbols = [
+              "susfs_set_init_sid",
+              "susfs_set_ksu_sid",
+              "susfs_set_priv_app_sid",
+          ]
+
+          files = []
+          for p in root.rglob("*"):
+              if p.is_file():
+                  try:
+                      files.append((p, p.read_text(encoding="utf-8", errors="replace")))
+                  except OSError:
+                      pass
+
+          out = []
+          blockers = 0
+
+          for sym in symbols:
+              refs = []
+              prototypes = []
+              definitions = []
+              callsites = []
+
+              word_re = re.compile(rf"\b{re.escape(sym)}\b")
+              proto_re = re.compile(
+                  rf"\b{re.escape(sym)}\s*\([^{{}};]*\)\s*;"
+              )
+              def_re = re.compile(
+                  rf"^[ \t]*(?:[A-Za-z_][A-Za-z0-9_ \t\*]*[ \t]+)?"
+                  rf"{re.escape(sym)}\s*\([^;]*\)\s*\{{",
+                  re.M
+              )
+              call_re = re.compile(rf"\b{re.escape(sym)}\s*\(")
+
+              for path, text in files:
+                  if not word_re.search(text):
+                      continue
+
+                  refs.append(str(path))
+
+                  if proto_re.search(text):
+                      prototypes.append(str(path))
+
+                  if def_re.search(text):
+                      definitions.append(str(path))
+
+                  # Remove declarations and definitions before detecting call sites.
+                  stripped = proto_re.sub("", text)
+                  stripped = def_re.sub("", stripped)
+
+                  if call_re.search(stripped):
+                      callsites.append(str(path))
+
+              if callsites and not definitions:
+                  cls = "UNRESOLVED_CALL_DEPENDENCY"
+                  blockers += 1
+              elif not callsites and prototypes and not definitions:
+                  cls = "STALE_UNUSED_PROTOTYPE"
+              elif definitions:
+                  cls = "DEFINED"
+              else:
+                  cls = "NO_REFERENCE"
+
+              out += [
+                  f"SYMBOL={sym}",
+                  f"CLASS={cls}",
+                  "REF_FILES=" + (",".join(sorted(set(refs))) if refs else "NONE"),
+                  "PROTOTYPE_FILES=" + (",".join(sorted(set(prototypes))) if prototypes else "NONE"),
+                  "DEFINITION_FILES=" + (",".join(sorted(set(definitions))) if definitions else "NONE"),
+                  "CALLSITE_FILES=" + (",".join(sorted(set(callsites))) if callsites else "NONE"),
+                  "",
+              ]
+
+          out.append(f"SID_UNRESOLVED_CALL_DEPENDENCIES={blockers}")
+          out.append(
+              "SID_STALE_PROTOTYPES_BLOCK_PORT="
+              + ("NO" if blockers == 0 else "YES")
+          )
+
+          Path("sid-callsite-verdict.txt").write_text(
+              "\n".join(out) + "\n", encoding="utf-8"
+          )
+          PY
+
+          cat sid-callsite-verdict.txt
+          grep -q '^SID_UNRESOLVED_CALL_DEPENDENCIES=0$' sid-callsite-verdict.txt
+          grep -q '^SID_STALE_PROTOTYPES_BLOCK_PORT=NO$' sid-callsite-verdict.txt
+
+      - name: Prepare exact legacy KernelSU removal patches
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          INCLUDE_COMMIT='1c1b2124991bcaf7c93cad5e460e9b9dfb32e4ed'
+          HOOK_COMMIT='3f95a98681655eeb1b928e001d30e00072ae0d8b'
+
+          mkdir -p reverse-patches
+
+          git -C kernel-src show \
+            --format= \
+            "$INCLUDE_COMMIT" \
+            -- drivers/Kconfig drivers/Makefile \
+            > reverse-patches/include-kernelsu.patch
+
+          git -C kernel-src show \
+            --format= \
+            "$HOOK_COMMIT" \
+            -- fs/devpts/inode.c fs/exec.c fs/namespace.c \
+               fs/open.c fs/read_write.c fs/stat.c \
+            > reverse-patches/legacy-hooks.patch
+
+          git -C kernel-src apply \
+            --reverse \
+            --check \
+            "$GITHUB_WORKSPACE/reverse-patches/include-kernelsu.patch"
+
+          git -C kernel-src apply \
+            --reverse \
+            --check \
+            "$GITHUB_WORKSPACE/reverse-patches/legacy-hooks.patch"
+
+          echo "LEGACY_REMOVAL_PRECHECK=CLEAN" \
+            | tee legacy-removal-precheck.txt
+
+      - name: Create isolated GEN2 port-staging worktree
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SIM="$RUNNER_TEMP/gen2-susfs-port-stage"
+          rm -rf "$SIM"
+
+          git -C kernel-src worktree add \
+            --detach \
+            "$SIM" \
+            f4b8a13a43a130a9aab83cc985ce4d4421291ae6
+
+          echo "$SIM" > kernel-simulation.path
+
+      - name: Remove legacy KernelSU in staging worktree
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SIM="$(cat kernel-simulation.path)"
+
+          git -C "$SIM" apply \
+            --reverse \
+            "$GITHUB_WORKSPACE/reverse-patches/include-kernelsu.patch"
+
+          git -C "$SIM" apply \
+            --reverse \
+            "$GITHUB_WORKSPACE/reverse-patches/legacy-hooks.patch"
+
+          rm -rf "$SIM/drivers/kernelsu"
+
+          if git -C "$SIM" grep -q -I -E \
+            'CONFIG_KSU|ksu_handle_|ksu_[A-Za-z0-9_]+_hook|KernelSU|kernelsu' \
+            -- ':!.github/**'; then
+            echo "ERROR=LEGACY_KSU_REFERENCE_REMAINS"
+            exit 1
+          fi
+
+          echo "LEGACY_KERNELSU_REMOVAL=CLEAN" \
+            | tee legacy-removal-state.txt
+
+      - name: Install exactly pinned ReSukiSU in staging worktree
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SIM="$(cat kernel-simulation.path)"
+          PIN='faccf4c5edc7be37776216e7d43dd3dca0239331'
+
+          git clone \
+            --no-local \
+            "$GITHUB_WORKSPACE/resukisu" \
+            "$SIM/KernelSU"
+
+          git -C "$SIM/KernelSU" checkout --detach "$PIN"
+
+          test "$(git -C "$SIM/KernelSU" rev-parse HEAD)" = "$PIN"
+
+          ln -s ../KernelSU/kernel "$SIM/drivers/kernelsu"
+
+          printf '\nobj-$(CONFIG_KSU) += kernelsu/\n' \
+            >> "$SIM/drivers/Makefile"
+
+          sed -i \
+            '/^endmenu$/i source "drivers/kernelsu/Kconfig"' \
+            "$SIM/drivers/Kconfig"
+
+          test -L "$SIM/drivers/kernelsu"
+          test "$(readlink "$SIM/drivers/kernelsu")" = "../KernelSU/kernel"
+
+          echo "PINNED_RESUKISU_INTEGRATION=PASS" \
+            | tee resukisu-integration-state.txt
+
+      - name: Materialize SUSFS v2.2 plus four OPEN_REDIRECT fixes
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          BASE='4003ecf2d01c6d13fa8edf6c4f2607365738dc3d'
+          FIX="$RUNNER_TEMP/susfs-v220-four-fix"
+
+          rm -rf "$FIX"
+
+          git -C susfs worktree add \
+            --detach \
+            "$FIX" \
+            "$BASE"
+
+          for sha in \
+            be08face56c347e7ba9c4fb420c2463598a14f5d \
+            86bb893e9a103b97d17045306f35eb239a623f2a \
+            c5723cc09c19786fcb701d25a8097e2edbee412a \
+            3c14ad549f826b1f53878ec8c12253efebeed75a
+          do
+            git -C "$FIX" cherry-pick --no-commit "$sha"
+          done
+
+          test -f "$FIX/kernel_patches/50_add_susfs_in_gki-android12-5.10.patch"
+          test -f "$FIX/kernel_patches/fs/susfs.c"
+          test -f "$FIX/kernel_patches/include/linux/susfs.h"
+          test -f "$FIX/kernel_patches/include/linux/susfs_def.h"
+
+          echo "$FIX" > susfs-fixset.path
+
+          {
+            echo "SUSFS_BASE=$BASE"
+            echo "OPEN_REDIRECT_FIX_1=be08face56c347e7ba9c4fb420c2463598a14f5d"
+            echo "OPEN_REDIRECT_FIX_2=86bb893e9a103b97d17045306f35eb239a623f2a"
+            echo "OPEN_REDIRECT_FIX_3=c5723cc09c19786fcb701d25a8097e2edbee412a"
+            echo "OPEN_REDIRECT_FIX_4=3c14ad549f826b1f53878ec8c12253efebeed75a"
+            echo "SUSFS_FIXSET_MATERIALIZATION=PASS"
+          } | tee susfs-fixset-state.txt
+
+      - name: Stage required standalone SUSFS source files in temporary kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SIM="$(cat kernel-simulation.path)"
+          FIX="$(cat susfs-fixset.path)"
+
+          install -m 0644 \
+            "$FIX/kernel_patches/fs/susfs.c" \
+            "$SIM/fs/susfs.c"
+
+          install -m 0644 \
+            "$FIX/kernel_patches/include/linux/susfs.h" \
+            "$SIM/include/linux/susfs.h"
+
+          install -m 0644 \
+            "$FIX/kernel_patches/include/linux/susfs_def.h" \
+            "$SIM/include/linux/susfs_def.h"
+
+          {
+            echo "STANDALONE_SUSFS_FILES_STAGED=YES"
+            sha256sum \
+              "$SIM/fs/susfs.c" \
+              "$SIM/include/linux/susfs.h" \
+              "$SIM/include/linux/susfs_def.h"
+          } | tee standalone-susfs-files.txt
+
+      - name: Apply kernel-side SUSFS patch with rejects captured
+        shell: bash
+        run: |
+          set -uo pipefail
+
+          SIM="$(cat kernel-simulation.path)"
+          FIX="$(cat susfs-fixset.path)"
+          PATCH="$FIX/kernel_patches/50_add_susfs_in_gki-android12-5.10.patch"
+
+          {
+            echo "PATCH_SOURCE=$PATCH"
+            echo "MODE=git apply --reject --whitespace=nowarn"
+            echo "NOTE=Partial application is intentional in this staging audit."
+          } > susfs-apply-result.txt
+
+          if git -C "$SIM" apply \
+            --reject \
+            --whitespace=nowarn \
+            "$PATCH" \
+            >> susfs-apply-result.txt 2>&1; then
+            echo "GIT_APPLY_REJECT_EXIT=CLEAN" \
+              >> susfs-apply-result.txt
+          else
+            echo "GIT_APPLY_REJECT_EXIT=REJECTS_PRESENT" \
+              >> susfs-apply-result.txt
+          fi
+
+          find "$SIM" \
+            -path "$SIM/KernelSU" -prune -o \
+            -type f -name '*.rej' -print \
+            | sort \
+            > reject-file-list-absolute.txt
+
+          sed "s#^$SIM/##" \
+            reject-file-list-absolute.txt \
+            > reject-file-list.txt
+
+          reject_count="$(wc -l < reject-file-list.txt)"
+
+          {
+            echo "REJECT_FILE_COUNT=$reject_count"
+
+            if [ "$reject_count" -eq 0 ]; then
+              echo "TEXTUAL_KERNEL_PATCH_COMPLETE=YES"
+            else
+              echo "TEXTUAL_KERNEL_PATCH_COMPLETE=NO"
+            fi
+          } | tee -a susfs-apply-result.txt
+
+          cat susfs-apply-result.txt
+          echo
+          cat reject-file-list.txt || true
+
+          exit 0
+
+      - name: Preserve all reject files and current-source context
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SIM="$(cat kernel-simulation.path)"
+
+          python3 - <<'PY'
+          import re, shutil
+          from pathlib import Path
+
+          sim = Path(Path("kernel-simulation.path").read_text().strip())
+          reject_names = [
+              x.strip()
+              for x in Path("reject-file-list.txt").read_text().splitlines()
+              if x.strip()
+          ]
+
+          outroot = Path("rejects")
+          outroot.mkdir(exist_ok=True)
+
+          report = []
+
+          for relrej in reject_names:
+              src_rej = sim / relrej
+              dst_rej = outroot / relrej
+              dst_rej.parent.mkdir(parents=True, exist_ok=True)
+              shutil.copy2(src_rej, dst_rej)
+
+              target_rel = relrej[:-4] if relrej.endswith(".rej") else relrej
+              target = sim / target_rel
+              rej_text = src_rej.read_text(encoding="utf-8", errors="replace")
+
+              report += [
+                  "=" * 80,
+                  f"REJECT={relrej}",
+                  f"TARGET={target_rel}",
+              ]
+
+              hunks = re.findall(
+                  r"^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@.*$",
+                  rej_text,
+                  flags=re.M
+              )
+
+              if target.exists():
+                  lines = target.read_text(
+                      encoding="utf-8", errors="replace"
+                  ).splitlines()
+
+                  if hunks:
+                      for old_start, new_start in hunks:
+                          center = int(old_start)
+                          lo = max(1, center - 20)
+                          hi = min(len(lines), center + 40)
+                          report.append(
+                              f"--- current source context around old line {center} ---"
+                          )
+                          for no in range(lo, hi + 1):
+                              report.append(f"{no:6d}: {lines[no-1]}")
+                  else:
+                      report.append("NO_HUNK_HEADER_PARSED")
+              else:
+                  report.append("TARGET_FILE_ABSENT")
+
+              report += [
+                  "--- reject content ---",
+                  rej_text,
+                  "",
+              ]
+
+          Path("reject-context-report.txt").write_text(
+              "\n".join(report) + "\n",
+              encoding="utf-8"
+          )
+          PY
+
+          sed -n '1,5000p' reject-context-report.txt
+
+      - name: Record auto-applied staging delta
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SIM="$(cat kernel-simulation.path)"
+
+          {
+            echo "=== Staging worktree status ==="
+            git -C "$SIM" status --short \
+              --untracked-files=all
+
+            echo
+            echo "=== Changed tracked paths ==="
+            git -C "$SIM" diff --name-status
+
+            echo
+            echo "=== Diff stat ==="
+            git -C "$SIM" diff --stat
+          } | tee staged-port-delta-summary.txt
+
+          git -C "$SIM" diff \
+            --binary \
+            > GEN2_17_PARTIAL_AUTO_APPLIED_SUSFS_PORT.patch
+
+      - name: Audit required ReSukiSU hooks after partial SUSFS staging
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SIM="$(cat kernel-simulation.path)"
+
+          present=0
+          absent=0
+          incompatible=0
+
+          {
+            echo "=== Required ReSukiSU SUSFS inline hooks ==="
+
+            for spec in \
+              'ksu_handle_setresuid:kernel/sys.c' \
+              'ksu_handle_execveat:fs/exec.c' \
+              'ksu_handle_faccessat:fs/open.c' \
+              'ksu_handle_sys_read:fs/read_write.c' \
+              'ksu_handle_stat:fs/stat.c' \
+              'ksu_handle_sys_reboot:kernel/reboot.c' \
+              'ksu_handle_input_handle_event:drivers/input/input.c'
+            do
+              symbol="${spec%%:*}"
+              file="${spec#*:}"
+
+              if grep -wq "$symbol" "$SIM/$file"; then
+                echo "REQUIRED_PRESENT=$symbol FILE=$file"
+                present=$((present + 1))
+              else
+                echo "REQUIRED_ABSENT=$symbol FILE=$file"
+                absent=$((absent + 1))
+              fi
+            done
+
+            echo
+            echo "=== Incompatible legacy hooks ==="
+
+            for spec in \
+              'ksu_vfs_read_hook:fs/read_write.c' \
+              'ksu_input_hook:drivers/input/input.c' \
+              'ksu_execveat_hook:fs/exec.c' \
+              'ksu_init_rc_hook:fs/read_write.c' \
+              'ksu_init_rc_hook:fs/stat.c'
+            do
+              symbol="${spec%%:*}"
+              file="${spec#*:}"
+
+              if grep -wq "$symbol" "$SIM/$file"; then
+                echo "INCOMPATIBLE_PRESENT=$symbol FILE=$file"
+                incompatible=$((incompatible + 1))
+              else
+                echo "INCOMPATIBLE_ABSENT=$symbol FILE=$file"
+              fi
+            done
+
+            echo
+            echo "REQUIRED_PRESENT_COUNT=$present"
+            echo "REQUIRED_ABSENT_COUNT=$absent"
+            echo "INCOMPATIBLE_PRESENT_COUNT=$incompatible"
+          } | tee staged-hook-state.txt
+
+      - name: Audit key SUSFS semantic markers after partial staging
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SIM="$(cat kernel-simulation.path)"
+
+          {
+            for spec in \
+              'fs/susfs.c:susfs_srcu_open_redirect|synchronize_srcu' \
+              'fs/namei.c:open_redirect|susfs_open_redirect|do_tmpfile|do_o_path|path_openat' \
+              'fs/proc/task_mmu.c:VMA_PAD_START|susfs_open_redirect|SUS_MAP|sus_map' \
+              'fs/open.c:susfs_open_redirect|OPEN_REDIRECT' \
+              'include/linux/susfs.h:OPEN_REDIRECT|SUS_MAP|susfs_' \
+              'include/linux/susfs_def.h:OPEN_REDIRECT|SUS_MAP|susfs_'
+            do
+              file="${spec%%:*}"
+              regex="${spec#*:}"
+
+              echo "================================================================"
+              echo "FILE=$file"
+              grep -n -C 5 -E "$regex" "$SIM/$file" \
+                | sed -n '1,500p' || true
+              echo
+            done
+          } | tee staged-semantic-markers.txt
+
+      - name: Check formatting damage without failing staging audit
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SIM="$(cat kernel-simulation.path)"
+
+          git -C "$SIM" diff --check \
+            > staged-diff-check.txt 2>&1 || true
+
+          if [ -s staged-diff-check.txt ]; then
+            echo "STAGED_DIFF_CHECK_WARNINGS=YES" \
+              | tee staged-diff-check-status.txt
+          else
+            echo "STAGED_DIFF_CHECK_WARNINGS=NO" \
+              | tee staged-diff-check-status.txt
+          fi
+
+          cat staged-diff-check.txt || true
+
+      - name: Verify original pinned GEN2 source remained untouched
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git -C kernel-src diff --exit-code
+          git -C kernel-src diff --cached --exit-code
+          test -z "$(git -C kernel-src status --porcelain)"
+
+          echo "ORIGINAL_PROJECT_SOURCE_UNTOUCHED=YES" \
+            | tee original-source-status.txt
+
+      - name: Derive staging verdict
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          reject_count="$(
+            grep '^REJECT_FILE_COUNT=' \
+              susfs-apply-result.txt \
+              | tail -1 \
+              | cut -d= -f2
+          )"
+
+          sid_block="$(
+            grep '^SID_STALE_PROTOTYPES_BLOCK_PORT=' \
+              sid-callsite-verdict.txt \
+              | cut -d= -f2
+          )"
+
+          {
+            echo "PORT_STAGING_COMPLETED=YES"
+            echo "REJECT_FILE_COUNT=$reject_count"
+            echo "SID_STALE_PROTOTYPES_BLOCK_PORT=$sid_block"
+
+            if [ "$reject_count" -eq 0 ]; then
+              echo "TEXTUAL_KERNEL_PATCH_COMPLETE=YES"
+            else
+              echo "TEXTUAL_KERNEL_PATCH_COMPLETE=NO"
+            fi
+
+            echo "SEMANTIC_PORT_COMPLETE=NO"
+            echo "READY_FOR_KERNEL_BUILD=NO"
+            echo "NEXT_STEP=RESOLVE_REJECTS_SEMANTICALLY_AGAINST_5.4.302"
+          } | tee staging-verdict.txt
+
+      - name: Write final audit file
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          {
+            echo "AUDIT=GEN2_17_SUSFS_PORT_STAGING_REJECT_MAP"
+            echo "RESULT=PASS"
+            echo "GEN2_17_SUSFS_PORT_STAGING_REJECT_MAP_AUDIT=PASS"
+            echo "KERNEL_COMMIT=$(git -C kernel-src rev-parse HEAD)"
+            echo "RESUKISU_COMMIT=$(git -C resukisu rev-parse HEAD)"
+            echo "SUSFS_BASE=4003ecf2d01c6d13fa8edf6c4f2607365738dc3d"
+            echo "OPEN_REDIRECT_REFERENCE=V220_PLUS_FOUR_SELECTED_FIXES"
+            echo "TEMPORARY_WORKTREE_MODIFIED=YES"
+            echo "ORIGINAL_PROJECT_SOURCE_UNTOUCHED=YES"
+            echo "NO_KERNEL_BUILD_PERFORMED=YES"
+            echo
+            cat sid-callsite-verdict.txt
+            echo
+            cat staging-verdict.txt
+            echo
+            cat staged-hook-state.txt
+          } | tee GEN2_17_SUSFS_PORT_STAGING_REJECT_MAP_AUDIT.txt
+
+      - name: Upload final audit artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: GEN2_17_SUSFS_PORT_STAGING_REJECT_MAP_AUDIT
+          path: |
+            GEN2_17_SUSFS_PORT_STAGING_REJECT_MAP_AUDIT.txt
+            source-pin-status.txt
+            sid-callsite-verdict.txt
+            legacy-removal-precheck.txt
+            legacy-removal-state.txt
+            resukisu-integration-state.txt
+            susfs-fixset-state.txt
+            standalone-susfs-files.txt
+            susfs-apply-result.txt
+            reject-file-list.txt
+            rejects/
+            reject-context-report.txt
+            staged-port-delta-summary.txt
+            GEN2_17_PARTIAL_AUTO_APPLIED_SUSFS_PORT.patch
+            staged-hook-state.txt
+            staged-semantic-markers.txt
+            staged-diff-check.txt
+            staged-diff-check-status.txt
+            original-source-status.txt
+            staging-verdict.txt
+          if-no-files-found: warn
+          retention-days: 30
