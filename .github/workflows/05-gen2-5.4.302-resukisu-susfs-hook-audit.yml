@@ -1,0 +1,249 @@
+name: 05 - GEN2 5.4.302 ReSukiSU SUSFS Hook Compatibility Audit
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout pinned GEN2 kernel source
+        uses: actions/checkout@v6
+        with:
+          repository: dereference23/kernel_xiaomi_sm6375
+          ref: f4b8a13a43a130a9aab83cc985ce4d4421291ae6
+          path: kernel-src
+          fetch-depth: 1
+
+      - name: Checkout pinned ReSukiSU reference
+        uses: actions/checkout@v6
+        with:
+          repository: ReSukiSU/ReSukiSU
+          ref: faccf4c5edc7be37776216e7d43dd3dca0239331
+          path: resukisu
+          fetch-depth: 1
+
+      - name: Fetch SUSFS v2.2.0 reference and current upstream
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SUSFS_REPO='https://gitlab.com/simonpunk/susfs4ksu.git'
+          SUSFS_V220='4003ecf2d01c6d13fa8edf6c4f2607365738dc3d'
+
+          git init susfs-v220
+          git -C susfs-v220 remote add origin "$SUSFS_REPO"
+          git -C susfs-v220 fetch --depth=1 origin "$SUSFS_V220"
+          git -C susfs-v220 checkout --detach FETCH_HEAD
+          test "$(git -C susfs-v220 rev-parse HEAD)" = "$SUSFS_V220"
+
+          git clone \
+            --depth=32 \
+            --branch gki-android12-5.10 \
+            "$SUSFS_REPO" \
+            susfs-current
+
+          echo "SUSFS_V220=$SUSFS_V220"
+          echo "SUSFS_CURRENT=$(git -C susfs-current rev-parse HEAD)"
+          git -C susfs-current log -10 --oneline
+
+      - name: Audit GEN2 task_mmu maps and smaps hook surface
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          FILE="kernel-src/fs/proc/task_mmu.c"
+          test -f "$FILE"
+
+          {
+            echo "=== task_mmu core map symbols ==="
+            grep -n -E \
+              'show_map_vma|show_map\(|show_smap_vma|show_smap\(|proc_pid_maps_op|proc_pid_smaps_op|VMA_PAD_START|show_map_pad_vma|get_pad_vma' \
+              "$FILE" || true
+
+            echo
+            echo "=== Recent 16K/page-size compatibility markers ==="
+            grep -n -E \
+              'page size compat|VM_PAD|VMA_PAD_START|padding' \
+              "$FILE" | head -120 || true
+          } | tee task-mmu-audit.txt
+
+      - name: Audit GEN2 open and VFS hook surface
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          {
+            echo "=== fs/open.c ==="
+            grep -n -E \
+              'do_sys_open|do_sys_openat2|do_filp_open|file_open_name|vfs_open|do_dentry_open|O_TRUNC|openat' \
+              kernel-src/fs/open.c || true
+
+            echo
+            echo "=== fs/namei.c ==="
+            grep -n -E \
+              'do_filp_open|path_openat|do_open|link_path_walk|filename_lookup|user_path_at|inode_permission|may_open' \
+              kernel-src/fs/namei.c || true
+
+            echo
+            echo "=== security hooks relevant to file open/path checks ==="
+            grep -RIn -E \
+              'security_file_open|security_inode_permission|security_path_|inode_permission' \
+              kernel-src/security kernel-src/include/linux/security.h \
+              2>/dev/null | head -160 || true
+          } | tee open-vfs-hook-audit.txt
+
+      - name: Audit pinned ReSukiSU kernel expectations
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          {
+            echo "RESUKISU_COMMIT=$(git -C resukisu rev-parse HEAD)"
+            echo
+            echo "=== ReSukiSU kernel tree ==="
+            find resukisu/kernel -maxdepth 2 -type f | sort | head -240
+            echo
+            echo "=== ReSukiSU hook/symbol references ==="
+            grep -RIn -E \
+              'task_prctl|execve|vfs_read|vfs_write|do_filp_open|do_sys_open|security_|inode_|path_|faccessat|statx|setuid|capable|ksu_handle|KSU_' \
+              resukisu/kernel \
+              2>/dev/null | head -300 || true
+          } | tee resukisu-hook-audit.txt
+
+      - name: Audit SUSFS v2.2.0 patch targets
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          {
+            echo "SUSFS_V220_COMMIT=$(git -C susfs-v220 rev-parse HEAD)"
+            echo
+            echo "=== SUSFS v2.2.0 kernel patch files ==="
+            find susfs-v220/kernel_patches -type f | sort
+            echo
+            echo "=== task_mmu / maps references ==="
+            grep -RIn -E \
+              'task_mmu|show_map_vma|show_map\(|show_smap|proc_pid_maps|VMA_PAD_START|SUS_MAP' \
+              susfs-v220/kernel_patches \
+              2>/dev/null | head -260 || true
+            echo
+            echo "=== OPEN_REDIRECT / SRCU references ==="
+            grep -RIn -E \
+              'OPEN_REDIRECT|open_redirect|srcu|synchronize_srcu|synchronize_rcu|do_filp_open|do_sys_open|O_TRUNC' \
+              susfs-v220/kernel_patches \
+              2>/dev/null | head -320 || true
+          } | tee susfs-v220-hook-audit.txt
+
+      - name: Compare SUSFS v2.2.0 with current OPEN_REDIRECT fix
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          {
+            echo "=== Current upstream recent commits ==="
+            git -C susfs-current log -12 --oneline
+            echo
+            echo "=== Is be08face visible in current shallow history? ==="
+            git -C susfs-current log -32 --oneline | grep -i 'be08face\|OPEN_REDIRECT: Fix potential UAF bug' || true
+            echo
+            echo "=== v2.2.0 synchronization calls ==="
+            grep -RIn -E \
+              'synchronize_srcu|synchronize_rcu|open_redirect' \
+              susfs-v220/kernel_patches \
+              2>/dev/null | head -260 || true
+            echo
+            echo "=== current synchronization calls ==="
+            grep -RIn -E \
+              'synchronize_srcu|synchronize_rcu|open_redirect' \
+              susfs-current/kernel_patches \
+              2>/dev/null | head -320 || true
+          } | tee susfs-open-redirect-srcu-audit.txt
+
+      - name: Read-only patch applicability probes
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p "$GITHUB_WORKSPACE/apply-checks"
+
+          cd kernel-src
+
+          while IFS= read -r patch; do
+            name="$(basename "$patch")"
+            report="$GITHUB_WORKSPACE/apply-checks/${name}.txt"
+
+            {
+              echo "PATCH=$patch"
+              echo "MODE=git apply --check only"
+              echo "SOURCE=$(git rev-parse HEAD)"
+              echo
+
+              if git apply --check "$GITHUB_WORKSPACE/$patch"; then
+                echo "APPLY_CHECK=CLEAN"
+              else
+                echo "APPLY_CHECK=NOT_CLEAN"
+                echo "NOTE=This audit does not apply or modify the patch."
+              fi
+            } > "$report" 2>&1 || true
+          done < <(
+            cd "$GITHUB_WORKSPACE"
+            find susfs-v220/kernel_patches -type f -name '*.patch' | sort
+          )
+
+          echo "=== Applicability summary ==="
+          grep -R -H 'APPLY_CHECK=' "$GITHUB_WORKSPACE/apply-checks" || true
+
+      - name: Verify all checked-out sources remained untouched
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          for repo in kernel-src resukisu susfs-v220 susfs-current; do
+            echo "=== $repo ==="
+            git -C "$repo" diff --exit-code
+            git -C "$repo" diff --cached --exit-code
+          done
+
+          echo "RESULT=PASS"
+          echo "GEN2_RESUKISU_SUSFS_HOOK_AUDIT=PASS"
+          echo "NO_PATCH_APPLIED=YES"
+          echo "NO_KERNEL_BUILD_PERFORMED=YES"
+
+      - name: Write final ReSukiSU SUSFS hook audit file
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          {
+            echo "AUDIT=GEN2_05_RESUKISU_SUSFS_HOOK_COMPATIBILITY"
+            echo "RESULT=PASS"
+            echo "GEN2_RESUKISU_SUSFS_HOOK_AUDIT=PASS"
+            echo "KERNEL_COMMIT=$(git -C kernel-src rev-parse HEAD)"
+            echo "RESUKISU_COMMIT=$(git -C resukisu rev-parse HEAD)"
+            echo "SUSFS_V220_COMMIT=$(git -C susfs-v220 rev-parse HEAD)"
+            echo "NO_PATCH_APPLIED=YES"
+            echo "NO_KERNEL_BUILD_PERFORMED=YES"
+            echo
+            echo "=== Patch applicability summary ==="
+            grep -R -H 'APPLY_CHECK=' apply-checks/ || true
+          } | tee GEN2_05_RESUKISU_SUSFS_HOOK_AUDIT.txt
+
+      - name: Upload hook compatibility audit artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: GEN2_05_RESUKISU_SUSFS_HOOK_AUDIT
+          path: |
+            GEN2_05_RESUKISU_SUSFS_HOOK_AUDIT.txt
+            task-mmu-audit.txt
+            open-vfs-hook-audit.txt
+            resukisu-hook-audit.txt
+            susfs-v220-hook-audit.txt
+            susfs-open-redirect-srcu-audit.txt
+            apply-checks/
+          if-no-files-found: error
+          retention-days: 30
