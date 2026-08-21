@@ -1,0 +1,539 @@
+name: 15 - GEN2 SUSFS v2.2 OPEN_REDIRECT Fixset Audit v2
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout pinned ReSukiSU reference
+        uses: actions/checkout@v6
+        with:
+          repository: ReSukiSU/ReSukiSU
+          ref: faccf4c5edc7be37776216e7d43dd3dca0239331
+          path: resukisu
+          fetch-depth: 1
+
+      - name: Fetch full SUSFS history
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git clone \
+            https://gitlab.com/simonpunk/susfs4ksu.git \
+            susfs
+
+          git -C susfs fetch origin gki-android12-5.10
+
+          for sha in \
+            4003ecf2d01c6d13fa8edf6c4f2607365738dc3d \
+            be08face56c347e7ba9c4fb420c2463598a14f5d \
+            86bb893e9a103b97d17045306f35eb239a623f2a \
+            c5723cc09c19786fcb701d25a8097e2edbee412a \
+            3c14ad549f826b1f53878ec8c12253efebeed75a
+          do
+            git -C susfs cat-file -e "${sha}^{commit}"
+          done
+
+          echo "SUSFS_HISTORY_FETCH=PASS" \
+            | tee fetch-status.txt
+
+      - name: Build exact ancestry and dependency map
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          import subprocess
+          from pathlib import Path
+
+          repo = "susfs"
+          v220 = "4003ecf2d01c6d13fa8edf6c4f2607365738dc3d"
+          last = "3c14ad549f826b1f53878ec8c12253efebeed75a"
+
+          selected = {
+              "be08face56c347e7ba9c4fb420c2463598a14f5d",
+              "86bb893e9a103b97d17045306f35eb239a623f2a",
+              "c5723cc09c19786fcb701d25a8097e2edbee412a",
+              "3c14ad549f826b1f53878ec8c12253efebeed75a",
+          }
+
+          def out(*args):
+              return subprocess.check_output(args, text=True).strip()
+
+          commits = out(
+              "git", "-C", repo, "rev-list",
+              "--reverse", "--ancestry-path", f"{v220}..{last}",
+              "--", "kernel_patches"
+          ).splitlines()
+
+          selected_paths = set()
+          for sha in selected:
+              names = out(
+                  "git", "-C", repo, "diff-tree",
+                  "--no-commit-id", "--name-only", "-r", sha,
+                  "--", "kernel_patches"
+              )
+              selected_paths.update(x for x in names.splitlines() if x)
+
+          lines = [
+              f"V220={v220}",
+              f"LAST_SELECTED_FIX={last}",
+              f"ANCESTRY_KERNEL_PATCH_COMMITS={len(commits)}",
+              f"SELECTED_COMMITS={len(selected)}",
+              f"NON_SELECTED_COMMITS={sum(c not in selected for c in commits)}",
+              "",
+              "=== Dependency map ===",
+          ]
+
+          overlap_nonselected = 0
+
+          for sha in commits:
+              subject = out("git", "-C", repo, "show", "-s", "--format=%s", sha)
+              date = out("git", "-C", repo, "show", "-s", "--format=%cI", sha)
+              names = out(
+                  "git", "-C", repo, "diff-tree",
+                  "--no-commit-id", "--name-only", "-r", sha,
+                  "--", "kernel_patches"
+              ).splitlines()
+
+              diff = out(
+                  "git", "-C", repo, "show", "--format=", sha,
+                  "--", "kernel_patches"
+              )
+
+              open_related = (
+                  "OPEN_REDIRECT" in subject
+                  or "open_redirect" in subject.lower()
+                  or "OPEN_REDIRECT" in diff
+                  or "open_redirect" in diff.lower()
+                  or "susfs_srcu_open_redirect" in diff
+                  or "synchronize_srcu" in diff
+              )
+
+              overlap = sorted(set(names) & selected_paths)
+              if sha not in selected and overlap:
+                  overlap_nonselected += 1
+
+              lines.append(
+                  "COMMIT={sha} DATE={date} SELECTED={sel} "
+                  "OPEN_REDIRECT_RELATED={orr} "
+                  "OVERLAPS_SELECTED_PATHS={ov} SUBJECT={sub}".format(
+                      sha=sha,
+                      date=date,
+                      sel="YES" if sha in selected else "NO",
+                      orr="YES" if open_related else "NO",
+                      ov=",".join(overlap) if overlap else "NONE",
+                      sub=subject,
+                  )
+              )
+
+              for path in names:
+                  lines.append(f"  PATH={path}")
+
+          lines += [
+              "",
+              f"NON_SELECTED_COMMITS_OVERLAPPING_SELECTED_PATHS={overlap_nonselected}",
+              "NOTE=An overlapping path is a dependency risk, not proof of semantic dependency.",
+          ]
+
+          Path("fixset-dependency-map.txt").write_text(
+              "\n".join(lines) + "\n", encoding="utf-8"
+          )
+          PY
+
+          cat fixset-dependency-map.txt
+
+      - name: Export all selected and intervening kernel-patch diffs
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p ancestry-diffs
+
+          V220='4003ecf2d01c6d13fa8edf6c4f2607365738dc3d'
+          LAST='3c14ad549f826b1f53878ec8c12253efebeed75a'
+
+          while IFS= read -r sha; do
+            git -C susfs show \
+              --binary \
+              --format='COMMIT=%H%nDATE=%cI%nSUBJECT=%s%n' \
+              "$sha" \
+              -- kernel_patches \
+              > "ancestry-diffs/${sha}.diff"
+          done < <(
+            git -C susfs rev-list \
+              --reverse \
+              --ancestry-path \
+              "$V220..$LAST" \
+              -- kernel_patches
+          )
+
+          {
+            for f in ancestry-diffs/*.diff; do
+              echo "================================================================"
+              echo "FILE=$f"
+              grep -E \
+                '^COMMIT=|^DATE=|^SUBJECT=|^diff --git |^@@' \
+                "$f" || true
+              echo
+            done
+          } | tee ancestry-hunk-map.txt
+
+      - name: Simulate selected-only fixset without failing audit on conflict
+        shell: bash
+        run: |
+          set -u
+
+          V220='4003ecf2d01c6d13fa8edf6c4f2607365738dc3d'
+          SIM="$RUNNER_TEMP/susfs-selected-only"
+
+          rm -rf "$SIM"
+
+          git -C susfs worktree add \
+            --detach \
+            "$SIM" \
+            "$V220"
+
+          {
+            echo "BASE=$V220"
+            echo "MODE=SELECTED_ONLY_CHERRY_PICK_TEST"
+          } > selected-only-materialization.txt
+
+          status='YES'
+
+          for sha in \
+            be08face56c347e7ba9c4fb420c2463598a14f5d \
+            86bb893e9a103b97d17045306f35eb239a623f2a \
+            c5723cc09c19786fcb701d25a8097e2edbee412a \
+            3c14ad549f826b1f53878ec8c12253efebeed75a
+          do
+            {
+              echo
+              echo "APPLYING=$sha"
+              git -C susfs show -s \
+                --format='SUBJECT=%s%nPARENT=%P' \
+                "$sha"
+            } >> selected-only-materialization.txt
+
+            if git -C "$SIM" cherry-pick \
+              --no-edit \
+              "$sha" \
+              >> selected-only-materialization.txt 2>&1; then
+              echo "STATUS=CLEAN" \
+                >> selected-only-materialization.txt
+            else
+              echo "STATUS=CONFLICT" \
+                >> selected-only-materialization.txt
+              echo "=== conflict status ===" \
+                >> selected-only-materialization.txt
+              git -C "$SIM" status --short \
+                >> selected-only-materialization.txt 2>&1 || true
+              git -C "$SIM" diff --name-only --diff-filter=U \
+                >> selected-only-materialization.txt 2>&1 || true
+
+              status='NO'
+              git -C "$SIM" cherry-pick --abort \
+                >> selected-only-materialization.txt 2>&1 || true
+              break
+            fi
+          done
+
+          echo >> selected-only-materialization.txt
+          echo "SELECTED_ONLY_MATERIALIZATION=$status" \
+            >> selected-only-materialization.txt
+
+          cat selected-only-materialization.txt
+
+          if [ "$status" = YES ]; then
+            git -C "$SIM" diff \
+              --binary \
+              "$V220" \
+              > GEN2_15_SELECTED_ONLY_FIXSET.patch
+
+            git -C "$SIM" diff \
+              --name-status \
+              "$V220" \
+              > selected-only-changed-paths.txt
+          else
+            printf '%s\n' \
+              'SELECTED_ONLY_FIXSET_NOT_MATERIALIZED_DUE_TO_DEPENDENCY_CONFLICT' \
+              > GEN2_15_SELECTED_ONLY_FIXSET.patch
+
+            printf '%s\n' \
+              'SELECTED_ONLY_FIXSET_NOT_MATERIALIZED_DUE_TO_DEPENDENCY_CONFLICT' \
+              > selected-only-changed-paths.txt
+          fi
+
+          exit 0
+
+      - name: Materialize actual upstream final reference state
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          V220='4003ecf2d01c6d13fa8edf6c4f2607365738dc3d'
+          LAST='3c14ad549f826b1f53878ec8c12253efebeed75a'
+          REF="$RUNNER_TEMP/susfs-upstream-final"
+
+          rm -rf "$REF"
+
+          git -C susfs worktree add \
+            --detach \
+            "$REF" \
+            "$LAST"
+
+          {
+            echo "REFERENCE_TYPE=ACTUAL_UPSTREAM_STATE"
+            echo "BASE_V220=$V220"
+            echo "REFERENCE_COMMIT=$LAST"
+            echo
+            git -C susfs show -s \
+              --format='DATE=%cI%nSUBJECT=%s%nPARENTS=%P' \
+              "$LAST"
+          } | tee actual-final-reference.txt
+
+          git -C susfs diff \
+            --binary \
+            "$V220" "$LAST" \
+            -- kernel_patches \
+            > GEN2_15_V220_TO_ACTUAL_FINAL_KERNEL_PATCH_DELTA.patch
+
+          git -C susfs diff \
+            --name-status \
+            "$V220" "$LAST" \
+            -- kernel_patches \
+            > actual-final-changed-paths.txt
+
+      - name: Separate OPEN_REDIRECT-relevant final delta inventory
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          V220='4003ecf2d01c6d13fa8edf6c4f2607365738dc3d'
+          LAST='3c14ad549f826b1f53878ec8c12253efebeed75a'
+
+          python3 - <<'PY'
+          import subprocess, re
+          from pathlib import Path
+
+          repo = "susfs"
+          base = "4003ecf2d01c6d13fa8edf6c4f2607365738dc3d"
+          last = "3c14ad549f826b1f53878ec8c12253efebeed75a"
+
+          text = subprocess.check_output(
+              ["git", "-C", repo, "diff", base, last, "--", "kernel_patches"],
+              text=True, errors="replace"
+          )
+
+          parts = re.split(r"(?=^diff --git )", text, flags=re.M)
+
+          open_parts = []
+          other_parts = []
+          inventory = []
+
+          for part in parts:
+              if not part.startswith("diff --git "):
+                  continue
+
+              first = part.splitlines()[0]
+              m = re.match(r"diff --git a/(.+?) b/(.+)$", first)
+              target = m.group(2) if m else "UNKNOWN"
+
+              open_related = any(x in part for x in [
+                  "OPEN_REDIRECT",
+                  "open_redirect",
+                  "susfs_srcu_open_redirect",
+                  "synchronize_srcu",
+                  "synchronize_rcu",
+                  "do_tmpfile",
+                  "do_o_path",
+                  "path_openat",
+              ])
+
+              inventory.append(
+                  f"PATH={target} OPEN_REDIRECT_RELATED={'YES' if open_related else 'NO'}"
+              )
+
+              (open_parts if open_related else other_parts).append(part)
+
+          Path("actual-final-openredirect-file-inventory.txt").write_text(
+              "\n".join(inventory) + "\n", encoding="utf-8"
+          )
+
+          Path("GEN2_15_OPENREDIRECT_RELEVANT_FINAL_DELTA.patch").write_text(
+              "".join(open_parts), encoding="utf-8"
+          )
+
+          Path("GEN2_15_NON_OPENREDIRECT_FINAL_DELTA.patch").write_text(
+              "".join(other_parts), encoding="utf-8"
+          )
+          PY
+
+          cat actual-final-openredirect-file-inventory.txt
+
+      - name: Compare selected-only result to actual upstream final if available
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if grep -q '^SELECTED_ONLY_MATERIALIZATION=YES$' \
+            selected-only-materialization.txt; then
+
+            SIM="$RUNNER_TEMP/susfs-selected-only"
+            LAST='3c14ad549f826b1f53878ec8c12253efebeed75a'
+
+            {
+              echo "COMPARISON_AVAILABLE=YES"
+              echo
+              echo "=== Selected-only vs actual final kernel_patches ==="
+              git -C "$SIM" diff \
+                "$LAST" \
+                -- kernel_patches \
+                || true
+            } | tee selected-only-vs-actual-final.txt
+          else
+            {
+              echo "COMPARISON_AVAILABLE=NO"
+              echo "REASON=SELECTED_ONLY_FIXSET_COULD_NOT_BE_MATERIALIZED_CLEANLY"
+            } | tee selected-only-vs-actual-final.txt
+          fi
+
+      - name: Audit ReSukiSU API against actual selected final SUSFS state
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          LAST='3c14ad549f826b1f53878ec8c12253efebeed75a'
+          REF="$RUNNER_TEMP/susfs-upstream-final"
+
+          {
+            echo "=== ReSukiSU SUSFS symbol references ==="
+            grep -RhoE \
+              '\b(susfs_[A-Za-z0-9_]+|SUSFS_[A-Za-z0-9_]+|CMD_SUSFS_[A-Za-z0-9_]+)\b' \
+              resukisu/kernel \
+              | sort -u
+
+            echo
+            echo "=== Actual final SUSFS symbol universe ==="
+            grep -RhoE \
+              '\b(susfs_[A-Za-z0-9_]+|SUSFS_[A-Za-z0-9_]+|CMD_SUSFS_[A-Za-z0-9_]+)\b' \
+              "$REF/kernel_patches" \
+              2>/dev/null \
+              | sort -u
+          } | tee resukisu-vs-actual-final-api-universe.txt
+
+          comm -23 \
+            <(
+              grep -RhoE \
+                '\b(susfs_[A-Za-z0-9_]+|SUSFS_[A-Za-z0-9_]+|CMD_SUSFS_[A-Za-z0-9_]+)\b' \
+                resukisu/kernel \
+                | sort -u
+            ) \
+            <(
+              grep -RhoE \
+                '\b(susfs_[A-Za-z0-9_]+|SUSFS_[A-Za-z0-9_]+|CMD_SUSFS_[A-Za-z0-9_]+)\b' \
+                "$REF/kernel_patches" \
+                2>/dev/null \
+                | sort -u
+            ) \
+            > resukisu-symbols-not-found-in-actual-final.txt
+
+          {
+            echo "=== ReSukiSU symbols not found in actual final SUSFS universe ==="
+            cat resukisu-symbols-not-found-in-actual-final.txt
+          } | tee resukisu-api-gap-summary.txt
+
+      - name: Derive dependency-aware verdict
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          nonselected="$(
+            grep '^NON_SELECTED_COMMITS=' \
+              fixset-dependency-map.txt \
+              | cut -d= -f2
+          )"
+
+          overlap="$(
+            grep '^NON_SELECTED_COMMITS_OVERLAPPING_SELECTED_PATHS=' \
+              fixset-dependency-map.txt \
+              | cut -d= -f2
+          )"
+
+          selective="$(
+            grep '^SELECTED_ONLY_MATERIALIZATION=' \
+              selected-only-materialization.txt \
+              | cut -d= -f2
+          )"
+
+          {
+            echo "NON_SELECTED_ANCESTRY_KERNEL_PATCH_COMMITS=$nonselected"
+            echo "NON_SELECTED_COMMITS_OVERLAPPING_SELECTED_PATHS=$overlap"
+            echo "SELECTED_ONLY_MATERIALIZATION=$selective"
+
+            if [ "$nonselected" -eq 0 ] \
+              && [ "$selective" = YES ]; then
+              echo "FOUR_COMMIT_FIXSET_IS_CLOSED=YES"
+              echo "PORT_REFERENCE=SELECTED_ONLY_FIXSET"
+            else
+              echo "FOUR_COMMIT_FIXSET_IS_CLOSED=NO"
+              echo "PORT_REFERENCE=ACTUAL_UPSTREAM_FINAL_WITH_HUNK_LEVEL_SCOPE_CONTROL"
+            fi
+
+            echo "NOTE=No kernel patch is applied by this audit."
+          } | tee dependency-aware-verdict.txt
+
+      - name: Write final audit file
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          {
+            echo "AUDIT=GEN2_15_SUSFS_V220_OPENREDIRECT_FIXSET_V2"
+            echo "RESULT=PASS"
+            echo "GEN2_15_SUSFS_V220_OPENREDIRECT_FIXSET_AUDIT=PASS"
+            echo "WORKFLOW_REVISION=V2_DEPENDENCY_AWARE"
+            echo "RESUKISU_COMMIT=$(git -C resukisu rev-parse HEAD)"
+            echo "SUSFS_V220_COMMIT=4003ecf2d01c6d13fa8edf6c4f2607365738dc3d"
+            echo "LAST_SELECTED_OPENREDIRECT_FIX=3c14ad549f826b1f53878ec8c12253efebeed75a"
+            echo "NO_KERNEL_SOURCE_MODIFIED=YES"
+            echo "NO_KERNEL_BUILD_PERFORMED=YES"
+            echo
+            cat dependency-aware-verdict.txt
+            echo
+            cat resukisu-api-gap-summary.txt
+          } | tee GEN2_15_SUSFS_V220_OPENREDIRECT_FIXSET_AUDIT.txt
+
+      - name: Upload final audit artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: GEN2_15_SUSFS_V220_OPENREDIRECT_FIXSET_AUDIT
+          path: |
+            GEN2_15_SUSFS_V220_OPENREDIRECT_FIXSET_AUDIT.txt
+            fetch-status.txt
+            fixset-dependency-map.txt
+            ancestry-diffs/
+            ancestry-hunk-map.txt
+            selected-only-materialization.txt
+            selected-only-changed-paths.txt
+            GEN2_15_SELECTED_ONLY_FIXSET.patch
+            actual-final-reference.txt
+            actual-final-changed-paths.txt
+            GEN2_15_V220_TO_ACTUAL_FINAL_KERNEL_PATCH_DELTA.patch
+            actual-final-openredirect-file-inventory.txt
+            GEN2_15_OPENREDIRECT_RELEVANT_FINAL_DELTA.patch
+            GEN2_15_NON_OPENREDIRECT_FINAL_DELTA.patch
+            selected-only-vs-actual-final.txt
+            resukisu-vs-actual-final-api-universe.txt
+            resukisu-symbols-not-found-in-actual-final.txt
+            resukisu-api-gap-summary.txt
+            dependency-aware-verdict.txt
+          if-no-files-found: warn
+          retention-days: 30
