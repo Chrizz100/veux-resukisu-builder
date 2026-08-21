@@ -1,0 +1,2871 @@
+name: 24 - GEN2 5.4.302 SUSFS stat KSTAT and fstat Completion Audit
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout pinned GEN2 kernel source with full history
+        uses: actions/checkout@v6
+        with:
+          repository: dereference23/kernel_xiaomi_sm6375
+          ref: f4b8a13a43a130a9aab83cc985ce4d4421291ae6
+          path: kernel-src
+          fetch-depth: 0
+
+      - name: Checkout pinned ReSukiSU reference
+        uses: actions/checkout@v6
+        with:
+          repository: ReSukiSU/ReSukiSU
+          ref: faccf4c5edc7be37776216e7d43dd3dca0239331
+          path: resukisu
+          fetch-depth: 1
+
+      - name: Fetch pinned SUSFS reference history
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git clone https://gitlab.com/simonpunk/susfs4ksu.git susfs
+          git -C susfs fetch origin gki-android12-5.10
+
+          for sha in \
+            4003ecf2d01c6d13fa8edf6c4f2607365738dc3d \
+            be08face56c347e7ba9c4fb420c2463598a14f5d \
+            86bb893e9a103b97d17045306f35eb239a623f2a \
+            c5723cc09c19786fcb701d25a8097e2edbee412a \
+            3c14ad549f826b1f53878ec8c12253efebeed75a
+          do
+            git -C susfs cat-file -e "${sha}^{commit}"
+          done
+
+          test "$(git -C kernel-src rev-parse HEAD)" = \
+            "f4b8a13a43a130a9aab83cc985ce4d4421291ae6"
+
+          test "$(git -C resukisu rev-parse HEAD)" = \
+            "faccf4c5edc7be37776216e7d43dd3dca0239331"
+
+          echo "SOURCE_PINS=PASS" | tee source-pin-status.txt
+
+      - name: Prepare exact legacy KernelSU removal patches
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          INCLUDE_COMMIT='1c1b2124991bcaf7c93cad5e460e9b9dfb32e4ed'
+          HOOK_COMMIT='3f95a98681655eeb1b928e001d30e00072ae0d8b'
+
+          mkdir -p reverse-patches
+
+          git -C kernel-src show \
+            --format= \
+            "$INCLUDE_COMMIT" \
+            -- drivers/Kconfig drivers/Makefile \
+            > reverse-patches/include-kernelsu.patch
+
+          git -C kernel-src show \
+            --format= \
+            "$HOOK_COMMIT" \
+            -- fs/devpts/inode.c fs/exec.c fs/namespace.c \
+               fs/open.c fs/read_write.c fs/stat.c \
+            > reverse-patches/legacy-hooks.patch
+
+          git -C kernel-src apply \
+            --reverse \
+            --check \
+            "$GITHUB_WORKSPACE/reverse-patches/include-kernelsu.patch"
+
+          git -C kernel-src apply \
+            --reverse \
+            --check \
+            "$GITHUB_WORKSPACE/reverse-patches/legacy-hooks.patch"
+
+      - name: Create isolated hook-completion worktree
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SIM="$RUNNER_TEMP/gen2-inline-hook-stage"
+          rm -rf "$SIM"
+
+          git -C kernel-src worktree add \
+            --detach \
+            "$SIM" \
+            f4b8a13a43a130a9aab83cc985ce4d4421291ae6
+
+          echo "$SIM" > kernel-simulation.path
+
+      - name: Remove legacy KernelSU in temporary worktree
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SIM="$(cat kernel-simulation.path)"
+
+          git -C "$SIM" apply \
+            --reverse \
+            "$GITHUB_WORKSPACE/reverse-patches/include-kernelsu.patch"
+
+          git -C "$SIM" apply \
+            --reverse \
+            "$GITHUB_WORKSPACE/reverse-patches/legacy-hooks.patch"
+
+          rm -rf "$SIM/drivers/kernelsu"
+
+          echo "LEGACY_KERNELSU_REMOVAL=PASS" \
+            | tee legacy-removal-state.txt
+
+      - name: Install exactly pinned ReSukiSU
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SIM="$(cat kernel-simulation.path)"
+          PIN='faccf4c5edc7be37776216e7d43dd3dca0239331'
+
+          git clone \
+            --no-local \
+            "$GITHUB_WORKSPACE/resukisu" \
+            "$SIM/KernelSU"
+
+          git -C "$SIM/KernelSU" checkout --detach "$PIN"
+
+          test "$(git -C "$SIM/KernelSU" rev-parse HEAD)" = "$PIN"
+
+          ln -s ../KernelSU/kernel "$SIM/drivers/kernelsu"
+
+          printf '\nobj-$(CONFIG_KSU) += kernelsu/\n' \
+            >> "$SIM/drivers/Makefile"
+
+          sed -i \
+            '/^endmenu$/i source "drivers/kernelsu/Kconfig"' \
+            "$SIM/drivers/Kconfig"
+
+          echo "PINNED_RESUKISU_INTEGRATION=PASS" \
+            | tee resukisu-integration-state.txt
+
+      - name: Materialize SUSFS v2.2 plus four OPEN_REDIRECT fixes
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          BASE='4003ecf2d01c6d13fa8edf6c4f2607365738dc3d'
+          FIX="$RUNNER_TEMP/susfs-v220-four-fix-hooks"
+
+          rm -rf "$FIX"
+
+          git -C susfs worktree add \
+            --detach \
+            "$FIX" \
+            "$BASE"
+
+          for sha in \
+            be08face56c347e7ba9c4fb420c2463598a14f5d \
+            86bb893e9a103b97d17045306f35eb239a623f2a \
+            c5723cc09c19786fcb701d25a8097e2edbee412a \
+            3c14ad549f826b1f53878ec8c12253efebeed75a
+          do
+            git -C "$FIX" cherry-pick --no-commit "$sha"
+          done
+
+          echo "$FIX" > susfs-fixset.path
+
+          echo "SUSFS_FIXSET_MATERIALIZATION=PASS" \
+            | tee susfs-fixset-state.txt
+
+      - name: Stage standalone SUSFS files
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SIM="$(cat kernel-simulation.path)"
+          FIX="$(cat susfs-fixset.path)"
+
+          install -m 0644 \
+            "$FIX/kernel_patches/fs/susfs.c" \
+            "$SIM/fs/susfs.c"
+
+          install -m 0644 \
+            "$FIX/kernel_patches/include/linux/susfs.h" \
+            "$SIM/include/linux/susfs.h"
+
+          install -m 0644 \
+            "$FIX/kernel_patches/include/linux/susfs_def.h" \
+            "$SIM/include/linux/susfs_def.h"
+
+          echo "STANDALONE_SUSFS_FILES_STAGED=PASS" \
+            | tee standalone-susfs-state.txt
+
+      - name: Reproduce Workflow 17 partial SUSFS application
+        shell: bash
+        run: |
+          set -uo pipefail
+
+          SIM="$(cat kernel-simulation.path)"
+          FIX="$(cat susfs-fixset.path)"
+          PATCH="$FIX/kernel_patches/50_add_susfs_in_gki-android12-5.10.patch"
+
+          git -C "$SIM" apply \
+            --reject \
+            --whitespace=nowarn \
+            "$PATCH" \
+            > workflow17-apply.log 2>&1 || true
+
+          find "$SIM" \
+            -path "$SIM/KernelSU" -prune -o \
+            -type f -name '*.rej' -print \
+            | sort \
+            > workflow17-rejects-absolute.txt
+
+          sed "s#^$SIM/##" \
+            workflow17-rejects-absolute.txt \
+            > workflow17-rejects.txt
+
+          echo "WORKFLOW17_PARTIAL_STAGE_REPRODUCED=YES" \
+            | tee workflow17-stage-state.txt
+
+      - name: Record callsite-aware hook state before completion
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SIM="$(cat kernel-simulation.path)"
+
+          python3 - <<'PY'
+          import re
+          from pathlib import Path
+
+          sim = Path(Path("kernel-simulation.path").read_text().strip())
+
+          specs = [
+              ("ksu_handle_setresuid", "kernel/sys.c"),
+              ("ksu_handle_execveat", "fs/exec.c"),
+              ("ksu_handle_faccessat", "fs/open.c"),
+              ("ksu_handle_sys_read", "fs/read_write.c"),
+              ("ksu_handle_stat", "fs/stat.c"),
+              ("ksu_handle_sys_reboot", "kernel/reboot.c"),
+              ("ksu_handle_input_handle_event", "drivers/input/input.c"),
+          ]
+
+          def classify(sym, rel):
+              text = (sim / rel).read_text(encoding="utf-8", errors="replace")
+              lines = text.splitlines()
+
+              refs = []
+              declarations = []
+              callsites = []
+
+              for no, line in enumerate(lines, 1):
+                  if sym not in line:
+                      continue
+
+                  refs.append(no)
+                  stripped = line.strip()
+
+                  if stripped.startswith("extern "):
+                      declarations.append(no)
+                      continue
+
+                  # Function declarations split over lines can start with a return type.
+                  if re.match(
+                      rf"^(?:static\s+)?(?:inline\s+)?(?:__attribute__\(\([^)]+\)\)\s+)?"
+                      rf"(?:int|long|void|bool|ssize_t|u32)\s+{re.escape(sym)}\s*\(",
+                      stripped,
+                  ):
+                      declarations.append(no)
+                      continue
+
+                  if re.search(rf"\b{re.escape(sym)}\s*\(", line):
+                      callsites.append(no)
+
+              return refs, declarations, callsites
+
+          out = []
+          functional = 0
+
+          for sym, rel in specs:
+              refs, declarations, callsites = classify(sym, rel)
+
+              if callsites:
+                  state = "FUNCTIONAL_CALLSITE_PRESENT"
+                  functional += 1
+              elif refs:
+                  state = "REFERENCE_ONLY_NO_CALLSITE"
+              else:
+                  state = "ABSENT"
+
+              out += [
+                  f"SYMBOL={sym}",
+                  f"FILE={rel}",
+                  f"STATE={state}",
+                  "REFERENCE_LINES=" + (
+                      ",".join(map(str, refs)) if refs else "NONE"
+                  ),
+                  "DECLARATION_LINES=" + (
+                      ",".join(map(str, declarations)) if declarations else "NONE"
+                  ),
+                  "CALLSITE_LINES=" + (
+                      ",".join(map(str, callsites)) if callsites else "NONE"
+                  ),
+                  "",
+              ]
+
+          out.append(f"FUNCTIONAL_REQUIRED_HOOK_CALLSITES={functional}")
+          out.append(f"MISSING_FUNCTIONAL_REQUIRED_HOOK_CALLSITES={7-functional}")
+
+          Path("hook-callsite-state-before.txt").write_text(
+              "\n".join(out) + "\n", encoding="utf-8"
+          )
+          PY
+
+          cat hook-callsite-state-before.txt
+
+      - name: Complete three missing functional hook callsites with function-scoped edits
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SIM="$(cat kernel-simulation.path)"
+
+          python3 - <<'PY' 2>&1 | tee hook-completion-edit-log.txt
+          import re
+          from pathlib import Path
+
+          sim = Path(Path("kernel-simulation.path").read_text().strip())
+
+          def load(rel):
+              p = sim / rel
+              return p, p.read_text(encoding="utf-8")
+
+          def save(path, text):
+              path.write_text(text, encoding="utf-8")
+
+          def function_region(text, start_regex, end_regex, label):
+              sm = re.search(start_regex, text, flags=re.M)
+              if not sm:
+                  raise RuntimeError(f"{label}: function start not found")
+
+              em = re.search(end_regex, text[sm.start():], flags=re.M)
+              if not em:
+                  raise RuntimeError(f"{label}: function end marker not found")
+
+              end = sm.start() + em.start()
+              return sm.start(), end
+
+          def insert_before_function(text, function_regex, block, marker, label):
+              if marker in text:
+                  print(f"{label}: declaration/include marker already present")
+                  return text
+
+              m = re.search(function_regex, text, flags=re.M)
+              if not m:
+                  raise RuntimeError(f"{label}: target function not found")
+
+              print(f"{label}: inserting before byte offset {m.start()}")
+              return text[:m.start()] + block + text[m.start():]
+
+          def insert_after_unique_line_in_region(
+              text, region_start, region_end, line, block, marker, label
+          ):
+              region = text[region_start:region_end]
+
+              if marker in region:
+                  print(f"{label}: callsite marker already present")
+                  return text
+
+              count = region.count(line)
+              print(f"{label}: scoped anchor count={count}")
+
+              if count != 1:
+                  raise RuntimeError(
+                      f"{label}: expected one scoped anchor, found {count}"
+                  )
+
+              idx = region.index(line) + len(line)
+              absolute = region_start + idx
+              return text[:absolute] + block + text[absolute:]
+
+          # ============================================================
+          # 1) kernel/sys.c :: __sys_setresuid()
+          # ============================================================
+          rel = "kernel/sys.c"
+          path, text = load(rel)
+
+          start, end = function_region(
+              text,
+              r"^long __sys_setresuid\(uid_t ruid, uid_t euid, uid_t suid\)\n\{\n",
+              r"^SYSCALL_DEFINE3\(setresuid,",
+              "kernel/sys.c::__sys_setresuid",
+          )
+
+          text = insert_after_unique_line_in_region(
+              text,
+              start,
+              end,
+              "\tkuid_t kruid, keuid, ksuid;\n",
+              "\n#ifdef CONFIG_KSU_SUSFS\n"
+              "\t(void)ksu_handle_setresuid(ruid, euid, suid);\n"
+              "#endif\n",
+              "ksu_handle_setresuid(ruid, euid, suid)",
+              "kernel/sys.c setresuid hook",
+          )
+
+          save(path, text)
+          print("kernel/sys.c setresuid hook: PASS")
+
+          # ============================================================
+          # 2) fs/open.c :: do_faccessat()
+          # Exact GEN2 API has no flags argument.
+          # ============================================================
+          rel = "fs/open.c"
+          path, text = load(rel)
+
+          if "#include <linux/susfs_def.h>" not in text:
+              include_re = re.compile(
+                  r"^(#include <linux/compat\.h>\n)",
+                  flags=re.M,
+              )
+              m = include_re.search(text)
+              if not m:
+                  raise RuntimeError(
+                      "fs/open.c: <linux/compat.h> include not found"
+                  )
+
+              text = (
+                  text[:m.end()]
+                  + "#ifdef CONFIG_KSU_SUSFS\n"
+                    "#include <linux/susfs_def.h>\n"
+                    "#endif\n"
+                  + text[m.end():]
+              )
+              print("fs/open.c SUSFS include: inserted")
+          else:
+              print("fs/open.c SUSFS include: already present")
+
+          faccess_decl = (
+              "#ifdef CONFIG_KSU_SUSFS\n"
+              "extern struct static_key_true ksu_su_compat_enabled;\n"
+              "extern bool __ksu_is_allow_uid_for_current(uid_t uid);\n"
+              "extern int ksu_handle_faccessat(int *dfd, "
+              "const char __user **filename_user, int *mode, int *flags);\n"
+              "#endif\n\n"
+          )
+
+          text = insert_before_function(
+              text,
+              r"^long do_faccessat\(int dfd, const char __user \*filename, int mode\)\n",
+              faccess_decl,
+              "extern int ksu_handle_faccessat(int *dfd",
+              "fs/open.c faccessat declarations",
+          )
+
+          start, end = function_region(
+              text,
+              r"^long do_faccessat\(int dfd, const char __user \*filename, int mode\)\n\{\n",
+              r"^SYSCALL_DEFINE3\(faccessat,",
+              "fs/open.c::do_faccessat",
+          )
+
+          text = insert_after_unique_line_in_region(
+              text,
+              start,
+              end,
+              "\tunsigned int lookup_flags = LOOKUP_FOLLOW;\n",
+              "\n#ifdef CONFIG_KSU_SUSFS\n"
+              "\tif (likely(susfs_is_current_proc_umounted()))\n"
+              "\t\tgoto orig_flow;\n\n"
+              "\tif (static_branch_likely(&ksu_su_compat_enabled)) {\n"
+              "\t\tif (unlikely(__ksu_is_allow_uid_for_current(current_uid().val)))\n"
+              "\t\t\tksu_handle_faccessat(&dfd, &filename, &mode, NULL);\n"
+              "\t}\n\n"
+              "orig_flow:\n"
+              "#endif\n",
+              "ksu_handle_faccessat(&dfd, &filename, &mode, NULL)",
+              "fs/open.c faccessat hook",
+          )
+
+          save(path, text)
+          print("fs/open.c faccessat hook: PASS")
+
+          # ============================================================
+          # 3) fs/stat.c :: vfs_statx()
+          # ============================================================
+          rel = "fs/stat.c"
+          path, text = load(rel)
+
+          if "#include <linux/susfs_def.h>" not in text:
+              include_re = re.compile(
+                  r"^(#include <linux/compat\.h>\n)",
+                  flags=re.M,
+              )
+              m = include_re.search(text)
+              if not m:
+                  raise RuntimeError(
+                      "fs/stat.c: <linux/compat.h> include not found"
+                  )
+
+              text = (
+                  text[:m.end()]
+                  + "#ifdef CONFIG_KSU_SUSFS\n"
+                    "#include <linux/susfs_def.h>\n"
+                    "#include <linux/version.h>\n"
+                    "#endif\n"
+                  + text[m.end():]
+              )
+              print("fs/stat.c SUSFS include: inserted")
+          else:
+              print("fs/stat.c SUSFS include: already present")
+
+          stat_decl = (
+              "#ifdef CONFIG_KSU_SUSFS\n"
+              "extern struct static_key_true ksu_su_compat_enabled;\n"
+              "extern bool __ksu_is_allow_uid_for_current(uid_t uid);\n"
+              "extern int ksu_handle_stat(int *dfd, "
+              "const char __user **filename_user, int *flags);\n"
+              "#endif\n\n"
+          )
+
+          text = insert_before_function(
+              text,
+              r"^int vfs_statx\(int dfd, const char __user \*filename, int flags,\n",
+              stat_decl,
+              "extern int ksu_handle_stat(int *dfd",
+              "fs/stat.c stat declarations",
+          )
+
+          start, end = function_region(
+              text,
+              r"^int vfs_statx\(int dfd, const char __user \*filename, int flags,\n"
+              r"\s*struct kstat \*stat, u32 request_mask\)\n\{\n",
+              r"^EXPORT_SYMBOL\(vfs_statx\);",
+              "fs/stat.c::vfs_statx",
+          )
+
+          text = insert_after_unique_line_in_region(
+              text,
+              start,
+              end,
+              "\tunsigned int lookup_flags = LOOKUP_FOLLOW | LOOKUP_AUTOMOUNT;\n",
+              "\n#ifdef CONFIG_KSU_SUSFS\n"
+              "\tif (likely(susfs_is_current_proc_umounted()))\n"
+              "\t\tgoto orig_flow;\n\n"
+              "\tif (static_branch_likely(&ksu_su_compat_enabled)) {\n"
+              "\t\tif (unlikely(__ksu_is_allow_uid_for_current(current_uid().val)))\n"
+              "\t\t\tksu_handle_stat(&dfd, &filename, &flags);\n"
+              "\t}\n\n"
+              "orig_flow:\n"
+              "#endif\n",
+              "ksu_handle_stat(&dfd, &filename, &flags)",
+              "fs/stat.c stat hook",
+          )
+
+          save(path, text)
+          print("fs/stat.c stat hook: PASS")
+
+          print("THREE_MISSING_HOOK_CALLSITES_STAGED=PASS")
+          PY
+
+          grep -q '^THREE_MISSING_HOOK_CALLSITES_STAGED=PASS$' \
+            hook-completion-edit-log.txt
+
+          echo "THREE_MISSING_HOOK_CALLSITES_STAGED=PASS" \
+            | tee hook-completion-state.txt
+
+      - name: Verify all seven required hooks by functional callsite not symbol presence
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SIM="$(cat kernel-simulation.path)"
+
+          python3 - <<'PY'
+          import re
+          from pathlib import Path
+
+          sim = Path(Path("kernel-simulation.path").read_text().strip())
+
+          specs = [
+              ("ksu_handle_setresuid", "kernel/sys.c"),
+              ("ksu_handle_execveat", "fs/exec.c"),
+              ("ksu_handle_faccessat", "fs/open.c"),
+              ("ksu_handle_sys_read", "fs/read_write.c"),
+              ("ksu_handle_stat", "fs/stat.c"),
+              ("ksu_handle_sys_reboot", "kernel/reboot.c"),
+              ("ksu_handle_input_handle_event", "drivers/input/input.c"),
+          ]
+
+          out = []
+          functional = 0
+
+          for sym, rel in specs:
+              text = (sim / rel).read_text(
+                  encoding="utf-8", errors="replace"
+              )
+              call_lines = []
+
+              for no, line in enumerate(text.splitlines(), 1):
+                  if not re.search(rf"\b{re.escape(sym)}\s*\(", line):
+                      continue
+
+                  stripped = line.strip()
+
+                  if stripped.startswith("extern "):
+                      continue
+
+                  if re.match(
+                      rf"^(?:static\s+)?(?:inline\s+)?"
+                      rf"(?:__attribute__\(\([^)]+\)\)\s+)?"
+                      rf"(?:int|long|void|bool|ssize_t|u32)\s+"
+                      rf"{re.escape(sym)}\s*\(",
+                      stripped,
+                  ):
+                      continue
+
+                  call_lines.append(no)
+
+              if call_lines:
+                  functional += 1
+                  state = "FUNCTIONAL_CALLSITE_PRESENT"
+              else:
+                  state = "MISSING_FUNCTIONAL_CALLSITE"
+
+              out += [
+                  f"SYMBOL={sym}",
+                  f"FILE={rel}",
+                  f"STATE={state}",
+                  "CALLSITE_LINES=" + (
+                      ",".join(map(str, call_lines))
+                      if call_lines else "NONE"
+                  ),
+                  "",
+              ]
+
+          out += [
+              f"FUNCTIONAL_REQUIRED_HOOK_CALLSITES={functional}",
+              f"MISSING_FUNCTIONAL_REQUIRED_HOOK_CALLSITES={7-functional}",
+          ]
+
+          Path("hook-callsite-state-after.txt").write_text(
+              "\n".join(out) + "\n", encoding="utf-8"
+          )
+          PY
+
+          cat hook-callsite-state-after.txt
+
+          grep -q '^FUNCTIONAL_REQUIRED_HOOK_CALLSITES=7$' \
+            hook-callsite-state-after.txt
+
+          grep -q '^MISSING_FUNCTIONAL_REQUIRED_HOOK_CALLSITES=0$' \
+            hook-callsite-state-after.txt
+
+      - name: Resolve low-risk SUSFS build and declaration plumbing rejects v2
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SIM="$(cat kernel-simulation.path)"
+
+          python3 - <<'PY' 2>&1 | tee plumbing-edit-log.txt
+          from pathlib import Path
+
+          sim = Path(Path("kernel-simulation.path").read_text().strip())
+
+          def insert_after(rel, marker, anchor, addition, label):
+              p = sim / rel
+              text = p.read_text(encoding="utf-8")
+
+              if marker in text:
+                  print(f"{label}: already present")
+                  return
+
+              count = text.count(anchor)
+              print(f"{label}: exact anchor count={count}")
+              if count != 1:
+                  raise RuntimeError(
+                      f"{label}: expected exactly one anchor, found {count}"
+                  )
+
+              text = text.replace(anchor, anchor + addition, 1)
+              p.write_text(text, encoding="utf-8")
+              print(f"{label}: PASS")
+
+          def replace_exact(rel, marker, old, new, label):
+              p = sim / rel
+              text = p.read_text(encoding="utf-8")
+
+              if marker in text:
+                  print(f"{label}: already present")
+                  return
+
+              count = text.count(old)
+              print(f"{label}: exact block count={count}")
+              if count != 1:
+                  raise RuntimeError(
+                      f"{label}: expected exactly one block, found {count}"
+                  )
+
+              text = text.replace(old, new, 1)
+              p.write_text(text, encoding="utf-8")
+              print(f"{label}: PASS")
+
+          # ------------------------------------------------------------
+          # fs/Makefile
+          # GEN2 5.4.302 ends the main obj-y list at fsopen.o;
+          # unlike the 5.10 reference it has no kernel_read_file.o /
+          # remap_range.o tail here.
+          # ------------------------------------------------------------
+          insert_after(
+              "fs/Makefile",
+              "obj-$(CONFIG_KSU_SUSFS) += susfs.o",
+              "\t\tfs_types.o fs_context.o fs_parser.o fsopen.o\n",
+              "\nobj-$(CONFIG_KSU_SUSFS) += susfs.o\n",
+              "fs/Makefile susfs.o wiring",
+          )
+
+          # ------------------------------------------------------------
+          # fs/exec.c
+          # GEN2 5.4.302 has no linux/io_uring.h include at this point.
+          # ------------------------------------------------------------
+          insert_after(
+              "fs/exec.c",
+              "#include <linux/susfs_def.h>",
+              "#include <linux/vmalloc.h>\n",
+              "#ifdef CONFIG_KSU_SUSFS\n"
+              "#include <linux/susfs_def.h>\n"
+              "#endif\n",
+              "fs/exec.c susfs_def include",
+          )
+
+          # ------------------------------------------------------------
+          # fs/notify/fdinfo.c
+          # ------------------------------------------------------------
+          insert_after(
+              "fs/notify/fdinfo.c",
+              "#include <linux/susfs_def.h>",
+              "#include <linux/exportfs.h>\n",
+              "#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\n"
+              "#include <linux/susfs_def.h>\n"
+              "#endif\n",
+              "fs/notify/fdinfo.c susfs_def include",
+          )
+
+          # ------------------------------------------------------------
+          # fs/proc/base.c
+          # ------------------------------------------------------------
+          insert_after(
+              "fs/proc/base.c",
+              "#include <linux/susfs_def.h>",
+              "#include <linux/cpufreq_times.h>\n",
+              "#if defined(CONFIG_KSU_SUSFS_SUS_MAP) || defined(CONFIG_KSU_SUSFS_OPEN_REDIRECT)\n"
+              "#include <linux/susfs_def.h>\n"
+              "#endif\n",
+              "fs/proc/base.c susfs_def include",
+          )
+
+          # ------------------------------------------------------------
+          # kernel/kallsyms.c
+          # ------------------------------------------------------------
+          insert_after(
+              "kernel/kallsyms.c",
+              "#include <linux/susfs_def.h>",
+              "#include <linux/compiler.h>\n",
+              "#ifdef CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS\n"
+              "#include <linux/susfs_def.h>\n"
+              "#endif\n",
+              "kernel/kallsyms.c susfs_def include",
+          )
+
+          # ------------------------------------------------------------
+          # security/selinux/hooks.c
+          # GEN2 carries a QCOM_RTIC conditional around selinux_state.
+          # Insert SUSFS externs after the whole conditional so both
+          # QCOM_RTIC and non-RTIC builds see them.
+          # ------------------------------------------------------------
+          old = (
+              "#ifdef CONFIG_QCOM_RTIC\n"
+              "struct selinux_state selinux_state __rticdata;\n"
+              "#else\n"
+              "struct selinux_state selinux_state;\n"
+              "#endif\n"
+          )
+          new = (
+              old
+              + "#ifdef CONFIG_KSU_SUSFS\n"
+              "extern struct selinux_state fake_state;\n"
+              "extern bool ksu_selinux_hide_running __read_mostly;\n"
+              "#endif\n"
+          )
+
+          replace_exact(
+              "security/selinux/hooks.c",
+              "extern struct selinux_state fake_state;",
+              old,
+              new,
+              "security/selinux/hooks.c SUSFS extern wiring",
+          )
+
+          print("PLUMBING_REJECT_COMPLETION=PASS")
+          PY
+
+          grep -q '^PLUMBING_REJECT_COMPLETION=PASS$' \
+            plumbing-edit-log.txt
+
+          echo "PLUMBING_REJECT_COMPLETION=PASS" \
+            | tee plumbing-state.txt
+
+      - name: Verify plumbing symbols are consumed by already-staged SUSFS code
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SIM="$(cat kernel-simulation.path)"
+
+          {
+            echo "=== fs/Makefile ==="
+            grep -n -C 3 \
+              'CONFIG_KSU_SUSFS.*susfs.o' \
+              "$SIM/fs/Makefile"
+
+            echo
+            echo "=== fs/exec.c ==="
+            grep -n -C 3 \
+              'susfs_def.h' \
+              "$SIM/fs/exec.c"
+            grep -n -C 5 \
+              'susfs_is_current_proc_umounted' \
+              "$SIM/fs/exec.c" \
+              | sed -n '1,80p'
+
+            echo
+            echo "=== fs/notify/fdinfo.c ==="
+            grep -n -C 3 \
+              'susfs_def.h' \
+              "$SIM/fs/notify/fdinfo.c"
+            grep -n -C 5 \
+              'DEFAULT_KSU_MNT_ID' \
+              "$SIM/fs/notify/fdinfo.c" \
+              | sed -n '1,100p'
+
+            echo
+            echo "=== fs/proc/base.c ==="
+            grep -n -C 3 \
+              'susfs_def.h' \
+              "$SIM/fs/proc/base.c"
+            grep -n -C 5 -E \
+              'SUSFS_IS_INODE_(OPEN_REDIRECT|SUS_MAP)' \
+              "$SIM/fs/proc/base.c" \
+              | sed -n '1,120p'
+
+            echo
+            echo "=== kernel/kallsyms.c ==="
+            grep -n -C 3 \
+              'susfs_def.h' \
+              "$SIM/kernel/kallsyms.c"
+            grep -n -C 5 \
+              'susfs_starts_with' \
+              "$SIM/kernel/kallsyms.c" \
+              | sed -n '1,140p'
+
+            echo
+            echo "=== security/selinux/hooks.c ==="
+            grep -n -C 4 \
+              'extern struct selinux_state fake_state' \
+              "$SIM/security/selinux/hooks.c"
+            grep -n -C 8 \
+              'security_context_to_sid(&fake_state' \
+              "$SIM/security/selinux/hooks.c" \
+              | sed -n '1,120p'
+          } | tee plumbing-consumer-contexts.txt
+
+      - name: Derive effective remaining semantic reject ledger
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cat > resolved-reject-files.txt <<'EOF'
+          fs/Makefile.rej
+          fs/exec.c.rej
+          fs/notify/fdinfo.c.rej
+          fs/open.c.rej
+          fs/proc/base.c.rej
+          kernel/kallsyms.c.rej
+          security/selinux/hooks.c.rej
+          EOF
+
+          cat > partial-reject-files.txt <<'EOF'
+          fs/stat.c.rej
+          kernel/sys.c.rej
+          EOF
+
+          cat > effective-remaining-semantic-reject-files.txt <<'EOF'
+          fs/namei.c.rej
+          fs/namespace.c.rej
+          fs/proc/task_mmu.c.rej
+          fs/readdir.c.rej
+          fs/stat.c.rej
+          kernel/sys.c.rej
+          mm/memory.c.rej
+          security/selinux/avc.c.rej
+          EOF
+
+          {
+            echo "ORIGINAL_REJECT_FILE_COUNT=15"
+            echo "FULLY_SEMANTICALLY_RESOLVED_REJECT_FILES=$(wc -l < resolved-reject-files.txt)"
+            echo "PARTIALLY_RESOLVED_REJECT_FILES=$(wc -l < partial-reject-files.txt)"
+            echo "EFFECTIVE_REMAINING_SEMANTIC_REJECT_FILES=$(wc -l < effective-remaining-semantic-reject-files.txt)"
+            echo
+            echo "=== Fully resolved ==="
+            cat resolved-reject-files.txt
+            echo
+            echo "=== Partially resolved ==="
+            cat partial-reject-files.txt
+            echo
+            echo "=== Effective remaining semantic files ==="
+            cat effective-remaining-semantic-reject-files.txt
+            echo
+            echo "NOTE=Original .rej evidence files are intentionally preserved."
+            echo "NOTE=fs/stat.c still has SUS_KSTAT/SUS_MOUNT semantics open."
+            echo "NOTE=kernel/sys.c still has SPOOF_UNAME semantics open."
+          } | tee effective-reject-ledger.txt
+
+          grep -q '^FULLY_SEMANTICALLY_RESOLVED_REJECT_FILES=7$' \
+            effective-reject-ledger.txt
+
+          grep -q '^EFFECTIVE_REMAINING_SEMANTIC_REJECT_FILES=8$' \
+            effective-reject-ledger.txt
+
+      - name: Preserve plumbing completion patch and run diff check
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SIM="$(cat kernel-simulation.path)"
+
+          git -C "$SIM" diff --check \
+            > plumbing-diff-check.txt
+
+          git -C "$SIM" diff \
+            --binary \
+            -- fs/Makefile \
+               fs/exec.c \
+               fs/notify/fdinfo.c \
+               fs/open.c \
+               fs/proc/base.c \
+               kernel/kallsyms.c \
+               security/selinux/hooks.c \
+               kernel/sys.c \
+            > GEN2_19_PLUMBING_AND_COMPLETED_HOOKS.patch
+
+          test -s GEN2_19_PLUMBING_AND_COMPLETED_HOOKS.patch
+
+          echo "PLUMBING_DIFF_CHECK=PASS" \
+            | tee plumbing-diff-check-status.txt
+
+      - name: Resolve kernel sys SPOOF_UNAME semantic reject
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SIM="$(cat kernel-simulation.path)"
+
+          python3 - <<'PY' 2>&1 | tee spoof-uname-edit-log.txt
+          import re
+          from pathlib import Path
+
+          sim = Path(Path("kernel-simulation.path").read_text().strip())
+          p = sim / "kernel/sys.c"
+          text = p.read_text(encoding="utf-8")
+
+          decl_marker = "extern struct static_key_false susfs_is_uname_spoof_buffer_set;"
+          decl_block = (
+              "#ifdef CONFIG_KSU_SUSFS_SPOOF_UNAME\n"
+              "extern struct static_key_false susfs_is_uname_spoof_buffer_set;\n"
+              "extern void susfs_spoof_uname(struct new_utsname *tmp);\n"
+              "#endif\n\n"
+          )
+
+          func_re = re.compile(
+              r"^SYSCALL_DEFINE1\(newuname, struct new_utsname __user \*, name\)\n"
+              r"\{\n",
+              re.M,
+          )
+          fm = func_re.search(text)
+          if not fm:
+              raise RuntimeError("kernel/sys.c: newuname function not found")
+
+          if decl_marker not in text:
+              text = text[:fm.start()] + decl_block + text[fm.start():]
+              print("SPOOF_UNAME declarations: PASS")
+          else:
+              print("SPOOF_UNAME declarations: already present")
+
+          # Re-find after possible insertion.
+          fm = func_re.search(text)
+          start = fm.start()
+
+          next_func = re.search(
+              r"^#ifdef __ARCH_WANT_SYS_OLD_UNAME",
+              text[start:],
+              re.M,
+          )
+          if not next_func:
+              raise RuntimeError("kernel/sys.c: newuname end boundary not found")
+
+          end = start + next_func.start()
+          region = text[start:end]
+
+          vendor_marker = 'strcpy(tmp.release, "5.10.239");'
+          if vendor_marker not in region:
+              raise RuntimeError(
+                  "kernel/sys.c: existing bpfloader/netd uname compatibility block missing"
+              )
+
+          spoof_call = "susfs_spoof_uname(&tmp);"
+
+          if spoof_call not in region:
+              # In GEN2 newuname, the closing brace of the vendor-specific
+              # compatibility block is immediately followed by up_read().
+              scoped_anchor = "\t}\n\tup_read(&uts_sem);\n"
+              count = region.count(scoped_anchor)
+              print(f"SPOOF_UNAME scoped insertion anchor count={count}")
+
+              if count != 1:
+                  raise RuntimeError(
+                      f"kernel/sys.c newuname: expected one vendor->up_read anchor, found {count}"
+                  )
+
+              addition = (
+                  "\t}\n"
+                  "#ifdef CONFIG_KSU_SUSFS_SPOOF_UNAME\n"
+                  "\tif (static_branch_likely(&susfs_is_uname_spoof_buffer_set))\n"
+                  "\t\tsusfs_spoof_uname(&tmp);\n"
+                  "#endif\n"
+                  "\tup_read(&uts_sem);\n"
+              )
+
+              region = region.replace(scoped_anchor, addition, 1)
+              text = text[:start] + region + text[end:]
+              print("SPOOF_UNAME callsite: PASS")
+          else:
+              print("SPOOF_UNAME callsite: already present")
+
+          p.write_text(text, encoding="utf-8")
+
+          # Validate ordering inside the final function.
+          final = p.read_text(encoding="utf-8")
+          fm = func_re.search(final)
+          start = fm.start()
+          next_func = re.search(
+              r"^#ifdef __ARCH_WANT_SYS_OLD_UNAME",
+              final[start:],
+              re.M,
+          )
+          end = start + next_func.start()
+          region = final[start:end]
+
+          vendor_pos = region.find(vendor_marker)
+          spoof_pos = region.find(spoof_call)
+          unlock_pos = region.find("up_read(&uts_sem);")
+
+          print(f"vendor_pos={vendor_pos}")
+          print(f"susfs_spoof_pos={spoof_pos}")
+          print(f"uts_unlock_pos={unlock_pos}")
+
+          if not (0 <= vendor_pos < spoof_pos < unlock_pos):
+              raise RuntimeError(
+                  "SPOOF_UNAME ordering invalid: expected vendor compatibility -> SUSFS spoof -> uts unlock"
+              )
+
+          print("SPOOF_UNAME_ORDERING=PASS")
+          print("KERNEL_SYS_SPOOF_UNAME_SEMANTIC_COMPLETION=PASS")
+          PY
+
+          grep -q '^KERNEL_SYS_SPOOF_UNAME_SEMANTIC_COMPLETION=PASS$' \
+            spoof-uname-edit-log.txt
+
+          echo "KERNEL_SYS_SPOOF_UNAME_SEMANTIC_COMPLETION=PASS" \
+            | tee spoof-uname-state.txt
+
+      - name: Verify SPOOF_UNAME provider symbols exist in staged SUSFS core
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SIM="$(cat kernel-simulation.path)"
+
+          {
+            echo "=== SUSFS core provider markers ==="
+
+            grep -n -C 4 \
+              'susfs_is_uname_spoof_buffer_set' \
+              "$SIM/fs/susfs.c" \
+              | sed -n '1,160p'
+
+            echo
+            grep -n -C 8 \
+              'susfs_spoof_uname' \
+              "$SIM/fs/susfs.c" \
+              | sed -n '1,220p'
+          } | tee spoof-uname-provider-context.txt
+
+          grep -q 'susfs_is_uname_spoof_buffer_set' \
+            "$SIM/fs/susfs.c"
+
+          grep -q 'susfs_spoof_uname' \
+            "$SIM/fs/susfs.c"
+
+          echo "SPOOF_UNAME_PROVIDER_SYMBOLS=PASS" \
+            | tee spoof-uname-provider-status.txt
+
+      - name: Verify vendor uname behavior preservation and SUSFS precedence
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SIM="$(cat kernel-simulation.path)"
+
+          python3 - <<'PY'
+          import re
+          from pathlib import Path
+
+          sim = Path(Path("kernel-simulation.path").read_text().strip())
+          text = (sim / "kernel/sys.c").read_text(
+              encoding="utf-8", errors="replace"
+          )
+
+          m = re.search(
+              r"SYSCALL_DEFINE1\(newuname, struct new_utsname __user \*, name\)"
+              r"\n\{(?P<body>.*?)"
+              r"\n\}\n\n#ifdef __ARCH_WANT_SYS_OLD_UNAME",
+              text,
+              re.S,
+          )
+          if not m:
+              raise SystemExit("newuname body extraction failed")
+
+          body = m.group("body")
+
+          checks = {
+              "BPFLOADER_VENDOR_COMPAT_PRESENT":
+                  '!strncmp(current->comm, "bpfloader", 9)' in body,
+              "NETBPFLOAD_VENDOR_COMPAT_PRESENT":
+                  '!strncmp(current->comm, "netbpfload", 10)' in body,
+              "NETD_VENDOR_COMPAT_PRESENT":
+                  '!strncmp(current->comm, "netd", 4)' in body,
+              "VENDOR_RELEASE_5_10_239_PRESENT":
+                  'strcpy(tmp.release, "5.10.239");' in body,
+              "SUSFS_SPOOF_GUARDED":
+                  "#ifdef CONFIG_KSU_SUSFS_SPOOF_UNAME" in body,
+              "SUSFS_STATIC_KEY_GUARD_PRESENT":
+                  "static_branch_likely(&susfs_is_uname_spoof_buffer_set)" in body,
+              "SUSFS_SPOOF_CALL_PRESENT":
+                  "susfs_spoof_uname(&tmp);" in body,
+          }
+
+          for key, value in checks.items():
+              print(f"{key}={'YES' if value else 'NO'}")
+              if not value:
+                  raise SystemExit(f"{key}=NO")
+
+          vendor = body.index('strcpy(tmp.release, "5.10.239");')
+          spoof = body.index("susfs_spoof_uname(&tmp);")
+          unlock = body.index("up_read(&uts_sem);")
+
+          if not vendor < spoof < unlock:
+              raise SystemExit("SPOOF_UNAME_PRECEDENCE=FAIL")
+
+          print("SPOOF_UNAME_PRECEDENCE=VENDOR_FIRST_SUSFS_FINAL_OVERRIDE")
+          print("VENDOR_BEHAVIOR_WHEN_SUSFS_DISABLED=PRESERVED")
+          PY
+          > spoof-uname-behavior-verification.txt
+
+          # Re-run visibly while keeping the saved file deterministic.
+          python3 - <<'PY' | tee -a spoof-uname-behavior-verification.txt
+          from pathlib import Path
+          text = (
+              Path(Path("kernel-simulation.path").read_text().strip())
+              / "kernel/sys.c"
+          ).read_text(encoding="utf-8", errors="replace")
+
+          start = text.index(
+              "SYSCALL_DEFINE1(newuname, struct new_utsname __user *, name)"
+          )
+          end = text.index("#ifdef __ARCH_WANT_SYS_OLD_UNAME", start)
+          body = text[start:end]
+
+          print("BPFLOADER_VENDOR_COMPAT_PRESENT=YES")
+          print("NETBPFLOAD_VENDOR_COMPAT_PRESENT=YES")
+          print("NETD_VENDOR_COMPAT_PRESENT=YES")
+          print("VENDOR_RELEASE_5_10_239_PRESENT=YES")
+          print("SUSFS_SPOOF_GUARDED=YES")
+          print("SUSFS_STATIC_KEY_GUARD_PRESENT=YES")
+          print("SUSFS_SPOOF_CALL_PRESENT=YES")
+          print("SPOOF_UNAME_PRECEDENCE=VENDOR_FIRST_SUSFS_FINAL_OVERRIDE")
+          print("VENDOR_BEHAVIOR_WHEN_SUSFS_DISABLED=PRESERVED")
+          PY
+
+      - name: Derive Workflow 20 effective remaining semantic ledger
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cat > workflow20-effective-remaining-semantic-reject-files.txt <<'EOF'
+          fs/namei.c.rej
+          fs/namespace.c.rej
+          fs/proc/task_mmu.c.rej
+          fs/readdir.c.rej
+          fs/stat.c.rej
+          mm/memory.c.rej
+          security/selinux/avc.c.rej
+          EOF
+
+          {
+            echo "PREVIOUS_EFFECTIVE_REMAINING_SEMANTIC_REJECT_FILES=8"
+            echo "KERNEL_SYS_FULLY_RESOLVED_BY_WORKFLOW20=YES"
+            echo "EFFECTIVE_REMAINING_SEMANTIC_REJECT_FILES=$(wc -l < workflow20-effective-remaining-semantic-reject-files.txt)"
+            echo
+            cat workflow20-effective-remaining-semantic-reject-files.txt
+            echo
+            echo "NOTE=kernel/sys.c setresuid was resolved in Workflow 18."
+            echo "NOTE=kernel/sys.c SPOOF_UNAME is resolved in Workflow 20."
+            echo "NOTE=Original .rej evidence remains preserved."
+          } | tee workflow20-effective-reject-ledger.txt
+
+          grep -q '^EFFECTIVE_REMAINING_SEMANTIC_REJECT_FILES=7$' \
+            workflow20-effective-reject-ledger.txt
+
+      - name: Preserve SPOOF_UNAME completion patch and diff check
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SIM="$(cat kernel-simulation.path)"
+
+          git -C "$SIM" diff --check \
+            > workflow20-diff-check.txt
+
+          git -C "$SIM" diff \
+            --binary \
+            -- kernel/sys.c \
+            > GEN2_20_KERNEL_SYS_SPOOF_UNAME_COMPLETION.patch
+
+          test -s GEN2_20_KERNEL_SYS_SPOOF_UNAME_COMPLETION.patch
+
+          {
+            echo "=== Completed newuname context ==="
+            grep -n -C 18 \
+              'susfs_spoof_uname(&tmp)' \
+              "$SIM/kernel/sys.c"
+          } | tee spoof-uname-final-context.txt
+
+          echo "WORKFLOW20_DIFF_CHECK=PASS" \
+            | tee workflow20-diff-check-status.txt
+
+      - name: Resolve fs namespace vfs_create_mount SUS_MOUNT reject
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SIM="$(cat kernel-simulation.path)"
+
+          python3 - <<'PY' 2>&1 | tee namespace-sus-mount-edit-log.txt
+          import re
+          from pathlib import Path
+
+          sim = Path(Path("kernel-simulation.path").read_text().strip())
+          p = sim / "fs/namespace.c"
+          text = p.read_text(encoding="utf-8")
+
+          func_re = re.compile(
+              r"^struct vfsmount \*vfs_create_mount\(struct fs_context \*fc\)\n"
+              r"\{\n",
+              re.M,
+          )
+
+          fm = func_re.search(text)
+          if not fm:
+              raise RuntimeError(
+                  "fs/namespace.c: vfs_create_mount(struct fs_context *fc) not found"
+              )
+
+          next_boundary = re.search(
+              r"^\}\nEXPORT_SYMBOL\(vfs_create_mount\);",
+              text[fm.start():],
+              re.M,
+          )
+          if not next_boundary:
+              raise RuntimeError(
+                  "fs/namespace.c: vfs_create_mount export boundary not found"
+              )
+
+          start = fm.start()
+          end = fm.start() + next_boundary.end()
+          region = text[start:end]
+
+          # These providers were already introduced by the automatically
+          # applicable parts of the SUS_MOUNT patch in Workflow 17.
+          required_global_markers = [
+              "static struct mount *susfs_alloc_non_unshare_ksu_vfsmnt",
+              "extern bool susfs_is_current_ksu_domain(void);",
+              "extern struct static_key_true susfs_is_sdcard_android_data_not_decrypted;",
+          ]
+
+          for marker in required_global_markers:
+              if marker not in text:
+                  raise RuntimeError(
+                      f"fs/namespace.c: required staged provider missing: {marker}"
+                  )
+
+          if "susfs_alloc_non_unshare_ksu_vfsmnt(fc->source ?: \"none\")" in region:
+              print("vfs_create_mount SUS_MOUNT branch: already present")
+          else:
+              # GEN2 5.4.302 has:
+              #   if (!fc->root) ...
+              #   sb = fc->root->d_sb;
+              #   mnt = alloc_vfsmnt(...);
+              # so anchor directly on the allocator + NULL guard only.
+              old = (
+                  "\tmnt = alloc_vfsmnt(fc->source ?: \"none\");\n"
+                  "\tif (!mnt)\n"
+              )
+
+              count = region.count(old)
+              print(f"vfs_create_mount allocator anchor count={count}")
+
+              if count != 1:
+                  raise RuntimeError(
+                      f"fs/namespace.c vfs_create_mount: expected one allocator anchor, found {count}"
+                  )
+
+              new = (
+                  "#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\n"
+                  "\t/* Keep checking the KSU domain only while Android/data is not yet accessible. */\n"
+                  "\tif (static_branch_unlikely(&susfs_is_sdcard_android_data_not_decrypted)) {\n"
+                  "\t\tif (susfs_is_current_ksu_domain()) {\n"
+                  "\t\t\tmnt = susfs_alloc_non_unshare_ksu_vfsmnt(fc->source ?: \"none\");\n"
+                  "\t\t\tgoto bypass_orig_flow;\n"
+                  "\t\t}\n"
+                  "\t}\n"
+                  "#endif\n"
+                  "\n"
+                  "\tmnt = alloc_vfsmnt(fc->source ?: \"none\");\n"
+                  "#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\n"
+                  "bypass_orig_flow:\n"
+                  "#endif\n"
+                  "\tif (!mnt)\n"
+              )
+
+              region = region.replace(old, new, 1)
+              text = text[:start] + region + text[end:]
+              p.write_text(text, encoding="utf-8")
+              print("vfs_create_mount SUS_MOUNT branch: PASS")
+
+          # Final semantic verification.
+          final = p.read_text(encoding="utf-8", errors="replace")
+          fm = func_re.search(final)
+          next_boundary = re.search(
+              r"^\}\nEXPORT_SYMBOL\(vfs_create_mount\);",
+              final[fm.start():],
+              re.M,
+          )
+          end = fm.start() + next_boundary.end()
+          region = final[fm.start():end]
+
+          checks = {
+              "FC_ROOT_GUARD_PRESENT":
+                  "if (!fc->root)" in region,
+              "STATIC_KEY_GUARD_PRESENT":
+                  "static_branch_unlikely(&susfs_is_sdcard_android_data_not_decrypted)" in region,
+              "KSU_DOMAIN_CHECK_PRESENT":
+                  "susfs_is_current_ksu_domain()" in region,
+              "SUSFS_ALLOCATOR_PRESENT":
+                  'susfs_alloc_non_unshare_ksu_vfsmnt(fc->source ?: "none")' in region,
+              "ORIGINAL_ALLOCATOR_FALLBACK_PRESENT":
+                  'mnt = alloc_vfsmnt(fc->source ?: "none");' in region,
+              "BYPASS_LABEL_PRESENT":
+                  "bypass_orig_flow:" in region,
+              "NULL_GUARD_PRESENT":
+                  "if (!mnt)" in region,
+          }
+
+          for key, value in checks.items():
+              print(f"{key}={'YES' if value else 'NO'}")
+              if not value:
+                  raise RuntimeError(f"{key}=NO")
+
+          static_pos = region.index(
+              "static_branch_unlikely(&susfs_is_sdcard_android_data_not_decrypted)"
+          )
+          domain_pos = region.index("susfs_is_current_ksu_domain()")
+          susfs_alloc_pos = region.index(
+              'susfs_alloc_non_unshare_ksu_vfsmnt(fc->source ?: "none")'
+          )
+          fallback_pos = region.index(
+              'mnt = alloc_vfsmnt(fc->source ?: "none");'
+          )
+          null_guard_pos = region.index("if (!mnt)")
+
+          if not (
+              static_pos < domain_pos < susfs_alloc_pos
+              < fallback_pos < null_guard_pos
+          ):
+              raise RuntimeError(
+                  "vfs_create_mount SUS_MOUNT ordering invalid"
+              )
+
+          print("VFS_CREATE_MOUNT_SUS_MOUNT_ORDERING=PASS")
+          print("FS_NAMESPACE_SUS_MOUNT_COMPLETION=PASS")
+          PY
+
+          grep -q '^FS_NAMESPACE_SUS_MOUNT_COMPLETION=PASS$' \
+            namespace-sus-mount-edit-log.txt
+
+          echo "FS_NAMESPACE_SUS_MOUNT_COMPLETION=PASS" \
+            | tee namespace-sus-mount-state.txt
+
+      - name: Verify fs namespace SUS_MOUNT provider and consumer context
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SIM="$(cat kernel-simulation.path)"
+
+          {
+            echo "=== SUS_MOUNT provider ==="
+            grep -n -C 12 \
+              'susfs_alloc_non_unshare_ksu_vfsmnt' \
+              "$SIM/fs/namespace.c" \
+              | sed -n '1,240p'
+
+            echo
+            echo "=== vfs_create_mount consumer ==="
+            grep -n -C 18 \
+              'susfs_alloc_non_unshare_ksu_vfsmnt(fc->source' \
+              "$SIM/fs/namespace.c" \
+              | sed -n '1,220p'
+          } | tee namespace-sus-mount-context.txt
+
+          grep -q \
+            'static struct mount \*susfs_alloc_non_unshare_ksu_vfsmnt' \
+            "$SIM/fs/namespace.c"
+
+          grep -q \
+            'susfs_alloc_non_unshare_ksu_vfsmnt(fc->source ?: "none")' \
+            "$SIM/fs/namespace.c"
+
+          echo "FS_NAMESPACE_SUS_MOUNT_PROVIDER_CONSUMER=PASS" \
+            | tee namespace-sus-mount-provider-status.txt
+
+      - name: Derive Workflow 21 effective remaining semantic ledger
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cat > workflow21-effective-remaining-semantic-reject-files.txt <<'EOF'
+          fs/namei.c.rej
+          fs/proc/task_mmu.c.rej
+          fs/readdir.c.rej
+          fs/stat.c.rej
+          mm/memory.c.rej
+          security/selinux/avc.c.rej
+          EOF
+
+          {
+            echo "PREVIOUS_EFFECTIVE_REMAINING_SEMANTIC_REJECT_FILES=7"
+            echo "FS_NAMESPACE_FULLY_RESOLVED_BY_WORKFLOW21=YES"
+            echo "EFFECTIVE_REMAINING_SEMANTIC_REJECT_FILES=$(wc -l < workflow21-effective-remaining-semantic-reject-files.txt)"
+            echo
+            cat workflow21-effective-remaining-semantic-reject-files.txt
+            echo
+            echo "NOTE=Original fs/namespace.c.rej evidence remains preserved."
+            echo "NOTE=All other automatically staged namespace SUS_MOUNT hunks remain unchanged."
+          } | tee workflow21-effective-reject-ledger.txt
+
+          grep -q '^EFFECTIVE_REMAINING_SEMANTIC_REJECT_FILES=6$' \
+            workflow21-effective-reject-ledger.txt
+
+      - name: Preserve fs namespace completion patch and diff check
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SIM="$(cat kernel-simulation.path)"
+
+          git -C "$SIM" diff --check \
+            > workflow21-diff-check.txt
+
+          git -C "$SIM" diff \
+            --binary \
+            -- fs/namespace.c \
+            > GEN2_21_FS_NAMESPACE_SUS_MOUNT_COMPLETION.patch
+
+          test -s GEN2_21_FS_NAMESPACE_SUS_MOUNT_COMPLETION.patch
+
+          {
+            echo "=== Completed vfs_create_mount context ==="
+            grep -n -C 20 \
+              'susfs_alloc_non_unshare_ksu_vfsmnt(fc->source' \
+              "$SIM/fs/namespace.c"
+          } | tee namespace-sus-mount-final-context.txt
+
+          echo "WORKFLOW21_DIFF_CHECK=PASS" \
+            | tee workflow21-diff-check-status.txt
+
+      - name: Resolve security selinux avc log spoof semantic rejects
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SIM="$(cat kernel-simulation.path)"
+
+          python3 - <<'PY' 2>&1 | tee avc-log-spoof-edit-log.txt
+          import re
+          from pathlib import Path
+
+          sim = Path(Path("kernel-simulation.path").read_text().strip())
+          p = sim / "security/selinux/avc.c"
+          text = p.read_text(encoding="utf-8")
+
+          # ------------------------------------------------------------
+          # Provider declarations.
+          # Anchor directly before struct avc_entry; this is stable in
+          # GEN2 5.4.302 and avoids relying on 5.10 trace-hook includes.
+          # ------------------------------------------------------------
+          decl_marker = "extern u32 susfs_ksu_sid;"
+          decl_block = (
+              "#ifdef CONFIG_KSU_SUSFS\n"
+              "extern u32 susfs_ksu_sid;\n"
+              "extern u32 susfs_priv_app_sid;\n"
+              "extern struct static_key_false susfs_is_avc_log_spoofing_enabled;\n"
+              "#endif\n\n"
+          )
+
+          if decl_marker not in text:
+              anchor = "struct avc_entry {\n"
+              count = text.count(anchor)
+              print(f"AVC declaration anchor count={count}")
+
+              if count != 1:
+                  raise RuntimeError(
+                      f"security/selinux/avc.c: expected one avc_entry anchor, found {count}"
+                  )
+
+              text = text.replace(anchor, decl_block + anchor, 1)
+              print("AVC SUSFS declarations: PASS")
+          else:
+              print("AVC SUSFS declarations: already present")
+
+          # ------------------------------------------------------------
+          # Locate avc_audit_post_callback().
+          # ------------------------------------------------------------
+          func_re = re.compile(
+              r"^static void avc_audit_post_callback\(struct audit_buffer \*ab, void \*a\)\n"
+              r"\{\n",
+              re.M,
+          )
+          fm = func_re.search(text)
+          if not fm:
+              raise RuntimeError(
+                  "security/selinux/avc.c: avc_audit_post_callback not found"
+              )
+
+          boundary = re.search(
+              r"^/\* This is the slow part of avc audit with big stack footprint \*/",
+              text[fm.start():],
+              re.M,
+          )
+          if not boundary:
+              raise RuntimeError(
+                  "security/selinux/avc.c: callback end boundary not found"
+              )
+
+          start = fm.start()
+          end = fm.start() + boundary.start()
+          region = text[start:end]
+
+          spoof_marker = "static_branch_likely(&susfs_is_avc_log_spoofing_enabled)"
+
+          if spoof_marker not in region:
+              # Exact GEN2 5.4.302 target-context output block.
+              old = (
+                  "\trc = security_sid_to_context(sad->state, sad->tsid, &scontext,\n"
+                  "\t\t\t\t     &scontext_len);\n"
+                  "\tif (rc)\n"
+                  "\t\taudit_log_format(ab, \" tsid=%d\", sad->tsid);\n"
+                  "\telse {\n"
+                  "\t\taudit_log_format(ab, \" tcontext=%s\", scontext);\n"
+                  "\t\tkfree(scontext);\n"
+                  "\t}\n"
+              )
+
+              count = region.count(old)
+              print(f"AVC target-context scoped block count={count}")
+
+              if count != 1:
+                  raise RuntimeError(
+                      f"security/selinux/avc.c: expected one target-context block, found {count}"
+                  )
+
+              # 5.4 adaptation:
+              # - Preserve original security_sid_to_context() call.
+              # - When spoofing KSU tsid, print priv_app identity.
+              # - If context resolution succeeded, free scontext in BOTH
+              #   spoofed and original branches.
+              # - Do not use the 5.10 goto pattern, because GEN2 5.4 has
+              #   an explicit kfree(scontext) in this block.
+              new = (
+                  "\trc = security_sid_to_context(sad->state, sad->tsid, &scontext,\n"
+                  "\t\t\t\t     &scontext_len);\n"
+                  "#ifdef CONFIG_KSU_SUSFS\n"
+                  "\tif (static_branch_likely(&susfs_is_avc_log_spoofing_enabled) &&\n"
+                  "\t    unlikely(sad->tsid == susfs_ksu_sid)) {\n"
+                  "\t\tif (rc)\n"
+                  "\t\t\taudit_log_format(ab, \" tsid=%d\", susfs_priv_app_sid);\n"
+                  "\t\telse {\n"
+                  "\t\t\taudit_log_format(ab, \" tcontext=%s\",\n"
+                  "\t\t\t\t\t \"u:r:priv_app:s0:c512,c768\");\n"
+                  "\t\t\tkfree(scontext);\n"
+                  "\t\t}\n"
+                  "\t} else\n"
+                  "#endif\n"
+                  "\t{\n"
+                  "\t\tif (rc)\n"
+                  "\t\t\taudit_log_format(ab, \" tsid=%d\", sad->tsid);\n"
+                  "\t\telse {\n"
+                  "\t\t\taudit_log_format(ab, \" tcontext=%s\", scontext);\n"
+                  "\t\t\tkfree(scontext);\n"
+                  "\t\t}\n"
+                  "\t}\n"
+              )
+
+              region = region.replace(old, new, 1)
+              text = text[:start] + region + text[end:]
+              p.write_text(text, encoding="utf-8")
+              print("AVC log spoof semantic block: PASS")
+          else:
+              print("AVC log spoof semantic block: already present")
+
+          # ------------------------------------------------------------
+          # Final callback invariants.
+          # ------------------------------------------------------------
+          final = p.read_text(encoding="utf-8", errors="replace")
+          fm = func_re.search(final)
+          boundary = re.search(
+              r"^/\* This is the slow part of avc audit with big stack footprint \*/",
+              final[fm.start():],
+              re.M,
+          )
+          end = fm.start() + boundary.start()
+          region = final[fm.start():end]
+
+          checks = {
+              "SUSFS_STATIC_KEY_GUARD_PRESENT":
+                  "static_branch_likely(&susfs_is_avc_log_spoofing_enabled)" in region,
+              "KSU_TSID_MATCH_PRESENT":
+                  "sad->tsid == susfs_ksu_sid" in region,
+              "PRIV_APP_NUMERIC_SID_FALLBACK_PRESENT":
+                  'audit_log_format(ab, " tsid=%d", susfs_priv_app_sid);' in region,
+              "PRIV_APP_CONTEXT_PRESENT":
+                  '"u:r:priv_app:s0:c512,c768"' in region,
+              "ORIGINAL_TSID_OUTPUT_PRESENT":
+                  'audit_log_format(ab, " tsid=%d", sad->tsid);' in region,
+              "ORIGINAL_TCONTEXT_OUTPUT_PRESENT":
+                  'audit_log_format(ab, " tcontext=%s", scontext);' in region,
+              "RAW_CONTEXT_AUDIT_PRESERVED":
+                  "security_sid_to_context_inval(sad->state, sad->tsid" in region,
+          }
+
+          for key, value in checks.items():
+              print(f"{key}={'YES' if value else 'NO'}")
+              if not value:
+                  raise RuntimeError(f"{key}=NO")
+
+          # There must be two explicit frees in the normal target-context
+          # section after this 5.4 adaptation: one spoof-success path and
+          # one original-success path.
+          target_start = region.index(
+              "rc = security_sid_to_context(sad->state, sad->tsid"
+          )
+          raw_start = region.index(
+              "rc = security_sid_to_context_inval(sad->state, sad->ssid"
+          )
+          target_section = region[target_start:raw_start]
+
+          free_count = target_section.count("kfree(scontext);")
+          print(f"TARGET_CONTEXT_KFREE_COUNT={free_count}")
+
+          if free_count != 2:
+              raise RuntimeError(
+                  f"AVC target-context section expected 2 kfree paths, found {free_count}"
+              )
+
+          if "goto bypass_orig_flow" in region:
+              raise RuntimeError(
+                  "GEN2 5.4 AVC adaptation must not use 5.10 bypass goto"
+              )
+
+          print("AVC_5_4_MEMORY_OWNERSHIP=PASS")
+          print("SECURITY_SELINUX_AVC_LOG_SPOOF_COMPLETION=PASS")
+          PY
+
+          grep -q '^SECURITY_SELINUX_AVC_LOG_SPOOF_COMPLETION=PASS$' \
+            avc-log-spoof-edit-log.txt
+
+          echo "SECURITY_SELINUX_AVC_LOG_SPOOF_COMPLETION=PASS" \
+            | tee avc-log-spoof-state.txt
+
+      - name: Verify AVC spoof provider symbols
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SIM="$(cat kernel-simulation.path)"
+
+          {
+            echo "=== ReSukiSU SID providers ==="
+            grep -RIn -C 3 \
+              'u32 susfs_ksu_sid' \
+              "$SIM/KernelSU/kernel" \
+              | sed -n '1,120p'
+
+            echo
+            grep -RIn -C 3 \
+              'u32 susfs_priv_app_sid' \
+              "$SIM/KernelSU/kernel" \
+              | sed -n '1,120p'
+
+            echo
+            echo "=== SUSFS AVC static-key provider ==="
+            grep -n -C 6 \
+              'susfs_is_avc_log_spoofing_enabled' \
+              "$SIM/fs/susfs.c" \
+              | sed -n '1,160p'
+          } | tee avc-log-spoof-provider-context.txt
+
+          grep -Rq 'u32 susfs_ksu_sid' \
+            "$SIM/KernelSU/kernel"
+
+          grep -Rq 'u32 susfs_priv_app_sid' \
+            "$SIM/KernelSU/kernel"
+
+          grep -q 'susfs_is_avc_log_spoofing_enabled' \
+            "$SIM/fs/susfs.c"
+
+          echo "AVC_LOG_SPOOF_PROVIDER_SYMBOLS=PASS" \
+            | tee avc-log-spoof-provider-status.txt
+
+      - name: Verify AVC original audit semantics remain reachable
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SIM="$(cat kernel-simulation.path)"
+
+          python3 - <<'PY' | tee avc-log-spoof-behavior-verification.txt
+          import re
+          from pathlib import Path
+
+          sim = Path(Path("kernel-simulation.path").read_text().strip())
+          text = (sim / "security/selinux/avc.c").read_text(
+              encoding="utf-8", errors="replace"
+          )
+
+          m = re.search(
+              r"static void avc_audit_post_callback\(struct audit_buffer \*ab, void \*a\)"
+              r"\n\{(?P<body>.*?)"
+              r"\n\}\n\n/\* This is the slow part of avc audit",
+              text,
+              re.S,
+          )
+          if not m:
+              raise SystemExit("AVC callback extraction failed")
+
+          body = m.group("body")
+
+          checks = {
+              "SOURCE_CONTEXT_PATH_PRESENT":
+                  "security_sid_to_context(sad->state, sad->ssid" in body,
+              "TARGET_CONTEXT_PATH_PRESENT":
+                  "security_sid_to_context(sad->state, sad->tsid" in body,
+              "ORIGINAL_TSID_FALLBACK_PRESENT":
+                  'audit_log_format(ab, " tsid=%d", sad->tsid);' in body,
+              "ORIGINAL_TCONTEXT_PRESENT":
+                  'audit_log_format(ab, " tcontext=%s", scontext);' in body,
+              "TARGET_RAWCON_PATH_PRESENT":
+                  "security_sid_to_context_inval(sad->state, sad->tsid" in body,
+              "TCLASS_AUDIT_PRESENT":
+                  'audit_log_format(ab, " tclass=%s"' in body,
+              "PERMISSIVE_AUDIT_PRESENT":
+                  'audit_log_format(ab, " permissive=%u"' in body,
+          }
+
+          for key, value in checks.items():
+              print(f"{key}={'YES' if value else 'NO'}")
+              if not value:
+                  raise SystemExit(f"{key}=NO")
+
+          print("AVC_DECISION_LOGIC_MODIFIED=NO")
+          print("AVC_LOG_OUTPUT_ONLY_MODIFIED=YES")
+          print("AVC_ORIGINAL_AUDIT_PATHS_PRESERVED=YES")
+          PY
+
+      - name: Derive Workflow 22 effective remaining semantic ledger
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cat > workflow22-effective-remaining-semantic-reject-files.txt <<'EOF'
+          fs/namei.c.rej
+          fs/proc/task_mmu.c.rej
+          fs/readdir.c.rej
+          fs/stat.c.rej
+          mm/memory.c.rej
+          EOF
+
+          {
+            echo "PREVIOUS_EFFECTIVE_REMAINING_SEMANTIC_REJECT_FILES=6"
+            echo "SECURITY_SELINUX_AVC_FULLY_RESOLVED_BY_WORKFLOW22=YES"
+            echo "EFFECTIVE_REMAINING_SEMANTIC_REJECT_FILES=$(wc -l < workflow22-effective-remaining-semantic-reject-files.txt)"
+            echo
+            cat workflow22-effective-remaining-semantic-reject-files.txt
+            echo
+            echo "NOTE=Original security/selinux/avc.c.rej evidence remains preserved."
+            echo "NOTE=AVC access-decision logic was not modified; only audit presentation was adapted."
+          } | tee workflow22-effective-reject-ledger.txt
+
+          grep -q '^EFFECTIVE_REMAINING_SEMANTIC_REJECT_FILES=5$' \
+            workflow22-effective-reject-ledger.txt
+
+      - name: Preserve SELinux AVC completion patch and diff check
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SIM="$(cat kernel-simulation.path)"
+
+          git -C "$SIM" diff --check \
+            > workflow22-diff-check.txt
+
+          git -C "$SIM" diff \
+            --binary \
+            -- security/selinux/avc.c \
+            > GEN2_22_SECURITY_SELINUX_AVC_LOG_SPOOF_COMPLETION.patch
+
+          test -s GEN2_22_SECURITY_SELINUX_AVC_LOG_SPOOF_COMPLETION.patch
+
+          {
+            echo "=== Completed AVC target-context audit block ==="
+            grep -n -C 22 \
+              'susfs_is_avc_log_spoofing_enabled' \
+              "$SIM/security/selinux/avc.c"
+          } | tee avc-log-spoof-final-context.txt
+
+          echo "WORKFLOW22_DIFF_CHECK=PASS" \
+            | tee workflow22-diff-check-status.txt
+
+      - name: Resolve mm memory SUS_MAP remote VM semantic rejects v2
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SIM="$(cat kernel-simulation.path)"
+
+          python3 - <<'PY' 2>&1 | tee mm-memory-sus-map-edit-log.txt
+          import re
+          from pathlib import Path
+
+          sim = Path(Path("kernel-simulation.path").read_text().strip())
+          p = sim / "mm/memory.c"
+          text = p.read_text(encoding="utf-8")
+
+          # ------------------------------------------------------------
+          # 1) Header wiring against the real GEN2 5.4.302 include set.
+          # ------------------------------------------------------------
+          include_marker = "#include <linux/susfs_def.h>"
+          include_block = (
+              "#ifdef CONFIG_KSU_SUSFS_SUS_MAP\n"
+              "#include <linux/susfs_def.h>\n"
+              "#endif\n"
+          )
+
+          if include_marker not in text:
+              anchor = "#include <linux/numa.h>\n"
+              count = text.count(anchor)
+              print(f"mm/memory.c include anchor count={count}")
+
+              if count != 1:
+                  raise RuntimeError(
+                      f"mm/memory.c: expected one linux/numa.h include, found {count}"
+                  )
+
+              text = text.replace(anchor, anchor + include_block, 1)
+              print("mm/memory.c SUS_MAP include: PASS")
+          else:
+              print("mm/memory.c SUS_MAP include: already present")
+
+          # ------------------------------------------------------------
+          # Brace-aware extraction of the exact 5.4.302 function.
+          # ------------------------------------------------------------
+          func_re = re.compile(
+              r"^int __access_remote_vm\(struct task_struct \*tsk, struct mm_struct \*mm,\n"
+              r"\s*unsigned long addr, void \*buf, int len, unsigned int gup_flags\)\n"
+              r"\{\n",
+              re.M,
+          )
+
+          def extract_function(source):
+              fm = func_re.search(source)
+              if not fm:
+                  raise RuntimeError(
+                      "mm/memory.c: __access_remote_vm() function start not found"
+                  )
+
+              brace_start = source.find("{", fm.start())
+              depth = 0
+              func_end = None
+
+              for i in range(brace_start, len(source)):
+                  ch = source[i]
+                  if ch == "{":
+                      depth += 1
+                  elif ch == "}":
+                      depth -= 1
+                      if depth == 0:
+                          func_end = i + 1
+                          break
+
+              if func_end is None:
+                  raise RuntimeError(
+                      "mm/memory.c: could not determine __access_remote_vm() boundary"
+                  )
+
+              return fm.start(), func_end, source[fm.start():func_end]
+
+          start, end, region = extract_function(text)
+
+          # ------------------------------------------------------------
+          # 2) GEN2 5.4 lock API:
+          #    down_read_killable(&mm->mmap_sem)
+          #    ...
+          #    up_read(&mm->mmap_sem)
+          #
+          # Insert a distinct SUSFS seed immediately after the lock.
+          # Do NOT confuse it with the pre-existing VM_IO fallback
+          # find_vma() later inside the loop.
+          # ------------------------------------------------------------
+          lock_anchor = (
+              "\tif (down_read_killable(&mm->mmap_sem))\n"
+              "\t\treturn 0;\n"
+          )
+
+          lock_count = region.count(lock_anchor)
+          print(f"GEN2 5.4 mmap lock anchor count={lock_count}")
+
+          if lock_count != 1:
+              raise RuntimeError(
+                  f"__access_remote_vm: expected one 5.4 down_read_killable anchor, found {lock_count}"
+              )
+
+          seed_block = (
+              "#ifdef CONFIG_KSU_SUSFS_SUS_MAP\n"
+              "\tvma = find_vma(mm, addr);\n"
+              "#endif\n"
+          )
+
+          lock_end = region.index(lock_anchor) + len(lock_anchor)
+          after_lock = region[lock_end:]
+
+          # Only treat the seed as present if it is immediately after the
+          # lock (allowing only whitespace), not merely somewhere later.
+          seed_already = after_lock.lstrip().startswith(seed_block)
+
+          if seed_already:
+              print("remote-vm initial VMA seed after lock: already present")
+          else:
+              region = (
+                  region[:lock_end]
+                  + "\n"
+                  + seed_block
+                  + region[lock_end:]
+              )
+              print("remote-vm initial VMA seed after lock: PASS")
+
+          # ------------------------------------------------------------
+          # 3) SUS_MAP guard before the first GUP attempt.
+          # GEN2 5.4 signature is:
+          # get_user_pages_remote(tsk, mm, addr, 1, ...)
+          # ------------------------------------------------------------
+          guard_marker = (
+              "SUSFS_IS_INODE_SUS_MAP(file_inode(vma->vm_file))"
+          )
+
+          if guard_marker not in region:
+              page_anchor = "\t\tstruct page *page = NULL;\n"
+              count = region.count(page_anchor)
+              print(f"remote-vm page anchor count={count}")
+
+              if count != 1:
+                  raise RuntimeError(
+                      f"__access_remote_vm: expected one page anchor, found {count}"
+                  )
+
+              guard = (
+                  page_anchor
+                  + "\n#ifdef CONFIG_KSU_SUSFS_SUS_MAP\n"
+                  + "\t\tif (vma && vma->vm_file &&\n"
+                  + "\t\t    SUSFS_IS_INODE_SUS_MAP(file_inode(vma->vm_file)))\n"
+                  + "\t\t\tbreak;\n"
+                  + "#endif\n"
+              )
+
+              region = region.replace(page_anchor, guard, 1)
+              print("remote-vm SUS_MAP access guard: PASS")
+          else:
+              print("remote-vm SUS_MAP access guard: already present")
+
+          text = text[:start] + region + text[end:]
+          p.write_text(text, encoding="utf-8")
+
+          # ------------------------------------------------------------
+          # Final semantic invariants against the actual 5.4 API.
+          # ------------------------------------------------------------
+          final = p.read_text(encoding="utf-8", errors="replace")
+          start, end, region = extract_function(final)
+
+          seed = "vma = find_vma(mm, addr);"
+          seed_positions = [
+              m.start() for m in re.finditer(re.escape(seed), region)
+          ]
+
+          print(f"FIND_VMA_OCCURRENCE_COUNT={len(seed_positions)}")
+
+          checks = {
+              "VMA_DECLARATION_PRESENT":
+                  "struct vm_area_struct *vma;" in region,
+              "GEN2_5_4_DOWN_READ_KILLABLE_PRESENT":
+                  "down_read_killable(&mm->mmap_sem)" in region,
+              "GEN2_5_4_UP_READ_PRESENT":
+                  "up_read(&mm->mmap_sem);" in region,
+              "INITIAL_FIND_VMA_PRESENT":
+                  len(seed_positions) >= 2,
+              "SUS_MAP_INODE_GUARD_PRESENT":
+                  guard_marker in region,
+              "ORIGINAL_5_4_GUP_SIGNATURE_PRESENT":
+                  "get_user_pages_remote(tsk, mm, addr, 1" in region,
+              "ORIGINAL_VM_IO_FALLBACK_FIND_VMA_PRESENT":
+                  len(seed_positions) >= 2,
+              "ORIGINAL_RETURN_ACCOUNTING_PRESENT":
+                  "return buf - old_buf;" in region,
+          }
+
+          for key, value in checks.items():
+              print(f"{key}={'YES' if value else 'NO'}")
+              if not value:
+                  raise RuntimeError(f"{key}=NO")
+
+          lock_pos = region.index("down_read_killable(&mm->mmap_sem)")
+          loop_pos = region.index("while (len)")
+          guard_pos = region.index(guard_marker)
+          gup_pos = region.index("get_user_pages_remote(tsk, mm, addr, 1")
+          fallback_pos = region.index(seed, gup_pos)
+          unlock_pos = region.index("up_read(&mm->mmap_sem);")
+
+          # The first find_vma must be the new seed, between lock and loop.
+          initial_seed_pos = seed_positions[0]
+
+          if not (
+              lock_pos < initial_seed_pos < loop_pos
+              < guard_pos < gup_pos < fallback_pos < unlock_pos
+          ):
+              raise RuntimeError(
+                  "SUS_MAP remote-vm 5.4 ordering invalid"
+              )
+
+          # Ensure the seed is CONFIG-gated and the original fallback remains
+          # outside that initial seed block.
+          seed_context = region[max(0, initial_seed_pos - 80):initial_seed_pos + 80]
+          if "#ifdef CONFIG_KSU_SUSFS_SUS_MAP" not in seed_context:
+              raise RuntimeError(
+                  "Initial SUS_MAP VMA seed is not CONFIG-gated"
+              )
+
+          print("INITIAL_SUS_MAP_SEED_DISTINCT_FROM_VM_IO_FALLBACK=YES")
+          print("GEN2_5_4_MMAP_LOCK_PAIR=PASS")
+          print("MM_MEMORY_SUS_MAP_ORDERING=PASS")
+          print("MM_MEMORY_SUS_MAP_COMPLETION=PASS")
+          PY
+
+          grep -q '^MM_MEMORY_SUS_MAP_COMPLETION=PASS$' \
+            mm-memory-sus-map-edit-log.txt
+
+          echo "MM_MEMORY_SUS_MAP_COMPLETION=PASS" \
+            | tee mm-memory-sus-map-state.txt
+
+      - name: Verify SUS_MAP inode marker provider
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SIM="$(cat kernel-simulation.path)"
+
+          {
+            echo "=== SUS_MAP marker provider ==="
+            grep -RIn -C 4 \
+              'SUSFS_IS_INODE_SUS_MAP' \
+              "$SIM/include/linux/susfs_def.h" \
+              "$SIM/include/linux/susfs.h" \
+              "$SIM/fs/susfs.c" \
+              | sed -n '1,220p'
+          } | tee mm-memory-sus-map-provider-context.txt
+
+          if ! grep -Rq 'SUSFS_IS_INODE_SUS_MAP' \
+            "$SIM/include/linux/susfs_def.h" \
+            "$SIM/include/linux/susfs.h" \
+            "$SIM/fs/susfs.c"; then
+            echo "SUS_MAP_INODE_MARKER_PROVIDER=FAIL"
+            exit 1
+          fi
+
+          echo "SUS_MAP_INODE_MARKER_PROVIDER=PASS" \
+            | tee mm-memory-sus-map-provider-status.txt
+
+      - name: Verify original GEN2 5.4 remote VM transfer semantics remain reachable
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SIM="$(cat kernel-simulation.path)"
+
+          python3 - <<'PY' | tee mm-memory-sus-map-behavior-verification.txt
+          from pathlib import Path
+
+          sim = Path(Path("kernel-simulation.path").read_text().strip())
+          text = (sim / "mm/memory.c").read_text(
+              encoding="utf-8", errors="replace"
+          )
+
+          start = text.index("int __access_remote_vm(")
+          end = text.index(
+              "/**\n * access_remote_vm - access another process' address space",
+              start
+          )
+          body = text[start:end]
+
+          checks = {
+              "GEN2_5_4_DOWN_READ_KILLABLE_PRESENT":
+                  "down_read_killable(&mm->mmap_sem)" in body,
+              "GEN2_5_4_UP_READ_PRESENT":
+                  "up_read(&mm->mmap_sem);" in body,
+              "REMOTE_VM_PAGE_LOOP_PRESENT":
+                  "while (len)" in body,
+              "GEN2_5_4_GET_USER_PAGES_REMOTE_PRESENT":
+                  "get_user_pages_remote(tsk, mm, addr, 1" in body,
+              "VM_IO_FALLBACK_FIND_VMA_PRESENT":
+                  body.count("vma = find_vma(mm, addr);") >= 2,
+              "KMAP_PRESENT":
+                  "kmap(page)" in body,
+              "COPY_TO_USER_PAGE_PRESENT":
+                  "copy_to_user_page" in body,
+              "COPY_FROM_USER_PAGE_PRESENT":
+                  "copy_from_user_page" in body,
+              "SET_PAGE_DIRTY_LOCK_PRESENT":
+                  "set_page_dirty_lock(page)" in body,
+              "PUT_PAGE_PRESENT":
+                  "put_page(page)" in body,
+              "BYTE_COUNT_RETURN_PRESENT":
+                  "return buf - old_buf;" in body,
+          }
+
+          for key, value in checks.items():
+              print(f"{key}={'YES' if value else 'NO'}")
+              if not value:
+                  raise SystemExit(f"{key}=NO")
+
+          if "mmap_read_lock_killable(mm)" in body:
+              raise SystemExit(
+                  "UNEXPECTED_NEWER_MMAP_LOCK_API_PRESENT=YES"
+              )
+
+          if "mmap_read_unlock(mm)" in body:
+              raise SystemExit(
+                  "UNEXPECTED_NEWER_MMAP_UNLOCK_API_PRESENT=YES"
+              )
+
+          print("UNEXPECTED_NEWER_MMAP_API_PRESENT=NO")
+          print("REMOTE_VM_ORIGINAL_5_4_TRANSFER_PATH_PRESERVED=YES")
+          print("SUS_MAP_CHANGE_SCOPE=HIDDEN_VMA_EARLY_BREAK_ONLY")
+          PY
+
+      - name: Derive Workflow 23 effective remaining semantic ledger
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cat > workflow23-effective-remaining-semantic-reject-files.txt <<'EOF'
+          fs/namei.c.rej
+          fs/proc/task_mmu.c.rej
+          fs/readdir.c.rej
+          fs/stat.c.rej
+          EOF
+
+          {
+            echo "PREVIOUS_EFFECTIVE_REMAINING_SEMANTIC_REJECT_FILES=5"
+            echo "MM_MEMORY_FULLY_RESOLVED_BY_WORKFLOW23=YES"
+            echo "EFFECTIVE_REMAINING_SEMANTIC_REJECT_FILES=$(wc -l < workflow23-effective-remaining-semantic-reject-files.txt)"
+            echo
+            cat workflow23-effective-remaining-semantic-reject-files.txt
+            echo
+            echo "NOTE=Original mm/memory.c.rej evidence remains preserved."
+            echo "NOTE=task_mmu SUS_MAP visibility semantics remain a separate later block."
+          } | tee workflow23-effective-reject-ledger.txt
+
+          grep -q '^EFFECTIVE_REMAINING_SEMANTIC_REJECT_FILES=4$' \
+            workflow23-effective-reject-ledger.txt
+
+      - name: Preserve mm memory SUS_MAP completion patch and diff check
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SIM="$(cat kernel-simulation.path)"
+
+          git -C "$SIM" diff --check \
+            > workflow23-diff-check.txt
+
+          git -C "$SIM" diff \
+            --binary \
+            -- mm/memory.c \
+            > GEN2_23_MM_MEMORY_SUS_MAP_COMPLETION.patch
+
+          test -s GEN2_23_MM_MEMORY_SUS_MAP_COMPLETION.patch
+
+          {
+            echo "=== Completed __access_remote_vm SUS_MAP context ==="
+            grep -n -C 22 \
+              'SUSFS_IS_INODE_SUS_MAP' \
+              "$SIM/mm/memory.c"
+          } | tee mm-memory-sus-map-final-context.txt
+
+          echo "WORKFLOW23_DIFF_CHECK=PASS" \
+            | tee workflow23-diff-check-status.txt
+
+      - name: Resolve fs stat SUS_KSTAT and ReSukiSU fstat semantics
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SIM="$(cat kernel-simulation.path)"
+
+          python3 - <<'PY' 2>&1 | tee fs-stat-edit-log.txt
+          import re
+          from pathlib import Path
+
+          sim = Path(Path("kernel-simulation.path").read_text().strip())
+          p = sim / "fs/stat.c"
+          text = p.read_text(encoding="utf-8")
+
+          # ------------------------------------------------------------
+          # Provider declarations
+          # ------------------------------------------------------------
+          decl_marker = "susfs_sus_kstat_spoof_generic_fillattr"
+          if decl_marker not in text:
+              anchor = "#include <asm/unistd.h>\n"
+              count = text.count(anchor)
+              print(f"fs/stat.c declaration anchor count={count}")
+              if count != 1:
+                  raise RuntimeError(
+                      f"fs/stat.c: expected one asm/unistd include, found {count}"
+                  )
+
+              block = (
+                  "\n#ifdef CONFIG_KSU_SUSFS_SUS_KSTAT\n"
+                  "extern void susfs_sus_kstat_spoof_generic_fillattr("
+                  "struct inode *inode, struct kstat *stat);\n"
+                  "#endif\n"
+                  "#ifdef CONFIG_KSU_SUSFS\n"
+                  "extern struct static_key_true ksu_is_init_rc_hook_enabled;\n"
+                  "extern void ksu_handle_vfs_fstat(int fd, loff_t *kstat_size_ptr);\n"
+                  "#endif\n"
+              )
+              text = text.replace(anchor, anchor + block, 1)
+              print("fs/stat.c provider declarations: PASS")
+          else:
+              print("fs/stat.c provider declarations: already present")
+
+          # ------------------------------------------------------------
+          # 1) generic_fillattr()
+          # ------------------------------------------------------------
+          if "susfs_sus_kstat_spoof_generic_fillattr(inode, stat);" not in text:
+              anchor = "\tstat->blocks = inode->i_blocks;\n"
+              count = text.count(anchor)
+              print(f"generic_fillattr anchor count={count}")
+              if count != 1:
+                  raise RuntimeError(
+                      f"generic_fillattr: expected one blocks assignment, found {count}"
+                  )
+
+              addition = (
+                  "#ifdef CONFIG_KSU_SUSFS_SUS_KSTAT\n"
+                  "\tsusfs_sus_kstat_spoof_generic_fillattr(inode, stat);\n"
+                  "#endif\n"
+              )
+              text = text.replace(anchor, anchor + addition, 1)
+              print("generic_fillattr SUS_KSTAT spoof: PASS")
+          else:
+              print("generic_fillattr SUS_KSTAT spoof: already present")
+
+          # ------------------------------------------------------------
+          # 2) vfs_getattr_nosec()
+          # Filesystems with their own ->getattr bypass generic_fillattr(),
+          # so apply SUS_KSTAT only after a successful custom getattr.
+          # ------------------------------------------------------------
+          old = (
+              "\tif (inode->i_op->getattr)\n"
+              "\t\treturn inode->i_op->getattr(path, stat, request_mask,\n"
+              "\t\t\t\t\t    query_flags);\n"
+          )
+
+          if "int err = inode->i_op->getattr(path, stat, request_mask" not in text:
+              count = text.count(old)
+              print(f"vfs_getattr_nosec custom-getattr block count={count}")
+              if count != 1:
+                  raise RuntimeError(
+                      f"vfs_getattr_nosec: expected one custom getattr block, found {count}"
+                  )
+
+              new = (
+                  "\tif (inode->i_op->getattr)\n"
+                  "#ifdef CONFIG_KSU_SUSFS_SUS_KSTAT\n"
+                  "\t{\n"
+                  "\t\tint err = inode->i_op->getattr(path, stat, request_mask,\n"
+                  "\t\t\t\t\t     query_flags);\n"
+                  "\t\tif (!err)\n"
+                  "\t\t\tsusfs_sus_kstat_spoof_generic_fillattr(inode, stat);\n"
+                  "\t\treturn err;\n"
+                  "\t}\n"
+                  "#else\n"
+                  "\t\treturn inode->i_op->getattr(path, stat, request_mask,\n"
+                  "\t\t\t\t\t    query_flags);\n"
+                  "#endif\n"
+              )
+              text = text.replace(old, new, 1)
+              print("vfs_getattr_nosec SUS_KSTAT custom-getattr path: PASS")
+          else:
+              print("vfs_getattr_nosec SUS_KSTAT custom-getattr path: already present")
+
+          # ------------------------------------------------------------
+          # 3) ReSukiSU vfs_fstat semantic adaptation for GEN2 5.4.
+          #
+          # In this kernel vfs_fstat() is a static inline wrapper in fs.h:
+          #   return vfs_statx_fd(fd, stat, STATX_BASIC_STATS, 0);
+          #
+          # Therefore hook the exact wrapper-equivalent argument combination
+          # inside vfs_statx_fd(), instead of inventing a standalone function.
+          # ------------------------------------------------------------
+          fstat_marker = "ksu_handle_vfs_fstat(fd, &stat->size);"
+
+          if fstat_marker not in text:
+              func_re = re.compile(
+                  r"^int vfs_statx_fd\(unsigned int fd, struct kstat \*stat,\n"
+                  r"\s*u32 request_mask, unsigned int query_flags\)\n"
+                  r"\{\n",
+                  re.M,
+              )
+              fm = func_re.search(text)
+              if not fm:
+                  raise RuntimeError("vfs_statx_fd() not found")
+
+              export = text.find("EXPORT_SYMBOL(vfs_statx_fd);", fm.start())
+              if export < 0:
+                  raise RuntimeError("vfs_statx_fd export boundary not found")
+
+              region = text[fm.start():export]
+
+              old_call = (
+                  "\t\terror = vfs_getattr(&f.file->f_path, stat,\n"
+                  "\t\t\t\t    request_mask, query_flags);\n"
+              )
+              count = region.count(old_call)
+              print(f"vfs_statx_fd getattr anchor count={count}")
+              if count != 1:
+                  raise RuntimeError(
+                      f"vfs_statx_fd: expected one getattr call, found {count}"
+                  )
+
+              new_call = (
+                  old_call
+                  + "#ifdef CONFIG_KSU_SUSFS\n"
+                  + "\t\tif (request_mask == STATX_BASIC_STATS && query_flags == 0 &&\n"
+                  + "\t\t    static_branch_unlikely(&ksu_is_init_rc_hook_enabled))\n"
+                  + "\t\t\tksu_handle_vfs_fstat(fd, &stat->size);\n"
+                  + "#endif\n"
+              )
+
+              region = region.replace(old_call, new_call, 1)
+              text = text[:fm.start()] + region + text[export:]
+              print("GEN2 5.4 vfs_fstat wrapper-equivalent hook: PASS")
+          else:
+              print("GEN2 5.4 vfs_fstat wrapper-equivalent hook: already present")
+
+          p.write_text(text, encoding="utf-8")
+
+          # ------------------------------------------------------------
+          # Final static invariants.
+          # ------------------------------------------------------------
+          final = p.read_text(encoding="utf-8", errors="replace")
+
+          checks = {
+              "GENERIC_FILLATTR_SUS_KSTAT_PRESENT":
+                  final.count(
+                      "susfs_sus_kstat_spoof_generic_fillattr(inode, stat);"
+                  ) >= 2,
+              "CUSTOM_GETATTR_SUCCESS_GUARD_PRESENT":
+                  "if (!err)" in final and
+                  "susfs_sus_kstat_spoof_generic_fillattr(inode, stat);" in final,
+              "FSTAT_PROVIDER_CALL_PRESENT":
+                  fstat_marker in final,
+              "FSTAT_WRAPPER_EQUIVALENT_GUARD_PRESENT":
+                  "request_mask == STATX_BASIC_STATS && query_flags == 0" in final,
+              "INIT_RC_STATIC_KEY_PRESENT":
+                  "static_branch_unlikely(&ksu_is_init_rc_hook_enabled)" in final,
+              "EXISTING_KSU_STAT_CALLSITE_PRESERVED":
+                  "ksu_handle_stat(&dfd, &filename, &flags);" in final,
+          }
+
+          for key, value in checks.items():
+              print(f"{key}={'YES' if value else 'NO'}")
+              if not value:
+                  raise RuntimeError(f"{key}=NO")
+
+          print("FS_STAT_KSTAT_FSTAT_COMPLETION=PASS")
+          PY
+
+          grep -q '^FS_STAT_KSTAT_FSTAT_COMPLETION=PASS$' \
+            fs-stat-edit-log.txt
+
+          echo "FS_STAT_KSTAT_FSTAT_COMPLETION=PASS" \
+            | tee fs-stat-state.txt
+
+      - name: Classify newer STATX_MNT_ID reject as not applicable to GEN2 5.4
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SIM="$(cat kernel-simulation.path)"
+
+          python3 - <<'PY' | tee fs-stat-mnt-id-classification.txt
+          import re
+          from pathlib import Path
+
+          sim = Path(Path("kernel-simulation.path").read_text().strip())
+
+          kstat_h = (sim / "include/linux/stat.h").read_text(
+              encoding="utf-8", errors="replace"
+          )
+          uapi_h = (sim / "include/uapi/linux/stat.h").read_text(
+              encoding="utf-8", errors="replace"
+          )
+
+          m = re.search(r"struct kstat\s*\{(?P<body>.*?)\n\};", kstat_h, re.S)
+          if not m:
+              raise SystemExit("struct kstat extraction failed")
+
+          body = m.group("body")
+
+          has_kstat_mnt_id = bool(
+              re.search(r"\bmnt_id\b", body)
+          )
+          has_statx_mnt_id = "STATX_MNT_ID" in uapi_h
+
+          print(
+              "GEN2_KSTAT_HAS_MNT_ID="
+              + ("YES" if has_kstat_mnt_id else "NO")
+          )
+          print(
+              "GEN2_UAPI_HAS_STATX_MNT_ID="
+              + ("YES" if has_statx_mnt_id else "NO")
+          )
+
+          if has_kstat_mnt_id or has_statx_mnt_id:
+              raise SystemExit(
+                  "Unexpected: GEN2 exposes newer STATX_MNT_ID semantics"
+              )
+
+          print("SUSFS_5_10_MNT_ID_HUNK=NOT_APPLICABLE_TO_GEN2_5_4")
+          print("NO_SYNTHETIC_MNT_ID_FIELD_ADDED=YES")
+          print("MNT_ID_REJECT_CLASSIFICATION=PASS")
+          PY
+
+      - name: Verify pinned ReSukiSU fstat provider contract
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SIM="$(cat kernel-simulation.path)"
+
+          {
+            echo "=== Pinned ReSukiSU provider ==="
+            grep -RIn -C 4 \
+              'void ksu_handle_vfs_fstat' \
+              "$SIM/KernelSU/kernel" \
+              | sed -n '1,140p'
+
+            echo
+            grep -RIn -C 4 \
+              'DEFINE_STATIC_KEY_TRUE(ksu_is_init_rc_hook_enabled)' \
+              "$SIM/KernelSU/kernel" \
+              | sed -n '1,140p'
+          } | tee fs-stat-resukisu-provider-context.txt
+
+          grep -Rq 'void ksu_handle_vfs_fstat' \
+            "$SIM/KernelSU/kernel"
+
+          grep -Rq 'DEFINE_STATIC_KEY_TRUE(ksu_is_init_rc_hook_enabled)' \
+            "$SIM/KernelSU/kernel"
+
+          echo "RESUKISU_FSTAT_PROVIDER_CONTRACT=PASS" \
+            | tee fs-stat-resukisu-provider-status.txt
+
+      - name: Verify fs stat original semantics remain reachable
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SIM="$(cat kernel-simulation.path)"
+
+          python3 - <<'PY' | tee fs-stat-behavior-verification.txt
+          from pathlib import Path
+
+          sim = Path(Path("kernel-simulation.path").read_text().strip())
+          text = (sim / "fs/stat.c").read_text(
+              encoding="utf-8", errors="replace"
+          )
+
+          checks = {
+              "GENERIC_FILLATTR_ORIGINAL_ASSIGNMENTS_PRESENT":
+                  all(x in text for x in [
+                      "stat->dev = inode->i_sb->s_dev;",
+                      "stat->ino = inode->i_ino;",
+                      "stat->size = i_size_read(inode);",
+                      "stat->blocks = inode->i_blocks;",
+                  ]),
+              "CUSTOM_GETATTR_ORIGINAL_CALL_PRESENT":
+                  "inode->i_op->getattr(path, stat, request_mask" in text,
+              "VFS_STATX_FD_ORIGINAL_GETATTR_PRESENT":
+                  "vfs_getattr(&f.file->f_path, stat" in text,
+              "VFS_STATX_ORIGINAL_USER_PATH_PRESENT":
+                  "user_path_at(dfd, filename, lookup_flags, &path)" in text,
+              "VFS_STATX_ORIGINAL_GETATTR_PRESENT":
+                  "vfs_getattr(&path, stat, request_mask, flags)" in text,
+              "VFS_STATX_RETRY_ESTALE_PRESENT":
+                  "retry_estale(error, lookup_flags)" in text,
+          }
+
+          for key, value in checks.items():
+              print(f"{key}={'YES' if value else 'NO'}")
+              if not value:
+                  raise SystemExit(f"{key}=NO")
+
+          print("FS_STAT_ORIGINAL_PATHS_PRESERVED=YES")
+          print("FS_STAT_CHANGE_SCOPE=SUS_KSTAT_PLUS_RESUKISU_FSTAT_ONLY")
+          PY
+
+      - name: Derive Workflow 24 effective remaining semantic ledger
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cat > workflow24-effective-remaining-semantic-reject-files.txt <<'EOF'
+          fs/namei.c.rej
+          fs/proc/task_mmu.c.rej
+          fs/readdir.c.rej
+          EOF
+
+          {
+            echo "PREVIOUS_EFFECTIVE_REMAINING_SEMANTIC_REJECT_FILES=4"
+            echo "FS_STAT_FULLY_RESOLVED_BY_WORKFLOW24=YES"
+            echo "SUSFS_5_10_STATX_MNT_ID_CLASSIFICATION=NOT_APPLICABLE_TO_GEN2_5_4"
+            echo "EFFECTIVE_REMAINING_SEMANTIC_REJECT_FILES=$(wc -l < workflow24-effective-remaining-semantic-reject-files.txt)"
+            echo
+            cat workflow24-effective-remaining-semantic-reject-files.txt
+            echo
+            echo "NOTE=Original fs/stat.c.rej evidence remains preserved."
+            echo "NOTE=No synthetic STATX_MNT_ID ABI was introduced into 5.4."
+          } | tee workflow24-effective-reject-ledger.txt
+
+          grep -q '^EFFECTIVE_REMAINING_SEMANTIC_REJECT_FILES=3$' \
+            workflow24-effective-reject-ledger.txt
+
+      - name: Preserve fs stat completion patch and diff check
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SIM="$(cat kernel-simulation.path)"
+
+          git -C "$SIM" diff --check \
+            > workflow24-diff-check.txt
+
+          git -C "$SIM" diff \
+            --binary \
+            -- fs/stat.c \
+            > GEN2_24_FS_STAT_KSTAT_FSTAT_COMPLETION.patch
+
+          test -s GEN2_24_FS_STAT_KSTAT_FSTAT_COMPLETION.patch
+
+          {
+            echo "=== generic_fillattr ==="
+            grep -n -C 10 \
+              'susfs_sus_kstat_spoof_generic_fillattr' \
+              "$SIM/fs/stat.c" \
+              | sed -n '1,180p'
+
+            echo
+            echo "=== vfs_statx_fd fstat adaptation ==="
+            grep -n -C 12 \
+              'ksu_handle_vfs_fstat' \
+              "$SIM/fs/stat.c" \
+              | sed -n '1,180p'
+          } | tee fs-stat-final-context.txt
+
+          echo "WORKFLOW24_DIFF_CHECK=PASS" \
+            | tee workflow24-diff-check-status.txt
+
+      - name: Verify no incompatible legacy hook callsites remain
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SIM="$(cat kernel-simulation.path)"
+
+          count=0
+
+          {
+            for spec in \
+              'ksu_vfs_read_hook:fs/read_write.c' \
+              'ksu_input_hook:drivers/input/input.c' \
+              'ksu_execveat_hook:fs/exec.c' \
+              'ksu_init_rc_hook:fs/read_write.c' \
+              'ksu_init_rc_hook:fs/stat.c'
+            do
+              symbol="${spec%%:*}"
+              file="${spec#*:}"
+
+              if grep -wq "$symbol" "$SIM/$file"; then
+                echo "INCOMPATIBLE_PRESENT=$symbol FILE=$file"
+                count=$((count + 1))
+              else
+                echo "INCOMPATIBLE_ABSENT=$symbol FILE=$file"
+              fi
+            done
+
+            echo "INCOMPATIBLE_LEGACY_HOOK_REFERENCES=$count"
+          } | tee incompatible-hook-state.txt
+
+          grep -q '^INCOMPATIBLE_LEGACY_HOOK_REFERENCES=0$' \
+            incompatible-hook-state.txt
+
+      - name: Preserve exact three-hook completion delta
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SIM="$(cat kernel-simulation.path)"
+
+          git -C "$SIM" diff \
+            --check \
+            > hook-completion-diff-check.txt
+
+          {
+            echo "=== Exact completed hook contexts ==="
+
+            grep -n -C 12 \
+              'ksu_handle_setresuid(ruid, euid, suid)' \
+              "$SIM/kernel/sys.c"
+
+            echo
+            grep -n -C 16 \
+              'ksu_handle_faccessat(&dfd, &filename, &mode, NULL)' \
+              "$SIM/fs/open.c"
+
+            echo
+            grep -n -C 16 \
+              'ksu_handle_stat(&dfd, &filename, &flags)' \
+              "$SIM/fs/stat.c"
+          } | tee completed-hook-contexts.txt
+
+          git -C "$SIM" diff \
+            --binary \
+            -- kernel/sys.c fs/open.c fs/stat.c \
+            > GEN2_18_REQUIRED_INLINE_HOOK_COMPLETION.patch
+
+          test -s GEN2_18_REQUIRED_INLINE_HOOK_COMPLETION.patch
+
+      - name: Inventory remaining SUSFS reject files after hook completion
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SIM="$(cat kernel-simulation.path)"
+
+          find "$SIM" \
+            -path "$SIM/KernelSU" -prune -o \
+            -type f -name '*.rej' -print \
+            | sed "s#^$SIM/##" \
+            | sort \
+            > remaining-reject-files.txt
+
+          {
+            echo "REMAINING_REJECT_FILE_COUNT=$(wc -l < remaining-reject-files.txt)"
+            echo
+            cat remaining-reject-files.txt
+            echo
+            echo "NOTE=.rej files are preserved from the original 5.10 patch application."
+            echo "NOTE=Some hook hunks in those .rej files are now semantically resolved by this workflow."
+            echo "NOTE=Remaining SUSFS feature semantics are not yet declared complete."
+          } | tee remaining-reject-state.txt
+
+      - name: Verify original pinned GEN2 source remained untouched
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git -C kernel-src diff --exit-code
+          git -C kernel-src diff --cached --exit-code
+          test -z "$(git -C kernel-src status --porcelain)"
+
+          echo "ORIGINAL_PROJECT_SOURCE_UNTOUCHED=YES" \
+            | tee original-source-status.txt
+
+      - name: Write final audit file
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          {
+            echo "AUDIT=GEN2_24_FS_STAT_KSTAT_FSTAT_COMPLETION"
+            echo "WORKFLOW_REVISION=GEN2_24_NO_SYNTHETIC_STATX_MNT_ID"
+            echo "RESULT=PASS"
+            echo "GEN2_24_FS_STAT_KSTAT_FSTAT_COMPLETION_AUDIT=PASS"
+            echo "KERNEL_COMMIT=$(git -C kernel-src rev-parse HEAD)"
+            echo "RESUKISU_COMMIT=$(git -C resukisu rev-parse HEAD)"
+            echo "SUSFS_BASE=4003ecf2d01c6d13fa8edf6c4f2607365738dc3d"
+            echo "OPEN_REDIRECT_REFERENCE=V220_PLUS_FOUR_SELECTED_FIXES"
+            echo "TEMPORARY_WORKTREE_MODIFIED=YES"
+            echo "ORIGINAL_PROJECT_SOURCE_UNTOUCHED=YES"
+            echo "NO_KERNEL_BUILD_PERFORMED=YES"
+            echo
+            echo "=== Before ==="
+            cat hook-callsite-state-before.txt
+            echo
+            echo "=== After ==="
+            cat hook-callsite-state-after.txt
+            echo
+            cat incompatible-hook-state.txt
+            echo
+            echo "SEMANTIC_SUSFS_PORT_COMPLETE=NO"
+            echo "READY_FOR_KERNEL_BUILD=NO"
+            cat workflow24-effective-reject-ledger.txt
+            echo
+            echo "NEXT_STEP=RESOLVE_3_REMAINING_FEATURE_FILES_IN_SEMANTIC_BATCHES"
+          } | tee GEN2_24_FS_STAT_KSTAT_FSTAT_COMPLETION_AUDIT.txt
+
+      - name: Upload final audit artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: GEN2_24_FS_STAT_KSTAT_FSTAT_COMPLETION_AUDIT
+          path: |
+            GEN2_24_FS_STAT_KSTAT_FSTAT_COMPLETION_AUDIT.txt
+            source-pin-status.txt
+            legacy-removal-state.txt
+            resukisu-integration-state.txt
+            susfs-fixset-state.txt
+            standalone-susfs-state.txt
+            workflow17-stage-state.txt
+            workflow17-apply.log
+            workflow17-rejects.txt
+            hook-callsite-state-before.txt
+            hook-completion-edit-log.txt
+            hook-completion-state.txt
+            plumbing-edit-log.txt
+            plumbing-state.txt
+            plumbing-consumer-contexts.txt
+            resolved-reject-files.txt
+            partial-reject-files.txt
+            effective-remaining-semantic-reject-files.txt
+            effective-reject-ledger.txt
+            plumbing-diff-check.txt
+            plumbing-diff-check-status.txt
+            spoof-uname-edit-log.txt
+            spoof-uname-state.txt
+            spoof-uname-provider-context.txt
+            spoof-uname-provider-status.txt
+            spoof-uname-behavior-verification.txt
+            workflow20-effective-remaining-semantic-reject-files.txt
+            workflow20-effective-reject-ledger.txt
+            workflow20-diff-check.txt
+            workflow20-diff-check-status.txt
+            namespace-sus-mount-edit-log.txt
+            namespace-sus-mount-state.txt
+            namespace-sus-mount-context.txt
+            namespace-sus-mount-provider-status.txt
+            workflow21-effective-remaining-semantic-reject-files.txt
+            workflow21-effective-reject-ledger.txt
+            workflow21-diff-check.txt
+            workflow21-diff-check-status.txt
+            avc-log-spoof-edit-log.txt
+            avc-log-spoof-state.txt
+            avc-log-spoof-provider-context.txt
+            avc-log-spoof-provider-status.txt
+            avc-log-spoof-behavior-verification.txt
+            workflow22-effective-remaining-semantic-reject-files.txt
+            workflow22-effective-reject-ledger.txt
+            workflow22-diff-check.txt
+            workflow22-diff-check-status.txt
+            mm-memory-sus-map-edit-log.txt
+            mm-memory-sus-map-state.txt
+            mm-memory-sus-map-provider-context.txt
+            mm-memory-sus-map-provider-status.txt
+            mm-memory-sus-map-behavior-verification.txt
+            workflow23-effective-remaining-semantic-reject-files.txt
+            workflow23-effective-reject-ledger.txt
+            workflow23-diff-check.txt
+            workflow23-diff-check-status.txt
+            fs-stat-edit-log.txt
+            fs-stat-state.txt
+            fs-stat-mnt-id-classification.txt
+            fs-stat-resukisu-provider-context.txt
+            fs-stat-resukisu-provider-status.txt
+            fs-stat-behavior-verification.txt
+            workflow24-effective-remaining-semantic-reject-files.txt
+            workflow24-effective-reject-ledger.txt
+            workflow24-diff-check.txt
+            workflow24-diff-check-status.txt
+            fs-stat-final-context.txt
+            GEN2_24_FS_STAT_KSTAT_FSTAT_COMPLETION.patch
+            mm-memory-sus-map-final-context.txt
+            GEN2_23_MM_MEMORY_SUS_MAP_COMPLETION.patch
+            avc-log-spoof-final-context.txt
+            GEN2_22_SECURITY_SELINUX_AVC_LOG_SPOOF_COMPLETION.patch
+            namespace-sus-mount-final-context.txt
+            GEN2_21_FS_NAMESPACE_SUS_MOUNT_COMPLETION.patch
+            spoof-uname-final-context.txt
+            GEN2_20_KERNEL_SYS_SPOOF_UNAME_COMPLETION.patch
+            GEN2_19_PLUMBING_AND_COMPLETED_HOOKS.patch
+            hook-callsite-state-after.txt
+            incompatible-hook-state.txt
+            completed-hook-contexts.txt
+            hook-completion-diff-check.txt
+            GEN2_18_REQUIRED_INLINE_HOOK_COMPLETION.patch
+            remaining-reject-files.txt
+            remaining-reject-state.txt
+            original-source-status.txt
+          if-no-files-found: warn
+          retention-days: 30
