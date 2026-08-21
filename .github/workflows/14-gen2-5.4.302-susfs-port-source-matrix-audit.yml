@@ -1,0 +1,480 @@
+name: 14 - GEN2 5.4.302 SUSFS Port Source Matrix Audit
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout pinned GEN2 kernel source
+        uses: actions/checkout@v6
+        with:
+          repository: dereference23/kernel_xiaomi_sm6375
+          ref: f4b8a13a43a130a9aab83cc985ce4d4421291ae6
+          path: kernel-src
+          fetch-depth: 1
+
+      - name: Checkout pinned ReSukiSU reference
+        uses: actions/checkout@v6
+        with:
+          repository: ReSukiSU/ReSukiSU
+          ref: faccf4c5edc7be37776216e7d43dd3dca0239331
+          path: resukisu
+          fetch-depth: 1
+
+      - name: Fetch SUSFS reference history
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SUSFS_REPO='https://gitlab.com/simonpunk/susfs4ksu.git'
+          V220='4003ecf2d01c6d13fa8edf6c4f2607365738dc3d'
+
+          git clone --no-checkout "$SUSFS_REPO" susfs
+          git -C susfs fetch origin "$V220"
+          git -C susfs fetch origin gki-android12-5.10
+
+          if git ls-remote --exit-code \
+            --heads "$SUSFS_REPO" kernel-5.4 \
+            >/dev/null 2>&1; then
+            git -C susfs fetch origin kernel-5.4
+            echo "KERNEL_5_4_BRANCH_PRESENT=YES" \
+              | tee susfs-branch-state.txt
+          else
+            echo "KERNEL_5_4_BRANCH_PRESENT=NO" \
+              | tee susfs-branch-state.txt
+          fi
+
+          {
+            echo "V220=$V220"
+            echo "GKI_5_10_CURRENT=$(git -C susfs rev-parse origin/gki-android12-5.10)"
+
+            if git -C susfs rev-parse --verify \
+              origin/kernel-5.4 >/dev/null 2>&1; then
+              echo "KERNEL_5_4_CURRENT=$(git -C susfs rev-parse origin/kernel-5.4)"
+            else
+              echo "KERNEL_5_4_CURRENT=ABSENT"
+            fi
+          } | tee -a susfs-branch-state.txt
+
+      - name: Inventory SUSFS patch sets at all relevant refs
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          V220='4003ecf2d01c6d13fa8edf6c4f2607365738dc3d'
+          CURRENT='origin/gki-android12-5.10'
+
+          {
+            for spec in \
+              "v220:$V220" \
+              "current-5.10:$CURRENT"
+            do
+              label="${spec%%:*}"
+              ref="${spec#*:}"
+
+              echo "================================================================"
+              echo "REF=$label"
+              echo "COMMIT=$(git -C susfs rev-parse "$ref")"
+              echo
+              git -C susfs ls-tree -r --name-only "$ref" kernel_patches \
+                | sort
+              echo
+            done
+
+            if git -C susfs rev-parse --verify \
+              origin/kernel-5.4 >/dev/null 2>&1; then
+              echo "================================================================"
+              echo "REF=kernel-5.4"
+              echo "COMMIT=$(git -C susfs rev-parse origin/kernel-5.4)"
+              echo
+              git -C susfs ls-tree -r --name-only \
+                origin/kernel-5.4 kernel_patches \
+                | sort
+              echo
+            fi
+          } | tee susfs-patch-inventory.txt
+
+      - name: Build SUSFS feature and synchronization matrix
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          import subprocess, re, pathlib
+
+          repo = "susfs"
+          refs = [
+              ("v220", "4003ecf2d01c6d13fa8edf6c4f2607365738dc3d"),
+              ("current-5.10", "origin/gki-android12-5.10"),
+          ]
+
+          try:
+              subprocess.run(
+                  ["git", "-C", repo, "rev-parse", "--verify", "origin/kernel-5.4"],
+                  check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+              )
+              refs.append(("kernel-5.4", "origin/kernel-5.4"))
+          except subprocess.CalledProcessError:
+              pass
+
+          markers = [
+              "SUSFS_VERSION",
+              "SUSFS_VERSION_VAR",
+              "SUS_KSTAT",
+              "SUS_MOUNT",
+              "SUS_PATH",
+              "SUS_MAP",
+              "OPEN_REDIRECT",
+              "SPOOF_UNAME",
+              "SPOOF_CMDLINE",
+              "synchronize_rcu",
+              "synchronize_srcu",
+              "susfs_srcu_open_redirect",
+              "VMA_PAD_START",
+              "show_map_pad_vma",
+          ]
+
+          candidate_paths = [
+              "kernel_patches/fs/susfs.c",
+              "kernel_patches/include/linux/susfs_def.h",
+              "kernel_patches/50_add_susfs_in_gki-android12-5.10.patch",
+              "kernel_patches/50_add_susfs_in_kernel-5.4.patch",
+          ]
+
+          def show(ref, path):
+              cp = subprocess.run(
+                  ["git", "-C", repo, "show", f"{ref}:{path}"],
+                  text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL
+              )
+              return cp.stdout if cp.returncode == 0 else ""
+
+          out = []
+          out.append("NOTE=Marker presence is not compatibility approval.")
+          out.append("")
+
+          for label, ref in refs:
+              text = ""
+              existing = []
+              for path in candidate_paths:
+                  data = show(ref, path)
+                  if data:
+                      existing.append(path)
+                      text += "\n" + data
+
+              out.append("=" * 72)
+              out.append(f"REF={label}")
+              out.append(f"COMMIT={subprocess.check_output(['git','-C',repo,'rev-parse',ref], text=True).strip()}")
+              out.append("SOURCES=" + (",".join(existing) if existing else "NONE"))
+
+              for marker in markers:
+                  out.append(f"{marker}={'YES' if marker in text else 'NO'}")
+              out.append("")
+
+          pathlib.Path("susfs-feature-sync-matrix.txt").write_text(
+              "\n".join(out) + "\n", encoding="utf-8"
+          )
+          PY
+
+          cat susfs-feature-sync-matrix.txt
+
+      - name: Export primary kernel patches from each SUSFS ref
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p exported-patches
+
+          python3 - <<'PY'
+          import subprocess, pathlib
+
+          refs = [
+              ("v220", "4003ecf2d01c6d13fa8edf6c4f2607365738dc3d"),
+              ("current-5.10", "origin/gki-android12-5.10"),
+          ]
+
+          try:
+              subprocess.run(
+                  ["git", "-C", "susfs", "rev-parse", "--verify", "origin/kernel-5.4"],
+                  check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+              )
+              refs.append(("kernel-5.4", "origin/kernel-5.4"))
+          except subprocess.CalledProcessError:
+              pass
+
+          for label, ref in refs:
+              cp = subprocess.run(
+                  ["git", "-C", "susfs", "ls-tree", "-r", "--name-only", ref, "kernel_patches"],
+                  text=True, stdout=subprocess.PIPE, check=True
+              )
+              patches = [p for p in cp.stdout.splitlines() if p.endswith(".patch")]
+
+              ranked = []
+              for patch in patches:
+                  data = subprocess.check_output(
+                      ["git", "-C", "susfs", "show", f"{ref}:{patch}"],
+                      text=True, errors="replace"
+                  )
+                  score = (
+                      ("fs/proc/task_mmu.c" in data) * 4
+                      + ("fs/open.c" in data) * 3
+                      + ("fs/namei.c" in data) * 3
+                      + ("fs/susfs.c" in data) * 2
+                      + ("OPEN_REDIRECT" in data)
+                  )
+                  ranked.append((score, len(data), patch, data))
+
+              if not ranked:
+                  continue
+
+              ranked.sort(reverse=True)
+              score, size, patch, data = ranked[0]
+              out = pathlib.Path("exported-patches") / f"{label}.patch"
+              out.write_text(data, encoding="utf-8")
+              pathlib.Path("exported-patches", f"{label}.source.txt").write_text(
+                  f"REF={ref}\nSOURCE_PATCH={patch}\nSCORE={score}\nSIZE={size}\n",
+                  encoding="utf-8"
+              )
+          PY
+
+          {
+            for f in exported-patches/*.source.txt; do
+              echo "=== $f ==="
+              cat "$f"
+            done
+          } | tee exported-patch-sources.txt
+
+      - name: Split exported patches into per-file patch fragments
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          import pathlib, re
+
+          root = pathlib.Path("exported-patches")
+          splitroot = pathlib.Path("split-patches")
+          splitroot.mkdir(exist_ok=True)
+
+          for patch in root.glob("*.patch"):
+              label = patch.stem
+              outdir = splitroot / label
+              outdir.mkdir(parents=True, exist_ok=True)
+
+              text = patch.read_text(encoding="utf-8", errors="replace")
+              parts = re.split(r"(?=^diff --git )", text, flags=re.M)
+
+              index = 0
+              for part in parts:
+                  if not part.startswith("diff --git "):
+                      continue
+
+                  first = part.splitlines()[0]
+                  m = re.match(r"diff --git a/(.+?) b/(.+)$", first)
+                  if not m:
+                      continue
+
+                  target = m.group(2)
+                  safe = target.replace("/", "__")
+                  index += 1
+                  (outdir / f"{index:03d}__{safe}.patch").write_text(
+                      part, encoding="utf-8"
+                  )
+          PY
+
+          find split-patches -type f -name '*.patch' -print | sort \
+            | tee split-patch-files.txt
+
+      - name: Run per-file applicability matrix against pinned 5.4.302
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          {
+            echo "NOTE=git apply --check only; no patch is applied."
+            echo
+
+            for dir in split-patches/*; do
+              [ -d "$dir" ] || continue
+              label="$(basename "$dir")"
+
+              echo "================================================================"
+              echo "REF=$label"
+
+              for patch in "$dir"/*.patch; do
+                [ -f "$patch" ] || continue
+
+                base="$(basename "$patch")"
+                target="${base#*__}"
+                target="${target%.patch}"
+                target="${target//__//}"
+
+                if git -C kernel-src apply \
+                  --check \
+                  "$GITHUB_WORKSPACE/$patch" \
+                  >/tmp/apply.out 2>/tmp/apply.err; then
+                  status='CLEAN'
+                else
+                  status='MANUAL'
+                fi
+
+                if [ ! -e "kernel-src/$target" ]; then
+                  if grep -q '^new file mode ' "$patch"; then
+                    existence='NEW_FILE_EXPECTED'
+                  else
+                    existence='TARGET_ABSENT'
+                  fi
+                else
+                  existence='TARGET_PRESENT'
+                fi
+
+                echo "FILE=$target APPLY_CHECK=$status EXISTENCE=$existence"
+              done
+
+              echo
+            done
+          } | tee susfs-per-file-applicability-matrix.txt
+
+      - name: Audit exact GEN2 semantic hook surfaces for SUSFS targets
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          show_context() {
+            file="$1"
+            regex="$2"
+
+            echo "================================================================"
+            echo "FILE=$file"
+            grep -n -C 8 -E "$regex" "kernel-src/$file" \
+              | sed -n '1,420p' || true
+            echo
+          }
+
+          {
+            show_context fs/open.c \
+              'do_sys_open|do_sys_openat2|build_open_flags|O_TRUNC'
+
+            show_context fs/namei.c \
+              'set_nameidata|do_tmpfile|do_o_path|path_openat|do_filp_open|may_open|handle_truncate|O_TRUNC'
+
+            show_context fs/proc/task_mmu.c \
+              'show_map_vma|show_map_pad_vma|VMA_PAD_START|show_smap_vma|proc_pid_maps_op|proc_pid_smaps_op'
+
+            show_context fs/stat.c \
+              'vfs_statx|vfs_fstatat|do_statx|SYSCALL_DEFINE.*stat'
+
+            show_context fs/readdir.c \
+              'iterate_dir|filldir|SYSCALL_DEFINE.*getdents'
+
+            show_context fs/namespace.c \
+              'show_mountinfo|show_vfsmnt|mnt_id|mountinfo'
+
+            show_context kernel/sys.c \
+              'newuname|override_release|SYSCALL_DEFINE.*uname'
+
+            show_context kernel/kallsyms.c \
+              'kallsyms_show_value|s_show|kallsyms'
+
+            show_context security/selinux/avc.c \
+              'avc_denied|avc_has_perm|avc_audit'
+          } | tee gen2-susfs-semantic-hook-surfaces.txt
+
+      - name: Compare kernel-5.4 reference with v2.2 and current 5.10
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if ! git -C susfs rev-parse --verify \
+            origin/kernel-5.4 >/dev/null 2>&1; then
+            echo "KERNEL_5_4_REFERENCE_COMPARISON=SKIPPED_BRANCH_ABSENT" \
+              | tee kernel54-vs-v220-current.txt
+            exit 0
+          fi
+
+          {
+            echo "=== kernel-5.4 history head ==="
+            git -C susfs log \
+              -20 \
+              --format='%H|%cI|%s' \
+              origin/kernel-5.4
+
+            echo
+            echo "=== kernel-5.4 files containing major features ==="
+            for marker in \
+              SUS_MAP OPEN_REDIRECT VMA_PAD_START \
+              synchronize_srcu susfs_srcu_open_redirect
+            do
+              echo "--- $marker ---"
+              git -C susfs grep -n "$marker" \
+                origin/kernel-5.4 \
+                -- kernel_patches \
+                || true
+            done
+          } | tee kernel54-vs-v220-current.txt
+
+      - name: Verify original sources remain untouched
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          for repo in kernel-src resukisu; do
+            git -C "$repo" diff --exit-code
+            git -C "$repo" diff --cached --exit-code
+            test -z "$(git -C "$repo" status --porcelain)"
+          done
+
+          echo "ORIGINAL_PROJECT_SOURCE_UNTOUCHED=YES" \
+            | tee original-source-status.txt
+
+      - name: Write final audit file
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          {
+            echo "AUDIT=GEN2_14_SUSFS_PORT_SOURCE_MATRIX"
+            echo "RESULT=PASS"
+            echo "GEN2_14_SUSFS_PORT_SOURCE_MATRIX_AUDIT=PASS"
+            echo "KERNEL_COMMIT=$(git -C kernel-src rev-parse HEAD)"
+            echo "RESUKISU_COMMIT=$(git -C resukisu rev-parse HEAD)"
+            echo "SUSFS_V220_COMMIT=4003ecf2d01c6d13fa8edf6c4f2607365738dc3d"
+            echo "SUSFS_CURRENT_5_10_COMMIT=$(git -C susfs rev-parse origin/gki-android12-5.10)"
+            echo "NO_PATCH_APPLIED=YES"
+            echo "NO_KERNEL_BUILD_PERFORMED=YES"
+            echo "ORIGINAL_PROJECT_SOURCE_UNTOUCHED=YES"
+            echo
+            cat susfs-branch-state.txt
+            echo
+            echo "=== Feature/synchronization matrix ==="
+            cat susfs-feature-sync-matrix.txt
+            echo
+            echo "=== Per-file applicability ==="
+            cat susfs-per-file-applicability-matrix.txt
+          } | tee GEN2_14_SUSFS_PORT_SOURCE_MATRIX_AUDIT.txt
+
+      - name: Upload final audit artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: GEN2_14_SUSFS_PORT_SOURCE_MATRIX_AUDIT
+          path: |
+            GEN2_14_SUSFS_PORT_SOURCE_MATRIX_AUDIT.txt
+            susfs-branch-state.txt
+            susfs-patch-inventory.txt
+            susfs-feature-sync-matrix.txt
+            exported-patch-sources.txt
+            exported-patches/
+            split-patch-files.txt
+            split-patches/
+            susfs-per-file-applicability-matrix.txt
+            gen2-susfs-semantic-hook-surfaces.txt
+            kernel54-vs-v220-current.txt
+            original-source-status.txt
+          if-no-files-found: warn
+          retention-days: 30
