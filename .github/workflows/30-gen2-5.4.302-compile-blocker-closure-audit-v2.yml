@@ -1,0 +1,763 @@
+name: 30 - GEN2 5.4.302 Compile Blocker Closure Audit v2
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    env:
+      KERNEL_PIN: f4b8a13a43a130a9aab83cc985ce4d4421291ae6
+      RESUKISU_PIN: faccf4c5edc7be37776216e7d43dd3dca0239331
+      SUSFS_BASE_PIN: 4003ecf2d01c6d13fa8edf6c4f2607365738dc3d
+      SUSFS_FIX_1: be08face56c347e7ba9c4fb420c2463598a14f5d
+      SUSFS_FIX_2: 86bb893e9a103b97d17045306f35eb239a623f2a
+      SUSFS_FIX_3: c5723cc09c19786fcb701d25a8097e2edbee412a
+      SUSFS_FIX_4: 3c14ad549f826b1f53878ec8c12253efebeed75a
+      WORK: ${{ github.workspace }}/gen2-w30v2
+      OUT: ${{ github.workspace }}/gen2-w30v2/audit
+      CAND: ${{ github.workspace }}/gen2-w30v2/candidate
+
+    steps:
+      - name: Checkout exact GEN2 kernel source
+        uses: actions/checkout@v6
+        with:
+          repository: dereference23/kernel_xiaomi_sm6375
+          ref: f4b8a13a43a130a9aab83cc985ce4d4421291ae6
+          path: kernel-src
+          fetch-depth: 0
+
+      - name: Checkout exact ReSukiSU reference
+        uses: actions/checkout@v6
+        with:
+          repository: ReSukiSU/ReSukiSU
+          ref: faccf4c5edc7be37776216e7d43dd3dca0239331
+          path: resukisu
+          fetch-depth: 1
+
+      - name: Initialize failure-safe Workflow 30 v2 audit
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -rf "$WORK"
+          mkdir -p "$OUT" "$CAND"
+
+          cat > "$OUT/GEN2_30_V2_COMPILE_BLOCKER_CLOSURE_AUDIT.txt" <<EOF
+          AUDIT=GEN2_30_V2_COMPILE_BLOCKER_CLOSURE
+          WORKFLOW_REVISION=GEN2_30_V2_ROBUST_FSNOTIFY_AND_EXACT_RESUKISU_CONTRACT
+          STATUS=STARTED
+
+          KERNEL_PIN=$KERNEL_PIN
+          RESUKISU_PIN=$RESUKISU_PIN
+          SUSFS_BASE_PIN=$SUSFS_BASE_PIN
+          SUSFS_FIX_1=$SUSFS_FIX_1
+          SUSFS_FIX_2=$SUSFS_FIX_2
+          SUSFS_FIX_3=$SUSFS_FIX_3
+          SUSFS_FIX_4=$SUSFS_FIX_4
+
+          PURPOSE:
+          Correct the Workflow 30 audit implementation and close exactly the
+          two source-level blockers observed in GEN2 Workflow 29 v3.
+
+          CORRECTIONS_FROM_W30_V1:
+          - validate the actual ReSukiSU declaration:
+              extern struct file_operations sel_handle_status_ops;
+            instead of the incorrect v1 expectation containing const
+          - replace the SUSFS callback signature by source-range boundaries,
+            avoiding the v1 regex replacement/newline mismatch
+          - require both generated source patches to be non-empty
+          - require adaptation diff counts to be greater than zero
+          - emulate ReSukiSU's exact static-export grep condition
+          - upload diagnostics before enforcing the final hard verdict
+
+          POLICY:
+          - isolated candidate copies only
+          - original kernel checkout remains byte-clean
+          - original ReSukiSU checkout remains byte-clean
+          - no config change
+          - no CONFIG_KALLSYMS_ALL enablement
+          - no full kernel build
+          - no boot.img
+          - no flashable ZIP
+          - no device access
+          - no flashing
+          EOF
+
+          {
+            echo "WORKFLOW=30_V2"
+            echo "AUDIT_FILE_CREATED=YES"
+            echo "NO_FULL_KERNEL_BUILD=YES"
+            echo "NO_BOOT_IMAGE=YES"
+            echo "NO_FLASH=YES"
+          } > "$OUT/START.txt"
+
+      - name: Verify exact source contracts
+        id: source_contracts
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test "$(git -C kernel-src rev-parse HEAD)" = "$KERNEL_PIN"
+          test "$(git -C resukisu rev-parse HEAD)" = "$RESUKISU_PIN"
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import json
+          import re
+
+          hdr = Path("kernel-src/include/linux/fsnotify_backend.h").read_text()
+          sel = Path("kernel-src/security/selinux/selinuxfs.c").read_text()
+          checker = Path("resukisu/kernel/tools/static_export_check.mk").read_text()
+          hide = Path("resukisu/kernel/feature/selinux_hide.c").read_text()
+
+          start = hdr.index("struct fsnotify_ops {")
+          end = hdr.index("};", start) + 2
+          ops = hdr[start:end]
+
+          required_fragments = [
+              "int (*handle_event)(struct fsnotify_group *group,",
+              "struct inode *inode,",
+              "u32 mask, const void *data, int data_type,",
+              "const struct qstr *file_name, u32 cookie,",
+              "struct fsnotify_iter_info *iter_info);",
+          ]
+          for fragment in required_fragments:
+              if fragment not in ops:
+                  raise SystemExit("ERROR: missing GEN2 fsnotify fragment: " + fragment)
+
+          if "handle_inode_event" in ops:
+              raise SystemExit("ERROR: unexpected handle_inode_event in GEN2 fsnotify_ops")
+
+          static_decl = "static const struct file_operations sel_handle_status_ops = {"
+          if sel.count(static_decl) != 1:
+              raise SystemExit("ERROR: expected exactly one static sel_handle_status_ops definition")
+
+          checker_literal = (
+              "static const struct file_operations sel_handle_status_ops"
+          )
+          if checker_literal not in checker:
+              raise SystemExit("ERROR: ReSukiSU static-export checker literal missing")
+
+          actual_extern = "extern struct file_operations sel_handle_status_ops;"
+          if actual_extern not in hide:
+              raise SystemExit("ERROR: actual ReSukiSU sel_handle_status_ops extern missing")
+
+          out = Path("gen2-w30v2/audit")
+          (out / "GEN2-FSNOTIFY-CONTRACT.txt").write_text(ops + "\n")
+          (out / "RESUKISU-STATIC-EXPORT-CONTRACT.txt").write_text(
+              "STATIC_CHECK_LITERAL=" + checker_literal + "\n"
+              "ACTUAL_EXTERN=" + actual_extern + "\n"
+              "CONTRACT=PASS\n"
+          )
+
+          print("SOURCE_CONTRACTS=PASS")
+          PY
+
+          {
+            echo
+            echo "=== SOURCE CONTRACTS ==="
+            echo "SOURCE_PINS=PASS"
+            echo "GEN2_FSNOTIFY_API=handle_event"
+            echo "GEN2_HANDLE_INODE_EVENT_FIELD=ABSENT"
+            echo "GEN2_SEL_HANDLE_STATUS_OPS_STATIC=YES"
+            echo "RESUKISU_EXPECTED_EXTERN='extern struct file_operations sel_handle_status_ops;'"
+            echo "SOURCE_CONTRACTS=PASS"
+          } >> "$OUT/GEN2_30_V2_COMPILE_BLOCKER_CLOSURE_AUDIT.txt"
+
+      - name: Materialize exact SUSFS v2.2 selected fixset
+        id: susfs
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          REPO="$WORK/susfs-repo"
+          TREE="$WORK/susfs-tree"
+          PATCHES="$WORK/susfs-fix-patches"
+          LOG="$OUT/SUSFS-FETCH-MATERIALIZE.log"
+
+          rm -rf "$REPO" "$TREE" "$PATCHES"
+          mkdir -p "$REPO" "$TREE" "$PATCHES"
+          : > "$LOG"
+
+          git -C "$REPO" init -q
+          git -C "$REPO" remote add origin https://gitlab.com/simonpunk/susfs4ksu.git
+
+          fetched=0
+          for attempt in 1 2 3; do
+            echo "FETCH_ATTEMPT=$attempt" | tee -a "$LOG"
+            if git -c http.version=HTTP/1.1 -C "$REPO" fetch \
+                --filter=blob:none --no-tags origin gki-android12-5.10 \
+                >>"$LOG" 2>&1; then
+              fetched=1
+              break
+            fi
+            sleep $((attempt * 5))
+          done
+          test "$fetched" -eq 1
+
+          for sha in \
+            "$SUSFS_BASE_PIN" \
+            "$SUSFS_FIX_1" \
+            "$SUSFS_FIX_2" \
+            "$SUSFS_FIX_3" \
+            "$SUSFS_FIX_4"
+          do
+            git -C "$REPO" cat-file -e "${sha}^{commit}"
+          done
+
+          git -C "$REPO" archive --format=tar "$SUSFS_BASE_PIN" \
+            | tar -xf - -C "$TREE"
+
+          for rel in \
+            kernel_patches/fs/susfs.c \
+            kernel_patches/include/linux/susfs.h \
+            kernel_patches/include/linux/susfs_def.h
+          do
+            test -f "$TREE/$rel"
+          done
+
+          git -C "$TREE" init -q
+          git -C "$TREE" add -A
+          git -C "$TREE" \
+            -c user.name='GEN2 W30 v2 Audit' \
+            -c user.email='gen2-w30v2@localhost' \
+            commit -q -m 'Exact SUSFS v2.2 base'
+
+          for sha in \
+            "$SUSFS_FIX_1" \
+            "$SUSFS_FIX_2" \
+            "$SUSFS_FIX_3" \
+            "$SUSFS_FIX_4"
+          do
+            patch="$PATCHES/${sha}.patch"
+            git -C "$REPO" diff --binary "${sha}^" "$sha" > "$patch"
+            test -s "$patch"
+            git -C "$TREE" apply --check "$patch"
+            git -C "$TREE" apply "$patch"
+          done
+
+          cp "$TREE/kernel_patches/fs/susfs.c" "$CAND/susfs.before.c"
+          cp "$TREE/kernel_patches/fs/susfs.c" "$CAND/susfs.c"
+
+          {
+            echo "SUSFS_FIXSET_MATERIALIZATION=PASS"
+            echo "SUSFS_BASE=$SUSFS_BASE_PIN"
+            echo "SUSFS_FIX_ORDER=$SUSFS_FIX_1 $SUSFS_FIX_2 $SUSFS_FIX_3 $SUSFS_FIX_4"
+            echo "SUSFS_C_SHA256=$(sha256sum "$CAND/susfs.before.c" | awk '{print $1}')"
+          } > "$OUT/SUSFS-FIXSET-STATUS.txt"
+
+          cat "$OUT/SUSFS-FIXSET-STATUS.txt" \
+            >> "$OUT/GEN2_30_V2_COMPILE_BLOCKER_CLOSURE_AUDIT.txt"
+
+      - name: Apply robust isolated GEN2 fsnotify adapter
+        id: fsnotify_fix
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import difflib
+
+          before_path = Path("gen2-w30v2/candidate/susfs.before.c")
+          after_path = Path("gen2-w30v2/candidate/susfs.c")
+          out_path = Path("gen2-w30v2/audit/30-v2-fsnotify-legacy-handle-event.patch")
+
+          original = before_path.read_text()
+          text = original
+
+          fn_marker = "static int susfs_handle_sdcard_inode_event("
+          start = text.index(fn_marker)
+          brace = text.index("{", start)
+          old_signature = text[start:brace]
+
+          required_old = [
+              "struct fsnotify_mark *mark",
+              "u32 mask",
+              "struct inode *inode",
+              "struct inode *dir",
+              "const struct qstr *file_name",
+              "u32 cookie",
+          ]
+          for fragment in required_old:
+              if fragment not in old_signature:
+                  raise SystemExit("ERROR: inherited SUSFS signature missing: " + fragment)
+
+          new_signature = """static int susfs_handle_sdcard_inode_event(struct fsnotify_group *group,
+                                                          struct inode *inode,
+                                                          u32 mask, const void *data,
+                                                          int data_type,
+                                                          const struct qstr *file_name,
+                                                          u32 cookie,
+                                                          struct fsnotify_iter_info *iter_info)
+          """
+
+          text = text[:start] + new_signature + text[brace:]
+
+          old_ops = ".handle_inode_event = susfs_handle_sdcard_inode_event,"
+          new_ops = ".handle_event = susfs_handle_sdcard_inode_event,"
+
+          if text.count(old_ops) != 1:
+              raise SystemExit(
+                  f"ERROR: expected one handle_inode_event assignment, got {text.count(old_ops)}"
+              )
+          text = text.replace(old_ops, new_ops, 1)
+
+          if text == original:
+              raise SystemExit("ERROR: fsnotify adaptation produced no change")
+
+          after_path.write_text(text)
+
+          patch = "".join(
+              difflib.unified_diff(
+                  original.splitlines(keepends=True),
+                  text.splitlines(keepends=True),
+                  fromfile="a/fs/susfs.c",
+                  tofile="b/fs/susfs.c",
+              )
+          )
+          if not patch:
+              raise SystemExit("ERROR: generated fsnotify patch is empty")
+          out_path.write_text(patch)
+          PY
+
+          test -s "$OUT/30-v2-fsnotify-legacy-handle-event.patch"
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          text = Path("gen2-w30v2/candidate/susfs.c").read_text()
+
+          if ".handle_inode_event = susfs_handle_sdcard_inode_event," in text:
+              raise SystemExit("ERROR: handle_inode_event assignment remains")
+
+          if text.count(".handle_event = susfs_handle_sdcard_inode_event,") != 1:
+              raise SystemExit("ERROR: adapted handle_event assignment count != 1")
+
+          start = text.index("static int susfs_handle_sdcard_inode_event(")
+          brace = text.index("{", start)
+          sig = text[start:brace]
+
+          required_new = [
+              "struct fsnotify_group *group",
+              "struct inode *inode",
+              "u32 mask, const void *data",
+              "int data_type",
+              "const struct qstr *file_name",
+              "u32 cookie",
+              "struct fsnotify_iter_info *iter_info",
+          ]
+          for fragment in required_new:
+              if fragment not in sig:
+                  raise SystemExit("ERROR: adapted signature missing: " + fragment)
+
+          # Preserve the inherited functional body relevant to this watcher.
+          for fragment in [
+              "file_name->len != 7",
+              'memcmp(file_name->name, "Android", 7)',
+              "queue_delayed_work(system_unbound_wq",
+          ]:
+              if fragment not in text:
+                  raise SystemExit("ERROR: inherited SUSFS watcher behavior missing: " + fragment)
+
+          print("FSNOTIFY_ADAPTER_STATIC_CONTRACT=PASS")
+          PY
+
+          {
+            echo
+            echo "=== FSNOTIFY BLOCKER CLOSURE ==="
+            echo "SUSFS_HANDLE_INODE_EVENT_ASSIGNMENT_REMAINING=0"
+            echo "SUSFS_HANDLE_EVENT_ASSIGNMENT_COUNT=1"
+            echo "GEN2_LEGACY_CALLBACK_SIGNATURE=PASS"
+            echo "INHERITED_WATCHER_BODY=PRESERVED"
+            echo "FSNOTIFY_PATCH_NONEMPTY=YES"
+            echo "FSNOTIFY_BLOCKER_CLOSURE=PASS"
+          } >> "$OUT/GEN2_30_V2_COMPILE_BLOCKER_CLOSURE_AUDIT.txt"
+
+      - name: Compile host-only exact fsnotify pointer-type contract
+        id: fsnotify_type
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cat > "$CAND/fsnotify-type-contract.c" <<'EOF'
+          typedef unsigned int u32;
+
+          struct fsnotify_group;
+          struct inode;
+          struct qstr;
+          struct fsnotify_iter_info;
+
+          struct gen2_fsnotify_ops {
+            int (*handle_event)(struct fsnotify_group *group,
+                                struct inode *inode,
+                                u32 mask, const void *data, int data_type,
+                                const struct qstr *file_name, u32 cookie,
+                                struct fsnotify_iter_info *iter_info);
+          };
+
+          static int susfs_handle_sdcard_inode_event(
+                                struct fsnotify_group *group,
+                                struct inode *inode,
+                                u32 mask, const void *data,
+                                int data_type,
+                                const struct qstr *file_name,
+                                u32 cookie,
+                                struct fsnotify_iter_info *iter_info)
+          {
+            (void)group;
+            (void)inode;
+            (void)mask;
+            (void)data;
+            (void)data_type;
+            (void)file_name;
+            (void)cookie;
+            (void)iter_info;
+            return 0;
+          }
+
+          static const struct gen2_fsnotify_ops ops = {
+            .handle_event = susfs_handle_sdcard_inode_event,
+          };
+
+          int main(void)
+          {
+            return ops.handle_event == 0;
+          }
+          EOF
+
+          clang \
+            -std=gnu11 \
+            -Wall -Wextra -Werror \
+            -c "$CAND/fsnotify-type-contract.c" \
+            -o "$CAND/fsnotify-type-contract.o"
+
+          test -s "$CAND/fsnotify-type-contract.o"
+
+          {
+            echo "FSNOTIFY_SYNTHETIC_TYPE_CONTRACT=PASS"
+            echo "TYPE_CHECK_COMPILER=$(clang --version | head -n 1)"
+            echo "TYPE_CHECK_SCOPE=HOST_ONLY_FUNCTION_POINTER_COMPATIBILITY"
+            echo "TARGET_ANDROID_CLANG_R416183B_VALIDATION=DEFERRED_TO_NEXT_FULL_BUILD"
+          } > "$OUT/FSNOTIFY-TYPE-CONTRACT.txt"
+
+          cat "$OUT/FSNOTIFY-TYPE-CONTRACT.txt" \
+            >> "$OUT/GEN2_30_V2_COMPILE_BLOCKER_CLOSURE_AUDIT.txt"
+
+      - name: Apply exact ReSukiSU static-export adaptation
+        id: resukisu_export
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p "$CAND/security/selinux"
+
+          cp kernel-src/security/selinux/selinuxfs.c \
+            "$CAND/security/selinux/selinuxfs.before.c"
+          cp kernel-src/security/selinux/selinuxfs.c \
+            "$CAND/security/selinux/selinuxfs.c"
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import difflib
+
+          before_path = Path(
+              "gen2-w30v2/candidate/security/selinux/selinuxfs.before.c"
+          )
+          after_path = Path(
+              "gen2-w30v2/candidate/security/selinux/selinuxfs.c"
+          )
+          out_path = Path(
+              "gen2-w30v2/audit/30-v2-resukisu-sel-handle-status-static-export.patch"
+          )
+
+          original = before_path.read_text()
+          text = original
+
+          old = "static const struct file_operations sel_handle_status_ops = {"
+          new = "const struct file_operations sel_handle_status_ops = {"
+
+          if text.count(old) != 1:
+              raise SystemExit(
+                  f"ERROR: expected exactly one static declaration, got {text.count(old)}"
+              )
+
+          text = text.replace(old, new, 1)
+          after_path.write_text(text)
+
+          patch = "".join(
+              difflib.unified_diff(
+                  original.splitlines(keepends=True),
+                  text.splitlines(keepends=True),
+                  fromfile="a/security/selinux/selinuxfs.c",
+                  tofile="b/security/selinux/selinuxfs.c",
+              )
+          )
+          if not patch:
+              raise SystemExit("ERROR: generated ReSukiSU export patch is empty")
+          out_path.write_text(patch)
+          PY
+
+          test -s "$OUT/30-v2-resukisu-sel-handle-status-static-export.patch"
+
+          # Emulate the exact condition in ReSukiSU's static_export_check.mk:
+          # the build checker treats this symbol as exported when the literal
+          # "static const struct file_operations sel_handle_status_ops" is absent.
+          if grep -q -F \
+              "static const struct file_operations sel_handle_status_ops" \
+              "$CAND/security/selinux/selinuxfs.c"; then
+            echo "ERROR: ReSukiSU checker would still reject sel_handle_status_ops"
+            exit 1
+          fi
+
+          grep -q -F \
+            "const struct file_operations sel_handle_status_ops = {" \
+            "$CAND/security/selinux/selinuxfs.c"
+
+          grep -q -F \
+            "extern struct file_operations sel_handle_status_ops;" \
+            resukisu/kernel/feature/selinux_hide.c
+
+          grep -q -F \
+            "static const struct file_operations sel_handle_status_ops" \
+            resukisu/kernel/tools/static_export_check.mk
+
+          {
+            echo
+            echo "=== RESUKISU STATIC EXPORT BLOCKER CLOSURE ==="
+            echo "SEL_HANDLE_STATUS_OPS_STATIC_BEFORE=YES"
+            echo "SEL_HANDLE_STATUS_OPS_STATIC_AFTER=NO"
+            echo "SEL_HANDLE_STATUS_OPS_CONST_PRESERVED=YES"
+            echo "RESUKISU_ACTUAL_EXTERN_DECLARATION_MATCHED=YES"
+            echo "RESUKISU_STATIC_EXPORT_GREP_EMULATION=PASS"
+            echo "CONFIG_KALLSYMS_ALL_ENABLEMENT_USED=NO"
+            echo "RESUKISU_PATCH_NONEMPTY=YES"
+            echo "RESUKISU_STATIC_EXPORT_BLOCKER_CLOSURE=PASS"
+          } >> "$OUT/GEN2_30_V2_COMPILE_BLOCKER_CLOSURE_AUDIT.txt"
+
+      - name: Verify exact two-contract adaptation scope
+        id: scope
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import difflib
+          import json
+
+          root = Path("gen2-w30v2")
+          out = root / "audit"
+
+          pairs = [
+              (
+                  root / "candidate/susfs.before.c",
+                  root / "candidate/susfs.c",
+                  "SUSFS fsnotify legacy handle_event adapter",
+              ),
+              (
+                  root / "candidate/security/selinux/selinuxfs.before.c",
+                  root / "candidate/security/selinux/selinuxfs.c",
+                  "ReSukiSU sel_handle_status_ops direct symbol visibility",
+              ),
+          ]
+
+          contracts = []
+          for before_path, after_path, purpose in pairs:
+              before = before_path.read_text().splitlines()
+              after = after_path.read_text().splitlines()
+              diff = list(difflib.unified_diff(before, after, lineterm=""))
+              if not diff:
+                  raise SystemExit("ERROR: zero-diff adaptation contract: " + purpose)
+              contracts.append(
+                  {
+                      "purpose": purpose,
+                      "before": str(before_path),
+                      "after": str(after_path),
+                      "diff_line_count": len(diff),
+                  }
+              )
+
+          required_patches = [
+              out / "30-v2-fsnotify-legacy-handle-event.patch",
+              out / "30-v2-resukisu-sel-handle-status-static-export.patch",
+          ]
+          for patch in required_patches:
+              if not patch.is_file() or patch.stat().st_size == 0:
+                  raise SystemExit("ERROR: required patch missing or empty: " + str(patch))
+
+          payload = {
+              "result": "PASS",
+              "changed_contract_count": len(contracts),
+              "all_contract_diffs_nonzero": all(
+                  item["diff_line_count"] > 0 for item in contracts
+              ),
+              "both_patch_files_nonempty": True,
+              "config_files_changed": 0,
+              "kernel_project_checkout_modified": False,
+              "resukisu_checkout_modified": False,
+              "contracts": contracts,
+          }
+
+          (out / "ADAPTATION-SCOPE.json").write_text(
+              json.dumps(payload, indent=2, sort_keys=True) + "\n"
+          )
+          PY
+
+          test -z "$(git -C kernel-src status --porcelain)"
+          test -z "$(git -C resukisu status --porcelain)"
+
+          jq -e \
+            '.result == "PASS"
+             and .changed_contract_count == 2
+             and .all_contract_diffs_nonzero == true
+             and .both_patch_files_nonempty == true
+             and .config_files_changed == 0
+             and .kernel_project_checkout_modified == false
+             and .resukisu_checkout_modified == false' \
+            "$OUT/ADAPTATION-SCOPE.json" >/dev/null
+
+          {
+            echo
+            echo "=== SCOPE ==="
+            echo "CHANGED_CONTRACT_COUNT=2"
+            echo "ALL_CONTRACT_DIFFS_NONZERO=YES"
+            echo "BOTH_PATCH_FILES_NONEMPTY=YES"
+            echo "CONFIG_FILES_CHANGED=0"
+            echo "ORIGINAL_KERNEL_CHECKOUT_MODIFIED=NO"
+            echo "ORIGINAL_RESUKISU_CHECKOUT_MODIFIED=NO"
+            echo "ADAPTATION_SCOPE=PASS"
+          } >> "$OUT/GEN2_30_V2_COMPILE_BLOCKER_CLOSURE_AUDIT.txt"
+
+      - name: Write final failure-safe verdict and checksums
+        id: final
+        if: always()
+        shell: bash
+        env:
+          SOURCE_CONTRACTS_OUTCOME: ${{ steps.source_contracts.outcome }}
+          SUSFS_OUTCOME: ${{ steps.susfs.outcome }}
+          FSNOTIFY_FIX_OUTCOME: ${{ steps.fsnotify_fix.outcome }}
+          FSNOTIFY_TYPE_OUTCOME: ${{ steps.fsnotify_type.outcome }}
+          RESUKISU_EXPORT_OUTCOME: ${{ steps.resukisu_export.outcome }}
+          SCOPE_OUTCOME: ${{ steps.scope.outcome }}
+        run: |
+          set -u
+
+          mkdir -p "$OUT"
+          REPORT="$OUT/GEN2_30_V2_COMPILE_BLOCKER_CLOSURE_AUDIT.txt"
+
+          if [ ! -f "$REPORT" ]; then
+            cat > "$REPORT" <<EOF
+          AUDIT=GEN2_30_V2_COMPILE_BLOCKER_CLOSURE
+          STATUS=EMERGENCY_FAILURE_SAFE_REPORT
+          EOF
+          fi
+
+          {
+            echo
+            echo "=== STEP OUTCOMES ==="
+            echo "SOURCE_CONTRACTS_OUTCOME=$SOURCE_CONTRACTS_OUTCOME"
+            echo "SUSFS_OUTCOME=$SUSFS_OUTCOME"
+            echo "FSNOTIFY_FIX_OUTCOME=$FSNOTIFY_FIX_OUTCOME"
+            echo "FSNOTIFY_TYPE_OUTCOME=$FSNOTIFY_TYPE_OUTCOME"
+            echo "RESUKISU_EXPORT_OUTCOME=$RESUKISU_EXPORT_OUTCOME"
+            echo "SCOPE_OUTCOME=$SCOPE_OUTCOME"
+          } >> "$REPORT"
+
+          FAILED=0
+          for x in \
+            "$SOURCE_CONTRACTS_OUTCOME" \
+            "$SUSFS_OUTCOME" \
+            "$FSNOTIFY_FIX_OUTCOME" \
+            "$FSNOTIFY_TYPE_OUTCOME" \
+            "$RESUKISU_EXPORT_OUTCOME" \
+            "$SCOPE_OUTCOME"
+          do
+            if [ "$x" != "success" ]; then
+              FAILED=$((FAILED + 1))
+            fi
+          done
+
+          if [ "$FAILED" -eq 0 ]; then
+            FINAL="PASS_TWO_WORKFLOW29_COMPILE_BLOCKERS_CLOSED_STATICALLY"
+            NEXT="READY_FOR_GEN2_FIRST_CONTROLLED_IMAGE_BUILD_RETRY"
+          else
+            FINAL="FAIL_COMPILE_BLOCKER_CLOSURE_INCOMPLETE"
+            NEXT="INSPECT_WORKFLOW30_V2_ARTIFACT_BEFORE_ANY_FULL_BUILD"
+          fi
+
+          {
+            echo
+            echo "=== FINAL VERDICT ==="
+            echo "FAILED_STEPS=$FAILED"
+            echo "FINAL_RESULT=$FINAL"
+            echo "NEXT_ACTION=$NEXT"
+            echo "FULL_KERNEL_BUILD_PERFORMED=NO"
+            echo "TARGET_ANDROID_CLANG_R416183B_FULL_VALIDATION=NOT_PERFORMED_IN_W30_V2"
+            echo "IMAGE_CREATED=NO"
+            echo "BOOT_IMAGE_CREATED=NO"
+            echo "FLASHABLE_ZIP_CREATED=NO"
+            echo "DEVICE_ACCESSED=NO"
+            echo "FLASHING_PERFORMED=NO"
+          } >> "$REPORT"
+
+          {
+            echo "WORKFLOW=GEN2_30_V2"
+            echo "FINAL_RESULT=$FINAL"
+            echo "FAILED_STEPS=$FAILED"
+            echo "NEXT_ACTION=$NEXT"
+            echo "AUDIT_FILE_PRESENT=YES"
+          } > "$OUT/RESULT.txt"
+
+          (
+            cd "$OUT"
+            find . -maxdepth 1 -type f ! -name SHA256SUMS -print0 \
+              | LC_ALL=C sort -z \
+              | xargs -0 sha256sum \
+              > SHA256SUMS
+          )
+
+          echo "===== GEN2_30_V2_COMPILE_BLOCKER_CLOSURE_AUDIT.txt ====="
+          cat "$REPORT"
+
+      - name: Upload guaranteed GEN2 Workflow 30 v2 audit
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: GEN2_30_V2_COMPILE_BLOCKER_CLOSURE_AUDIT
+          path: |
+            gen2-w30v2/audit/
+          if-no-files-found: error
+          include-hidden-files: true
+          retention-days: 30
+          compression-level: 0
+
+      - name: Enforce Workflow 30 v2 final verdict
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test -f "$OUT/RESULT.txt"
+
+          grep -q -F \
+            "FINAL_RESULT=PASS_TWO_WORKFLOW29_COMPILE_BLOCKERS_CLOSED_STATICALLY" \
+            "$OUT/RESULT.txt"
+
+          grep -q -F \
+            "FAILED_STEPS=0" \
+            "$OUT/RESULT.txt"
+
+          echo "GEN2_WORKFLOW30_V2_FINAL_GATE=PASS"
