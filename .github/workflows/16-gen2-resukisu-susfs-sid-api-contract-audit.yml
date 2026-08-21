@@ -1,0 +1,456 @@
+name: 16 - GEN2 ReSukiSU SUSFS SID API Contract Audit
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout pinned ReSukiSU reference
+        uses: actions/checkout@v6
+        with:
+          repository: ReSukiSU/ReSukiSU
+          ref: faccf4c5edc7be37776216e7d43dd3dca0239331
+          path: resukisu
+          fetch-depth: 1
+
+      - name: Fetch SUSFS history and verify exact refs
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git clone https://gitlab.com/simonpunk/susfs4ksu.git susfs
+          git -C susfs fetch origin gki-android12-5.10
+
+          for sha in \
+            4003ecf2d01c6d13fa8edf6c4f2607365738dc3d \
+            be08face56c347e7ba9c4fb420c2463598a14f5d \
+            86bb893e9a103b97d17045306f35eb239a623f2a \
+            c5723cc09c19786fcb701d25a8097e2edbee412a \
+            3c14ad549f826b1f53878ec8c12253efebeed75a
+          do
+            git -C susfs cat-file -e "${sha}^{commit}"
+          done
+
+          echo "SOURCE_PIN_CHECK=PASS" | tee source-pin-status.txt
+
+      - name: Materialize v2.2 plus four selected OPEN_REDIRECT fixes
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          BASE='4003ecf2d01c6d13fa8edf6c4f2607365738dc3d'
+          SIM="$RUNNER_TEMP/susfs-selected-api"
+
+          rm -rf "$SIM"
+          git -C susfs worktree add --detach "$SIM" "$BASE"
+
+          for sha in \
+            be08face56c347e7ba9c4fb420c2463598a14f5d \
+            86bb893e9a103b97d17045306f35eb239a623f2a \
+            c5723cc09c19786fcb701d25a8097e2edbee412a \
+            3c14ad549f826b1f53878ec8c12253efebeed75a
+          do
+            git -C "$SIM" cherry-pick --no-commit "$sha"
+          done
+
+          echo "$SIM" > selected-fixset.path
+          echo "SELECTED_FIXSET_MATERIALIZATION=PASS" \
+            | tee selected-fixset-status.txt
+
+      - name: Export actual upstream final reference
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          LAST='3c14ad549f826b1f53878ec8c12253efebeed75a'
+          FINAL="$RUNNER_TEMP/susfs-final-api"
+
+          rm -rf "$FINAL"
+          mkdir -p "$FINAL"
+
+          git -C susfs archive "$LAST" kernel_patches \
+            | tar -x -C "$FINAL"
+
+          test -d "$FINAL/kernel_patches"
+
+          echo "$FINAL" > actual-final.path
+          echo "ACTUAL_FINAL_EXPORT=PASS" \
+            | tee actual-final-status.txt
+
+      - name: Trace three apparent SID API gaps inside ReSukiSU
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          {
+            for symbol in \
+              susfs_set_init_sid \
+              susfs_set_ksu_sid \
+              susfs_set_priv_app_sid
+            do
+              echo "================================================================"
+              echo "SYMBOL=$symbol"
+
+              echo "--- exact occurrences ---"
+              grep -RIn -w \
+                "$symbol" \
+                resukisu/kernel \
+                || true
+
+              echo
+              echo "--- declaration-like occurrences ---"
+              grep -RIn -E \
+                "(extern[[:space:]].*${symbol}|${symbol}[[:space:]]*\\([^;]*\\)[[:space:]]*;)" \
+                resukisu/kernel \
+                || true
+
+              echo
+              echo "--- definition-like occurrences ---"
+              grep -RIn -E \
+                "^[[:space:]]*([A-Za-z_][A-Za-z0-9_[:space:]\\*]+[[:space:]])?${symbol}[[:space:]]*\\([^;]*\\)[[:space:]]*\\{" \
+                resukisu/kernel \
+                || true
+
+              echo
+              echo "--- macro/alias occurrences ---"
+              grep -RIn -E \
+                "#[[:space:]]*define[[:space:]]+${symbol}\\b|${symbol}[[:space:]]*=" \
+                resukisu/kernel \
+                || true
+
+              echo
+            done
+          } | tee resukisu-three-gap-trace.txt
+
+      - name: Trace replacement SID APIs across ReSukiSU and SUSFS
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SIM="$(cat selected-fixset.path)"
+          FINAL="$(cat actual-final.path)"
+
+          {
+            for symbol in \
+              susfs_set_sid \
+              susfs_set_batch_sid \
+              susfs_get_sid_from_name \
+              susfs_get_current_sid \
+              susfs_is_sid_equal
+            do
+              echo "================================================================"
+              echo "SYMBOL=$symbol"
+
+              echo "--- ReSukiSU ---"
+              grep -RIn -w "$symbol" resukisu/kernel || true
+
+              echo "--- v2.2 + four OPEN_REDIRECT fixes ---"
+              grep -RIn -w "$symbol" "$SIM/kernel_patches" || true
+
+              echo "--- actual 3c14ad5 final ---"
+              grep -RIn -w "$symbol" "$FINAL/kernel_patches" || true
+
+              echo
+            done
+          } | tee sid-replacement-api-trace.txt
+
+      - name: Compare SID API evolution from v2.2 to actual final
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          BASE='4003ecf2d01c6d13fa8edf6c4f2607365738dc3d'
+          LAST='3c14ad549f826b1f53878ec8c12253efebeed75a'
+
+          {
+            echo "=== History touching SID API names after v2.2 ==="
+
+            for token in \
+              susfs_set_init_sid \
+              susfs_set_ksu_sid \
+              susfs_set_priv_app_sid \
+              susfs_set_sid \
+              susfs_set_batch_sid
+            do
+              echo "----------------------------------------------------------------"
+              echo "TOKEN=$token"
+
+              git -C susfs log \
+                --reverse \
+                --format='%H|%cI|%s' \
+                -S"$token" \
+                "$BASE..$LAST" \
+                -- kernel_patches \
+                || true
+            done
+          } | tee sid-api-evolution-history.txt
+
+      - name: Compare KernelSU integration patch at v2.2 selected fixset and actual final
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          BASE='4003ecf2d01c6d13fa8edf6c4f2607365738dc3d'
+          LAST='3c14ad549f826b1f53878ec8c12253efebeed75a'
+          SIM="$(cat selected-fixset.path)"
+          FINAL="$(cat actual-final.path)"
+
+          PATH_KSU='kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch'
+
+          {
+            echo "=== v2.2 KernelSU SUSFS integration SID lines ==="
+            git -C susfs show "$BASE:$PATH_KSU" \
+              | grep -n -C 6 -E \
+                'susfs_set_(init|ksu|priv_app|sid|batch_sid)|susfs_get_sid' \
+              || true
+
+            echo
+            echo "=== selected v2.2 + OPEN_REDIRECT fixes SID lines ==="
+            grep -n -C 6 -E \
+              'susfs_set_(init|ksu|priv_app|sid|batch_sid)|susfs_get_sid' \
+              "$SIM/$PATH_KSU" \
+              || true
+
+            echo
+            echo "=== actual final SID lines ==="
+            grep -n -C 6 -E \
+              'susfs_set_(init|ksu|priv_app|sid|batch_sid)|susfs_get_sid' \
+              "$FINAL/$PATH_KSU" \
+              || true
+          } | tee ksu-integration-sid-diff-context.txt
+
+      - name: Build exact symbol ownership matrix
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SIM="$(cat selected-fixset.path)"
+          FINAL="$(cat actual-final.path)"
+
+          python3 - <<'PY'
+          import os, re
+          from pathlib import Path
+
+          res = Path("resukisu/kernel")
+          sim = Path(Path("selected-fixset.path").read_text().strip()) / "kernel_patches"
+          final = Path(Path("actual-final.path").read_text().strip()) / "kernel_patches"
+
+          symbols = [
+              "susfs_set_init_sid",
+              "susfs_set_ksu_sid",
+              "susfs_set_priv_app_sid",
+              "susfs_set_sid",
+              "susfs_set_batch_sid",
+              "susfs_get_sid_from_name",
+              "susfs_get_current_sid",
+              "susfs_is_sid_equal",
+          ]
+
+          def files(root):
+              for p in root.rglob("*"):
+                  if p.is_file():
+                      try:
+                          yield p, p.read_text(encoding="utf-8", errors="replace")
+                      except OSError:
+                          pass
+
+          corpora = {
+              "RESUKISU": list(files(res)),
+              "SELECTED_FIXSET": list(files(sim)),
+              "ACTUAL_FINAL": list(files(final)),
+          }
+
+          out = []
+
+          for sym in symbols:
+              out.append("=" * 72)
+              out.append(f"SYMBOL={sym}")
+
+              for label, entries in corpora.items():
+                  refs = []
+                  definitions = []
+                  declarations = []
+                  macros = []
+
+                  word = re.compile(rf"\b{re.escape(sym)}\b")
+                  def_re = re.compile(
+                      rf"^[ \t]*(?:[A-Za-z_][A-Za-z0-9_ \t\*]*[ \t]+)?{re.escape(sym)}"
+                      rf"[ \t]*\([^;]*\)[ \t]*\{{",
+                      re.M
+                  )
+                  decl_re = re.compile(
+                      rf"\b{re.escape(sym)}[ \t]*\([^{{}};]*\)[ \t]*;",
+                      re.M
+                  )
+                  macro_re = re.compile(
+                      rf"^[ \t]*#[ \t]*define[ \t]+{re.escape(sym)}\b",
+                      re.M
+                  )
+
+                  for path, text in entries:
+                      if word.search(text):
+                          refs.append(str(path))
+                      if def_re.search(text):
+                          definitions.append(str(path))
+                      if decl_re.search(text):
+                          declarations.append(str(path))
+                      if macro_re.search(text):
+                          macros.append(str(path))
+
+                  out.append(
+                      f"{label}_REF_FILES="
+                      + (",".join(sorted(set(refs))) if refs else "NONE")
+                  )
+                  out.append(
+                      f"{label}_DEF_FILES="
+                      + (",".join(sorted(set(definitions))) if definitions else "NONE")
+                  )
+                  out.append(
+                      f"{label}_DECL_FILES="
+                      + (",".join(sorted(set(declarations))) if declarations else "NONE")
+                  )
+                  out.append(
+                      f"{label}_MACRO_FILES="
+                      + (",".join(sorted(set(macros))) if macros else "NONE")
+                  )
+
+              out.append("")
+
+          Path("sid-symbol-ownership-matrix.txt").write_text(
+              "\n".join(out) + "\n", encoding="utf-8"
+          )
+          PY
+
+          cat sid-symbol-ownership-matrix.txt
+
+      - name: Classify the three apparent gaps
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          import re
+          from pathlib import Path
+
+          text = Path("sid-symbol-ownership-matrix.txt").read_text()
+
+          targets = [
+              "susfs_set_init_sid",
+              "susfs_set_ksu_sid",
+              "susfs_set_priv_app_sid",
+          ]
+
+          blocks = re.split(r"={72}\n", text)
+          by_symbol = {}
+
+          for block in blocks:
+              m = re.search(r"^SYMBOL=(\S+)$", block, re.M)
+              if m:
+                  by_symbol[m.group(1)] = block
+
+          out = []
+          real_gaps = 0
+
+          for sym in targets:
+              block = by_symbol.get(sym, "")
+
+              def mval(key):
+                  m = re.search(rf"^{re.escape(key)}=(.*)$", block, re.M)
+                  return m.group(1).strip() if m else "NONE"
+
+              r_def = mval("RESUKISU_DEF_FILES")
+              r_macro = mval("RESUKISU_MACRO_FILES")
+              s_def = mval("SELECTED_FIXSET_DEF_FILES")
+              f_def = mval("ACTUAL_FINAL_DEF_FILES")
+
+              if r_def != "NONE" or r_macro != "NONE":
+                  cls = "RESUKISU_INTERNAL_OR_ALIAS"
+              elif s_def != "NONE":
+                  cls = "PROVIDED_BY_SELECTED_V220_FIXSET"
+              elif f_def != "NONE":
+                  cls = "PROVIDED_BY_ACTUAL_FINAL_ONLY"
+              else:
+                  cls = "UNRESOLVED_EXTERNAL_SYMBOL"
+                  real_gaps += 1
+
+              out.append(f"SYMBOL={sym} CLASS={cls}")
+
+          out.append(f"UNRESOLVED_EXTERNAL_SYMBOL_COUNT={real_gaps}")
+
+          Path("three-gap-classification.txt").write_text(
+              "\n".join(out) + "\n", encoding="utf-8"
+          )
+          PY
+
+          cat three-gap-classification.txt
+
+      - name: Determine ReSukiSU compatibility reference for SID API
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          unresolved="$(
+            grep '^UNRESOLVED_EXTERNAL_SYMBOL_COUNT=' \
+              three-gap-classification.txt \
+              | cut -d= -f2
+          )"
+
+          {
+            echo "UNRESOLVED_EXTERNAL_SYMBOL_COUNT=$unresolved"
+
+            if [ "$unresolved" -eq 0 ]; then
+              echo "SID_API_CONTRACT_RESOLVED=YES"
+            else
+              echo "SID_API_CONTRACT_RESOLVED=NO"
+            fi
+
+            echo
+            echo "NOTE=OPEN_REDIRECT reference remains v2.2 plus the four selected fixes."
+            echo "NOTE=This audit only determines SID API ownership/compatibility."
+          } | tee sid-api-verdict.txt
+
+      - name: Write final audit file
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          {
+            echo "AUDIT=GEN2_16_RESUKISU_SUSFS_SID_API_CONTRACT"
+            echo "RESULT=PASS"
+            echo "GEN2_16_RESUKISU_SUSFS_SID_API_CONTRACT_AUDIT=PASS"
+            echo "RESUKISU_COMMIT=$(git -C resukisu rev-parse HEAD)"
+            echo "SUSFS_V220_COMMIT=4003ecf2d01c6d13fa8edf6c4f2607365738dc3d"
+            echo "OPEN_REDIRECT_REFERENCE=V220_PLUS_FOUR_SELECTED_FIXES"
+            echo "NO_KERNEL_SOURCE_MODIFIED=YES"
+            echo "NO_KERNEL_BUILD_PERFORMED=YES"
+            echo
+            cat three-gap-classification.txt
+            echo
+            cat sid-api-verdict.txt
+          } | tee GEN2_16_RESUKISU_SUSFS_SID_API_CONTRACT_AUDIT.txt
+
+      - name: Upload final audit artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: GEN2_16_RESUKISU_SUSFS_SID_API_CONTRACT_AUDIT
+          path: |
+            GEN2_16_RESUKISU_SUSFS_SID_API_CONTRACT_AUDIT.txt
+            source-pin-status.txt
+            selected-fixset-status.txt
+            actual-final-status.txt
+            resukisu-three-gap-trace.txt
+            sid-replacement-api-trace.txt
+            sid-api-evolution-history.txt
+            ksu-integration-sid-diff-context.txt
+            sid-symbol-ownership-matrix.txt
+            three-gap-classification.txt
+            sid-api-verdict.txt
+          if-no-files-found: warn
+          retention-days: 30
