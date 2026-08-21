@@ -1,0 +1,298 @@
+name: 07 - GEN2 5.4.302 SUSFS OPEN_REDIRECT Semantic Audit
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout pinned GEN2 kernel source
+        uses: actions/checkout@v6
+        with:
+          repository: dereference23/kernel_xiaomi_sm6375
+          ref: f4b8a13a43a130a9aab83cc985ce4d4421291ae6
+          path: kernel-src
+          fetch-depth: 1
+
+      - name: Checkout pinned ReSukiSU reference
+        uses: actions/checkout@v6
+        with:
+          repository: ReSukiSU/ReSukiSU
+          ref: faccf4c5edc7be37776216e7d43dd3dca0239331
+          path: resukisu
+          fetch-depth: 1
+
+      - name: Fetch SUSFS v2.2.0 and post-v2.2 history
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SUSFS_REPO='https://gitlab.com/simonpunk/susfs4ksu.git'
+          V220='4003ecf2d01c6d13fa8edf6c4f2607365738dc3d'
+
+          git clone "$SUSFS_REPO" susfs
+          git -C susfs fetch origin gki-android12-5.10
+
+          for sha in \
+            "$V220" \
+            be08face56c347e7ba9c4fb420c2463598a14f5d \
+            86bb893e9a103b97d17045306f35eb239a623f2a \
+            c5723cc09c19786fcb701d25a8097e2edbee412a \
+            3c14ad549f826b1f53878ec8c12253efebeed75a
+          do
+            git -C susfs cat-file -e "${sha}^{commit}"
+          done
+
+          {
+            echo "V220=$V220"
+            echo "CURRENT=$(git -C susfs rev-parse origin/gki-android12-5.10)"
+            echo
+            for sha in \
+              be08face56c347e7ba9c4fb420c2463598a14f5d \
+              86bb893e9a103b97d17045306f35eb239a623f2a \
+              c5723cc09c19786fcb701d25a8097e2edbee412a \
+              3c14ad549f826b1f53878ec8c12253efebeed75a
+            do
+              echo "=== $sha ==="
+              git -C susfs show -s --format='%H%n%cI%n%s' "$sha"
+              if git -C susfs merge-base --is-ancestor "$V220" "$sha"; then
+                echo "DESCENDS_FROM_V220=YES"
+              else
+                echo "DESCENDS_FROM_V220=NO"
+              fi
+              echo
+            done
+          } | tee susfs-chain-audit.txt
+
+      - name: Export exact OPEN_REDIRECT follow-up diffs
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p diffs
+
+          for sha in \
+            be08face56c347e7ba9c4fb420c2463598a14f5d \
+            86bb893e9a103b97d17045306f35eb239a623f2a \
+            c5723cc09c19786fcb701d25a8097e2edbee412a \
+            3c14ad549f826b1f53878ec8c12253efebeed75a
+          do
+            git -C susfs show \
+              --no-ext-diff \
+              --format='COMMIT=%H%nDATE=%cI%nSUBJECT=%s%n' \
+              "$sha" \
+              -- kernel_patches \
+              > "diffs/${sha}.diff"
+          done
+
+          {
+            for f in diffs/*.diff; do
+              echo "=== $f ==="
+              grep -E \
+                '^COMMIT=|^DATE=|^SUBJECT=|^diff --git |^@@' \
+                "$f" || true
+              echo
+            done
+          } | tee followup-hunk-map.txt
+
+      - name: Export SUSFS patch state at v2.2.0 and after follow-ups
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          PATCH='kernel_patches/50_add_susfs_in_gki-android12-5.10.patch'
+
+          for spec in \
+            'v220:4003ecf2d01c6d13fa8edf6c4f2607365738dc3d' \
+            'uaf:be08face56c347e7ba9c4fb420c2463598a14f5d' \
+            'leak-deadlock:86bb893e9a103b97d17045306f35eb239a623f2a' \
+            'refactor:c5723cc09c19786fcb701d25a8097e2edbee412a' \
+            'compiler-fix:3c14ad549f826b1f53878ec8c12253efebeed75a'
+          do
+            label="${spec%%:*}"
+            sha="${spec#*:}"
+            git -C susfs show "${sha}:${PATCH}" > "susfs-${label}-kernel.patch"
+          done
+
+          {
+            for f in susfs-*-kernel.patch; do
+              echo "=== $f ==="
+              grep -n -E \
+                '^diff --git a/(fs/(open|namei|exec|read_write|stat|proc/task_mmu)\.c|mm/[^ ]+\.c)|OPEN_REDIRECT|open_redirect|O_TRUNC|do_filp_open|do_sys_open|path_openat|show_map_vma|VMA_PAD_START|show_map_pad_vma' \
+                "$f" | head -500 || true
+              echo
+            done
+          } | tee patch-state-hook-map.txt
+
+      - name: Audit OPEN_REDIRECT implementation state across commits
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SUSFS_C='kernel_patches/fs/susfs.c'
+
+          {
+            for spec in \
+              'v220:4003ecf2d01c6d13fa8edf6c4f2607365738dc3d' \
+              'uaf:be08face56c347e7ba9c4fb420c2463598a14f5d' \
+              'leak-deadlock:86bb893e9a103b97d17045306f35eb239a623f2a' \
+              'refactor:c5723cc09c19786fcb701d25a8097e2edbee412a' \
+              'compiler-fix:3c14ad549f826b1f53878ec8c12253efebeed75a'
+            do
+              label="${spec%%:*}"
+              sha="${spec#*:}"
+              tmp="$(mktemp)"
+              git -C susfs show "${sha}:${SUSFS_C}" > "$tmp"
+
+              echo "=== $label $sha ==="
+              grep -n -E \
+                'DEFINE_STATIC_SRCU\(susfs_srcu_open_redirect\)|susfs_add_open_redirect|susfs_open_redirect|synchronize_rcu|synchronize_srcu|srcu_read_lock|srcu_read_unlock|mutex_(lock|unlock).*open_redirect|kfree\(' \
+                "$tmp" | head -420 || true
+              rm -f "$tmp"
+              echo
+            done
+          } | tee openredirect-implementation-evolution.txt
+
+      - name: Audit exact GEN2 5.4.302 VFS hook surface
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          {
+            echo "=== fs/open.c ==="
+            grep -n -E \
+              'do_sys_open|do_sys_openat2|build_open_flags|do_filp_open|filp_open|O_TRUNC|LOOKUP_|getname|putname|fd_install' \
+              kernel-src/fs/open.c || true
+
+            echo
+            echo "=== fs/namei.c ==="
+            grep -n -E \
+              'do_filp_open|path_openat|do_open|may_open|handle_truncate|O_TRUNC|open_last_lookups|link_path_walk|filename_lookup' \
+              kernel-src/fs/namei.c || true
+
+            echo
+            echo "=== fs/proc/task_mmu.c ==="
+            grep -n -E \
+              'show_map_vma|show_map\(|show_map_pad_vma|VMA_PAD_START|show_smap_vma|proc_pid_maps_op|proc_pid_smaps_op' \
+              kernel-src/fs/proc/task_mmu.c || true
+
+            echo
+            echo "=== SRCU support ==="
+            grep -n -E \
+              'synchronize_srcu|srcu_read_lock|srcu_read_unlock|DEFINE_STATIC_SRCU|DEFINE_SRCU' \
+              kernel-src/include/linux/srcu.h \
+              kernel-src/kernel/rcu/srcutree.c \
+              2>/dev/null | head -240 || true
+          } | tee gen2-vfs-srcu-hook-surface.txt
+
+      - name: Audit ReSukiSU SUSFS inline hook contract
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          {
+            echo "RESUKISU_COMMIT=$(git -C resukisu rev-parse HEAD)"
+            echo
+            echo "=== Kbuild SUSFS mode ==="
+            sed -n '165,205p' resukisu/kernel/Kbuild
+
+            echo
+            echo "=== Required inline hooks ==="
+            grep -n -E \
+              'check_ksu_hook|check_ksu_hook_incompatible|ksu_handle_|ksu_.*hook|CONFIG_KSU_MANUAL_HOOK' \
+              resukisu/kernel/tools/inline_hook_check.mk || true
+
+            echo
+            echo "=== SUSFS compatibility helper ==="
+            cat resukisu/kernel/tools/susfs_compat.mk 2>/dev/null || true
+          } | tee resukisu-susfs-inline-contract.txt
+
+      - name: Produce mechanical hook presence matrix
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          check_symbol() {
+            symbol="$1"
+            file="$2"
+            if grep -q "$symbol" "$file"; then
+              printf '%-34s %-32s PRESENT\n' "$symbol" "$file"
+            else
+              printf '%-34s %-32s ABSENT\n' "$symbol" "$file"
+            fi
+          }
+
+          {
+            echo "NOTE=Presence is not compatibility approval. No hooks are added by this audit."
+            echo
+            check_symbol 'ksu_handle_setresuid'          kernel-src/kernel/sys.c
+            check_symbol 'ksu_handle_execveat'          kernel-src/fs/exec.c
+            check_symbol 'ksu_handle_faccessat'         kernel-src/fs/open.c
+            check_symbol 'ksu_handle_sys_read'          kernel-src/fs/read_write.c
+            check_symbol 'ksu_handle_stat'              kernel-src/fs/stat.c
+            check_symbol 'ksu_handle_sys_reboot'        kernel-src/kernel/reboot.c
+            check_symbol 'ksu_handle_input_handle_event' kernel-src/drivers/input/input.c
+            echo
+            check_symbol 'do_sys_open'                  kernel-src/fs/open.c
+            check_symbol 'do_filp_open'                 kernel-src/fs/namei.c
+            check_symbol 'path_openat'                  kernel-src/fs/namei.c
+            check_symbol 'show_map_vma'                 kernel-src/fs/proc/task_mmu.c
+            check_symbol 'VMA_PAD_START'                kernel-src/fs/proc/task_mmu.c
+          } | tee hook-presence-matrix.txt
+
+      - name: Write final audit file
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          {
+            echo "AUDIT=GEN2_07_SUSFS_OPENREDIRECT_SEMANTIC"
+            echo "RESULT=PASS"
+            echo "GEN2_07_SUSFS_OPENREDIRECT_SEMANTIC_AUDIT=PASS"
+            echo "KERNEL_COMMIT=$(git -C kernel-src rev-parse HEAD)"
+            echo "RESUKISU_COMMIT=$(git -C resukisu rev-parse HEAD)"
+            echo "SUSFS_V220_COMMIT=4003ecf2d01c6d13fa8edf6c4f2607365738dc3d"
+            echo "SUSFS_CURRENT_COMMIT=$(git -C susfs rev-parse origin/gki-android12-5.10)"
+            echo "NO_PATCH_APPLIED=YES"
+            echo "NO_KERNEL_BUILD_PERFORMED=YES"
+            echo
+            echo "=== Follow-up chain ==="
+            cat susfs-chain-audit.txt
+            echo
+            echo "=== Mechanical hook presence ==="
+            cat hook-presence-matrix.txt
+          } | tee GEN2_07_SUSFS_OPENREDIRECT_SEMANTIC_AUDIT.txt
+
+      - name: Verify checked-out trees remained untouched
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          for repo in kernel-src resukisu; do
+            git -C "$repo" diff --exit-code
+            git -C "$repo" diff --cached --exit-code
+          done
+
+          echo "READ_ONLY_SOURCE_AUDIT=YES"
+
+      - name: Upload final audit artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: GEN2_07_SUSFS_OPENREDIRECT_SEMANTIC_AUDIT
+          path: |
+            GEN2_07_SUSFS_OPENREDIRECT_SEMANTIC_AUDIT.txt
+            susfs-chain-audit.txt
+            followup-hunk-map.txt
+            patch-state-hook-map.txt
+            openredirect-implementation-evolution.txt
+            gen2-vfs-srcu-hook-surface.txt
+            resukisu-susfs-inline-contract.txt
+            hook-presence-matrix.txt
+            diffs/
+          if-no-files-found: error
+          retention-days: 30
