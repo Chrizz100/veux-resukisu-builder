@@ -1,0 +1,344 @@
+name: 08 - GEN2 5.4.302 Existing KSU Hook Provenance Audit
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout pinned GEN2 kernel source with history
+        uses: actions/checkout@v6
+        with:
+          repository: dereference23/kernel_xiaomi_sm6375
+          ref: f4b8a13a43a130a9aab83cc985ce4d4421291ae6
+          path: kernel-src
+          fetch-depth: 0
+
+      - name: Checkout pinned ReSukiSU reference
+        uses: actions/checkout@v6
+        with:
+          repository: ReSukiSU/ReSukiSU
+          ref: faccf4c5edc7be37776216e7d43dd3dca0239331
+          path: resukisu
+          fetch-depth: 1
+
+      - name: Verify exact pins
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test "$(git -C kernel-src rev-parse HEAD)" = \
+            "f4b8a13a43a130a9aab83cc985ce4d4421291ae6"
+
+          test "$(git -C resukisu rev-parse HEAD)" = \
+            "faccf4c5edc7be37776216e7d43dd3dca0239331"
+
+      - name: Inventory all existing KSU and KernelSU footprints
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          {
+            echo "=== Paths whose names contain ksu or kernelsu ==="
+            find kernel-src \
+              -path 'kernel-src/.git' -prune -o \
+              -iname '*ksu*' -print \
+              | sort | head -1000
+
+            echo
+            echo "=== CONFIG_KSU references ==="
+            git -C kernel-src grep -n -I -E \
+              'CONFIG_KSU|KSU_SUSFS|KSU_MANUAL|KSU_TRACEPOINT' \
+              -- ':!Documentation' || true
+
+            echo
+            echo "=== ksu_handle / ksu_*_hook references ==="
+            git -C kernel-src grep -n -I -E \
+              'ksu_handle_[A-Za-z0-9_]+|ksu_[A-Za-z0-9_]+_hook' \
+              -- ':!Documentation' || true
+
+            echo
+            echo "=== KernelSU includes / external declarations / build references ==="
+            git -C kernel-src grep -n -I -E \
+              'kernelsu|KernelSU|ksu_hook|ksu\.h|KSU_VERSION|obj-.*ksu|source .*KSU|source .*KernelSU' \
+              -- Makefile Kconfig arch drivers fs include kernel mm security 2>/dev/null || true
+          } | tee existing-ksu-footprint.txt
+
+      - name: Audit exact ReSukiSU inline-hook contract
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          {
+            echo "RESUKISU_COMMIT=$(git -C resukisu rev-parse HEAD)"
+            echo
+            echo "=== inline_hook_check.mk ==="
+            cat resukisu/kernel/tools/inline_hook_check.mk
+            echo
+            echo "=== manual_hook_check.mk ==="
+            cat resukisu/kernel/tools/manual_hook_check.mk
+          } | tee resukisu-hook-contract.txt
+
+      - name: Produce exact required-hook matrix with source context
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          check_hook() {
+            symbol="$1"
+            file="$2"
+
+            echo "================================================================"
+            echo "SYMBOL=$symbol"
+            echo "FILE=$file"
+
+            if grep -wq "$symbol" "kernel-src/$file"; then
+              echo "STATUS=PRESENT"
+              grep -n -C 8 -w "$symbol" "kernel-src/$file" || true
+            else
+              echo "STATUS=ABSENT"
+            fi
+            echo
+          }
+
+          {
+            check_hook ksu_handle_setresuid kernel/sys.c
+            check_hook ksu_handle_execveat fs/exec.c
+            check_hook ksu_handle_faccessat fs/open.c
+            check_hook ksu_handle_sys_read fs/read_write.c
+            check_hook ksu_handle_stat fs/stat.c
+            check_hook ksu_handle_sys_reboot kernel/reboot.c
+            check_hook ksu_handle_input_handle_event drivers/input/input.c
+
+            echo "=== Hooks that ReSukiSU SUSFS mode marks incompatible ==="
+            for spec in \
+              'ksu_vfs_read_hook:fs/read_write.c' \
+              'ksu_input_hook:drivers/input/input.c' \
+              'ksu_execveat_hook:fs/exec.c' \
+              'ksu_init_rc_hook:fs/read_write.c' \
+              'ksu_init_rc_hook:fs/stat.c'
+            do
+              symbol="${spec%%:*}"
+              file="${spec#*:}"
+              echo "SYMBOL=$symbol FILE=$file"
+              if grep -wq "$symbol" "kernel-src/$file"; then
+                echo "STATUS=PRESENT"
+                grep -n -C 6 -w "$symbol" "kernel-src/$file" || true
+              else
+                echo "STATUS=ABSENT"
+              fi
+              echo
+            done
+          } | tee required-hook-context.txt
+
+      - name: Audit provenance of every present KSU hook
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          provenance() {
+            symbol="$1"
+            file="$2"
+
+            echo "================================================================"
+            echo "SYMBOL=$symbol"
+            echo "FILE=$file"
+
+            if grep -wq "$symbol" "kernel-src/$file"; then
+              echo "CURRENT_STATUS=PRESENT"
+
+              echo
+              echo "--- First/last history matches using -S ---"
+              git -C kernel-src log \
+                --all \
+                --date=iso-strict \
+                --format='%H %ad %s' \
+                -S"$symbol" \
+                -- "$file" \
+                | head -80 || true
+
+              echo
+              echo "--- Current-line blame ---"
+              line="$(grep -n -m1 -w "$symbol" "kernel-src/$file" | cut -d: -f1)"
+              if [ -n "${line:-}" ]; then
+                start="$line"
+                end="$line"
+                git -C kernel-src blame \
+                  -L "${start},${end}" \
+                  --date=iso-strict \
+                  -- "$file" || true
+              fi
+            else
+              echo "CURRENT_STATUS=ABSENT"
+            fi
+            echo
+          }
+
+          {
+            provenance ksu_handle_setresuid kernel/sys.c
+            provenance ksu_handle_execveat fs/exec.c
+            provenance ksu_handle_faccessat fs/open.c
+            provenance ksu_handle_sys_read fs/read_write.c
+            provenance ksu_handle_stat fs/stat.c
+            provenance ksu_handle_sys_reboot kernel/reboot.c
+            provenance ksu_handle_input_handle_event drivers/input/input.c
+          } | tee ksu-hook-provenance.txt
+
+      - name: Audit exact OPEN_REDIRECT target function signatures in GEN2
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          show_context() {
+            pattern="$1"
+            file="$2"
+            echo "================================================================"
+            echo "PATTERN=$pattern"
+            echo "FILE=$file"
+            grep -n -C 10 -E "$pattern" "kernel-src/$file" | head -260 || true
+            echo
+          }
+
+          {
+            show_context 'static void set_nameidata|set_nameidata\(' fs/namei.c
+            show_context 'static int do_tmpfile|do_tmpfile\(' fs/namei.c
+            show_context 'static int do_o_path|do_o_path\(' fs/namei.c
+            show_context 'static struct file \*path_openat|path_openat\(' fs/namei.c
+            show_context 'struct file \*do_filp_open|do_filp_open\(' fs/namei.c
+            show_context 'long do_sys_open|do_sys_open\(' fs/open.c
+            show_context 'O_TRUNC|handle_truncate|may_open' fs/namei.c
+          } | tee gen2-openredirect-function-signatures.txt
+
+      - name: Audit nearby Android/Qualcomm changes to OPEN_REDIRECT target functions
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          {
+            for file in fs/namei.c fs/open.c fs/proc/task_mmu.c; do
+              echo "================================================================"
+              echo "FILE=$file"
+              echo "--- Recent history ---"
+              git -C kernel-src log \
+                -40 \
+                --date=iso-strict \
+                --format='%H %ad %s' \
+                -- "$file"
+              echo
+            done
+
+            echo "=== History for Android 16K task_mmu change ==="
+            git -C kernel-src show \
+              --stat \
+              --oneline \
+              2f1e2df209f16a352b0ca1b4585421ea0a92161c \
+              -- fs/proc/task_mmu.c 2>/dev/null || true
+          } | tee target-function-history.txt
+
+      - name: Classify current kernel against ReSukiSU SUSFS inline contract
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          required_present=0
+          required_absent=0
+          incompatible_present=0
+
+          while IFS='|' read -r symbol file; do
+            if grep -wq "$symbol" "kernel-src/$file"; then
+              required_present=$((required_present + 1))
+            else
+              required_absent=$((required_absent + 1))
+            fi
+          done <<'EOF'
+          ksu_handle_setresuid|kernel/sys.c
+          ksu_handle_execveat|fs/exec.c
+          ksu_handle_faccessat|fs/open.c
+          ksu_handle_sys_read|fs/read_write.c
+          ksu_handle_stat|fs/stat.c
+          ksu_handle_sys_reboot|kernel/reboot.c
+          ksu_handle_input_handle_event|drivers/input/input.c
+          EOF
+
+          while IFS='|' read -r symbol file; do
+            if grep -wq "$symbol" "kernel-src/$file"; then
+              incompatible_present=$((incompatible_present + 1))
+            fi
+          done <<'EOF'
+          ksu_vfs_read_hook|fs/read_write.c
+          ksu_input_hook|drivers/input/input.c
+          ksu_execveat_hook|fs/exec.c
+          ksu_init_rc_hook|fs/read_write.c
+          ksu_init_rc_hook|fs/stat.c
+          EOF
+
+          {
+            echo "REQUIRED_HOOKS_TOTAL=7"
+            echo "REQUIRED_HOOKS_PRESENT=$required_present"
+            echo "REQUIRED_HOOKS_ABSENT=$required_absent"
+            echo "INCOMPATIBLE_OLD_HOOK_OCCURRENCES_PRESENT=$incompatible_present"
+
+            if [ "$required_present" -gt 0 ] && [ "$required_absent" -gt 0 ]; then
+              echo "KSU_HOOK_STATE=PARTIAL_MIXED"
+            elif [ "$required_present" -eq 7 ]; then
+              echo "KSU_HOOK_STATE=ALL_REQUIRED_PRESENT"
+            else
+              echo "KSU_HOOK_STATE=NONE_REQUIRED_PRESENT"
+            fi
+
+            echo "NOTE=This classification is source evidence only and is not integration approval."
+          } | tee hook-state-classification.txt
+
+      - name: Write final audit file
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          {
+            echo "AUDIT=GEN2_08_EXISTING_KSU_HOOK_PROVENANCE"
+            echo "RESULT=PASS"
+            echo "GEN2_08_EXISTING_KSU_HOOK_PROVENANCE_AUDIT=PASS"
+            echo "KERNEL_COMMIT=$(git -C kernel-src rev-parse HEAD)"
+            echo "RESUKISU_COMMIT=$(git -C resukisu rev-parse HEAD)"
+            echo "NO_SOURCE_CHANGE=YES"
+            echo "NO_PATCH_APPLIED=YES"
+            echo "NO_KERNEL_BUILD_PERFORMED=YES"
+            echo
+            cat hook-state-classification.txt
+            echo
+            echo "=== Required hook matrix ==="
+            grep -E '^(SYMBOL|FILE|STATUS)=' required-hook-context.txt || true
+          } | tee GEN2_08_EXISTING_KSU_HOOK_PROVENANCE_AUDIT.txt
+
+      - name: Verify source trees remained untouched
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          for repo in kernel-src resukisu; do
+            git -C "$repo" diff --exit-code
+            git -C "$repo" diff --cached --exit-code
+          done
+
+          echo "READ_ONLY_SOURCE_AUDIT=YES"
+
+      - name: Upload final audit artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: GEN2_08_EXISTING_KSU_HOOK_PROVENANCE_AUDIT
+          path: |
+            GEN2_08_EXISTING_KSU_HOOK_PROVENANCE_AUDIT.txt
+            existing-ksu-footprint.txt
+            resukisu-hook-contract.txt
+            required-hook-context.txt
+            ksu-hook-provenance.txt
+            gen2-openredirect-function-signatures.txt
+            target-function-history.txt
+            hook-state-classification.txt
+          if-no-files-found: error
+          retention-days: 30
