@@ -1,0 +1,461 @@
+name: 15 - GEN2 SUSFS v2.2 OPEN_REDIRECT Fixset Audit v4
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout pinned ReSukiSU reference
+        uses: actions/checkout@v6
+        with:
+          repository: ReSukiSU/ReSukiSU
+          ref: faccf4c5edc7be37776216e7d43dd3dca0239331
+          path: resukisu
+          fetch-depth: 1
+
+      - name: Fetch SUSFS history and verify exact commits
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git clone https://gitlab.com/simonpunk/susfs4ksu.git susfs
+          git -C susfs fetch origin gki-android12-5.10
+
+          for sha in \
+            4003ecf2d01c6d13fa8edf6c4f2607365738dc3d \
+            be08face56c347e7ba9c4fb420c2463598a14f5d \
+            86bb893e9a103b97d17045306f35eb239a623f2a \
+            c5723cc09c19786fcb701d25a8097e2edbee412a \
+            3c14ad549f826b1f53878ec8c12253efebeed75a
+          do
+            git -C susfs cat-file -e "${sha}^{commit}"
+          done
+
+          echo "SUSFS_HISTORY_FETCH=PASS" | tee fetch-status.txt
+
+      - name: Build ancestry and non-selected dependency map
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          import subprocess
+          from pathlib import Path
+
+          repo = "susfs"
+          base = "4003ecf2d01c6d13fa8edf6c4f2607365738dc3d"
+          last = "3c14ad549f826b1f53878ec8c12253efebeed75a"
+          selected = {
+              "be08face56c347e7ba9c4fb420c2463598a14f5d",
+              "86bb893e9a103b97d17045306f35eb239a623f2a",
+              "c5723cc09c19786fcb701d25a8097e2edbee412a",
+              "3c14ad549f826b1f53878ec8c12253efebeed75a",
+          }
+
+          def out(*args):
+              return subprocess.check_output(args, text=True).strip()
+
+          commits = out(
+              "git", "-C", repo, "rev-list",
+              "--reverse", "--ancestry-path", f"{base}..{last}",
+              "--", "kernel_patches"
+          ).splitlines()
+
+          lines = [
+              f"V220={base}",
+              f"LAST_SELECTED_FIX={last}",
+              f"ANCESTRY_KERNEL_PATCH_COMMITS={len(commits)}",
+              f"SELECTED_COMMITS={len(selected)}",
+              f"NON_SELECTED_COMMITS={sum(c not in selected for c in commits)}",
+              "",
+          ]
+
+          nonselected_open = 0
+
+          for sha in commits:
+              subject = out("git", "-C", repo, "show", "-s", "--format=%s", sha)
+              diff = out(
+                  "git", "-C", repo, "show", "--format=", sha,
+                  "--", "kernel_patches"
+              )
+              paths = out(
+                  "git", "-C", repo, "diff-tree",
+                  "--no-commit-id", "--name-only", "-r", sha,
+                  "--", "kernel_patches"
+              ).splitlines()
+
+              open_related = (
+                  "OPEN_REDIRECT" in subject
+                  or "open_redirect" in subject.lower()
+                  or "OPEN_REDIRECT" in diff
+                  or "open_redirect" in diff.lower()
+                  or "susfs_srcu_open_redirect" in diff
+                  or "synchronize_srcu" in diff
+              )
+
+              if sha not in selected and open_related:
+                  nonselected_open += 1
+
+              lines.append(
+                  f"COMMIT={sha} SELECTED={'YES' if sha in selected else 'NO'} "
+                  f"OPEN_REDIRECT_RELATED={'YES' if open_related else 'NO'} "
+                  f"SUBJECT={subject}"
+              )
+              for path in paths:
+                  lines.append(f"  PATH={path}")
+
+          lines += [
+              "",
+              f"NON_SELECTED_OPEN_REDIRECT_COMMITS={nonselected_open}",
+          ]
+
+          Path("dependency-map.txt").write_text(
+              "\n".join(lines) + "\n", encoding="utf-8"
+          )
+          PY
+
+          cat dependency-map.txt
+
+      - name: Materialize four selected fixes on v2.2 without commits
+        shell: bash
+        run: |
+          set -uo pipefail
+
+          BASE='4003ecf2d01c6d13fa8edf6c4f2607365738dc3d'
+          SIM="$RUNNER_TEMP/susfs-selected-v4"
+
+          rm -rf "$SIM"
+          git -C susfs worktree add --detach "$SIM" "$BASE"
+
+          {
+            echo "BASE=$BASE"
+            echo "MODE=CHERRY_PICK_NO_COMMIT"
+          } > selected-materialization.txt
+
+          status='YES'
+
+          for sha in \
+            be08face56c347e7ba9c4fb420c2463598a14f5d \
+            86bb893e9a103b97d17045306f35eb239a623f2a \
+            c5723cc09c19786fcb701d25a8097e2edbee412a \
+            3c14ad549f826b1f53878ec8c12253efebeed75a
+          do
+            echo "APPLYING=$sha" >> selected-materialization.txt
+
+            if git -C "$SIM" cherry-pick --no-commit "$sha" \
+              >> selected-materialization.txt 2>&1; then
+              echo "STATUS=CLEAN" >> selected-materialization.txt
+            else
+              echo "STATUS=CONFLICT" >> selected-materialization.txt
+              git -C "$SIM" status --short \
+                >> selected-materialization.txt 2>&1 || true
+              status='NO'
+              break
+            fi
+          done
+
+          echo "SELECTED_ONLY_MATERIALIZATION=$status" \
+            >> selected-materialization.txt
+
+          cat selected-materialization.txt
+
+          if [ "$status" = YES ]; then
+            git -C "$SIM" diff --binary "$BASE" -- kernel_patches \
+              > GEN2_15_SELECTED_ONLY_FIXSET.patch
+
+            git -C "$SIM" diff --name-status "$BASE" -- kernel_patches \
+              > selected-changed-paths.txt
+
+            git -C "$SIM" diff --check "$BASE" -- kernel_patches \
+              > selected-whitespace-check.txt 2>&1 || true
+          else
+            echo "SELECTED_ONLY_FIXSET_NOT_MATERIALIZED" \
+              > GEN2_15_SELECTED_ONLY_FIXSET.patch
+            echo "SELECTED_ONLY_FIXSET_NOT_MATERIALIZED" \
+              > selected-changed-paths.txt
+            echo "SELECTED_ONLY_FIXSET_NOT_MATERIALIZED" \
+              > selected-whitespace-check.txt
+          fi
+
+      - name: Export actual final kernel_patches without second worktree
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          BASE='4003ecf2d01c6d13fa8edf6c4f2607365738dc3d'
+          LAST='3c14ad549f826b1f53878ec8c12253efebeed75a'
+          FINAL="$RUNNER_TEMP/susfs-final-v4"
+
+          rm -rf "$FINAL"
+          mkdir -p "$FINAL"
+
+          git -C susfs archive "$LAST" kernel_patches \
+            | tar -x -C "$FINAL"
+
+          test -d "$FINAL/kernel_patches"
+
+          git -C susfs diff --binary "$BASE" "$LAST" -- kernel_patches \
+            > GEN2_15_V220_TO_ACTUAL_FINAL_KERNEL_PATCH_DELTA.patch
+
+          {
+            echo "ACTUAL_FINAL_COMMIT=$LAST"
+            git -C susfs show -s \
+              --format='DATE=%cI%nSUBJECT=%s%nPARENTS=%P' \
+              "$LAST"
+            echo
+            echo "=== Changed kernel_patches paths since v2.2 ==="
+            git -C susfs diff --name-status "$BASE" "$LAST" -- kernel_patches
+          } | tee actual-final-reference.txt
+
+      - name: Compare selected-only tree with actual final reference
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SIM="$RUNNER_TEMP/susfs-selected-v4"
+          FINAL="$RUNNER_TEMP/susfs-final-v4"
+
+          if ! grep -q '^SELECTED_ONLY_MATERIALIZATION=YES$' \
+            selected-materialization.txt; then
+            {
+              echo "COMPARISON_AVAILABLE=NO"
+              echo "REASON=SELECTED_ONLY_MATERIALIZATION_FAILED"
+            } | tee selected-vs-final-summary.txt
+            exit 0
+          fi
+
+          diff -ruN \
+            "$FINAL/kernel_patches" \
+            "$SIM/kernel_patches" \
+            > selected-vs-final.diff || true
+
+          {
+            echo "COMPARISON_AVAILABLE=YES"
+            echo
+            echo "=== Remaining different files ==="
+            grep '^diff ' selected-vs-final.diff || true
+            echo
+            echo "=== Remaining diff size ==="
+            wc -l selected-vs-final.diff
+          } | tee selected-vs-final-summary.txt
+
+      - name: Compare OPEN_REDIRECT marker lines exactly
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SIM="$RUNNER_TEMP/susfs-selected-v4"
+          FINAL="$RUNNER_TEMP/susfs-final-v4"
+
+          if ! grep -q '^SELECTED_ONLY_MATERIALIZATION=YES$' \
+            selected-materialization.txt; then
+            echo "OPEN_REDIRECT_MARKER_COMPARISON=SKIPPED" \
+              | tee openredirect-marker-comparison.txt
+            exit 0
+          fi
+
+          pattern='OPEN_REDIRECT|open_redirect|susfs_srcu_open_redirect|synchronize_srcu|synchronize_rcu|do_tmpfile|do_o_path|path_openat'
+
+          grep -RhsE "$pattern" \
+            "$SIM/kernel_patches/fs/susfs.c" \
+            "$SIM/kernel_patches/50_add_susfs_in_gki-android12-5.10.patch" \
+            | sed 's/[[:space:]]\+$//' \
+            > selected-openredirect-markers.txt
+
+          grep -RhsE "$pattern" \
+            "$FINAL/kernel_patches/fs/susfs.c" \
+            "$FINAL/kernel_patches/50_add_susfs_in_gki-android12-5.10.patch" \
+            | sed 's/[[:space:]]\+$//' \
+            > final-openredirect-markers.txt
+
+          if cmp -s \
+            selected-openredirect-markers.txt \
+            final-openredirect-markers.txt; then
+            state='YES'
+          else
+            state='NO'
+          fi
+
+          {
+            echo "OPEN_REDIRECT_MARKER_LINES_MATCH_ACTUAL_FINAL=$state"
+            echo
+            diff -u \
+              final-openredirect-markers.txt \
+              selected-openredirect-markers.txt \
+              || true
+          } | tee openredirect-marker-comparison.txt
+
+      - name: Audit all non-selected ancestry commits for OPEN_REDIRECT content
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          BASE='4003ecf2d01c6d13fa8edf6c4f2607365738dc3d'
+          LAST='3c14ad549f826b1f53878ec8c12253efebeed75a'
+
+          selected_regex='^(be08face56c347e7ba9c4fb420c2463598a14f5d|86bb893e9a103b97d17045306f35eb239a623f2a|c5723cc09c19786fcb701d25a8097e2edbee412a|3c14ad549f826b1f53878ec8c12253efebeed75a)$'
+
+          count=0
+          : > nonselected-openredirect-audit.txt
+
+          while IFS= read -r sha; do
+            if printf '%s\n' "$sha" | grep -Eq "$selected_regex"; then
+              continue
+            fi
+
+            subject="$(git -C susfs show -s --format='%s' "$sha")"
+
+            if git -C susfs show --format= "$sha" -- kernel_patches \
+              | grep -qiE \
+                'OPEN_REDIRECT|open_redirect|susfs_srcu_open_redirect|synchronize_srcu'; then
+              related='YES'
+              count=$((count + 1))
+            else
+              related='NO'
+            fi
+
+            echo "COMMIT=$sha OPEN_REDIRECT_RELATED=$related SUBJECT=$subject" \
+              >> nonselected-openredirect-audit.txt
+          done < <(
+            git -C susfs rev-list \
+              --reverse \
+              --ancestry-path \
+              "$BASE..$LAST" \
+              -- kernel_patches
+          )
+
+          echo "NON_SELECTED_OPEN_REDIRECT_COMMITS=$count" \
+            >> nonselected-openredirect-audit.txt
+
+          cat nonselected-openredirect-audit.txt
+
+      - name: Derive final fixset verdict
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          materialized="$(
+            grep '^SELECTED_ONLY_MATERIALIZATION=' \
+              selected-materialization.txt \
+              | cut -d= -f2
+          )"
+
+          nonselected="$(
+            grep '^NON_SELECTED_OPEN_REDIRECT_COMMITS=' \
+              nonselected-openredirect-audit.txt \
+              | tail -1 \
+              | cut -d= -f2
+          )"
+
+          marker_match="$(
+            grep '^OPEN_REDIRECT_MARKER_LINES_MATCH_ACTUAL_FINAL=' \
+              openredirect-marker-comparison.txt \
+              | cut -d= -f2
+          )"
+
+          {
+            echo "SELECTED_ONLY_MATERIALIZATION=$materialized"
+            echo "NON_SELECTED_OPEN_REDIRECT_COMMITS=$nonselected"
+            echo "OPEN_REDIRECT_MARKER_LINES_MATCH_ACTUAL_FINAL=$marker_match"
+
+            if [ "$materialized" = YES ] \
+              && [ "$nonselected" -eq 0 ] \
+              && [ "$marker_match" = YES ]; then
+              echo "FOUR_COMMIT_OPENREDIRECT_FIXSET_SELF_CONTAINED=YES"
+              echo "PORT_REFERENCE=V220_PLUS_FOUR_SELECTED_OPENREDIRECT_FIXES"
+            else
+              echo "FOUR_COMMIT_OPENREDIRECT_FIXSET_SELF_CONTAINED=NO"
+              echo "PORT_REFERENCE=ACTUAL_UPSTREAM_FINAL_WITH_HUNK_LEVEL_SCOPE_CONTROL"
+            fi
+          } | tee final-fixset-verdict.txt
+
+      - name: Audit ReSukiSU SUSFS C-call identifiers against final reference
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          FINAL="$RUNNER_TEMP/susfs-final-v4"
+
+          grep -RhoE \
+            '\b(susfs_[A-Za-z0-9_]+)[[:space:]]*\(' \
+            resukisu/kernel \
+            | sed -E 's/[[:space:]]*\($//' \
+            | sort -u \
+            > resukisu-calls.txt || true
+
+          grep -RhoE \
+            '\b(susfs_[A-Za-z0-9_]+)[[:space:]]*\(' \
+            "$FINAL/kernel_patches" \
+            | sed -E 's/[[:space:]]*\($//' \
+            | sort -u \
+            > susfs-final-calls.txt || true
+
+          comm -23 \
+            resukisu-calls.txt \
+            susfs-final-calls.txt \
+            > resukisu-call-gaps.txt
+
+          {
+            echo "=== ReSukiSU SUSFS calls ==="
+            cat resukisu-calls.txt
+            echo
+            echo "=== Calls not found in final SUSFS reference ==="
+            cat resukisu-call-gaps.txt
+          } | tee resukisu-call-contract.txt
+
+      - name: Write final audit file
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          {
+            echo "AUDIT=GEN2_15_SUSFS_V220_OPENREDIRECT_FIXSET_V4"
+            echo "RESULT=PASS"
+            echo "GEN2_15_SUSFS_V220_OPENREDIRECT_FIXSET_AUDIT=PASS"
+            echo "WORKFLOW_REVISION=V4_ARCHIVE_FINAL_REFERENCE"
+            echo "RESUKISU_COMMIT=$(git -C resukisu rev-parse HEAD)"
+            echo "SUSFS_V220_COMMIT=4003ecf2d01c6d13fa8edf6c4f2607365738dc3d"
+            echo "LAST_SELECTED_FIX=3c14ad549f826b1f53878ec8c12253efebeed75a"
+            echo "NO_KERNEL_SOURCE_MODIFIED=YES"
+            echo "NO_KERNEL_BUILD_PERFORMED=YES"
+            echo
+            cat final-fixset-verdict.txt
+            echo
+            echo "=== ReSukiSU call gaps ==="
+            cat resukisu-call-gaps.txt
+          } | tee GEN2_15_SUSFS_V220_OPENREDIRECT_FIXSET_AUDIT.txt
+
+      - name: Upload final audit artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: GEN2_15_SUSFS_V220_OPENREDIRECT_FIXSET_AUDIT
+          path: |
+            GEN2_15_SUSFS_V220_OPENREDIRECT_FIXSET_AUDIT.txt
+            fetch-status.txt
+            dependency-map.txt
+            selected-materialization.txt
+            selected-changed-paths.txt
+            selected-whitespace-check.txt
+            GEN2_15_SELECTED_ONLY_FIXSET.patch
+            actual-final-reference.txt
+            GEN2_15_V220_TO_ACTUAL_FINAL_KERNEL_PATCH_DELTA.patch
+            selected-vs-final.diff
+            selected-vs-final-summary.txt
+            selected-openredirect-markers.txt
+            final-openredirect-markers.txt
+            openredirect-marker-comparison.txt
+            nonselected-openredirect-audit.txt
+            final-fixset-verdict.txt
+            resukisu-calls.txt
+            susfs-final-calls.txt
+            resukisu-call-gaps.txt
+            resukisu-call-contract.txt
+          if-no-files-found: warn
+          retention-days: 30
