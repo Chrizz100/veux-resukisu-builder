@@ -1,0 +1,397 @@
+name: 10 - GEN2 5.4.302 Legacy KernelSU Upstream and Footprint Audit
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout pinned GEN2 kernel source with full history
+        uses: actions/checkout@v6
+        with:
+          repository: dereference23/kernel_xiaomi_sm6375
+          ref: f4b8a13a43a130a9aab83cc985ce4d4421291ae6
+          path: kernel-src
+          fetch-depth: 0
+
+      - name: Checkout upstream KernelSU history
+        uses: actions/checkout@v6
+        with:
+          repository: tiann/KernelSU
+          path: upstream-kernelsu
+          fetch-depth: 0
+
+      - name: Checkout pinned ReSukiSU reference
+        uses: actions/checkout@v6
+        with:
+          repository: ReSukiSU/ReSukiSU
+          ref: faccf4c5edc7be37776216e7d43dd3dca0239331
+          path: resukisu
+          fetch-depth: 1
+
+      - name: Verify exact GEN2 and ReSukiSU pins
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test "$(git -C kernel-src rev-parse HEAD)" = \
+            "f4b8a13a43a130a9aab83cc985ce4d4421291ae6"
+
+          test "$(git -C resukisu rev-parse HEAD)" = \
+            "faccf4c5edc7be37776216e7d43dd3dca0239331"
+
+      - name: Identify corresponding upstream KernelSU commits by subject
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          {
+            for subject in \
+              'Fix kernel panics caused by thread info flag corruption' \
+              'kernel: selinux: rules: Micro-optimize get_policydb() and fix illegal RCU lock usage in handle_sepolicy()' \
+              'kernel: selinux: rules: Fix illegal RCU lock usage in apply_kernelsu_rules()' \
+              'kernel: core_hook: fix refcount leaks on try_umount' \
+              'kernel: throne_tracker: avoid cross-fs traversal using s_magic check' \
+              'Switch to prepare_creds/commit_creds'
+            do
+              echo "================================================================"
+              echo "SUBJECT=$subject"
+
+              matches="$(
+                git -C upstream-kernelsu log \
+                  --all \
+                  --fixed-strings \
+                  --grep="$subject" \
+                  --format='%H|%cI|%s'
+              )"
+
+              if [ -n "$matches" ]; then
+                echo "$matches"
+              else
+                echo "UPSTREAM_MATCH=NONE"
+              fi
+              echo
+            done
+          } | tee upstream-subject-match.txt
+
+      - name: Resolve latest embedded KernelSU-content provenance point
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          {
+            echo "=== Latest commits touching drivers/kernelsu in GEN2 ==="
+            git -C kernel-src log \
+              --date=iso-strict \
+              --format='%H|%cI|%s' \
+              -- drivers/kernelsu \
+              | sed -n '1,80p'
+
+            echo
+            echo "=== Latest commit touching each embedded KernelSU file ==="
+            while IFS= read -r file; do
+              commit="$(
+                git -C kernel-src log \
+                  -1 \
+                  --format='%H|%cI|%s' \
+                  -- "drivers/kernelsu/$file"
+              )"
+              printf '%s|%s\n' "$file" "$commit"
+            done < <(
+              cd kernel-src/drivers/kernelsu
+              find . -type f -printf '%P\n' | sort
+            )
+          } | tee embedded-latest-provenance.txt
+
+      - name: Find upstream candidate for latest embedded KernelSU change
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SUBJECT='Fix kernel panics caused by thread info flag corruption'
+
+          CANDIDATE="$(
+            git -C upstream-kernelsu log \
+              --all \
+              --fixed-strings \
+              --grep="$SUBJECT" \
+              --format='%H' \
+              | sed -n '1p'
+          )"
+
+          test -n "$CANDIDATE"
+
+          {
+            echo "UPSTREAM_CANDIDATE=$CANDIDATE"
+            git -C upstream-kernelsu show -s \
+              --format='UPSTREAM_DATE=%cI%nUPSTREAM_SUBJECT=%s%nUPSTREAM_PARENTS=%P' \
+              "$CANDIDATE"
+
+            echo
+            echo "=== Upstream tags containing candidate ==="
+            git -C upstream-kernelsu tag --contains "$CANDIDATE" \
+              | sed -n '1,80p'
+          } | tee upstream-candidate.txt
+
+          echo "$CANDIDATE" > upstream-candidate.sha
+
+      - name: Compare embedded KernelSU tree to upstream candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          CANDIDATE="$(cat upstream-candidate.sha)"
+
+          rm -rf compare
+          mkdir -p compare/embedded compare/upstream
+
+          cp -a kernel-src/drivers/kernelsu/. compare/embedded/
+
+          git -C upstream-kernelsu archive "$CANDIDATE:kernel" \
+            | tar -x -C compare/upstream
+
+          # Normalize only the intentionally hardcoded downstream version line.
+          if [ -f compare/embedded/Makefile ]; then
+            sed -i -E \
+              's/^ccflags-y \+= -DKSU_VERSION=.*/ccflags-y += -DKSU_VERSION=<NORMALIZED>/' \
+              compare/embedded/Makefile
+          fi
+
+          if [ -f compare/upstream/Makefile ]; then
+            sed -i -E \
+              's/^ccflags-y \+= -DKSU_VERSION=.*/ccflags-y += -DKSU_VERSION=<NORMALIZED>/' \
+              compare/upstream/Makefile
+          fi
+
+          {
+            echo "=== Embedded files ==="
+            (
+              cd compare/embedded
+              find . -type f -printf '%P\n' | sort
+            )
+
+            echo
+            echo "=== Upstream candidate kernel files ==="
+            (
+              cd compare/upstream
+              find . -type f -printf '%P\n' | sort
+            )
+
+            echo
+            echo "=== File-list difference ==="
+            diff -u \
+              <(cd compare/upstream && find . -type f -printf '%P\n' | sort) \
+              <(cd compare/embedded && find . -type f -printf '%P\n' | sort) \
+              || true
+
+            echo
+            echo "=== Content difference after KSU_VERSION normalization ==="
+            diff -ruN compare/upstream compare/embedded || true
+          } | tee embedded-vs-upstream-diff.txt
+
+      - name: Calculate normalized content-match statistics
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          common=0
+          identical=0
+          different=0
+          upstream_only=0
+          embedded_only=0
+
+          while IFS= read -r rel; do
+            u="compare/upstream/$rel"
+            e="compare/embedded/$rel"
+
+            if [ -f "$u" ] && [ -f "$e" ]; then
+              common=$((common + 1))
+              if cmp -s "$u" "$e"; then
+                identical=$((identical + 1))
+              else
+                different=$((different + 1))
+              fi
+            elif [ -f "$u" ]; then
+              upstream_only=$((upstream_only + 1))
+            else
+              embedded_only=$((embedded_only + 1))
+            fi
+          done < <(
+            {
+              cd compare/upstream
+              find . -type f -printf '%P\n'
+              cd ../embedded
+              find . -type f -printf '%P\n'
+            } | sort -u
+          )
+
+          {
+            echo "COMMON_FILES=$common"
+            echo "IDENTICAL_FILES_AFTER_VERSION_NORMALIZATION=$identical"
+            echo "DIFFERENT_FILES_AFTER_VERSION_NORMALIZATION=$different"
+            echo "UPSTREAM_ONLY_FILES=$upstream_only"
+            echo "EMBEDDED_ONLY_FILES=$embedded_only"
+          } | tee upstream-content-match-summary.txt
+
+      - name: Inventory all KSU integration footprint outside drivers kernelsu
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          {
+            echo "=== Current KSU references outside drivers/kernelsu ==="
+            git -C kernel-src grep -n -I -E \
+              'CONFIG_KSU|ksu_handle_|ksu_[A-Za-z0-9_]+_hook|KernelSU|kernelsu' \
+              -- \
+              ':!drivers/kernelsu/**' \
+              ':!.github/**' \
+              || true
+
+            echo
+            echo "=== Files outside drivers/kernelsu containing KSU references ==="
+            git -C kernel-src grep -l -I -E \
+              'CONFIG_KSU|ksu_handle_|ksu_[A-Za-z0-9_]+_hook|KernelSU|kernelsu' \
+              -- \
+              ':!drivers/kernelsu/**' \
+              ':!.github/**' \
+              | sort || true
+
+            echo
+            echo "=== History adding/removing KSU references outside drivers/kernelsu ==="
+            for file in \
+              drivers/Kconfig \
+              drivers/Makefile \
+              fs/devpts/inode.c \
+              fs/exec.c \
+              fs/namespace.c \
+              fs/open.c \
+              fs/read_write.c \
+              fs/stat.c \
+              kernel/sys.c \
+              kernel/reboot.c \
+              drivers/input/input.c
+            do
+              echo "----------------------------------------------------------------"
+              echo "FILE=$file"
+              git -C kernel-src log \
+                --all \
+                --date=iso-strict \
+                --format='%H|%cI|%s' \
+                -G'CONFIG_KSU|ksu_|KernelSU|kernelsu' \
+                -- "$file" \
+                | sed -n '1,120p' || true
+            done
+          } | tee external-ksu-footprint.txt
+
+      - name: Audit exact files changed by original import and 2026 hook commit
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          IMPORT='e812e0cbb1cb36ee6cf55bdc3a1bf18b7e035e0b'
+          HOOKS='3f95a98681655eeb1b928e001d30e00072ae0d8b'
+
+          git -C kernel-src cat-file -e "${IMPORT}^{commit}"
+          git -C kernel-src cat-file -e "${HOOKS}^{commit}"
+
+          {
+            for sha in "$IMPORT" "$HOOKS"; do
+              echo "================================================================"
+              echo "COMMIT=$sha"
+              git -C kernel-src show -s \
+                --format='DATE=%cI%nSUBJECT=%s%nPARENTS=%P' \
+                "$sha"
+
+              echo
+              echo "--- Name status ---"
+              git -C kernel-src show --name-status --format= "$sha"
+
+              echo
+              echo "--- Stat ---"
+              git -C kernel-src show --stat --oneline "$sha"
+              echo
+            done
+          } | tee import-and-hook-footprint.txt
+
+      - name: Compare current legacy hook contract to ReSukiSU target
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          {
+            echo "=== ReSukiSU incompatible legacy hook checks ==="
+            grep -n -E \
+              'check_ksu_hook_incompatible' \
+              resukisu/kernel/tools/inline_hook_check.mk
+
+            echo
+            echo "=== Current incompatible-hook occurrences ==="
+            for symbol in \
+              ksu_vfs_read_hook \
+              ksu_input_hook \
+              ksu_execveat_hook \
+              ksu_init_rc_hook
+            do
+              echo "SYMBOL=$symbol"
+              git -C kernel-src grep -n -w "$symbol" -- ':!drivers/kernelsu/**' || true
+            done
+          } | tee legacy-vs-resukisu-conflict.txt
+
+      - name: Write final audit file
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          CANDIDATE="$(cat upstream-candidate.sha)"
+
+          {
+            echo "AUDIT=GEN2_10_LEGACY_KERNELSU_UPSTREAM_FOOTPRINT"
+            echo "RESULT=PASS"
+            echo "GEN2_10_LEGACY_KERNELSU_UPSTREAM_FOOTPRINT_AUDIT=PASS"
+            echo "KERNEL_COMMIT=$(git -C kernel-src rev-parse HEAD)"
+            echo "RESUKISU_COMMIT=$(git -C resukisu rev-parse HEAD)"
+            echo "UPSTREAM_KERNELSU_CANDIDATE=$CANDIDATE"
+            echo "NO_SOURCE_CHANGE=YES"
+            echo "NO_PATCH_APPLIED=YES"
+            echo "NO_KERNEL_BUILD_PERFORMED=YES"
+            echo
+            cat upstream-content-match-summary.txt
+            echo
+            echo "=== Candidate ==="
+            cat upstream-candidate.txt
+          } | tee GEN2_10_LEGACY_KERNELSU_UPSTREAM_FOOTPRINT_AUDIT.txt
+
+      - name: Verify source trees remained untouched
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          for repo in kernel-src upstream-kernelsu resukisu; do
+            git -C "$repo" diff --exit-code
+            git -C "$repo" diff --cached --exit-code
+          done
+
+          echo "READ_ONLY_SOURCE_AUDIT=YES"
+
+      - name: Upload final audit artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: GEN2_10_LEGACY_KERNELSU_UPSTREAM_FOOTPRINT_AUDIT
+          path: |
+            GEN2_10_LEGACY_KERNELSU_UPSTREAM_FOOTPRINT_AUDIT.txt
+            upstream-subject-match.txt
+            embedded-latest-provenance.txt
+            upstream-candidate.txt
+            embedded-vs-upstream-diff.txt
+            upstream-content-match-summary.txt
+            external-ksu-footprint.txt
+            import-and-hook-footprint.txt
+            legacy-vs-resukisu-conflict.txt
+          if-no-files-found: warn
+          retention-days: 30
