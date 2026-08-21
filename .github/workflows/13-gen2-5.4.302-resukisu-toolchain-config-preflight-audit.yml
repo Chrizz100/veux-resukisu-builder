@@ -1,0 +1,478 @@
+name: 13 - GEN2 5.4.302 ReSukiSU Toolchain Config Preflight Audit
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout pinned GEN2 kernel source with full history
+        uses: actions/checkout@v6
+        with:
+          repository: dereference23/kernel_xiaomi_sm6375
+          ref: f4b8a13a43a130a9aab83cc985ce4d4421291ae6
+          path: kernel-src
+          fetch-depth: 0
+
+      - name: Checkout pinned ReSukiSU reference
+        uses: actions/checkout@v6
+        with:
+          repository: ReSukiSU/ReSukiSU
+          ref: faccf4c5edc7be37776216e7d43dd3dca0239331
+          path: resukisu
+          fetch-depth: 1
+
+      - name: Install config-audit prerequisites
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            bc bison flex libssl-dev libelf-dev \
+            curl ca-certificates xz-utils
+
+      - name: Fetch exact Android Clang r416183b
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p toolchain
+
+          curl -fL --retry 3 \
+            'https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/a20a080107a36d82289e257345bfb9a0acb180cc/clang-r416183b.tar.gz' \
+            -o /tmp/clang-r416183b.tar.gz
+
+          tar -xzf /tmp/clang-r416183b.tar.gz -C toolchain
+
+          test -x toolchain/bin/clang
+          test -x toolchain/bin/ld.lld
+
+          {
+            echo "=== clang ==="
+            toolchain/bin/clang --version
+            echo
+            echo "=== ld.lld ==="
+            toolchain/bin/ld.lld --version
+          } | tee toolchain-identity.txt
+
+      - name: Verify exact pins and pristine project source
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test "$(git -C kernel-src rev-parse HEAD)" = \
+            "f4b8a13a43a130a9aab83cc985ce4d4421291ae6"
+
+          test "$(git -C resukisu rev-parse HEAD)" = \
+            "faccf4c5edc7be37776216e7d43dd3dca0239331"
+
+          git -C kernel-src diff --exit-code
+          git -C kernel-src diff --cached --exit-code
+
+      - name: Prepare exact legacy-removal patches
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          INCLUDE_COMMIT='1c1b2124991bcaf7c93cad5e460e9b9dfb32e4ed'
+          HOOK_COMMIT='3f95a98681655eeb1b928e001d30e00072ae0d8b'
+
+          mkdir -p reverse-patches
+
+          git -C kernel-src show \
+            --format= \
+            "$INCLUDE_COMMIT" \
+            -- drivers/Kconfig drivers/Makefile \
+            > reverse-patches/include-kernelsu.patch
+
+          git -C kernel-src show \
+            --format= \
+            "$HOOK_COMMIT" \
+            -- fs/devpts/inode.c fs/exec.c fs/namespace.c \
+               fs/open.c fs/read_write.c fs/stat.c \
+            > reverse-patches/legacy-hooks.patch
+
+          git -C kernel-src apply \
+            --reverse \
+            --check \
+            "$GITHUB_WORKSPACE/reverse-patches/include-kernelsu.patch"
+
+          git -C kernel-src apply \
+            --reverse \
+            --check \
+            "$GITHUB_WORKSPACE/reverse-patches/legacy-hooks.patch"
+
+      - name: Create isolated integration worktree
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SIM="$RUNNER_TEMP/gen2-resukisu-toolchain-sim"
+          rm -rf "$SIM"
+
+          git -C kernel-src worktree add \
+            --detach \
+            "$SIM" \
+            f4b8a13a43a130a9aab83cc985ce4d4421291ae6
+
+          echo "$SIM" > simulation-worktree.path
+
+      - name: Remove legacy KernelSU in simulation
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SIM="$(cat simulation-worktree.path)"
+
+          git -C "$SIM" apply \
+            --reverse \
+            "$GITHUB_WORKSPACE/reverse-patches/include-kernelsu.patch"
+
+          git -C "$SIM" apply \
+            --reverse \
+            "$GITHUB_WORKSPACE/reverse-patches/legacy-hooks.patch"
+
+          rm -rf "$SIM/drivers/kernelsu"
+
+          if git -C "$SIM" grep -q -I -E \
+            'CONFIG_KSU|ksu_handle_|ksu_[A-Za-z0-9_]+_hook|KernelSU|kernelsu' \
+            -- ':!.github/**'; then
+            echo "ERROR=LEGACY_KSU_FOOTPRINT_REMAINS"
+            exit 1
+          fi
+
+          echo "LEGACY_KERNELSU_REMOVAL_SIMULATION=CLEAN" \
+            | tee legacy-removal-state.txt
+
+      - name: Install exactly pinned ReSukiSU in simulation
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SIM="$(cat simulation-worktree.path)"
+          PIN='faccf4c5edc7be37776216e7d43dd3dca0239331'
+
+          git clone \
+            --no-local \
+            "$GITHUB_WORKSPACE/resukisu" \
+            "$SIM/KernelSU"
+
+          git -C "$SIM/KernelSU" checkout --detach "$PIN"
+
+          test "$(git -C "$SIM/KernelSU" rev-parse HEAD)" = "$PIN"
+
+          ln -s ../KernelSU/kernel "$SIM/drivers/kernelsu"
+
+          printf '\nobj-$(CONFIG_KSU) += kernelsu/\n' \
+            >> "$SIM/drivers/Makefile"
+
+          sed -i \
+            '/^endmenu$/i source "drivers/kernelsu/Kconfig"' \
+            "$SIM/drivers/Kconfig"
+
+          test -L "$SIM/drivers/kernelsu"
+          test "$(readlink "$SIM/drivers/kernelsu")" = "../KernelSU/kernel"
+
+          echo "PINNED_RESUKISU_WIRING=PASS" \
+            | tee resukisu-wiring-state.txt
+
+      - name: Resolve pristine VEUX baseline with exact LLVM toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          export PATH="$GITHUB_WORKSPACE/toolchain/bin:$PATH"
+
+          SIM="$(cat simulation-worktree.path)"
+
+          rm -rf "$SIM/out"
+
+          make \
+            -C "$SIM" \
+            O="$SIM/out" \
+            ARCH=arm64 \
+            LLVM=1 \
+            LLVM_IAS=1 \
+            veux_defconfig
+
+          test -f "$SIM/out/.config"
+
+          cp "$SIM/out/.config" \
+            GEN2_13_RESUKISU_DEFAULT_LLVM_CONFIG.txt
+
+          {
+            echo "=== Default ReSukiSU state with exact LLVM toolchain ==="
+            grep -E \
+              '^(CONFIG_KSU|CONFIG_KSU_TRACEPOINT_HOOK|CONFIG_KSU_MANUAL_HOOK|CONFIG_KSU_SUSFS|CONFIG_LTO|CONFIG_LTO_CLANG|CONFIG_LTO_NONE|CONFIG_THINLTO|CONFIG_MODULES|CONFIG_MODVERSIONS)=' \
+              "$SIM/out/.config" || true
+
+            grep -E \
+              '^# (CONFIG_KSU|CONFIG_KSU_TRACEPOINT_HOOK|CONFIG_KSU_MANUAL_HOOK|CONFIG_KSU_SUSFS|CONFIG_LTO|CONFIG_LTO_CLANG|CONFIG_LTO_NONE|CONFIG_THINLTO|CONFIG_MODULES|CONFIG_MODVERSIONS) is not set$' \
+              "$SIM/out/.config" || true
+          } | tee resukisu-default-llvm-config-state.txt
+
+      - name: Resolve target SUSFS Inline config with exact LLVM toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          export PATH="$GITHUB_WORKSPACE/toolchain/bin:$PATH"
+
+          SIM="$(cat simulation-worktree.path)"
+
+          "$SIM/scripts/config" \
+            --file "$SIM/out/.config" \
+            -e KSU \
+            -e KSU_SUSFS \
+            -d KSU_TRACEPOINT_HOOK \
+            -d KSU_MANUAL_HOOK
+
+          make \
+            -C "$SIM" \
+            O="$SIM/out" \
+            ARCH=arm64 \
+            LLVM=1 \
+            LLVM_IAS=1 \
+            olddefconfig
+
+          cp "$SIM/out/.config" \
+            GEN2_13_RESUKISU_SUSFS_LLVM_TARGET_CONFIG.txt
+
+          {
+            echo "=== Exact LLVM ReSukiSU/SUSFS target ==="
+
+            grep -E \
+              '^(CONFIG_KSU|CONFIG_KSU_TRACEPOINT_HOOK|CONFIG_KSU_MANUAL_HOOK|CONFIG_KSU_SUSFS|CONFIG_THREAD_INFO_IN_TASK|CONFIG_64BIT|CONFIG_LTO|CONFIG_LTO_CLANG|CONFIG_LTO_NONE|CONFIG_THINLTO|CONFIG_MODULES|CONFIG_MODVERSIONS|CONFIG_CPUSETS|CONFIG_SCHED_CASS|CONFIG_SPRD_ROTATION_TASK|CONFIG_HZ|CONFIG_HZ_100|CONFIG_CPU_FREQ|CONFIG_CPU_IDLE|CONFIG_QGKI|CONFIG_WT_QGKI|CONFIG_SECURITY_SELINUX)=' \
+              "$SIM/out/.config" || true
+
+            grep -E \
+              '^# (CONFIG_KSU_TRACEPOINT_HOOK|CONFIG_KSU_MANUAL_HOOK|CONFIG_KSU_SUSFS|CONFIG_LTO|CONFIG_LTO_CLANG|CONFIG_LTO_NONE|CONFIG_THINLTO|CONFIG_MODULES|CONFIG_MODVERSIONS) is not set$' \
+              "$SIM/out/.config" || true
+
+            echo
+            echo "=== SUSFS feature defaults ==="
+            grep -E \
+              '^CONFIG_KSU_SUSFS_' \
+              "$SIM/out/.config" || true
+          } | tee resukisu-susfs-llvm-target-state.txt
+
+      - name: Enforce target hook mode and baseline LLVM invariants
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          CFG='GEN2_13_RESUKISU_SUSFS_LLVM_TARGET_CONFIG.txt'
+
+          grep -q '^CONFIG_KSU=y$' "$CFG"
+          grep -q '^CONFIG_KSU_SUSFS=y$' "$CFG"
+
+          grep -q '^# CONFIG_KSU_TRACEPOINT_HOOK is not set$' "$CFG"
+          grep -q '^# CONFIG_KSU_MANUAL_HOOK is not set$' "$CFG"
+
+          grep -q '^CONFIG_THREAD_INFO_IN_TASK=y$' "$CFG"
+          grep -q '^CONFIG_64BIT=y$' "$CFG"
+
+          grep -q '^CONFIG_LTO=y$' "$CFG"
+          grep -q '^CONFIG_LTO_CLANG=y$' "$CFG"
+          grep -q '^# CONFIG_THINLTO is not set$' "$CFG"
+
+          if grep -q '^CONFIG_LTO_NONE=y$' "$CFG"; then
+            echo "ERROR=LLVM_TARGET_CONFIG_FELL_BACK_TO_LTO_NONE"
+            exit 1
+          fi
+
+          grep -q '^# CONFIG_MODULES is not set$' "$CFG"
+
+          grep -q '^CONFIG_CPUSETS=y$' "$CFG"
+          grep -q '^CONFIG_SCHED_CASS=y$' "$CFG"
+          grep -q '^CONFIG_SPRD_ROTATION_TASK=y$' "$CFG"
+          grep -q '^CONFIG_HZ_100=y$' "$CFG"
+          grep -q '^CONFIG_HZ=100$' "$CFG"
+          grep -q '^CONFIG_CPU_FREQ=y$' "$CFG"
+          grep -q '^CONFIG_CPU_IDLE=y$' "$CFG"
+          grep -q '^CONFIG_QGKI=y$' "$CFG"
+          grep -q '^CONFIG_SECURITY_SELINUX=y$' "$CFG"
+
+          echo "LLVM_BASELINE_INVARIANTS=PASS" \
+            | tee llvm-baseline-invariants.txt
+
+      - name: Compare baseline critical config before and after enabling ReSukiSU SUSFS
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          FILTER='^(CONFIG_CPUSETS|CONFIG_SCHED_CASS|CONFIG_SPRD_ROTATION_TASK|CONFIG_HZ|CONFIG_HZ_100|CONFIG_CPU_FREQ|CONFIG_CPU_IDLE|CONFIG_LTO|CONFIG_LTO_CLANG|CONFIG_THINLTO|CONFIG_MODULES|CONFIG_MODVERSIONS|CONFIG_QGKI|CONFIG_WT_QGKI|CONFIG_SECURITY_SELINUX)='
+
+          {
+            echo "=== Critical baseline delta ==="
+
+            diff -u \
+              <(
+                grep -E "$FILTER" \
+                  GEN2_13_RESUKISU_DEFAULT_LLVM_CONFIG.txt \
+                  | sort
+              ) \
+              <(
+                grep -E "$FILTER" \
+                  GEN2_13_RESUKISU_SUSFS_LLVM_TARGET_CONFIG.txt \
+                  | sort
+              ) \
+              || true
+          } | tee critical-baseline-config-delta.txt
+
+      - name: Check kernelrelease remains source-identical
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          export PATH="$GITHUB_WORKSPACE/toolchain/bin:$PATH"
+
+          SIM="$(cat simulation-worktree.path)"
+
+          {
+            echo "KERNELVERSION=$(
+              make -s \
+                -C "$SIM" \
+                O="$SIM/out" \
+                ARCH=arm64 \
+                LLVM=1 \
+                LLVM_IAS=1 \
+                kernelversion
+            )"
+
+            echo "KERNELRELEASE=$(
+              make -s \
+                -C "$SIM" \
+                O="$SIM/out" \
+                ARCH=arm64 \
+                LLVM=1 \
+                LLVM_IAS=1 \
+                kernelrelease
+            )"
+          } | tee resukisu-target-kernelrelease.txt
+
+      - name: Audit clean hook preconditions before SUSFS kernel-side port
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SIM="$(cat simulation-worktree.path)"
+
+          required_present=0
+          incompatible_present=0
+
+          {
+            for spec in \
+              'ksu_handle_setresuid:kernel/sys.c' \
+              'ksu_handle_execveat:fs/exec.c' \
+              'ksu_handle_faccessat:fs/open.c' \
+              'ksu_handle_sys_read:fs/read_write.c' \
+              'ksu_handle_stat:fs/stat.c' \
+              'ksu_handle_sys_reboot:kernel/reboot.c' \
+              'ksu_handle_input_handle_event:drivers/input/input.c'
+            do
+              symbol="${spec%%:*}"
+              file="${spec#*:}"
+
+              if grep -wq "$symbol" "$SIM/$file"; then
+                echo "REQUIRED_PRESENT=$symbol FILE=$file"
+                required_present=$((required_present + 1))
+              else
+                echo "REQUIRED_ABSENT=$symbol FILE=$file"
+              fi
+            done
+
+            for spec in \
+              'ksu_vfs_read_hook:fs/read_write.c' \
+              'ksu_input_hook:drivers/input/input.c' \
+              'ksu_execveat_hook:fs/exec.c' \
+              'ksu_init_rc_hook:fs/read_write.c' \
+              'ksu_init_rc_hook:fs/stat.c'
+            do
+              symbol="${spec%%:*}"
+              file="${spec#*:}"
+
+              if grep -wq "$symbol" "$SIM/$file"; then
+                echo "INCOMPATIBLE_PRESENT=$symbol FILE=$file"
+                incompatible_present=$((incompatible_present + 1))
+              else
+                echo "INCOMPATIBLE_ABSENT=$symbol FILE=$file"
+              fi
+            done
+
+            echo "REQUIRED_PRESENT_COUNT=$required_present"
+            echo "INCOMPATIBLE_PRESENT_COUNT=$incompatible_present"
+
+            if [ "$required_present" -eq 0 ] \
+              && [ "$incompatible_present" -eq 0 ]; then
+              echo "READY_FOR_FRESH_SUSFS_KERNEL_HOOK_PORT=YES"
+            else
+              echo "READY_FOR_FRESH_SUSFS_KERNEL_HOOK_PORT=NO"
+              exit 1
+            fi
+          } | tee clean-hook-preconditions.txt
+
+      - name: Verify original project source remained untouched
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git -C kernel-src diff --exit-code
+          git -C kernel-src diff --cached --exit-code
+          test -z "$(git -C kernel-src status --porcelain)"
+
+          echo "ORIGINAL_PROJECT_SOURCE_UNTOUCHED=YES" \
+            | tee original-source-status.txt
+
+      - name: Write final audit file
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          {
+            echo "AUDIT=GEN2_13_RESUKISU_TOOLCHAIN_CONFIG_PREFLIGHT"
+            echo "RESULT=PASS"
+            echo "GEN2_13_RESUKISU_TOOLCHAIN_CONFIG_PREFLIGHT_AUDIT=PASS"
+            echo "KERNEL_COMMIT=$(git -C kernel-src rev-parse HEAD)"
+            echo "RESUKISU_COMMIT=$(git -C resukisu rev-parse HEAD)"
+            echo "TOOLCHAIN=Android Clang r416183b"
+            echo "TEMPORARY_SIMULATION_ONLY=YES"
+            echo "ORIGINAL_PROJECT_SOURCE_UNTOUCHED=YES"
+            echo "NO_KERNEL_BUILD_PERFORMED=YES"
+            echo "NO_PROJECT_PATCH_APPLIED=YES"
+            echo
+            cat toolchain-identity.txt
+            echo
+            cat llvm-baseline-invariants.txt
+            echo
+            cat resukisu-target-kernelrelease.txt
+            echo
+            cat clean-hook-preconditions.txt
+          } | tee GEN2_13_RESUKISU_TOOLCHAIN_CONFIG_PREFLIGHT_AUDIT.txt
+
+      - name: Upload final audit artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: GEN2_13_RESUKISU_TOOLCHAIN_CONFIG_PREFLIGHT_AUDIT
+          path: |
+            GEN2_13_RESUKISU_TOOLCHAIN_CONFIG_PREFLIGHT_AUDIT.txt
+            toolchain-identity.txt
+            legacy-removal-state.txt
+            resukisu-wiring-state.txt
+            resukisu-default-llvm-config-state.txt
+            resukisu-susfs-llvm-target-state.txt
+            GEN2_13_RESUKISU_DEFAULT_LLVM_CONFIG.txt
+            GEN2_13_RESUKISU_SUSFS_LLVM_TARGET_CONFIG.txt
+            llvm-baseline-invariants.txt
+            critical-baseline-config-delta.txt
+            resukisu-target-kernelrelease.txt
+            clean-hook-preconditions.txt
+            original-source-status.txt
+          if-no-files-found: warn
+          retention-days: 30
