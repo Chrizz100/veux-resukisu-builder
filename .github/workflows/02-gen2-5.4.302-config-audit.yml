@@ -1,0 +1,141 @@
+name: 02 - GEN2 5.4.302 Config Audit
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout pinned GEN2 kernel source
+        uses: actions/checkout@v6
+        with:
+          repository: dereference23/kernel_xiaomi_sm6375
+          ref: f4b8a13a43a130a9aab83cc985ce4d4421291ae6
+          path: kernel-src
+          fetch-depth: 1
+
+      - name: Install config-audit prerequisites
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            bc bison flex libssl-dev libelf-dev \
+            curl ca-certificates xz-utils
+
+      - name: Fetch exact Android Clang r416183b
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p toolchain
+          curl -fL --retry 3 \
+            'https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/a20a080107a36d82289e257345bfb9a0acb180cc/clang-r416183b.tar.gz' \
+            -o /tmp/clang-r416183b.tar.gz
+
+          tar -xzf /tmp/clang-r416183b.tar.gz -C toolchain
+
+          test -x toolchain/bin/clang
+          test -x toolchain/bin/ld.lld
+
+          echo "=== clang ==="
+          toolchain/bin/clang --version
+          echo
+          echo "=== ld.lld ==="
+          toolchain/bin/ld.lld --version
+
+      - name: Generate resolved VEUX config only
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          export PATH="$GITHUB_WORKSPACE/toolchain/bin:$PATH"
+
+          cd kernel-src
+          rm -rf out
+
+          make \
+            O=out \
+            ARCH=arm64 \
+            LLVM=1 \
+            LLVM_IAS=1 \
+            veux_defconfig
+
+          test -f out/.config
+
+          echo "=== Resolved critical config ==="
+          grep -E \
+            '^(CONFIG_MODULES|CONFIG_MODVERSIONS|CONFIG_MODULE_SIG|CONFIG_LTO|CONFIG_LTO_CLANG|CONFIG_THINLTO|CONFIG_CFI|CONFIG_CFI_CLANG|CONFIG_CFI_PERMISSIVE|CONFIG_CPUSETS|CONFIG_SCHED_CASS|CONFIG_SPRD_ROTATION_TASK|CONFIG_HZ_[0-9]+|CONFIG_CPU_FREQ|CONFIG_CPU_FREQ_DEFAULT_GOV_SCHEDUTIL|CONFIG_CPU_FREQ_GOV_SCHEDUTIL|CONFIG_ARM_QCOM_CPUFREQ_HW|CONFIG_CPU_IDLE|CONFIG_ARM_QCOM_LPM_CPUIDLE|CONFIG_QGKI|CONFIG_WT_QGKI|CONFIG_SECURITY_SELINUX|CONFIG_ANDROID|CONFIG_ANDROID_BINDER_IPC|CONFIG_ANDROID_BINDERFS)=' \
+            out/.config || true
+
+          echo
+          echo "=== Explicit disabled critical config ==="
+          grep -E \
+            '^# (CONFIG_MODVERSIONS|CONFIG_THINLTO|CONFIG_CFI|CONFIG_CFI_CLANG|CONFIG_CFI_PERMISSIVE) is not set$' \
+            out/.config || true
+
+          cp out/.config "$GITHUB_WORKSPACE/final-gen2-config.txt"
+
+      - name: Compare defconfig intent with resolved config
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd kernel-src
+
+          {
+            echo "=== Explicit veux_defconfig values ==="
+            grep -E \
+              'CONFIG_MODULE|CONFIG_MODVERSIONS|CONFIG_LTO|CONFIG_THINLTO|CONFIG_CFI|CONFIG_CPUSETS|CONFIG_SCHED_CASS|CONFIG_SPRD_ROTATION_TASK|CONFIG_HZ_|CONFIG_CPU_FREQ|CONFIG_CPU_IDLE|CONFIG_QGKI|CONFIG_WT_QGKI|CONFIG_SECURITY_SELINUX|CONFIG_ANDROID' \
+              arch/arm64/configs/veux_defconfig || true
+
+            echo
+            echo "=== android-base.config module requirements ==="
+            grep -E \
+              '^(CONFIG_MODULES|CONFIG_MODVERSIONS)=' \
+              kernel/configs/android-base.config || true
+          } | tee "$GITHUB_WORKSPACE/config-audit.txt"
+
+      - name: Verify no tracked source changes
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd kernel-src
+          git diff --exit-code
+          git diff --cached --exit-code
+          echo "RESULT=PASS"
+          echo "GEN2_CONFIG_AUDIT=PASS"
+
+      - name: Write final config audit file
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          {
+            echo "AUDIT=GEN2_02_CONFIG"
+            echo "RESULT=PASS"
+            echo "GEN2_CONFIG_AUDIT=PASS"
+            echo "SOURCE_COMMIT=$(git -C kernel-src rev-parse HEAD)"
+            echo "DEFCONFIG=veux_defconfig"
+            echo "RESOLVED_CONFIG=YES"
+            echo "NO_KERNEL_BUILD_PERFORMED=YES"
+            echo
+            echo "=== Critical resolved values ==="
+            grep -E               '^(CONFIG_MODULES|CONFIG_MODVERSIONS|CONFIG_LTO|CONFIG_LTO_CLANG|CONFIG_THINLTO|CONFIG_CFI|CONFIG_CFI_CLANG|CONFIG_CPUSETS|CONFIG_SCHED_CASS|CONFIG_SPRD_ROTATION_TASK|CONFIG_HZ_[0-9]+|CONFIG_CPU_FREQ|CONFIG_CPU_FREQ_DEFAULT_GOV_SCHEDUTIL|CONFIG_CPU_IDLE|CONFIG_ARM_QCOM_LPM_CPUIDLE|CONFIG_QGKI|CONFIG_WT_QGKI|CONFIG_SECURITY_SELINUX)='               final-gen2-config.txt || true
+            grep -E               '^# (CONFIG_MODVERSIONS|CONFIG_THINLTO|CONFIG_CFI|CONFIG_CFI_CLANG) is not set$'               final-gen2-config.txt || true
+          } | tee GEN2_02_CONFIG_AUDIT.txt
+
+      - name: Upload config audit artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: GEN2_02_CONFIG_AUDIT
+          path: |
+            GEN2_02_CONFIG_AUDIT.txt
+            final-gen2-config.txt
+            config-audit.txt
+          if-no-files-found: error
+          retention-days: 30
