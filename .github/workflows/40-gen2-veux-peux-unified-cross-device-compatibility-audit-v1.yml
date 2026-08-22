@@ -1,0 +1,440 @@
+name: 40 - GEN2 VEUX PEUX Unified Cross Device Compatibility Audit v1
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: gen2-40-v1-veux-peux-cross-device-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    name: GEN2 40 v1 VEUX PEUX unified cross device audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+
+    env:
+      W39_ARTIFACT_PREFIX: GEN2_39_V5_SIMULATED_BOOT_DIFFERENTIAL_SAFETY_AUDIT-
+      W33_IMAGE_SHA256: 98e608f7c30540b6cb5a1731b0edecd9a3b4960ebf388763452685858916037f
+      W38_FINAL_BOOT_SHA256: fe83a790cf7dc213c709320fe4b38072c50a434387f5f49845120d9e770ecf6f
+
+      GEN2_REPO: https://github.com/dereference23/kernel_xiaomi_sm6375.git
+      GEN2_COMMIT: f4b8a13a43a130a9aab83cc985ce4d4421291ae6
+
+      LINEAGE_VEUX_REPO: https://github.com/xiaomi-sm6375-devs/android_device_xiaomi_veux.git
+      LINEAGE_COMMON_REPO: https://github.com/xiaomi-sm6375-devs/android_device_xiaomi_sm6375-common.git
+      LINEAGE_VEUX_PIN: 423b9b6e00301e181a85d886b3c67c47c48d096e
+      LINEAGE_COMMON_PIN: 4cd108d5cd933e5cdaf1293bee233621e8008ac8
+
+    steps:
+      - name: Checkout builder repository
+        uses: actions/checkout@v6
+
+      - name: Initialize W40 workspace
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -rf w40
+          mkdir -p w40/evidence w40/w39 w40/gen2 w40/lineage
+
+          {
+            echo "AUDIT=GEN2_40_V1_VEUX_PEUX_UNIFIED_CROSS_DEVICE_COMPATIBILITY"
+            echo "DATE_UTC=$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+            echo "RUN_ID=$GITHUB_RUN_ID"
+            echo "TARGET_DEVICE_1=veux"
+            echo "TARGET_DEVICE_2=peux"
+            echo "TARGET_SCOPE=VEUX_AND_PEUX"
+            echo "PARENT_CHAIN=W33_V7_TO_W39_V5"
+            echo "AUDIT_MODE=READ_ONLY_STATIC_CROSS_DEVICE"
+            echo "KERNEL_REBUILD=NO"
+            echo "BOOT_IMAGE_CREATED=NO"
+            echo "INSTALLABLE_PACKAGE_CREATED=NO"
+            echo "REAL_DEVICE_ACCESSED=NO"
+            echo "FLASHING_PERFORMED=NO"
+          } | tee w40/evidence/AUDIT-HEADER.txt
+
+      - name: Download exact W39 v5 artifact with full pagination
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          API="$GITHUB_API_URL/repos/$GITHUB_REPOSITORY"
+          AUTH="Authorization: Bearer $GH_TOKEN"
+          ACCEPT="Accept: application/vnd.github+json"
+          VERSION="X-GitHub-Api-Version: 2022-11-28"
+          ALL='w40/evidence/artifacts.ndjson'
+          : > "$ALL"
+
+          page=1
+          while :; do
+            page_json="w40/evidence/artifacts-page-${page}.json"
+
+            curl -fsSL \
+              -H "$AUTH" \
+              -H "$ACCEPT" \
+              -H "$VERSION" \
+              "$API/actions/artifacts?per_page=100&page=${page}" \
+              -o "$page_json"
+
+            count="$(jq '.artifacts | length' "$page_json")"
+            jq -c '.artifacts[]' "$page_json" >> "$ALL"
+
+            if [ "$count" -lt 100 ]; then
+              break
+            fi
+
+            page=$((page + 1))
+            if [ "$page" -gt 100 ]; then
+              echo "ERROR: artifact pagination safety limit reached"
+              exit 1
+            fi
+          done
+
+          selected="$(
+            jq -s -c --arg prefix "$W39_ARTIFACT_PREFIX" '
+              [
+                .[]
+                | select(
+                    (.expired == false)
+                    and
+                    (.name | startswith($prefix))
+                  )
+              ]
+              | sort_by(.created_at)
+              | reverse
+              | .[0] // empty
+            ' "$ALL"
+          )"
+
+          test -n "$selected"
+
+          id="$(jq -r '.id // empty' <<< "$selected")"
+          name="$(jq -r '.name // empty' <<< "$selected")"
+          url="$(jq -r '.archive_download_url // empty' <<< "$selected")"
+
+          test -n "$id"
+          test -n "$name"
+          test -n "$url"
+
+          jq . <<< "$selected" > w40/evidence/W39-ARTIFACT.json
+
+          curl -fLsS \
+            -H "$AUTH" \
+            -H "$ACCEPT" \
+            -H "$VERSION" \
+            "$url" \
+            -o w40/W39_V5.zip
+
+          unzip -t w40/W39_V5.zip > w40/evidence/W39-ZIP-TEST.txt
+          unzip -q w40/W39_V5.zip -d w40/w39
+
+          {
+            echo "W39_ARTIFACT_FETCH=PASS"
+            echo "ARTIFACT_PAGINATION=PASS"
+            echo "ARTIFACT_PAGE_COUNT=$page"
+            echo "ARTIFACT_TOTAL_COUNT=$(wc -l < "$ALL" | tr -d ' ')"
+            echo "W39_ARTIFACT_ID=$id"
+            echo "W39_ARTIFACT_NAME=$name"
+            echo "W39_ARTIFACT_ZIP_SHA256=$(sha256sum w40/W39_V5.zip | awk '{print $1}')"
+          } | tee w40/evidence/W39-ARTIFACT-STATUS.txt
+
+      - name: Verify successful W39 v5 prerequisite
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          REPORT="$(
+            find w40/w39 \
+              -type f \
+              -name 'GEN2_39_V5_SIMULATED_BOOT_DIFFERENTIAL_SAFETY_AUDIT.txt' \
+              -print \
+              | head -n 1
+          )"
+
+          test -n "$REPORT"
+          test -s "$REPORT"
+
+          grep -Fxq \
+            'FINAL_RESULT=PASS_GEN2_39_V5_SIMULATED_BOOT_DIFFERENTIAL_SAFETY_AUDIT' \
+            "$REPORT"
+          grep -Fxq 'W33_KERNEL_INSERTED_EXACTLY=YES' "$REPORT"
+          grep -Fxq 'RAMDISK_LOGICAL_BYTES_PRESERVED=YES' "$REPORT"
+          grep -Fxq 'ARM64_LOAD_SEMANTICS_MATCH_VALIDATED_SOURCE=YES' "$REPORT"
+          grep -Fxq 'GENERIC_QEMU_DIFFERENTIAL_REGRESSION=NO' "$REPORT"
+          grep -Fxq 'REAL_DEVICE_ACCESSED=NO' "$REPORT"
+          grep -Fxq 'FLASHING_PERFORMED=NO' "$REPORT"
+
+          {
+            echo "W40_PREREQUISITE_CHAIN=PASS"
+            echo "W39_V5=PASS"
+            echo "W33_IMAGE_SHA256=$W33_IMAGE_SHA256"
+            echo "W38_FINAL_BOOT_SHA256=$W38_FINAL_BOOT_SHA256"
+          } | tee w40/evidence/PREREQUISITE-CHAIN.txt
+
+      - name: Fetch exact GEN2 and Lineage source pins
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git clone --filter=blob:none --no-checkout \
+            "$GEN2_REPO" w40/gen2/kernel >/dev/null 2>&1
+          git -C w40/gen2/kernel \
+            checkout --detach "$GEN2_COMMIT" >/dev/null 2>&1
+
+          git clone --filter=blob:none --no-checkout \
+            "$LINEAGE_VEUX_REPO" w40/lineage/veux >/dev/null 2>&1
+          git -C w40/lineage/veux \
+            checkout --detach "$LINEAGE_VEUX_PIN" >/dev/null 2>&1
+
+          git clone --filter=blob:none --no-checkout \
+            "$LINEAGE_COMMON_REPO" w40/lineage/common >/dev/null 2>&1
+          git -C w40/lineage/common \
+            checkout --detach "$LINEAGE_COMMON_PIN" >/dev/null 2>&1
+
+          test "$(git -C w40/gen2/kernel rev-parse HEAD)" = "$GEN2_COMMIT"
+          test "$(git -C w40/lineage/veux rev-parse HEAD)" = "$LINEAGE_VEUX_PIN"
+          test "$(git -C w40/lineage/common rev-parse HEAD)" = "$LINEAGE_COMMON_PIN"
+
+          {
+            echo "SOURCE_PINS=PASS"
+            echo "GEN2_COMMIT=$GEN2_COMMIT"
+            echo "LINEAGE_VEUX_PIN=$LINEAGE_VEUX_PIN"
+            echo "LINEAGE_COMMON_PIN=$LINEAGE_COMMON_PIN"
+          } | tee w40/evidence/SOURCE-PINS.txt
+
+      - name: Verify Lineage explicitly accepts both boards
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          BOARD_INFO='w40/lineage/veux/board-info.txt'
+          BOARD_CONFIG='w40/lineage/veux/BoardConfig.mk'
+          PRODUCTS='w40/lineage/veux/AndroidProducts.mk'
+          PRODUCT_MK='w40/lineage/veux/lineage_veux.mk'
+
+          test "$(tr -d '\r\n' < "$BOARD_INFO")" = 'require board=veux|peux'
+
+          grep -Fxq 'DEVICE_PATH := device/xiaomi/veux' "$BOARD_CONFIG"
+          grep -Fxq 'TARGET_BOOTLOADER_BOARD_NAME := veux' "$BOARD_CONFIG"
+          grep -Fxq 'TARGET_KERNEL_CONFIG := veux_defconfig' "$BOARD_CONFIG"
+          grep -Fq 'device/xiaomi/sm6375-common/BoardConfigCommon.mk' "$BOARD_CONFIG"
+
+          grep -Fq '$(LOCAL_DIR)/lineage_veux.mk' "$PRODUCTS"
+          grep -Fxq 'PRODUCT_DEVICE := veux' "$PRODUCT_MK"
+          grep -Fxq 'PRODUCT_NAME := lineage_veux' "$PRODUCT_MK"
+
+          {
+            echo "LINEAGE_DUAL_BOARD_ASSERT=PASS"
+            echo "LINEAGE_BOARD_ASSERT=require board=veux|peux"
+            echo "LINEAGE_PRODUCT=lineage_veux"
+            echo "LINEAGE_BOOTLOADER_BOARD_NAME=veux"
+            echo "LINEAGE_KERNEL_CONFIG=veux_defconfig"
+            echo "LINEAGE_DEVICE_TREE_MODEL=UNIFIED_VEUX_TREE_ACCEPTS_VEUX_AND_PEUX"
+          } | tee w40/evidence/LINEAGE-DUAL-BOARD.txt
+
+      - name: Verify shared Lineage boot contract
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          COMMON='w40/lineage/common/BoardConfigCommon.mk'
+
+          grep -q 'TARGET_KERNEL_SOURCE := kernel/xiaomi/sm6375' "$COMMON"
+          grep -q 'BOARD_KERNEL_IMAGE_NAME := Image' "$COMMON"
+          grep -q 'BOARD_BOOT_HEADER_VERSION := 3' "$COMMON"
+          grep -q 'BOARD_INCLUDE_DTB_IN_BOOTIMG := true' "$COMMON"
+          grep -q 'BOARD_KERNEL_SEPARATED_DTBO := true' "$COMMON"
+          grep -q 'BOARD_USES_GENERIC_KERNEL_IMAGE := true' "$COMMON"
+          grep -q 'BOARD_BOOTIMAGE_PARTITION_SIZE := 134217728' "$COMMON"
+          grep -q 'BOARD_VENDOR_BOOTIMAGE_PARTITION_SIZE := 100663296' "$COMMON"
+          grep -q 'BOARD_MOVE_RECOVERY_RESOURCES_TO_VENDOR_BOOT := true' "$COMMON"
+          grep -q 'TARGET_BOARD_PLATFORM := holi' "$COMMON"
+
+          {
+            echo "LINEAGE_SHARED_BOOT_CONTRACT=PASS"
+            echo "KERNEL_IMAGE=Image"
+            echo "BOOT_HEADER_VERSION=3"
+            echo "BOOT_PARTITION_SIZE=134217728"
+            echo "PLATFORM=holi"
+            echo "VENDOR_BOOT_POLICY=PRESERVE"
+            echo "DTBO_POLICY=PRESERVE"
+          } | tee w40/evidence/LINEAGE-SHARED-BOOT-CONTRACT.txt
+
+      - name: Verify GEN2 unified kernel config and DTB model
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          K='w40/gen2/kernel'
+          CFG="$K/arch/arm64/configs/veux_defconfig"
+          DTS_MAKE="$K/arch/arm64/boot/dts/vendor/xiaomi/Makefile"
+          DTS="$K/arch/arm64/boot/dts/vendor/xiaomi/veux.dts"
+          DTBO="$K/arch/arm64/boot/dts/vendor/xiaomi/veux-overlay.dts"
+
+          test -s "$CFG"
+          test -s "$DTS_MAKE"
+          test -s "$DTS"
+          test -s "$DTBO"
+
+          test ! -e "$K/arch/arm64/configs/peux_defconfig"
+          test ! -e "$K/arch/arm64/boot/dts/vendor/xiaomi/peux.dts"
+          test ! -e "$K/arch/arm64/boot/dts/vendor/xiaomi/peux-overlay.dts"
+
+          grep -Fq 'dtbo-$(CONFIG_ARCH_BLAIR) += veux-overlay.dtbo' "$DTS_MAKE"
+          grep -Fq 'veux-overlay.dtbo-base := veux.dtb' "$DTS_MAKE"
+          grep -Fq 'dtb-$(CONFIG_ARCH_BLAIR) += veux.dtb' "$DTS_MAKE"
+
+          grep -q '^CONFIG_ARCH_HOLI=y$' "$CFG"
+          grep -q '^CONFIG_QGKI=y$' "$CFG"
+
+          {
+            echo "GEN2_UNIFIED_KERNEL_MODEL=PASS"
+            echo "GEN2_KERNEL_CONFIG=veux_defconfig"
+            echo "SEPARATE_PEUX_DEFCONFIG=NO"
+            echo "GEN2_DTB=veux.dtb"
+            echo "GEN2_DTBO=veux-overlay.dtbo"
+            echo "SEPARATE_PEUX_DTB=NO"
+            echo "DTBO_BASE=veux.dtb"
+            echo "CLASSIFICATION=UNIFIED_KERNEL_DTB_MODEL_CONSISTENT_WITH_LINEAGE_VEUX_PEUX_BOARD_ALIAS"
+          } | tee w40/evidence/GEN2-UNIFIED-KERNEL-MODEL.txt
+
+      - name: Audit proposed AnyKernel3 dual device guard
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cat > w40/evidence/PROPOSED-AK3-DUAL-DEVICE.txt <<'EOF'
+          do.devicecheck=1
+          do.modules=0
+          do.systemless=0
+          device.name1=veux
+          device.name2=peux
+          supported.versions=16
+          EOF
+
+          sed -i 's/^          //' w40/evidence/PROPOSED-AK3-DUAL-DEVICE.txt
+
+          POLICY='w40/evidence/PROPOSED-AK3-DUAL-DEVICE.txt'
+
+          grep -Fxq 'do.devicecheck=1' "$POLICY"
+          grep -Fxq 'do.modules=0' "$POLICY"
+          grep -Fxq 'device.name1=veux' "$POLICY"
+          grep -Fxq 'device.name2=peux' "$POLICY"
+          grep -Fxq 'supported.versions=16' "$POLICY"
+
+          if grep -Eq '^device\.name[3-9]=' "$POLICY"; then
+            echo "ERROR: unexpected third device in proposed release scope"
+            exit 1
+          fi
+
+          {
+            echo "AK3_DUAL_DEVICE_GUARD=PASS"
+            echo "DEVICE_NAME_1=veux"
+            echo "DEVICE_NAME_2=peux"
+            echo "OTHER_DEVICE_NAMES=NONE"
+            echo "INSTALLABLE_PACKAGE_CREATED=NO"
+          } | tee w40/evidence/AK3-DUAL-DEVICE-GUARD.txt
+
+      - name: Derive final dual device verdict
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          grep -Fxq 'W40_PREREQUISITE_CHAIN=PASS' w40/evidence/PREREQUISITE-CHAIN.txt
+          grep -Fxq 'LINEAGE_DUAL_BOARD_ASSERT=PASS' w40/evidence/LINEAGE-DUAL-BOARD.txt
+          grep -Fxq 'LINEAGE_SHARED_BOOT_CONTRACT=PASS' w40/evidence/LINEAGE-SHARED-BOOT-CONTRACT.txt
+          grep -Fxq 'GEN2_UNIFIED_KERNEL_MODEL=PASS' w40/evidence/GEN2-UNIFIED-KERNEL-MODEL.txt
+          grep -Fxq 'AK3_DUAL_DEVICE_GUARD=PASS' w40/evidence/AK3-DUAL-DEVICE-GUARD.txt
+
+          {
+            echo "FINAL_RESULT=PASS_GEN2_40_V1_VEUX_PEUX_UNIFIED_STATIC_CROSS_DEVICE_COMPATIBILITY_AUDIT"
+            echo "TARGET_SCOPE=VEUX_AND_PEUX"
+            echo "LINEAGE_EXPLICITLY_ACCEPTS_VEUX=YES"
+            echo "LINEAGE_EXPLICITLY_ACCEPTS_PEUX=YES"
+            echo "LINEAGE_BOARD_ASSERT=require board=veux|peux"
+            echo "UNIFIED_LINEAGE_DEVICE_TREE=YES"
+            echo "UNIFIED_KERNEL_CONFIG=veux_defconfig"
+            echo "UNIFIED_KERNEL_DTB=veux.dtb"
+            echo "UNIFIED_KERNEL_DTBO=veux-overlay.dtbo"
+            echo "PROPOSED_AK3_DEVICE_NAME_1=veux"
+            echo "PROPOSED_AK3_DEVICE_NAME_2=peux"
+            echo "W33_KERNEL_BINARY_CHANGED=NO"
+            echo "W39_V5_VALIDATION_PRESERVED=YES"
+            echo "VEUX_REAL_BOOT_PATH_VALIDATED=YES"
+            echo "PEUX_SEPARATE_PHYSICAL_DEVICE_BOOT_TESTED=NO"
+            echo "STATIC_DUAL_DEVICE_RELEASE_SCOPE_SUPPORTED=YES"
+            echo "PHYSICAL_PEUX_BOOT_GUARANTEED=NO"
+            echo "INSTALLABLE_DUAL_DEVICE_PACKAGE_READY=NO"
+            echo "NEXT_STEP=FINAL_DUAL_DEVICE_RELEASE_READINESS_OR_PEUX_PHYSICAL_RUNTIME_TEST"
+            echo "REAL_DEVICE_ACCESSED=NO"
+            echo "FLASHING_PERFORMED=NO"
+          } | tee w40/evidence/W40-VERDICT.txt
+
+      - name: Write final W40 report
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          REPORT='GEN2_40_V1_VEUX_PEUX_UNIFIED_CROSS_DEVICE_COMPATIBILITY_AUDIT.txt'
+
+          {
+            cat w40/evidence/AUDIT-HEADER.txt
+            echo
+            cat w40/evidence/W39-ARTIFACT-STATUS.txt
+            cat w40/evidence/PREREQUISITE-CHAIN.txt
+            echo
+            cat w40/evidence/SOURCE-PINS.txt
+            echo
+            cat w40/evidence/LINEAGE-DUAL-BOARD.txt
+            cat w40/evidence/LINEAGE-SHARED-BOOT-CONTRACT.txt
+            echo
+            cat w40/evidence/GEN2-UNIFIED-KERNEL-MODEL.txt
+            cat w40/evidence/AK3-DUAL-DEVICE-GUARD.txt
+            echo
+            cat w40/evidence/W40-VERDICT.txt
+          } > "$REPORT"
+
+          test -s "$REPORT"
+
+      - name: Build failure safe W40 report
+        if: always()
+        shell: bash
+        run: |
+          set +e
+
+          REPORT='GEN2_40_V1_VEUX_PEUX_UNIFIED_CROSS_DEVICE_COMPATIBILITY_AUDIT.txt'
+
+          if [ ! -s "$REPORT" ]; then
+            {
+              echo "AUDIT=GEN2_40_V1_VEUX_PEUX_UNIFIED_CROSS_DEVICE_COMPATIBILITY"
+              echo "RESULT=INCOMPLETE_OR_FAILED"
+              echo "FAILURE_SAFE_AUDIT_GENERATED=YES"
+              echo "DATE_UTC=$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+              find w40/evidence -maxdepth 1 -type f -print 2>/dev/null | sort
+              echo "KERNEL_REBUILD=NO"
+              echo "INSTALLABLE_PACKAGE_CREATED=NO"
+              echo "REAL_DEVICE_ACCESSED=NO"
+              echo "FLASHING_PERFORMED=NO"
+            } > "$REPORT"
+          fi
+
+          test -s "$REPORT"
+
+      - name: Upload W40 dual device audit artifact
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: GEN2_40_V1_VEUX_PEUX_UNIFIED_CROSS_DEVICE_COMPATIBILITY_AUDIT-${{ github.run_number }}
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 6
+          path: |
+            GEN2_40_V1_VEUX_PEUX_UNIFIED_CROSS_DEVICE_COMPATIBILITY_AUDIT.txt
+            w40/evidence/
