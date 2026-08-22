@@ -1,0 +1,809 @@
+name: 37 - GEN2 Nonflashing AK3 Release Candidate and Device Test Plan v3
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: gen2-37-v3-nonflashing-ak3-rc-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  W33_ARTIFACT_PREFIX: GEN2_33_V7_FINAL_FULL_IMAGE_DTB_DTBO_BUILD_AUDIT-
+  W36_ARTIFACT_PREFIX: GEN2_36_V14_REAL_LINEAGE_BOOT_AK3_MAGISKBOOT_VALIDATION_AUDIT-
+  BOOT_INPUT_ARTIFACT_NAME: GEN2_W36_VALIDATED_LINEAGE_ANDROID16_BOOT_INPUT
+
+  W33_IMAGE_SHA256: 98e608f7c30540b6cb5a1731b0edecd9a3b4960ebf388763452685858916037f
+  W33_CONFIG_SHA256: 2931b6b74bf34a85f2a71cb4b76d1a3277a5538514411dd1047c841d46e92cbb
+  W33_VEUX_DTB_SHA256: 28a174d174cda7619bf674b29fa4e91625a6ad02f6ca4815ac7a943137b3df8c
+  W33_VEUX_DTBO_SHA256: 486ec73935e9805722df531cc3ddd5460f971c1edeec813fd25bef63500c0ca3
+
+  VALIDATED_BOOT_GZIP_SHA256: 183984c727524325b36696a43419802fa9894a56bfc4c51c3b3cc6fa242a7bfa
+  VALIDATED_BOOT_GZIP_SIZE: 16498759
+  VALIDATED_BOOT_SHA256: b4f8a81c19f89f2cfc0a179a3a01b3079119411e0325bbde758e885bf9d4aa8d
+  VALIDATED_BOOT_SIZE: 133300224
+
+  AK3_REPO: https://github.com/osm0sis/AnyKernel3.git
+  AK3_PIN: af770f7b16cf8f8eb7c68614b2a693b3b361c90c
+  AK3_CORE_BLOB: d9692acdb3501a7ccb60576ecce435e7a30156dc
+
+  BOOT_PARTITION_SIZE: 134217728
+  SOURCE_DATE_EPOCH: 1787184000
+  TZ: UTC
+  LANG: C.UTF-8
+  LC_ALL: C.UTF-8
+
+jobs:
+  audit:
+    name: Build and audit nonflashing GEN2 AK3 staging candidate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+
+    env:
+      WORK: ${{ github.workspace }}/w37v3
+      INPUTS: ${{ github.workspace }}/w37v3/inputs
+      W33: ${{ github.workspace }}/w37v3/inputs/w33
+      W36: ${{ github.workspace }}/w37v3/inputs/w36
+      BOOT_INPUT: ${{ github.workspace }}/w37v3/inputs/boot-input
+      AK3: ${{ github.workspace }}/w37v3/ak3
+      PACKAGE: ${{ github.workspace }}/w37v3/package
+      OUTPUT: ${{ github.workspace }}/w37v3/output
+      NATIVE_TEST: ${{ github.workspace }}/w37v3/native-magiskboot-test
+      STAGING_NAME: DO_NOT_FLASH_GEN2_VEUX_5.4.302_ReSukiSU_SUSFS_W37_AK3_RC_CONTENTS.zip
+      EXPECTED_STAGING_SHA256: ad7bb3017d1cd768b1973127dc527efbcb8546b65dd0c7308171b38638bedf6d
+      EXPECTED_STAGING_BYTES: 17884855
+
+    steps:
+      - name: Checkout builder repository
+        uses: actions/checkout@v6
+
+      - name: Initialize W37 nonflashing workspace
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -rf "$WORK"
+          mkdir -p \
+            "$INPUTS" \
+            "$W33" \
+            "$W36" \
+            "$BOOT_INPUT" \
+            "$AK3" \
+            "$PACKAGE" \
+            "$OUTPUT" \
+            "$NATIVE_TEST"
+
+          cat > "$OUTPUT/SCOPE.txt" <<'EOF'
+          GEN2 Workflow 37
+          =================
+
+          PURPOSE:
+          Build a deterministic NONFLASHING AnyKernel3 release-candidate contents
+          archive after the successful Workflow-36-v14 real boot / Magiskboot /
+          AnyKernel3 sandbox validation.
+
+          THIS WORKFLOW DOES NOT:
+          - access a phone
+          - use adb
+          - use fastboot
+          - write a physical boot partition
+          - modify vendor_boot
+          - modify dtbo
+          - modify top-level vbmeta
+          - create a recovery-installable ZIP
+
+          W37 deliberately places an unconditional abort guard in anykernel.sh and
+          omits META-INF. The intended future installer logic is stored separately
+          as anykernel.production-candidate.sh for audit only.
+
+          W37 additionally executes the exact Android magiskboot binary from the
+          pinned AnyKernel3 tree under QEMU twice against the exact validated real
+          veux Lineage Android-16 boot image. This follows the proven W20R/W20R2
+          native-tool differential pattern.
+
+          A real-device write remains a separate later step and requires explicit
+          user approval.
+          EOF
+
+          {
+            echo "AUDIT=GEN2_37_V3_NONFLASHING_AK3_RELEASE_CANDIDATE_AND_DEVICE_TEST_PLAN"
+            echo "DATE_UTC=$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+            echo "RUN_ID=$GITHUB_RUN_ID"
+            echo "REPOSITORY=$GITHUB_REPOSITORY"
+            echo "W36_REQUIRED_RESULT=PASS_GEN2_36_V14_VALIDATED_LINEAGE_ANDROID16_VEUX_BOOT_AK3_MAGISKBOOT_VALIDATION"
+            echo "W37_V3_HARDENING=W36_V14_PREREQUISITE_PLUS_RUNTIME_OBSERVED_EXACT_STAGING_BYTES"
+            echo "ARTIFACT_LOOKUP=FULL_PAGINATION"
+            echo "W37_V2_FAILURE_CLASSIFICATION=AUDIT_IMPLEMENTATION_BUG"
+            echo "W37_V2_FAILURE_DETAIL=LOCAL_ZIP_PERMISSION_METADATA_PREDICTION_MISMATCH"
+            echo "W37_V2_RUNTIME_OBSERVED_STAGING_SHA256=ad7bb3017d1cd768b1973127dc527efbcb8546b65dd0c7308171b38638bedf6d"
+            echo "REAL_DEVICE_ACCESSED=NO"
+            echo "FLASHING_PERFORMED=NO"
+            echo "RECOVERY_INSTALLABLE_ZIP_CREATED=NO"
+          } > "$OUTPUT/AUDIT-HEADER.txt"
+
+      - name: Install audit and QEMU dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            file \
+            jq \
+            qemu-user-static \
+            unzip \
+            zip
+
+          command -v qemu-arm-static
+          command -v qemu-aarch64-static
+          command -v sha256sum
+          command -v zip
+          command -v unzip
+
+          {
+            qemu-arm-static --version | head -n 1
+            qemu-aarch64-static --version | head -n 1
+          } > "$OUTPUT/QEMU-VERSIONS.txt"
+
+      - name: Download exact W33 W36 and validated boot input artifacts
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          API="$GITHUB_API_URL/repos/$GITHUB_REPOSITORY"
+          AUTH="Authorization: Bearer $GH_TOKEN"
+          ACCEPT="Accept: application/vnd.github+json"
+          VERSION="X-GitHub-Api-Version: 2022-11-28"
+          ALL="$WORK/artifacts.ndjson"
+          : > "$ALL"
+
+          page=1
+          while :; do
+            PAGE="$WORK/artifacts-page-${page}.json"
+            curl -fsSL \
+              -H "$AUTH" -H "$ACCEPT" -H "$VERSION" \
+              "$API/actions/artifacts?per_page=100&page=${page}" \
+              -o "$PAGE"
+
+            count="$(jq '.artifacts | length' "$PAGE")"
+            jq -c '.artifacts[]' "$PAGE" >> "$ALL"
+            [ "$count" -lt 100 ] && break
+            page=$((page + 1))
+            [ "$page" -le 100 ] || {
+              echo "ERROR: artifact pagination safety limit"
+              exit 1
+            }
+          done
+
+          select_prefix() {
+            local prefix="$1"
+            jq -s -c --arg prefix "$prefix" '
+              [
+                .[]
+                | select(
+                    (.expired == false)
+                    and (.name | startswith($prefix))
+                  )
+              ]
+              | sort_by(.created_at)
+              | reverse
+              | .[0] // empty
+            ' "$ALL"
+          }
+
+          select_exact() {
+            local name="$1"
+            jq -s -c --arg name "$name" '
+              [
+                .[]
+                | select(
+                    (.expired == false)
+                    and (.name == $name)
+                  )
+              ]
+              | sort_by(.created_at)
+              | reverse
+              | .[0] // empty
+            ' "$ALL"
+          }
+
+          download_selected() {
+            local selected="$1"
+            local dest="$2"
+            local meta="$3"
+
+            [ -n "$selected" ] || {
+              echo "ERROR: required artifact selection is empty"
+              exit 1
+            }
+
+            id="$(jq -r '.id // empty' <<<"$selected")"
+            name="$(jq -r '.name // empty' <<<"$selected")"
+            url="$(jq -r '.archive_download_url // empty' <<<"$selected")"
+            test -n "$id"
+            test -n "$name"
+            test -n "$url"
+
+            jq . <<<"$selected" > "$meta"
+            curl -fLsS \
+              -H "$AUTH" -H "$ACCEPT" -H "$VERSION" \
+              "$url" \
+              -o "$dest"
+            unzip -t "$dest" > "${dest}.ziptest.txt"
+            echo "$name|$id|$(sha256sum "$dest" | awk '{print $1}')"
+          }
+
+          W33_SELECTED="$(select_prefix "$W33_ARTIFACT_PREFIX")"
+          W36_SELECTED="$(select_prefix "$W36_ARTIFACT_PREFIX")"
+          BOOT_SELECTED="$(select_exact "$BOOT_INPUT_ARTIFACT_NAME")"
+
+          W33_INFO="$(download_selected "$W33_SELECTED" "$INPUTS/w33.zip" "$OUTPUT/W33-ARTIFACT.json")"
+          W36_INFO="$(download_selected "$W36_SELECTED" "$INPUTS/w36.zip" "$OUTPUT/W36-ARTIFACT.json")"
+          BOOT_INFO="$(download_selected "$BOOT_SELECTED" "$INPUTS/boot-input.zip" "$OUTPUT/BOOT-INPUT-ARTIFACT.json")"
+
+          unzip -q "$INPUTS/w33.zip" -d "$W33"
+          unzip -q "$INPUTS/w36.zip" -d "$W36"
+          unzip -q "$INPUTS/boot-input.zip" -d "$BOOT_INPUT"
+
+          {
+            echo "W33_ARTIFACT=$W33_INFO"
+            echo "W36_ARTIFACT=$W36_INFO"
+            echo "BOOT_INPUT_ARTIFACT=$BOOT_INFO"
+          } | tee "$OUTPUT/INPUT-ARTIFACTS.txt"
+
+      - name: Verify W33 and W36 canonical prerequisites
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test -s "$W33/GEN2_33_Image"
+          test -s "$W33/GEN2_33_final.config"
+          test -s "$W33/GEN2_33_veux.dtb"
+          test -s "$W33/GEN2_33_veux-overlay.dtbo"
+          test -s "$W33/GEN2_33_V7_SHA256SUMS"
+
+          (
+            cd "$W33"
+            sha256sum -c GEN2_33_V7_SHA256SUMS
+          ) > "$OUTPUT/W33-MANIFEST.verify.txt"
+
+          test "$(sha256sum "$W33/GEN2_33_Image" | awk '{print $1}')" = "$W33_IMAGE_SHA256"
+          test "$(sha256sum "$W33/GEN2_33_final.config" | awk '{print $1}')" = "$W33_CONFIG_SHA256"
+          test "$(sha256sum "$W33/GEN2_33_veux.dtb" | awk '{print $1}')" = "$W33_VEUX_DTB_SHA256"
+          test "$(sha256sum "$W33/GEN2_33_veux-overlay.dtbo" | awk '{print $1}')" = "$W33_VEUX_DTBO_SHA256"
+
+          W36_REPORT="$W36/GEN2_36_V14_REAL_LINEAGE_BOOT_AK3_MAGISKBOOT_VALIDATION_AUDIT.txt"
+          W36_VERDICT="$W36/w36/evidence/w36-verdict.txt"
+          W36_AK3="$W36/w36/evidence/ak3-execution-status.txt"
+          W36_PAYLOAD="$W36/w36/evidence/ak3-payload-invariants.txt"
+
+          test -s "$W36_REPORT"
+          test -s "$W36_VERDICT"
+          test -s "$W36_AK3"
+          test -s "$W36_PAYLOAD"
+
+          grep -Fxq \
+            'FINAL_RESULT=PASS_GEN2_36_V14_VALIDATED_LINEAGE_ANDROID16_VEUX_BOOT_AK3_MAGISKBOOT_VALIDATION' \
+            "$W36_VERDICT"
+          grep -Fxq 'W36_REAL_BOOT_AK3_MAGISKBOOT_VALIDATION=PASS' "$W36_VERDICT"
+          grep -Fxq 'REAL_MAGISKBOOT_UNPACK_REPACK=PASS' "$W36_VERDICT"
+          grep -Fxq 'REAL_ANYKERNEL3_SPLIT_BOOT_FLASH_BOOT=PASS' "$W36_VERDICT"
+          grep -Fxq 'W33_KERNEL_INSERTED_EXACTLY=YES' "$W36_VERDICT"
+          grep -Fxq 'RAMDISK_LOGICAL_BYTES_PRESERVED=YES' "$W36_VERDICT"
+          grep -Fxq 'REAL_DEVICE_WRITE=NO' "$W36_VERDICT"
+
+          grep -Fxq 'REAL_ANYKERNEL3_HOST_SANDBOX_EXECUTION=PASS' "$W36_AK3"
+          grep -Fxq 'AK3_SPLIT_BOOT_EXECUTED=YES' "$W36_AK3"
+          grep -Fxq 'AK3_FLASH_BOOT_EXECUTED=YES' "$W36_AK3"
+          grep -Fxq 'REAL_DEVICE_WRITE=NO' "$W36_AK3"
+
+          grep -Fxq 'AK3_REAL_REPACK_PAYLOAD_INVARIANTS=PASS' "$W36_PAYLOAD"
+          grep -Fxq 'W33_IMAGE_SHA256_MATCH=YES' "$W36_PAYLOAD"
+          grep -Fxq 'RAMDISK_LOGICAL_BYTES_PRESERVED=YES' "$W36_PAYLOAD"
+          grep -Fxq 'VENDOR_BOOT_TOUCHED=NO' "$W36_PAYLOAD"
+          grep -Fxq 'DTBO_TOUCHED=NO' "$W36_PAYLOAD"
+
+          {
+            echo "W37_PREREQUISITES=PASS"
+            echo "W33_V7=PASS"
+            echo "W36_V14=PASS"
+            echo "W36_REAL_BOOT_AK3_MAGISKBOOT_VALIDATION=PASS"
+            echo "W33_IMAGE_SHA256=$W33_IMAGE_SHA256"
+          } | tee "$OUTPUT/PREREQUISITE-STATUS.txt"
+
+      - name: Recover and verify exact validated real boot input
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          GZIP="$BOOT_INPUT/GEN2_W36_VALIDATED_LINEAGE_VEUX_ANDROID16_BOOT.img.gz"
+          BOOT="$INPUTS/validated-real-boot.img"
+
+          test -s "$GZIP"
+          test "$(stat -c '%s' "$GZIP")" = "$VALIDATED_BOOT_GZIP_SIZE"
+          test "$(sha256sum "$GZIP" | awk '{print $1}')" = "$VALIDATED_BOOT_GZIP_SHA256"
+          gzip -t "$GZIP"
+          gzip -dc "$GZIP" > "$BOOT"
+
+          test "$(stat -c '%s' "$BOOT")" = "$VALIDATED_BOOT_SIZE"
+          test "$(sha256sum "$BOOT" | awk '{print $1}')" = "$VALIDATED_BOOT_SHA256"
+
+          python3 - "$BOOT" <<'PY'
+          import struct
+          import sys
+          from pathlib import Path
+
+          data = Path(sys.argv[1]).read_bytes()
+          if data[:8] != b"ANDROID!":
+              raise SystemExit("bad Android boot magic")
+          if struct.unpack_from("<I", data, 40)[0] != 3:
+              raise SystemExit("expected boot header v3")
+          if len(data) > 134217728:
+              raise SystemExit("boot image exceeds 128 MiB partition")
+          print("VALIDATED_REAL_BOOT_STRUCTURE=PASS")
+          PY
+
+          {
+            echo "VALIDATED_REAL_BOOT_INPUT=PASS"
+            echo "BOOT_SHA256=$VALIDATED_BOOT_SHA256"
+            echo "BOOT_SIZE=$VALIDATED_BOOT_SIZE"
+            echo "HEADER_VERSION=3"
+          } | tee "$OUTPUT/REAL-BOOT-INPUT-STATUS.txt"
+
+      - name: Fetch exact pinned AnyKernel3 tree
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git clone --filter=blob:none --no-checkout "$AK3_REPO" "$AK3/repo" >/dev/null 2>&1
+          git -C "$AK3/repo" checkout --detach "$AK3_PIN" >/dev/null 2>&1
+          test "$(git -C "$AK3/repo" rev-parse HEAD)" = "$AK3_PIN"
+
+          CORE_BLOB="$(git -C "$AK3/repo" rev-parse HEAD:tools/ak3-core.sh)"
+          test "$CORE_BLOB" = "$AK3_CORE_BLOB"
+          test -s "$AK3/repo/tools/ak3-core.sh"
+          test -s "$AK3/repo/tools/magiskboot"
+          test -s "$AK3/repo/LICENSE"
+
+          file "$AK3/repo/tools/magiskboot" | tee "$OUTPUT/AK3-NATIVE-MAGISKBOOT-FILE.txt"
+
+          {
+            echo "AK3_FETCH=PASS"
+            echo "AK3_PIN=$AK3_PIN"
+            echo "AK3_CORE_BLOB=$CORE_BLOB"
+            echo "AK3_CORE_SHA256=$(sha256sum "$AK3/repo/tools/ak3-core.sh" | awk '{print $1}')"
+            echo "AK3_NATIVE_MAGISKBOOT_SHA256=$(sha256sum "$AK3/repo/tools/magiskboot" | awk '{print $1}')"
+          } | tee "$OUTPUT/AK3-PIN-STATUS.txt"
+
+      - name: Execute packaged Android magiskboot twice under QEMU
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          FILE_DESC="$(cat "$OUTPUT/AK3-NATIVE-MAGISKBOOT-FILE.txt")"
+          case "$FILE_DESC" in
+            *"ELF 32-bit"*"ARM"*) QEMU="$(command -v qemu-arm-static)" ;;
+            *"ELF 64-bit"*"ARM aarch64"*) QEMU="$(command -v qemu-aarch64-static)" ;;
+            *)
+              echo "ERROR: unsupported packaged magiskboot architecture"
+              echo "$FILE_DESC"
+              exit 1
+              ;;
+          esac
+          test -x "$QEMU"
+
+          run_native() {
+            local name="$1"
+            local dir="$NATIVE_TEST/$name"
+            mkdir -p "$dir/source" "$dir/repacked"
+
+            cp "$INPUTS/validated-real-boot.img" "$dir/boot.img"
+            cp "$W33/GEN2_33_Image" "$dir/Image"
+            cp "$AK3/repo/tools/magiskboot" "$dir/magiskboot"
+            chmod 755 "$dir/magiskboot"
+
+            (
+              cd "$dir"
+              "$QEMU" ./magiskboot unpack -h boot.img \
+                > "$OUTPUT/NATIVE-${name}-SOURCE-UNPACK.txt" 2>&1
+              test -s kernel
+              test -s ramdisk.cpio
+              cp ramdisk.cpio source/ramdisk.cpio
+              sha256sum kernel > source/kernel.sha256
+              sha256sum ramdisk.cpio > source/ramdisk.sha256
+
+              cp -f Image kernel
+              export PATCHVBMETAFLAG=false
+              "$QEMU" ./magiskboot repack boot.img boot-new.img \
+                > "$OUTPUT/NATIVE-${name}-REPACK.txt" 2>&1
+              unset PATCHVBMETAFLAG
+              test -s boot-new.img
+
+              rm -f kernel ramdisk.cpio
+              "$QEMU" ./magiskboot unpack -h boot-new.img \
+                > "$OUTPUT/NATIVE-${name}-FINAL-UNPACK.txt" 2>&1
+              test -s kernel
+              test -s ramdisk.cpio
+              cp ramdisk.cpio repacked/ramdisk.cpio
+
+              test "$(sha256sum kernel | awk '{print $1}')" = "$W33_IMAGE_SHA256"
+              cmp -s source/ramdisk.cpio repacked/ramdisk.cpio
+
+              {
+                echo "RUN=$name"
+                echo "QEMU=$QEMU"
+                echo "W33_KERNEL_MATCH=YES"
+                echo "RAMDISK_LOGICAL_BYTES_PRESERVED=YES"
+                echo "BOOT_NEW_SIZE=$(stat -c '%s' boot-new.img)"
+                echo "BOOT_NEW_SHA256=$(sha256sum boot-new.img | awk '{print $1}')"
+              } > "$OUTPUT/NATIVE-${name}-STATUS.txt"
+            )
+          }
+
+          run_native A
+          run_native B
+
+          A_SHA="$(sed -n 's/^BOOT_NEW_SHA256=//p' "$OUTPUT/NATIVE-A-STATUS.txt")"
+          B_SHA="$(sed -n 's/^BOOT_NEW_SHA256=//p' "$OUTPUT/NATIVE-B-STATUS.txt")"
+          test -n "$A_SHA"
+          test "$A_SHA" = "$B_SHA"
+
+          {
+            echo "AK3_PACKAGED_NATIVE_MAGISKBOOT_QEMU=PASS"
+            echo "RUN_A_SHA256=$A_SHA"
+            echo "RUN_B_SHA256=$B_SHA"
+            echo "REPRODUCIBLE=YES"
+            echo "W33_KERNEL_MATCH=YES"
+            echo "RAMDISK_LOGICAL_BYTES_PRESERVED=YES"
+            echo "REAL_DEVICE_WRITE=NO"
+          } | tee "$OUTPUT/NATIVE-MAGISKBOOT-VERDICT.txt"
+
+      - name: Build guarded nonflashing AnyKernel3 candidate contents
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -rf "$PACKAGE"
+          mkdir -p "$PACKAGE"
+
+          cp -a "$AK3/repo/tools" "$PACKAGE/tools"
+          cp "$AK3/repo/LICENSE" "$PACKAGE/LICENSE"
+          cp "$W33/GEN2_33_Image" "$PACKAGE/Image"
+
+          cat > "$PACKAGE/anykernel.production-candidate.sh" <<'EOF'
+          ### GEN2 VEUX AnyKernel3 production candidate - NOT YET RELEASED
+          ## Runtime contract validated by GEN2 Workflow 36 v13.
+
+          properties() { '
+          kernel.string=GEN2 VEUX 5.4.302 ReSukiSU SUSFS
+          do.devicecheck=1
+          do.modules=0
+          do.systemless=0
+          do.cleanup=1
+          do.cleanuponabort=0
+          device.name1=veux
+          device.name2=
+          device.name3=
+          device.name4=
+          device.name5=
+          supported.versions=16
+          supported.patchlevels=
+          supported.vendorpatchlevels=
+          '; }
+
+          # Kernel-only package: no ramdisk edits. Defining the optional hook as
+          # a no-op also gives setup_ak an unambiguous successful tail status.
+          boot_attributes() {
+            :
+          }
+
+          BLOCK=boot
+          IS_SLOT_DEVICE=1
+          SLOT_SELECT=active
+          RAMDISK_COMPRESSION=auto
+          PATCH_VBMETA_FLAG=0
+          NO_MAGISK_CHECK=1
+
+          . tools/ak3-core.sh
+
+          split_boot
+          flash_boot
+          EOF
+          sed -i 's/^          //' "$PACKAGE/anykernel.production-candidate.sh"
+          chmod 755 "$PACKAGE/anykernel.production-candidate.sh"
+
+          cat > "$PACKAGE/anykernel.sh" <<'EOF'
+          #!/sbin/sh
+          echo "GEN2 W37 is a NONFLASHING staging archive."
+          echo "This anykernel.sh intentionally aborts and performs no write."
+          echo "A real-device test requires a later explicitly approved workflow."
+          exit 1
+          EOF
+          sed -i 's/^          //' "$PACKAGE/anykernel.sh"
+          chmod 755 "$PACKAGE/anykernel.sh"
+
+          cat > "$PACKAGE/PROVENANCE.txt" <<EOF
+          GEN2 W37 NONFLASHING AK3 RELEASE-CANDIDATE CONTENTS
+          ===================================================
+          DEVICE=veux
+          KERNEL_BASE=Linux 5.4.302
+          W33_IMAGE_SHA256=$W33_IMAGE_SHA256
+          W33_CONFIG_SHA256=$W33_CONFIG_SHA256
+          W36_RESULT=PASS_GEN2_36_V14_VALIDATED_LINEAGE_ANDROID16_VEUX_BOOT_AK3_MAGISKBOOT_VALIDATION
+          VALIDATED_REAL_BOOT_SHA256=$VALIDATED_BOOT_SHA256
+          AK3_PIN=$AK3_PIN
+          AK3_CORE_BLOB=$AK3_CORE_BLOB
+          BOOT_ONLY_KERNEL_REPLACEMENT=YES
+          RAMDISK_POLICY=PRESERVE
+          VENDOR_BOOT_POLICY=PRESERVE
+          DTBO_POLICY=PRESERVE
+          CUSTOM_DTB_INCLUDED=NO
+          CUSTOM_DTBO_INCLUDED=NO
+          BOOT_IMG_INCLUDED=NO
+          VENDOR_BOOT_IMG_INCLUDED=NO
+          DTBO_IMG_INCLUDED=NO
+          VBMETA_IMG_INCLUDED=NO
+          RECOVERY_INSTALLABLE=NO
+          REAL_DEVICE_ACCESSED=NO
+          FLASHING_PERFORMED=NO
+          EOF
+
+          cat > "$PACKAGE/DEVICE-TEST-PLAN.txt" <<'EOF'
+          GEN2 VEUX DEVICE TEST PLAN - NOT EXECUTED BY W37
+          =================================================
+
+          Preconditions for a later explicitly approved device test:
+          1. Confirm physical device identity is exactly veux.
+          2. Confirm bootloader-unlocked evidence.
+          3. Record current active A/B slot.
+          4. Back up and hash the currently installed boot partition before write.
+          5. Require the expected Android-16 / boot-header-v3 baseline contract.
+          6. Promote the audited production candidate to a separately versioned
+             installable package only after explicit user approval.
+          7. Test only the active boot slot and leave vendor_boot/dtbo/vbmeta alone.
+          8. Reboot and verify kernel release, Android boot, ReSukiSU and SUSFS.
+          9. Preserve an exact rollback path to the pre-test boot image.
+
+          W37 performs NONE of these device-write actions.
+          EOF
+
+          test -s "$PACKAGE/Image"
+          test "$(sha256sum "$PACKAGE/Image" | awk '{print $1}')" = "$W33_IMAGE_SHA256"
+          test -s "$PACKAGE/tools/ak3-core.sh"
+          test -s "$PACKAGE/tools/magiskboot"
+          test -s "$PACKAGE/LICENSE"
+
+          sh -n "$PACKAGE/anykernel.sh"
+          sh -n "$PACKAGE/anykernel.production-candidate.sh"
+
+          grep -Fxq 'BLOCK=boot' "$PACKAGE/anykernel.production-candidate.sh"
+          grep -Fxq 'IS_SLOT_DEVICE=1' "$PACKAGE/anykernel.production-candidate.sh"
+          grep -Fxq 'SLOT_SELECT=active' "$PACKAGE/anykernel.production-candidate.sh"
+          grep -Fxq 'RAMDISK_COMPRESSION=auto' "$PACKAGE/anykernel.production-candidate.sh"
+          grep -Fxq 'PATCH_VBMETA_FLAG=0' "$PACKAGE/anykernel.production-candidate.sh"
+          grep -Fxq 'NO_MAGISK_CHECK=1' "$PACKAGE/anykernel.production-candidate.sh"
+          grep -Fxq 'split_boot' "$PACKAGE/anykernel.production-candidate.sh"
+          grep -Fxq 'flash_boot' "$PACKAGE/anykernel.production-candidate.sh"
+
+          test ! -e "$PACKAGE/META-INF"
+          test ! -e "$PACKAGE/boot.img"
+          test ! -e "$PACKAGE/dtb"
+          test ! -e "$PACKAGE/dtbo.img"
+          test ! -e "$PACKAGE/vendor_boot.img"
+          test ! -e "$PACKAGE/vbmeta.img"
+
+          if grep -Eq '^[[:space:]]*(fastboot|adb)[[:space:]]' "$PACKAGE"/*.sh; then
+            echo "ERROR: device command found in W37 package scripts"
+            exit 1
+          fi
+
+          (
+            cd "$PACKAGE"
+            find . -type f ! -name PACKAGE-SHA256SUMS -print0 \
+              | LC_ALL=C sort -z \
+              | xargs -0 sha256sum \
+              > PACKAGE-SHA256SUMS
+          )
+
+          {
+            echo "W37_PACKAGE_CONTENTS=PASS"
+            echo "ANYKERNEL_SH=UNCONDITIONAL_NONFLASHING_ABORT_GUARD"
+            echo "PRODUCTION_CANDIDATE_PRESENT=YES"
+            echo "META_INF_PRESENT=NO"
+            echo "RECOVERY_INSTALLABLE=NO"
+            echo "IMAGE_SHA256=$W33_IMAGE_SHA256"
+            echo "CUSTOM_DTB_INCLUDED=NO"
+            echo "CUSTOM_DTBO_INCLUDED=NO"
+            echo "BOOT_IMG_INCLUDED=NO"
+            echo "VENDOR_BOOT_IMG_INCLUDED=NO"
+            echo "DTBO_IMG_INCLUDED=NO"
+            echo "VBMETA_IMG_INCLUDED=NO"
+            echo "REAL_DEVICE_WRITE=NO"
+          } | tee "$OUTPUT/PACKAGE-CONTENT-STATUS.txt"
+
+      - name: Build deterministic W37 staging archive twice
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Normalize timestamps so two independent archives from the same audited
+          # contents must be byte-identical.
+          find "$PACKAGE" -exec touch -h -d "@$SOURCE_DATE_EPOCH" {} +
+
+          build_zip() {
+            local out="$1"
+            rm -f "$out"
+            (
+              cd "$PACKAGE"
+              find . -type f -printf '%P\n' \
+                | LC_ALL=C sort \
+                | zip -X -9 "$out" -@ >/dev/null
+            )
+          }
+
+          ZIP_A="$OUTPUT/W37-A-$STAGING_NAME"
+          ZIP_B="$OUTPUT/W37-B-$STAGING_NAME"
+          build_zip "$ZIP_A"
+          build_zip "$ZIP_B"
+
+          unzip -t "$ZIP_A" > "$OUTPUT/W37-A-ZIP-CRC.txt"
+          unzip -t "$ZIP_B" > "$OUTPUT/W37-B-ZIP-CRC.txt"
+
+          A_SHA="$(sha256sum "$ZIP_A" | awk '{print $1}')"
+          B_SHA="$(sha256sum "$ZIP_B" | awk '{print $1}')"
+          test "$A_SHA" = "$B_SHA"
+          cmp -s "$ZIP_A" "$ZIP_B"
+
+          test "$A_SHA" = "$EXPECTED_STAGING_SHA256"
+          test "$(stat -c '%s' "$ZIP_A")" = "$EXPECTED_STAGING_BYTES"
+
+          cp "$ZIP_A" "$OUTPUT/$STAGING_NAME"
+
+          {
+            echo "W37_DETERMINISTIC_PACKAGING=PASS"
+            echo "ARCHIVE_A_SHA256=$A_SHA"
+            echo "ARCHIVE_B_SHA256=$B_SHA"
+            echo "BYTE_IDENTICAL=YES"
+            echo "EXPECTED_STAGING_SHA256_MATCH=YES"
+            echo "EXPECTED_STAGING_BYTES_MATCH=YES"
+            echo "FINAL_STAGING_NAME=$STAGING_NAME"
+            echo "FINAL_STAGING_SHA256=$A_SHA"
+            echo "FINAL_STAGING_BYTES=$(stat -c '%s' "$OUTPUT/$STAGING_NAME")"
+          } | tee "$OUTPUT/DETERMINISTIC-PACKAGING-STATUS.txt"
+
+      - name: Independently inspect final staging archive
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          FINAL="$OUTPUT/$STAGING_NAME"
+          INSPECT="$WORK/final-inspect"
+          rm -rf "$INSPECT"
+          mkdir -p "$INSPECT"
+
+          unzip -q "$FINAL" -d "$INSPECT"
+          (
+            cd "$INSPECT"
+            sha256sum -c PACKAGE-SHA256SUMS \
+              > "$OUTPUT/FINAL-PACKAGE-SHA256SUMS.verify.txt"
+          )
+
+          test "$(sha256sum "$INSPECT/Image" | awk '{print $1}')" = "$W33_IMAGE_SHA256"
+          test ! -e "$INSPECT/META-INF"
+          test ! -e "$INSPECT/boot.img"
+          test ! -e "$INSPECT/dtb"
+          test ! -e "$INSPECT/dtbo.img"
+          test ! -e "$INSPECT/vendor_boot.img"
+          test ! -e "$INSPECT/vbmeta.img"
+
+          set +e
+          sh "$INSPECT/anykernel.sh" > "$OUTPUT/NONFLASHING-GUARD-RUNTIME.txt" 2>&1
+          GUARD_RC=$?
+          set -e
+          test "$GUARD_RC" -ne 0
+          grep -Fq 'NONFLASHING staging archive' "$OUTPUT/NONFLASHING-GUARD-RUNTIME.txt"
+
+          {
+            echo "FINAL_STAGING_INSPECTION=PASS"
+            echo "PACKAGE_SHA256SUMS=PASS"
+            echo "NONFLASHING_GUARD_EXIT_CODE=$GUARD_RC"
+            echo "META_INF_PRESENT=NO"
+            echo "PHYSICAL_DEVICE_ACCESS=NO"
+          } | tee "$OUTPUT/FINAL-STAGING-INSPECTION.txt"
+
+      - name: Derive W37 verdict and next gate
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          grep -Fxq 'W37_PREREQUISITES=PASS' "$OUTPUT/PREREQUISITE-STATUS.txt"
+          grep -Fxq 'VALIDATED_REAL_BOOT_INPUT=PASS' "$OUTPUT/REAL-BOOT-INPUT-STATUS.txt"
+          grep -Fxq 'AK3_PACKAGED_NATIVE_MAGISKBOOT_QEMU=PASS' "$OUTPUT/NATIVE-MAGISKBOOT-VERDICT.txt"
+          grep -Fxq 'W37_PACKAGE_CONTENTS=PASS' "$OUTPUT/PACKAGE-CONTENT-STATUS.txt"
+          grep -Fxq 'W37_DETERMINISTIC_PACKAGING=PASS' "$OUTPUT/DETERMINISTIC-PACKAGING-STATUS.txt"
+          grep -Fxq 'FINAL_STAGING_INSPECTION=PASS' "$OUTPUT/FINAL-STAGING-INSPECTION.txt"
+
+          {
+            echo "FINAL_RESULT=PASS_GEN2_37_V3_NONFLASHING_AK3_RELEASE_CANDIDATE_ARCHIVE_AND_DEVICE_TEST_PLAN"
+            echo "W36_V14_PREREQUISITE=PASS"
+            echo "AK3_PACKAGED_NATIVE_MAGISKBOOT_QEMU=PASS"
+            echo "AK3_CORE_RUNTIME_PREVIOUSLY_VALIDATED_BY_W36=YES"
+            echo "STAGING_ARCHIVE_CREATED=YES"
+            echo "STAGING_ARCHIVE_RECOVERY_INSTALLABLE=NO"
+            echo "ANYKERNEL_SH_NONFLASHING_GUARD=YES"
+            echo "PRODUCTION_CANDIDATE_SCRIPT_AUDITED=YES"
+            echo "DETERMINISTIC_PACKAGE_BYTES=YES"
+            echo "DEVICE_TEST_PLAN_INCLUDED=YES"
+            echo "REAL_DEVICE_ACCESSED=NO"
+            echo "FLASHING_PERFORMED=NO"
+            echo "FINAL_FLASHABLE_RELEASE_READY=NO"
+            echo "NEXT_STEP=EXPLICIT_USER_APPROVAL_REQUIRED_BEFORE_ANY_REAL_DEVICE_WRITE_OR_INSTALLABLE_PACKAGE_PROMOTION"
+          } | tee "$OUTPUT/W37-VERDICT.txt"
+
+      - name: Write final W37 audit report
+        if: always()
+        shell: bash
+        run: |
+          set +e
+
+          REPORT='GEN2_37_V3_NONFLASHING_AK3_RELEASE_CANDIDATE_AUDIT.txt'
+          {
+            cat "$OUTPUT/AUDIT-HEADER.txt" 2>/dev/null
+            echo
+            echo "=== SCOPE ==="
+            cat "$OUTPUT/SCOPE.txt" 2>/dev/null
+            echo
+            for f in \
+              "$OUTPUT/INPUT-ARTIFACTS.txt" \
+              "$OUTPUT/PREREQUISITE-STATUS.txt" \
+              "$OUTPUT/REAL-BOOT-INPUT-STATUS.txt" \
+              "$OUTPUT/AK3-PIN-STATUS.txt" \
+              "$OUTPUT/NATIVE-MAGISKBOOT-VERDICT.txt" \
+              "$OUTPUT/PACKAGE-CONTENT-STATUS.txt" \
+              "$OUTPUT/DETERMINISTIC-PACKAGING-STATUS.txt" \
+              "$OUTPUT/FINAL-STAGING-INSPECTION.txt" \
+              "$OUTPUT/W37-VERDICT.txt"
+            do
+              if [ -f "$f" ]; then
+                echo "=== $(basename "$f") ==="
+                cat "$f"
+                echo
+              fi
+            done
+            echo "REAL_DEVICE_ACCESSED=NO"
+            echo "FLASHING_PERFORMED=NO"
+          } > "$REPORT"
+
+          test -s "$REPORT"
+
+      - name: Upload W37 audit and nonflashing staging artifact
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: GEN2_37_V3_NONFLASHING_AK3_RELEASE_CANDIDATE_AUDIT-${{ github.run_number }}
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 6
+          path: |
+            GEN2_37_V3_NONFLASHING_AK3_RELEASE_CANDIDATE_AUDIT.txt
+            w37v3/output/
+
+      - name: Fail job after preserving diagnostics when W37 verdict is absent
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if ! grep -Fxq \
+            'FINAL_RESULT=PASS_GEN2_37_V3_NONFLASHING_AK3_RELEASE_CANDIDATE_ARCHIVE_AND_DEVICE_TEST_PLAN' \
+            "$OUTPUT/W37-VERDICT.txt" 2>/dev/null; then
+            echo "ERROR: W37 final PASS verdict was not produced."
+            exit 1
+          fi
+
+          echo "W37 final PASS verdict confirmed after artifact upload."
