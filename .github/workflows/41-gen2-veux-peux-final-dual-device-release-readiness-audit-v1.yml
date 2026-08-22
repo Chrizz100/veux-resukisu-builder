@@ -1,0 +1,583 @@
+name: 41 - GEN2 VEUX PEUX Final Dual Device Release Readiness Audit v1
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: gen2-41-v1-veux-peux-release-readiness-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    name: GEN2 41 v1 VEUX PEUX final nonflashing release readiness audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+
+    env:
+      W40_ARTIFACT_PREFIX: GEN2_40_V1_VEUX_PEUX_UNIFIED_CROSS_DEVICE_COMPATIBILITY_AUDIT-
+      W37_ARTIFACT_PREFIX: GEN2_37_V3_NONFLASHING_AK3_RELEASE_CANDIDATE_AUDIT-
+
+      W37_STAGING_NAME: DO_NOT_FLASH_GEN2_VEUX_5.4.302_ReSukiSU_SUSFS_W37_AK3_RC_CONTENTS.zip
+      W37_STAGING_SHA256: ad7bb3017d1cd768b1973127dc527efbcb8546b65dd0c7308171b38638bedf6d
+      W37_STAGING_BYTES: 17884855
+
+      W33_IMAGE_SHA256: 98e608f7c30540b6cb5a1731b0edecd9a3b4960ebf388763452685858916037f
+      W38_FINAL_BOOT_SHA256: fe83a790cf7dc213c709320fe4b38072c50a434387f5f49845120d9e770ecf6f
+
+    steps:
+      - name: Checkout builder repository
+        uses: actions/checkout@v6
+
+      - name: Initialize W41 workspace
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -rf w41
+          mkdir -p \
+            w41/evidence \
+            w41/w40 \
+            w41/w37 \
+            w41/package \
+            w41/proposed
+
+          {
+            echo "AUDIT=GEN2_41_V1_VEUX_PEUX_FINAL_DUAL_DEVICE_RELEASE_READINESS"
+            echo "DATE_UTC=$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+            echo "RUN_ID=$GITHUB_RUN_ID"
+            echo "REPOSITORY=$GITHUB_REPOSITORY"
+            echo "TARGET_SCOPE=VEUX_AND_PEUX"
+            echo "PARENT_COMPATIBILITY_AUDIT=W40_V1"
+            echo "PARENT_NONFLASHING_PACKAGE=W37_V3"
+            echo "AUDIT_MODE=READ_ONLY_PLUS_PROPOSED_TEXT_DELTA"
+            echo "KERNEL_REBUILD=NO"
+            echo "BOOT_IMAGE_CREATED=NO"
+            echo "INSTALLABLE_PACKAGE_CREATED=NO"
+            echo "META_INF_CREATED=NO"
+            echo "REAL_DEVICE_ACCESSED=NO"
+            echo "FLASHING_PERFORMED=NO"
+          } | tee w41/evidence/AUDIT-HEADER.txt
+
+      - name: Download W40 v1 and W37 v3 artifacts with full pagination
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          API="$GITHUB_API_URL/repos/$GITHUB_REPOSITORY"
+          AUTH="Authorization: Bearer $GH_TOKEN"
+          ACCEPT="Accept: application/vnd.github+json"
+          VERSION="X-GitHub-Api-Version: 2022-11-28"
+
+          ALL='w41/evidence/artifacts.ndjson'
+          : > "$ALL"
+
+          page=1
+          while :; do
+            page_json="w41/evidence/artifacts-page-${page}.json"
+
+            curl -fsSL \
+              -H "$AUTH" \
+              -H "$ACCEPT" \
+              -H "$VERSION" \
+              "$API/actions/artifacts?per_page=100&page=${page}" \
+              -o "$page_json"
+
+            count="$(jq '.artifacts | length' "$page_json")"
+            jq -c '.artifacts[]' "$page_json" >> "$ALL"
+
+            if [ "$count" -lt 100 ]; then
+              break
+            fi
+
+            page=$((page + 1))
+            if [ "$page" -gt 100 ]; then
+              echo "ERROR: artifact pagination safety limit reached"
+              exit 1
+            fi
+          done
+
+          jq -s '{artifacts: .}' "$ALL" > w41/evidence/artifacts.json
+
+          fetch_prefix() {
+            local prefix="$1"
+            local zip_path="$2"
+            local out_dir="$3"
+            local meta_path="$4"
+
+            local selected id name url
+            selected="$(
+              jq -c --arg prefix "$prefix" '
+                [
+                  .artifacts[]
+                  | select(
+                      (.expired == false)
+                      and
+                      (.name | startswith($prefix))
+                    )
+                ]
+                | sort_by(.created_at)
+                | reverse
+                | .[0] // empty
+              ' w41/evidence/artifacts.json
+            )"
+
+            test -n "$selected"
+
+            id="$(jq -r '.id // empty' <<< "$selected")"
+            name="$(jq -r '.name // empty' <<< "$selected")"
+            url="$(jq -r '.archive_download_url // empty' <<< "$selected")"
+
+            test -n "$id"
+            test -n "$name"
+            test -n "$url"
+
+            jq . <<< "$selected" > "$meta_path"
+
+            curl -fLsS \
+              -H "$AUTH" \
+              -H "$ACCEPT" \
+              -H "$VERSION" \
+              "$url" \
+              -o "$zip_path"
+
+            unzip -t "$zip_path" > "${zip_path}.ziptest.txt"
+            unzip -q "$zip_path" -d "$out_dir"
+
+            printf '%s|%s|%s\n' \
+              "$name" \
+              "$id" \
+              "$(sha256sum "$zip_path" | awk '{print $1}')"
+          }
+
+          W40_INFO="$(
+            fetch_prefix \
+              "$W40_ARTIFACT_PREFIX" \
+              w41/W40_V1.zip \
+              w41/w40 \
+              w41/evidence/W40-ARTIFACT.json
+          )"
+
+          W37_INFO="$(
+            fetch_prefix \
+              "$W37_ARTIFACT_PREFIX" \
+              w41/W37_V3.zip \
+              w41/w37 \
+              w41/evidence/W37-ARTIFACT.json
+          )"
+
+          {
+            echo "INPUT_ARTIFACT_FETCH=PASS"
+            echo "ARTIFACT_PAGINATION=PASS"
+            echo "ARTIFACT_PAGE_COUNT=$page"
+            echo "ARTIFACT_TOTAL_COUNT=$(wc -l < "$ALL" | tr -d ' ')"
+            echo "W40_ARTIFACT=$W40_INFO"
+            echo "W37_ARTIFACT=$W37_INFO"
+          } | tee w41/evidence/INPUT-ARTIFACTS.txt
+
+      - name: Verify W40 dual device compatibility verdict
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          W40_REPORT="$(
+            find w41/w40 \
+              -type f \
+              -name 'GEN2_40_V1_VEUX_PEUX_UNIFIED_CROSS_DEVICE_COMPATIBILITY_AUDIT.txt' \
+              -print \
+              | head -n 1
+          )"
+
+          test -n "$W40_REPORT"
+          test -s "$W40_REPORT"
+
+          grep -Fxq \
+            'FINAL_RESULT=PASS_GEN2_40_V1_VEUX_PEUX_UNIFIED_STATIC_CROSS_DEVICE_COMPATIBILITY_AUDIT' \
+            "$W40_REPORT"
+
+          grep -Fxq 'TARGET_SCOPE=VEUX_AND_PEUX' "$W40_REPORT"
+          grep -Fxq 'LINEAGE_EXPLICITLY_ACCEPTS_VEUX=YES' "$W40_REPORT"
+          grep -Fxq 'LINEAGE_EXPLICITLY_ACCEPTS_PEUX=YES' "$W40_REPORT"
+          grep -Fxq 'LINEAGE_BOARD_ASSERT=require board=veux|peux' "$W40_REPORT"
+          grep -Fxq 'UNIFIED_KERNEL_CONFIG=veux_defconfig' "$W40_REPORT"
+          grep -Fxq 'UNIFIED_KERNEL_DTB=veux.dtb' "$W40_REPORT"
+          grep -Fxq 'UNIFIED_KERNEL_DTBO=veux-overlay.dtbo' "$W40_REPORT"
+          grep -Fxq 'W33_KERNEL_BINARY_CHANGED=NO' "$W40_REPORT"
+          grep -Fxq 'W39_V5_VALIDATION_PRESERVED=YES' "$W40_REPORT"
+          grep -Fxq 'STATIC_DUAL_DEVICE_RELEASE_SCOPE_SUPPORTED=YES' "$W40_REPORT"
+          grep -Fxq 'PEUX_SEPARATE_PHYSICAL_DEVICE_BOOT_TESTED=NO' "$W40_REPORT"
+          grep -Fxq 'REAL_DEVICE_ACCESSED=NO' "$W40_REPORT"
+          grep -Fxq 'FLASHING_PERFORMED=NO' "$W40_REPORT"
+
+          {
+            echo "W40_DUAL_DEVICE_PREREQUISITE=PASS"
+            echo "TARGET_SCOPE=VEUX_AND_PEUX"
+            echo "PEUX_STATIC_COMPATIBILITY=PASS"
+            echo "PEUX_PHYSICAL_BOOT_TESTED=NO"
+          } | tee w41/evidence/W40-PREREQUISITE.txt
+
+      - name: Authenticate exact W37 v3 nonflashing staging archive
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          STAGING="$(
+            find w41/w37 \
+              -type f \
+              -name "$W37_STAGING_NAME" \
+              -print \
+              | head -n 1
+          )"
+
+          test -n "$STAGING"
+          test -s "$STAGING"
+
+          test "$(stat -c '%s' "$STAGING")" = "$W37_STAGING_BYTES"
+          test "$(sha256sum "$STAGING" | awk '{print $1}')" = "$W37_STAGING_SHA256"
+
+          unzip -t "$STAGING" > w41/evidence/W37-STAGING-CRC.txt
+          unzip -q "$STAGING" -d w41/package
+
+          (
+            cd w41/package
+            sha256sum -c PACKAGE-SHA256SUMS
+          ) > w41/evidence/W37-PACKAGE-SHA256SUMS.verify.txt
+
+          test -s w41/package/Image
+          test -s w41/package/anykernel.sh
+          test -s w41/package/anykernel.production-candidate.sh
+          test -s w41/package/tools/ak3-core.sh
+          test -s w41/package/tools/magiskboot
+
+          test "$(sha256sum w41/package/Image | awk '{print $1}')" = "$W33_IMAGE_SHA256"
+
+          test ! -e w41/package/META-INF
+          test ! -e w41/package/boot.img
+          test ! -e w41/package/vendor_boot.img
+          test ! -e w41/package/dtbo.img
+          test ! -e w41/package/vbmeta.img
+
+          if ! grep -Fq 'NONFLASHING' w41/package/anykernel.sh; then
+            echo "ERROR: W37 anykernel.sh is not the expected nonflashing guard"
+            exit 1
+          fi
+
+          {
+            echo "W37_V3_STAGING_AUTHENTICATION=PASS"
+            echo "W37_STAGING_SHA256=$W37_STAGING_SHA256"
+            echo "W37_STAGING_BYTES=$W37_STAGING_BYTES"
+            echo "W33_IMAGE_SHA256=$W33_IMAGE_SHA256"
+            echo "META_INF_PRESENT=NO"
+            echo "RECOVERY_INSTALLABLE=NO"
+            echo "NONFLASHING_GUARD_PRESENT=YES"
+          } | tee w41/evidence/W37-STAGING-STATUS.txt
+
+      - name: Verify current W37 production candidate is still veux only
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          CANDIDATE='w41/package/anykernel.production-candidate.sh'
+
+          test -s "$CANDIDATE"
+          bash -n "$CANDIDATE"
+
+          grep -Fxq 'device.name1=veux' "$CANDIDATE"
+          grep -Fxq 'device.name2=' "$CANDIDATE"
+          grep -Fxq 'device.name3=' "$CANDIDATE"
+          grep -Fxq 'device.name4=' "$CANDIDATE"
+          grep -Fxq 'device.name5=' "$CANDIDATE"
+
+          if grep -Fxq 'device.name2=peux' "$CANDIDATE"; then
+            echo "ERROR: baseline W37 candidate unexpectedly already enables peux"
+            exit 1
+          fi
+
+          grep -Fxq 'do.devicecheck=1' "$CANDIDATE"
+          grep -Fxq 'do.modules=0' "$CANDIDATE"
+          grep -Fxq 'do.systemless=0' "$CANDIDATE"
+          grep -Fxq 'supported.versions=16' "$CANDIDATE"
+          grep -Fxq 'BLOCK=boot' "$CANDIDATE"
+          grep -Fxq 'IS_SLOT_DEVICE=1' "$CANDIDATE"
+          grep -Fxq 'SLOT_SELECT=active' "$CANDIDATE"
+          grep -Fxq 'PATCH_VBMETA_FLAG=0' "$CANDIDATE"
+          grep -Fxq 'NO_MAGISK_CHECK=1' "$CANDIDATE"
+
+          {
+            echo "W37_BASELINE_CANDIDATE=PASS"
+            echo "BASELINE_DEVICE_NAME_1=veux"
+            echo "BASELINE_DEVICE_NAME_2=EMPTY"
+            echo "DEVICECHECK=ENABLED"
+            echo "MODULE_INSTALL=NO"
+            echo "SYSTEMLESS=NO"
+            echo "ANDROID_VERSION_SCOPE=16"
+            echo "BLOCK=boot"
+            echo "A_B_ACTIVE_SLOT=YES"
+          } | tee w41/evidence/W37-BASELINE-CANDIDATE.txt
+
+      - name: Generate exact proposed VEUX PEUX production candidate delta
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          BASE='w41/package/anykernel.production-candidate.sh'
+          NEW='w41/proposed/anykernel.production-candidate.veux-peux.sh'
+
+          cp "$BASE" "$NEW"
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("w41/proposed/anykernel.production-candidate.veux-peux.sh")
+          text = path.read_text(encoding="utf-8")
+
+          replacements = [
+              (
+                  "### GEN2 VEUX AnyKernel3 production candidate - NOT YET RELEASED",
+                  "### GEN2 VEUX/PEUX AnyKernel3 production candidate - NOT YET RELEASED",
+              ),
+              (
+                  "## Runtime contract validated by GEN2 Workflow 36 v13.",
+                  "## VEUX runtime validated through GEN2 Workflow 39 v5; "
+                  "VEUX/PEUX static scope validated by Workflow 40 v1.",
+              ),
+              (
+                  "kernel.string=GEN2 VEUX 5.4.302 ReSukiSU SUSFS",
+                  "kernel.string=GEN2 VEUX/PEUX 5.4.302 ReSukiSU SUSFS",
+              ),
+              (
+                  "device.name2=",
+                  "device.name2=peux",
+              ),
+          ]
+
+          for old, new in replacements:
+              if text.count(old) != 1:
+                  raise RuntimeError(
+                      f"expected exactly one baseline occurrence: {old!r}"
+                  )
+              text = text.replace(old, new, 1)
+
+          path.write_text(text, encoding="utf-8")
+          PY
+
+          bash -n "$NEW"
+
+          diff -u "$BASE" "$NEW" \
+            > w41/evidence/W37-TO-DUAL-DEVICE-CANDIDATE.patch || true
+
+          test -s w41/evidence/W37-TO-DUAL-DEVICE-CANDIDATE.patch
+
+          grep -Fxq 'device.name1=veux' "$NEW"
+          grep -Fxq 'device.name2=peux' "$NEW"
+          grep -Fxq 'device.name3=' "$NEW"
+          grep -Fxq 'device.name4=' "$NEW"
+          grep -Fxq 'device.name5=' "$NEW"
+
+          grep -Fxq 'do.devicecheck=1' "$NEW"
+          grep -Fxq 'do.modules=0' "$NEW"
+          grep -Fxq 'do.systemless=0' "$NEW"
+          grep -Fxq 'supported.versions=16' "$NEW"
+          grep -Fxq 'BLOCK=boot' "$NEW"
+          grep -Fxq 'IS_SLOT_DEVICE=1' "$NEW"
+          grep -Fxq 'SLOT_SELECT=active' "$NEW"
+          grep -Fxq 'PATCH_VBMETA_FLAG=0' "$NEW"
+          grep -Fxq 'NO_MAGISK_CHECK=1' "$NEW"
+
+          {
+            echo "PROPOSED_DUAL_DEVICE_CANDIDATE=PASS"
+            echo "DEVICE_NAME_1=veux"
+            echo "DEVICE_NAME_2=peux"
+            echo "DEVICE_NAME_3_TO_5=EMPTY"
+            echo "FUNCTIONAL_DEVICE_SCOPE_DELTA=device.name2=peux"
+            echo "KERNEL_BINARY_CHANGED=NO"
+            echo "AK3_CORE_CHANGED=NO"
+            echo "MAGISKBOOT_CHANGED=NO"
+            echo "RAMDISK_POLICY_CHANGED=NO"
+            echo "BOOT_PARTITION_POLICY_CHANGED=NO"
+            echo "VBMETA_POLICY_CHANGED=NO"
+            echo "INSTALLABLE_PACKAGE_CREATED=NO"
+            echo "PROPOSED_SCRIPT_SHA256=$(sha256sum "$NEW" | awk '{print $1}')"
+          } | tee w41/evidence/PROPOSED-DUAL-DEVICE-STATUS.txt
+
+      - name: Verify proposed delta is narrowly bounded
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          PATCH='w41/evidence/W37-TO-DUAL-DEVICE-CANDIDATE.patch'
+
+          test -s "$PATCH"
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          patch = Path(
+              "w41/evidence/W37-TO-DUAL-DEVICE-CANDIDATE.patch"
+          ).read_text(encoding="utf-8")
+
+          added = [
+              line[1:]
+              for line in patch.splitlines()
+              if line.startswith("+")
+              and not line.startswith("+++")
+          ]
+
+          removed = [
+              line[1:]
+              for line in patch.splitlines()
+              if line.startswith("-")
+              and not line.startswith("---")
+          ]
+
+          expected_added = {
+              "### GEN2 VEUX/PEUX AnyKernel3 production candidate - NOT YET RELEASED",
+              "## VEUX runtime validated through GEN2 Workflow 39 v5; VEUX/PEUX static scope validated by Workflow 40 v1.",
+              "kernel.string=GEN2 VEUX/PEUX 5.4.302 ReSukiSU SUSFS",
+              "device.name2=peux",
+          }
+
+          expected_removed = {
+              "### GEN2 VEUX AnyKernel3 production candidate - NOT YET RELEASED",
+              "## Runtime contract validated by GEN2 Workflow 36 v13.",
+              "kernel.string=GEN2 VEUX 5.4.302 ReSukiSU SUSFS",
+              "device.name2=",
+          }
+
+          if set(added) != expected_added:
+              raise RuntimeError(
+                  f"unexpected added lines: {added!r}"
+              )
+
+          if set(removed) != expected_removed:
+              raise RuntimeError(
+                  f"unexpected removed lines: {removed!r}"
+              )
+
+          print("PROPOSED_DELTA_EXACTLY_BOUNDED=PASS")
+          print("ADDED_LINES=4")
+          print("REMOVED_LINES=4")
+          PY
+
+          {
+            echo "PROPOSED_DELTA_BOUNDARY=PASS"
+            echo "ADDED_LINES=4"
+            echo "REMOVED_LINES=4"
+            echo "FUNCTIONAL_CHANGE=device.name2=peux"
+            echo "OTHER_CHANGES=DISPLAY_AND_PROVENANCE_TEXT_ONLY"
+          } | tee w41/evidence/DELTA-BOUNDARY.txt
+
+      - name: Derive final dual device release readiness verdict
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          grep -Fxq 'W40_DUAL_DEVICE_PREREQUISITE=PASS' \
+            w41/evidence/W40-PREREQUISITE.txt
+
+          grep -Fxq 'W37_V3_STAGING_AUTHENTICATION=PASS' \
+            w41/evidence/W37-STAGING-STATUS.txt
+
+          grep -Fxq 'W37_BASELINE_CANDIDATE=PASS' \
+            w41/evidence/W37-BASELINE-CANDIDATE.txt
+
+          grep -Fxq 'PROPOSED_DUAL_DEVICE_CANDIDATE=PASS' \
+            w41/evidence/PROPOSED-DUAL-DEVICE-STATUS.txt
+
+          grep -Fxq 'PROPOSED_DELTA_BOUNDARY=PASS' \
+            w41/evidence/DELTA-BOUNDARY.txt
+
+          {
+            echo "FINAL_RESULT=PASS_GEN2_41_V1_VEUX_PEUX_FINAL_NONFLASHING_RELEASE_READINESS_AUDIT"
+            echo "TARGET_SCOPE=VEUX_AND_PEUX"
+            echo "W40_STATIC_DUAL_DEVICE_COMPATIBILITY=PASS"
+            echo "W37_V3_NONFLASHING_STAGING=PASS"
+            echo "EXACT_DUAL_DEVICE_CANDIDATE_DELTA=PASS"
+            echo "FUNCTIONAL_SCOPE_CHANGE=device.name2=peux"
+            echo "W33_KERNEL_BINARY_CHANGED=NO"
+            echo "AK3_CORE_CHANGED=NO"
+            echo "MAGISKBOOT_CHANGED=NO"
+            echo "BOOT_ONLY_POLICY_PRESERVED=YES"
+            echo "ACTIVE_SLOT_POLICY_PRESERVED=YES"
+            echo "VENDOR_BOOT_POLICY=PRESERVE"
+            echo "DTBO_POLICY=PRESERVE"
+            echo "TOP_LEVEL_VBMETA_POLICY=PRESERVE"
+            echo "VEUX_RUNTIME_VALIDATION=PASS_THROUGH_W39_V5"
+            echo "PEUX_STATIC_COMPATIBILITY=PASS_THROUGH_W40_V1"
+            echo "PEUX_PHYSICAL_RUNTIME_VALIDATION=NOT_PERFORMED"
+            echo "INSTALLABLE_DUAL_DEVICE_PACKAGE_PROMOTION_PRECONDITIONS=PASS"
+            echo "INSTALLABLE_PACKAGE_CREATED=NO"
+            echo "PROMOTION_REQUIRES_EXPLICIT_USER_APPROVAL=YES"
+            echo "REAL_DEVICE_ACCESSED=NO"
+            echo "FLASHING_PERFORMED=NO"
+            echo "NEXT_STEP=EXPLICIT_USER_APPROVAL_FOR_DUAL_DEVICE_INSTALLABLE_PACKAGE_PROMOTION"
+          } | tee w41/evidence/W41-VERDICT.txt
+
+      - name: Write final W41 report
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          REPORT='GEN2_41_V1_VEUX_PEUX_FINAL_NONFLASHING_RELEASE_READINESS_AUDIT.txt'
+
+          {
+            cat w41/evidence/AUDIT-HEADER.txt
+            echo
+            cat w41/evidence/INPUT-ARTIFACTS.txt
+            echo
+            cat w41/evidence/W40-PREREQUISITE.txt
+            cat w41/evidence/W37-STAGING-STATUS.txt
+            cat w41/evidence/W37-BASELINE-CANDIDATE.txt
+            echo
+            cat w41/evidence/PROPOSED-DUAL-DEVICE-STATUS.txt
+            cat w41/evidence/DELTA-BOUNDARY.txt
+            echo
+            cat w41/evidence/W41-VERDICT.txt
+          } > "$REPORT"
+
+          test -s "$REPORT"
+
+      - name: Build failure safe W41 report
+        if: always()
+        shell: bash
+        run: |
+          set +e
+
+          REPORT='GEN2_41_V1_VEUX_PEUX_FINAL_NONFLASHING_RELEASE_READINESS_AUDIT.txt'
+
+          if [ ! -s "$REPORT" ]; then
+            {
+              echo "AUDIT=GEN2_41_V1_VEUX_PEUX_FINAL_DUAL_DEVICE_RELEASE_READINESS"
+              echo "RESULT=INCOMPLETE_OR_FAILED"
+              echo "FAILURE_SAFE_AUDIT_GENERATED=YES"
+              echo "DATE_UTC=$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+              echo
+              find w41/evidence -maxdepth 1 -type f -print 2>/dev/null | sort
+              echo
+              echo "KERNEL_REBUILD=NO"
+              echo "INSTALLABLE_PACKAGE_CREATED=NO"
+              echo "META_INF_CREATED=NO"
+              echo "REAL_DEVICE_ACCESSED=NO"
+              echo "FLASHING_PERFORMED=NO"
+            } > "$REPORT"
+          fi
+
+          test -s "$REPORT"
+
+      - name: Upload W41 release readiness artifact
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: GEN2_41_V1_VEUX_PEUX_FINAL_NONFLASHING_RELEASE_READINESS_AUDIT-${{ github.run_number }}
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 6
+          path: |
+            GEN2_41_V1_VEUX_PEUX_FINAL_NONFLASHING_RELEASE_READINESS_AUDIT.txt
+            w41/evidence/
+            w41/proposed/anykernel.production-candidate.veux-peux.sh
