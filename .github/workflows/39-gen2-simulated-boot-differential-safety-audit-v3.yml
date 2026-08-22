@@ -1,0 +1,1031 @@
+name: 39 - GEN2 Simulated Boot Differential Safety Audit v3
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: gen2-39-v3-simulated-boot-differential-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  W38_ARTIFACT_PREFIX: "GEN2_38_PRODUCTION_CANDIDATE_RUNTIME_PROMOTION_GATE_AUDIT-"
+  W37_ARTIFACT_PREFIX: "GEN2_37_NONFLASHING_AK3_RELEASE_CANDIDATE_AUDIT-"
+  BOOT_INPUT_ARTIFACT_NAME: "GEN2_W36_VALIDATED_LINEAGE_ANDROID16_BOOT_INPUT"
+
+  W37_STAGING_NAME: "DO_NOT_FLASH_GEN2_VEUX_5.4.302_ReSukiSU_SUSFS_W37_AK3_RC_CONTENTS.zip"
+  W37_STAGING_SHA256: "5df4a693e10995a707f607dc1f02f2abc5e6af535daf7569267426ec5d02e15e"
+  PRODUCTION_CANDIDATE_SHA256: "4e1a731b9454e17697ba38051c5e2aa63f274305875152900f6222e34b45791a"
+  AK3_CORE_SHA256: "f7a51cfe2e093016a34a76e16de6c9885c2d1992c3482fcabc668680e1f0f6bb"
+  AK3_NATIVE_MAGISKBOOT_SHA256: "0b19472b291ce9033c29a83155ff4c1b18be9d1d17d901d63e50f57436378762"
+
+  W33_IMAGE_SHA256: "98e608f7c30540b6cb5a1731b0edecd9a3b4960ebf388763452685858916037f"
+
+  VALIDATED_BOOT_GZIP_SHA256: "183984c727524325b36696a43419802fa9894a56bfc4c51c3b3cc6fa242a7bfa"
+  VALIDATED_BOOT_GZIP_SIZE: "16498759"
+  VALIDATED_BOOT_SHA256: "b4f8a81c19f89f2cfc0a179a3a01b3079119411e0325bbde758e885bf9d4aa8d"
+  VALIDATED_BOOT_SIZE: "133300224"
+
+  BOOT_PARTITION_SIZE: "134217728"
+
+jobs:
+  audit:
+    name: Differential simulated boot safety gate v3
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+
+    env:
+      WORK: ${{ github.workspace }}/w39v3
+      INPUTS: ${{ github.workspace }}/w39v3/inputs
+      W38: ${{ github.workspace }}/w39v3/w38
+      W37: ${{ github.workspace }}/w39v3/w37
+      PACKAGE: ${{ github.workspace }}/w39v3/package
+      BOOT_INPUT: ${{ github.workspace }}/w39v3/boot-input
+      SIM: ${{ github.workspace }}/w39v3/sim
+      OUTPUT: ${{ github.workspace }}/w39v3/output
+
+    steps:
+      - name: Prepare simulated boot safety audit
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -rf "$WORK"
+          mkdir -p \
+            "$INPUTS" \
+            "$W38" \
+            "$W37" \
+            "$PACKAGE" \
+            "$BOOT_INPUT" \
+            "$SIM" \
+            "$OUTPUT"
+
+          cat > "$OUTPUT/SCOPE.txt" <<'EOF'
+          GEN2 Workflow 39 v3
+          =================
+
+          PURPOSE:
+          Add a simulated boot safety layer before any real VEUX device operation.
+
+          INPUT CHAIN:
+          - exact successful W38 fake A/B runtime promotion gate
+          - exact successful W37 nonflashing production-candidate archive
+          - exact validated Lineage Android 16 veux boot input from W36
+
+          TEST LAYERS:
+          1. Reproduce the exact W38 production-candidate result on a fake boot_a.
+          2. Require the reproduced final boot partition SHA-256 to equal the
+             exact W38 recorded A/B result SHA-256.
+          3. Unpack original Lineage boot and GEN2 candidate with the exact
+             packaged Android magiskboot under qemu-arm-static.
+          4. Require exact W33 kernel bytes in the candidate.
+          5. Require logical ramdisk byte identity with the source Lineage boot.
+          6. Require valid boot header v3 and preservation of Android version,
+             patch level, header size, reserved fields and cmdline.
+          7. Require valid ARM64 Image magic/header for source and candidate.
+          8. Require candidate ramdisk CPIO to be readable/listable.
+          9. Run source Lineage kernel and GEN2 kernel through the same generic
+             qemu-system-aarch64 "virt" early-boot load test twice each.
+          10. Fail on immediate QEMU kernel-loader rejection.
+          11. If the source kernel reaches a recognizable Linux early-boot line
+              but the GEN2 kernel never does in either run, fail closed as a
+              differential regression signal.
+
+          QEMU LIMIT:
+          QEMU "virt" is NOT a Qualcomm SM6375 / POCO X4 Pro emulator.
+          Therefore:
+          - timeout is not a VEUX boot failure
+          - no serial output is not by itself a VEUX boot failure
+          - later platform/device/rootfs panic is not by itself a VEUX boot failure
+          - immediate inability to load the ARM64 kernel image IS a hard failure
+          - losing early-boot progress that the source Lineage kernel achieves
+            under the same emulator is treated as a differential safety failure
+
+          NO PHONE.
+          NO ADB.
+          NO FASTBOOT.
+          NO PHYSICAL PARTITION.
+          NO FLASH.
+          NO INSTALLABLE ZIP.
+          EOF
+
+          {
+            echo "AUDIT=GEN2_39_V3_SIMULATED_BOOT_DIFFERENTIAL_SAFETY"
+            echo "DATE_UTC=$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+            echo "RUN_ID=$GITHUB_RUN_ID"
+            echo "REAL_DEVICE_ACCESSED=NO"
+            echo "FLASHING_PERFORMED=NO"
+            echo "QEMU_MACHINE=virt"
+            echo "QEMU_IS_VEUX_EMULATOR=NO"
+            echo "W39_V1_FAILURE_CLASSIFICATION=AUDIT_IMPLEMENTATION_BUG"
+            echo "W39_V1_FAILURE_DETAIL=INVALID_UNIVERSAL_ARM64_TEXT_OFFSET_0X80000_ASSUMPTION"
+            echo "W39_V3_FIX=JSON_SAFE_BOOT_CMDLINE_PLUS_REFERENCE_DERIVED_ARM64_GATES"
+          } > "$OUTPUT/AUDIT-HEADER.txt"
+
+      - name: Install simulation dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            cpio \
+            file \
+            jq \
+            qemu-system-arm \
+            qemu-user-static \
+            unzip
+
+          command -v qemu-system-aarch64
+          command -v qemu-arm-static
+          command -v cpio
+          command -v gzip
+
+          {
+            qemu-system-aarch64 --version | head -n 1
+            qemu-arm-static --version | head -n 1
+          } > "$OUTPUT/QEMU-VERSIONS.txt"
+
+      - name: Download exact W38 W37 and real boot artifacts
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          API="$GITHUB_API_URL/repos/$GITHUB_REPOSITORY"
+          AUTH="Authorization: Bearer $GH_TOKEN"
+          ACCEPT="Accept: application/vnd.github+json"
+          VERSION="X-GitHub-Api-Version: 2022-11-28"
+          ALL="$WORK/artifacts.ndjson"
+          : > "$ALL"
+
+          page=1
+          while :; do
+            page_json="$WORK/artifacts-page-${page}.json"
+
+            curl -fsSL \
+              -H "$AUTH" \
+              -H "$ACCEPT" \
+              -H "$VERSION" \
+              "$API/actions/artifacts?per_page=100&page=${page}" \
+              -o "$page_json"
+
+            count="$(jq '.artifacts | length' "$page_json")"
+            jq -c '.artifacts[]' "$page_json" >> "$ALL"
+
+            [ "$count" -lt 100 ] && break
+
+            page=$((page + 1))
+            [ "$page" -le 30 ] || {
+              echo "ERROR: artifact pagination safety limit reached"
+              exit 1
+            }
+          done
+
+          select_prefix() {
+            local prefix="$1"
+            jq -s -c --arg prefix "$prefix" '
+              [
+                .[]
+                | select(
+                    (.expired == false)
+                    and (.name | startswith($prefix))
+                  )
+              ]
+              | sort_by(.created_at)
+              | reverse
+              | .[0] // empty
+            ' "$ALL"
+          }
+
+          select_exact() {
+            local name="$1"
+            jq -s -c --arg name "$name" '
+              [
+                .[]
+                | select(
+                    (.expired == false)
+                    and (.name == $name)
+                  )
+              ]
+              | sort_by(.created_at)
+              | reverse
+              | .[0] // empty
+            ' "$ALL"
+          }
+
+          download_selected() {
+            local selected="$1"
+            local dest="$2"
+            local meta="$3"
+
+            test -n "$selected"
+
+            local id name url
+            id="$(jq -r '.id // empty' <<<"$selected")"
+            name="$(jq -r '.name // empty' <<<"$selected")"
+            url="$(jq -r '.archive_download_url // empty' <<<"$selected")"
+
+            test -n "$id"
+            test -n "$name"
+            test -n "$url"
+
+            jq . <<<"$selected" > "$meta"
+
+            curl -fLsS \
+              -H "$AUTH" \
+              -H "$ACCEPT" \
+              -H "$VERSION" \
+              "$url" \
+              -o "$dest"
+
+            unzip -t "$dest" > "${dest}.ziptest.txt"
+
+            echo "$name|$id|$(sha256sum "$dest" | awk '{print $1}')"
+          }
+
+          W38_INFO="$(
+            download_selected \
+              "$(select_prefix "$W38_ARTIFACT_PREFIX")" \
+              "$INPUTS/w38.zip" \
+              "$OUTPUT/W38-ARTIFACT.json"
+          )"
+
+          W37_INFO="$(
+            download_selected \
+              "$(select_prefix "$W37_ARTIFACT_PREFIX")" \
+              "$INPUTS/w37.zip" \
+              "$OUTPUT/W37-ARTIFACT.json"
+          )"
+
+          BOOT_INFO="$(
+            download_selected \
+              "$(select_exact "$BOOT_INPUT_ARTIFACT_NAME")" \
+              "$INPUTS/boot-input.zip" \
+              "$OUTPUT/BOOT-INPUT-ARTIFACT.json"
+          )"
+
+          unzip -q "$INPUTS/w38.zip" -d "$W38"
+          unzip -q "$INPUTS/w37.zip" -d "$W37"
+          unzip -q "$INPUTS/boot-input.zip" -d "$BOOT_INPUT"
+
+          {
+            echo "W38_ARTIFACT=$W38_INFO"
+            echo "W37_ARTIFACT=$W37_INFO"
+            echo "BOOT_INPUT_ARTIFACT=$BOOT_INFO"
+          } | tee "$OUTPUT/INPUT-ARTIFACTS.txt"
+
+      - name: Verify W38 and W37 prerequisite gates
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          W38_VERDICT="$W38/w38/output/W38-VERDICT.txt"
+          W38_VALID="$W38/w38/output/VALID-SLOT-VERDICT.txt"
+          W37_VERDICT="$W37/w37/output/W37-VERDICT.txt"
+          STAGING="$W37/w37/output/$W37_STAGING_NAME"
+
+          test -s "$W38_VERDICT"
+          test -s "$W38_VALID"
+          test -s "$W37_VERDICT"
+          test -s "$STAGING"
+
+          grep -Fxq \
+            'FINAL_RESULT=PASS_GEN2_38_PRODUCTION_CANDIDATE_RUNTIME_PROMOTION_GATE' \
+            "$W38_VERDICT"
+          grep -Fxq 'ACTIVE_SLOT_A_RUNTIME=PASS' "$W38_VERDICT"
+          grep -Fxq 'ACTIVE_SLOT_B_RUNTIME=PASS' "$W38_VERDICT"
+          grep -Fxq 'INVALID_SLOT_FAIL_CLOSED=PASS' "$W38_VERDICT"
+          grep -Fxq 'W33_KERNEL_INSERTED_EXACTLY=YES' "$W38_VERDICT"
+          grep -Fxq 'RAMDISK_LOGICAL_BYTES_PRESERVED=YES' "$W38_VERDICT"
+          grep -Fxq 'REAL_DEVICE_ACCESSED=NO' "$W38_VERDICT"
+
+          grep -Fxq 'VALID_SLOT_RUNTIME=PASS' "$W38_VALID"
+          grep -Fxq 'VALID_SLOT_OUTPUTS_BYTE_IDENTICAL=YES' "$W38_VALID"
+
+          EXPECTED_FINAL_BOOT_SHA256="$(
+            sed -n 's/^SLOT_A_FINAL_SHA256=//p' "$W38_VALID"
+          )"
+          EXPECTED_FINAL_BOOT_SHA256_B="$(
+            sed -n 's/^SLOT_B_FINAL_SHA256=//p' "$W38_VALID"
+          )"
+
+          test -n "$EXPECTED_FINAL_BOOT_SHA256"
+          test "$EXPECTED_FINAL_BOOT_SHA256" = "$EXPECTED_FINAL_BOOT_SHA256_B"
+          test "${#EXPECTED_FINAL_BOOT_SHA256}" -eq 64
+
+          echo "EXPECTED_FINAL_BOOT_SHA256=$EXPECTED_FINAL_BOOT_SHA256" \
+            >> "$GITHUB_ENV"
+
+          grep -Fxq \
+            'FINAL_RESULT=PASS_GEN2_37_NONFLASHING_AK3_RELEASE_CANDIDATE_ARCHIVE_AND_DEVICE_TEST_PLAN' \
+            "$W37_VERDICT"
+          grep -Fxq 'AK3_PACKAGED_NATIVE_MAGISKBOOT_QEMU=PASS' "$W37_VERDICT"
+          grep -Fxq 'DETERMINISTIC_PACKAGE_BYTES=YES' "$W37_VERDICT"
+
+          test "$(sha256sum "$STAGING" | awk '{print $1}')" = "$W37_STAGING_SHA256"
+
+          unzip -t "$STAGING" > "$OUTPUT/W37-STAGING-CRC.txt"
+          unzip -q "$STAGING" -d "$PACKAGE"
+
+          (
+            cd "$PACKAGE"
+            sha256sum -c PACKAGE-SHA256SUMS
+          ) > "$OUTPUT/W37-PACKAGE-SHA256SUMS.verify.txt"
+
+          test "$(sha256sum "$PACKAGE/Image" | awk '{print $1}')" = "$W33_IMAGE_SHA256"
+          test "$(sha256sum "$PACKAGE/anykernel.production-candidate.sh" | awk '{print $1}')" = "$PRODUCTION_CANDIDATE_SHA256"
+          test "$(sha256sum "$PACKAGE/tools/ak3-core.sh" | awk '{print $1}')" = "$AK3_CORE_SHA256"
+          test "$(sha256sum "$PACKAGE/tools/magiskboot" | awk '{print $1}')" = "$AK3_NATIVE_MAGISKBOOT_SHA256"
+
+          {
+            echo "W38_PREREQUISITE=PASS"
+            echo "W37_PREREQUISITE=PASS"
+            echo "EXPECTED_FINAL_BOOT_SHA256=$EXPECTED_FINAL_BOOT_SHA256"
+            echo "W33_IMAGE_SHA256=$W33_IMAGE_SHA256"
+          } | tee "$OUTPUT/PREREQUISITE-GATE.txt"
+
+      - name: Recover exact validated source Lineage boot
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          GZIP="$BOOT_INPUT/GEN2_W36_VALIDATED_LINEAGE_VEUX_ANDROID16_BOOT.img.gz"
+          SOURCE_BOOT="$SIM/source-lineage-boot.img"
+
+          test -s "$GZIP"
+          test "$(stat -c '%s' "$GZIP")" = "$VALIDATED_BOOT_GZIP_SIZE"
+          test "$(sha256sum "$GZIP" | awk '{print $1}')" = "$VALIDATED_BOOT_GZIP_SHA256"
+
+          gzip -t "$GZIP"
+          gzip -dc "$GZIP" > "$SOURCE_BOOT"
+
+          test "$(stat -c '%s' "$SOURCE_BOOT")" = "$VALIDATED_BOOT_SIZE"
+          test "$(sha256sum "$SOURCE_BOOT" | awk '{print $1}')" = "$VALIDATED_BOOT_SHA256"
+
+          {
+            echo "SOURCE_LINEAGE_BOOT=PASS"
+            echo "SOURCE_BOOT_SHA256=$VALIDATED_BOOT_SHA256"
+            echo "SOURCE_BOOT_SIZE=$VALIDATED_BOOT_SIZE"
+          } > "$OUTPUT/SOURCE-BOOT.txt"
+
+      - name: Reproduce exact W38 final boot partition
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          QEMU_ARM="$(command -v qemu-arm-static)"
+          export QEMU_ARM
+
+          RUNTIME="$SIM/runtime"
+          PKG="$RUNTIME/package"
+          TARGET="$RUNTIME/boot_a.img"
+
+          rm -rf "$RUNTIME"
+          mkdir -p "$RUNTIME/harness/bin"
+          cp -a "$PACKAGE" "$PKG"
+          cp \
+            "$PKG/anykernel.production-candidate.sh" \
+            "$PKG/anykernel.sh"
+
+          test "$(sha256sum "$PKG/anykernel.sh" | awk '{print $1}')" = \
+            "$PRODUCTION_CANDIDATE_SHA256"
+
+          cat > "$RUNTIME/harness/bin/getprop" <<'EOF'
+          #!/usr/bin/env bash
+          case "${1:-}" in
+            ro.boot.slot_suffix) printf '%s\n' '_a' ;;
+            ro.boot.slot) printf '%s\n' 'a' ;;
+            *) exit 0 ;;
+          esac
+          EOF
+
+          cat > "$RUNTIME/harness/bin/blockdev" <<'EOF'
+          #!/usr/bin/env bash
+          case "${1:-}" in
+            --setrw) exit 0 ;;
+            --getro) printf '%s\n' '0'; exit 0 ;;
+            *) exit 0 ;;
+          esac
+          EOF
+
+          cat > "$RUNTIME/harness/bin/magiskboot" <<'EOF'
+          #!/usr/bin/env bash
+          exec "$QEMU_ARM" "$AKHOME/tools/magiskboot" "$@"
+          EOF
+
+          chmod 755 "$RUNTIME/harness/bin/"*
+
+          truncate -s "$BOOT_PARTITION_SIZE" "$TARGET"
+
+          dd \
+            if="$SIM/source-lineage-boot.img" \
+            of="$TARGET" \
+            bs=1048576 \
+            conv=notrunc \
+            status=none
+
+          cleanup_dev() {
+            sudo rm -f /dev/block/by-name/boot_a 2>/dev/null || true
+            sudo rmdir /dev/block/by-name 2>/dev/null || true
+            sudo rmdir /dev/block 2>/dev/null || true
+          }
+          trap cleanup_dev EXIT
+
+          cleanup_dev
+          sudo mkdir -p /dev/block/by-name
+          sudo ln -s "$TARGET" /dev/block/by-name/boot_a
+
+          (
+            cd "$PKG"
+
+            export AKHOME="$PKG"
+            export OUTFD=1
+            export PATH="$RUNTIME/harness/bin:$PATH"
+            export CUSTOMDD="bs=1048576 count=128 conv=notrunc status=none"
+
+            bash anykernel.sh
+          ) > "$OUTPUT/PRODUCTION-CANDIDATE-REPRODUCE.log" 2>&1
+
+          cleanup_dev
+
+          FINAL_SHA="$(sha256sum "$TARGET" | awk '{print $1}')"
+          FINAL_SIZE="$(stat -c '%s' "$TARGET")"
+
+          test "$FINAL_SIZE" = "$BOOT_PARTITION_SIZE"
+          test "$FINAL_SHA" = "$EXPECTED_FINAL_BOOT_SHA256"
+
+          cp "$TARGET" "$SIM/final-gen2-boot-partition.img"
+
+          {
+            echo "W38_FINAL_BOOT_REPRODUCTION=PASS"
+            echo "EXPECTED_SHA256=$EXPECTED_FINAL_BOOT_SHA256"
+            echo "ACTUAL_SHA256=$FINAL_SHA"
+            echo "BYTE_IDENTICAL_TO_W38_RECORDED_RESULT=YES"
+            echo "FINAL_PARTITION_SIZE=$FINAL_SIZE"
+            echo "REAL_DEVICE_WRITE=NO"
+          } | tee "$OUTPUT/FINAL-BOOT-REPRODUCTION.txt"
+
+      - name: Unpack source and final boot with exact packaged magiskboot
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          QEMU_ARM="$(command -v qemu-arm-static)"
+
+          rm -rf "$SIM/source-unpack" "$SIM/final-unpack"
+          mkdir -p "$SIM/source-unpack" "$SIM/final-unpack"
+
+          cp "$SIM/source-lineage-boot.img" \
+            "$SIM/source-unpack/boot.img"
+
+          cp "$SIM/final-gen2-boot-partition.img" \
+            "$SIM/final-unpack/boot.img"
+
+          (
+            cd "$SIM/source-unpack"
+            "$QEMU_ARM" \
+              "$PACKAGE/tools/magiskboot" \
+              unpack \
+              -h \
+              boot.img \
+              > "$OUTPUT/SOURCE-MAGISKBOOT-UNPACK.log" \
+              2>&1
+          )
+
+          (
+            cd "$SIM/final-unpack"
+            "$QEMU_ARM" \
+              "$PACKAGE/tools/magiskboot" \
+              unpack \
+              -h \
+              boot.img \
+              > "$OUTPUT/FINAL-MAGISKBOOT-UNPACK.log" \
+              2>&1
+          )
+
+          test -s "$SIM/source-unpack/kernel"
+          test -s "$SIM/source-unpack/ramdisk.cpio"
+          test -s "$SIM/final-unpack/kernel"
+          test -s "$SIM/final-unpack/ramdisk.cpio"
+
+          SOURCE_KERNEL_SHA="$(sha256sum "$SIM/source-unpack/kernel" | awk '{print $1}')"
+          FINAL_KERNEL_SHA="$(sha256sum "$SIM/final-unpack/kernel" | awk '{print $1}')"
+          SOURCE_RAMDISK_SHA="$(sha256sum "$SIM/source-unpack/ramdisk.cpio" | awk '{print $1}')"
+          FINAL_RAMDISK_SHA="$(sha256sum "$SIM/final-unpack/ramdisk.cpio" | awk '{print $1}')"
+
+          test "$FINAL_KERNEL_SHA" = "$W33_IMAGE_SHA256"
+          test "$SOURCE_RAMDISK_SHA" = "$FINAL_RAMDISK_SHA"
+          cmp -s \
+            "$SIM/source-unpack/ramdisk.cpio" \
+            "$SIM/final-unpack/ramdisk.cpio"
+
+          {
+            echo "MAGISKBOOT_SOURCE_FINAL_UNPACK=PASS"
+            echo "SOURCE_KERNEL_SHA256=$SOURCE_KERNEL_SHA"
+            echo "FINAL_KERNEL_SHA256=$FINAL_KERNEL_SHA"
+            echo "W33_KERNEL_SHA256_MATCH=YES"
+            echo "SOURCE_RAMDISK_SHA256=$SOURCE_RAMDISK_SHA"
+            echo "FINAL_RAMDISK_SHA256=$FINAL_RAMDISK_SHA"
+            echo "RAMDISK_LOGICAL_BYTES_PRESERVED=YES"
+          } | tee "$OUTPUT/UNPACK-GATE.txt"
+
+      - name: Validate boot v3 metadata and ARM64 image headers
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - \
+            "$SIM/source-lineage-boot.img" \
+            "$SIM/final-gen2-boot-partition.img" \
+            "$SIM/source-unpack/kernel" \
+            "$SIM/final-unpack/kernel" \
+            "$OUTPUT/BOOT-STRUCTURE.json" <<'PY'
+          import hashlib
+          import json
+          import struct
+          import sys
+          from pathlib import Path
+
+          source_boot = Path(sys.argv[1]).read_bytes()
+          final_boot = Path(sys.argv[2]).read_bytes()
+          source_kernel = Path(sys.argv[3]).read_bytes()
+          final_kernel = Path(sys.argv[4]).read_bytes()
+          output = Path(sys.argv[5])
+
+          def need(cond, message):
+              if not cond:
+                  raise SystemExit("ERROR: " + message)
+
+          def parse_boot(data):
+              need(data[:8] == b"ANDROID!", "boot ANDROID! magic")
+
+              kernel_size = struct.unpack_from("<I", data, 8)[0]
+              ramdisk_size = struct.unpack_from("<I", data, 12)[0]
+              os_raw = struct.unpack_from("<I", data, 16)[0]
+              header_size = struct.unpack_from("<I", data, 20)[0]
+              reserved = struct.unpack_from("<4I", data, 24)
+              header_version = struct.unpack_from("<I", data, 40)[0]
+              cmdline_raw = data[44:44+1536]
+              cmdline_text_raw = cmdline_raw.split(b"\0", 1)[0]
+
+              android_major = (os_raw >> 25) & 0x7f
+              android_minor = (os_raw >> 18) & 0x7f
+              android_patch = (os_raw >> 11) & 0x7f
+              patch_year = ((os_raw >> 4) & 0x7f) + 2000
+              patch_month = os_raw & 0xf
+
+              return {
+                  "kernel_size": kernel_size,
+                  "ramdisk_size": ramdisk_size,
+                  "os_raw": os_raw,
+                  "header_size": header_size,
+                  "reserved": reserved,
+                  "header_version": header_version,
+                  "cmdline_hex": cmdline_raw.hex(),
+                  "cmdline_sha256": hashlib.sha256(cmdline_raw).hexdigest(),
+                  "cmdline_text": cmdline_text_raw.decode("utf-8", errors="replace"),
+                  "android": [android_major, android_minor, android_patch],
+                  "patch": [patch_year, patch_month],
+              }
+
+          def parse_arm64(image, label):
+              need(len(image) >= 64, f"{label} ARM64 Image too small")
+
+              text_offset = struct.unpack_from("<Q", image, 8)[0]
+              image_size = struct.unpack_from("<Q", image, 16)[0]
+              flags = struct.unpack_from("<Q", image, 24)[0]
+              magic = struct.unpack_from("<I", image, 56)[0]
+              res5 = struct.unpack_from("<I", image, 60)[0]
+
+              # Linux arm64 Image headers do not require a universal 0x80000
+              # text_offset.  The exact validated Lineage source and exact W33
+              # Image used by this audit both legitimately encode 0.  Validate
+              # the architecture contract and sane geometry instead of imposing
+              # a legacy fixed offset.
+              need(magic == 0x644D5241, f"{label} ARM64 Image magic")
+              need(text_offset % 4096 == 0,
+                   f"{label} ARM64 text_offset is not 4 KiB aligned")
+              need(text_offset < 128 * 1024 * 1024,
+                   f"{label} ARM64 text_offset is implausibly large")
+              need(image_size > 0,
+                   f"{label} ARM64 image_size is zero")
+              need(image_size % 4096 == 0,
+                   f"{label} ARM64 image_size is not 4 KiB aligned")
+              need(image_size >= len(image),
+                   f"{label} ARM64 image_size is smaller than Image bytes")
+              need(image_size <= 512 * 1024 * 1024,
+                   f"{label} ARM64 image_size is implausibly large")
+
+              return {
+                  "bytes": len(image),
+                  "sha256": hashlib.sha256(image).hexdigest(),
+                  "text_offset": text_offset,
+                  "text_offset_hex": f"0x{text_offset:x}",
+                  "image_size": image_size,
+                  "flags": flags,
+                  "flags_hex": f"0x{flags:x}",
+                  "magic": f"0x{magic:08x}",
+                  "res5": res5,
+                  "res5_hex": f"0x{res5:x}",
+                  "geometry_sane": True,
+              }
+
+          before = parse_boot(source_boot)
+          after = parse_boot(final_boot)
+
+          need(before["header_version"] == 3, "source header v3")
+          need(after["header_version"] == 3, "final header v3")
+          need(before["header_size"] == after["header_size"] == 1580, "header size")
+          need(before["os_raw"] == after["os_raw"], "OS version/patch field preserved")
+          need(before["reserved"] == after["reserved"], "reserved fields preserved")
+          need(before["cmdline_hex"] == after["cmdline_hex"], "cmdline preserved")
+          need(before["cmdline_sha256"] == after["cmdline_sha256"],
+               "cmdline digest preserved")
+          need(before["android"][0] == after["android"][0] == 16, "Android 16")
+          need(before["patch"] == after["patch"] == [2026, 4], "2026-04 patch level")
+          need(len(final_boot) == 134217728, "final fake partition size")
+
+          source_arm64 = parse_arm64(source_kernel, "source")
+          final_arm64 = parse_arm64(final_kernel, "GEN2")
+
+          # Differential load-semantics gate.  The source Lineage kernel is the
+          # real-device reference, so do not invent a fixed text_offset.  Require
+          # the replacement to preserve the fields that affect the arm64 loader
+          # contract while allowing image_size to change with the kernel payload.
+          need(source_arm64["text_offset"] == final_arm64["text_offset"],
+               "ARM64 text_offset differs from validated Lineage source")
+          need(source_arm64["flags"] == final_arm64["flags"],
+               "ARM64 flags differ from validated Lineage source")
+          need(source_arm64["res5"] == final_arm64["res5"],
+               "ARM64 reserved/PE field differs from validated Lineage source")
+
+          report = {
+              "result": "PASS",
+              "boot": {
+                  "source": before,
+                  "final": after,
+                  "header_version_preserved": True,
+                  "header_size_preserved": True,
+                  "os_version_patch_preserved": True,
+                  "reserved_preserved": True,
+                  "cmdline_preserved": True,
+                  "cmdline_json_safe": True,
+              },
+              "arm64": {
+                  "source": source_arm64,
+                  "final": final_arm64,
+                  "both_valid_arm64_images": True,
+                  "geometry_sane": True,
+                  "text_offset_matches_source": True,
+                  "flags_match_source": True,
+                  "res5_matches_source": True,
+                  "legacy_fixed_0x80000_assumption_used": False,
+              },
+          }
+
+          output.write_text(
+              json.dumps(report, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+
+          print("BOOT_V3_STRUCTURE=PASS")
+          print("ANDROID_VERSION_PATCH_PRESERVED=YES")
+          print("CMDLINE_PRESERVED=YES")
+          print("CMDLINE_JSON_SAFE=YES")
+          print("ARM64_SOURCE_IMAGE=PASS")
+          print("ARM64_GEN2_IMAGE=PASS")
+          print(f"ARM64_SOURCE_TEXT_OFFSET={source_arm64['text_offset_hex']}")
+          print(f"ARM64_GEN2_TEXT_OFFSET={final_arm64['text_offset_hex']}")
+          print("ARM64_LOAD_SEMANTICS_MATCH_SOURCE=YES")
+          print("LEGACY_FIXED_TEXT_OFFSET_ASSUMPTION=REMOVED")
+          PY
+
+          jq -e \
+            '.result == "PASS"
+             and .boot.header_version_preserved == true
+             and .boot.os_version_patch_preserved == true
+             and .boot.cmdline_preserved == true
+             and .boot.cmdline_json_safe == true
+             and .arm64.both_valid_arm64_images == true
+             and .arm64.geometry_sane == true
+             and .arm64.text_offset_matches_source == true
+             and .arm64.flags_match_source == true
+             and .arm64.res5_matches_source == true
+             and .arm64.legacy_fixed_0x80000_assumption_used == false' \
+            "$OUTPUT/BOOT-STRUCTURE.json" \
+            > /dev/null
+
+      - name: Validate preserved ramdisk as readable CPIO
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          (
+            cd "$SIM/source-unpack"
+            cpio -it < ramdisk.cpio \
+              > "$OUTPUT/SOURCE-RAMDISK-FILELIST.txt"
+          )
+
+          (
+            cd "$SIM/final-unpack"
+            cpio -it < ramdisk.cpio \
+              > "$OUTPUT/FINAL-RAMDISK-FILELIST.txt"
+          )
+
+          cmp -s \
+            "$OUTPUT/SOURCE-RAMDISK-FILELIST.txt" \
+            "$OUTPUT/FINAL-RAMDISK-FILELIST.txt"
+
+          SOURCE_COUNT="$(
+            wc -l < "$OUTPUT/SOURCE-RAMDISK-FILELIST.txt" \
+              | tr -d ' '
+          )"
+
+          FINAL_COUNT="$(
+            wc -l < "$OUTPUT/FINAL-RAMDISK-FILELIST.txt" \
+              | tr -d ' '
+          )"
+
+          test "$SOURCE_COUNT" -gt 0
+          test "$SOURCE_COUNT" = "$FINAL_COUNT"
+
+          {
+            echo "RAMDISK_CPIO=PASS"
+            echo "SOURCE_ENTRY_COUNT=$SOURCE_COUNT"
+            echo "FINAL_ENTRY_COUNT=$FINAL_COUNT"
+            echo "FILELIST_IDENTICAL=YES"
+            echo "LOGICAL_CPIO_BYTES_IDENTICAL=YES"
+          } | tee "$OUTPUT/RAMDISK-CPIO-GATE.txt"
+
+      - name: Run differential generic QEMU early boot simulations
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          QEMU="$(command -v qemu-system-aarch64)"
+
+          run_qemu() {
+            local label="$1"
+            local kernel="$2"
+            local run="$3"
+            local log="$OUTPUT/QEMU-${label}-${run}.log"
+            local meta="$OUTPUT/QEMU-${label}-${run}.txt"
+
+            set +e
+            timeout \
+              --signal=TERM \
+              --kill-after=3s \
+              18s \
+              "$QEMU" \
+                -machine virt,gic-version=3 \
+                -cpu max \
+                -smp 4 \
+                -m 2048 \
+                -nographic \
+                -no-reboot \
+                -kernel "$kernel" \
+                -append 'console=ttyAMA0 earlycon=pl011,0x09000000 nokaslr panic=-1' \
+                > "$log" \
+                2>&1
+            rc=$?
+            set -e
+
+            hard_reject='NO'
+
+            if grep -Eqi \
+              'could not load kernel|failed to load kernel|invalid kernel|kernel image.*invalid|error loading.*kernel|not a valid.*kernel' \
+              "$log"; then
+              hard_reject='YES'
+            fi
+
+            early_linux='NO'
+            if grep -Eqi \
+              'Linux version|Booting Linux|Kernel command line|Memory:|Calibrating delay loop|Kernel panic' \
+              "$log"; then
+              early_linux='YES'
+            fi
+
+            {
+              echo "LABEL=$label"
+              echo "RUN=$run"
+              echo "QEMU_EXIT_CODE=$rc"
+              echo "TIMEOUT=$([ "$rc" -eq 124 ] && echo YES || echo NO)"
+              echo "HARD_KERNEL_LOADER_REJECT=$hard_reject"
+              echo "EARLY_LINUX_SIGNAL=$early_linux"
+              echo "QEMU_MACHINE_IS_VEUX=NO"
+            } > "$meta"
+
+            test "$hard_reject" = 'NO'
+          }
+
+          run_qemu \
+            SOURCE \
+            "$SIM/source-unpack/kernel" \
+            A
+
+          run_qemu \
+            SOURCE \
+            "$SIM/source-unpack/kernel" \
+            B
+
+          run_qemu \
+            GEN2 \
+            "$SIM/final-unpack/kernel" \
+            A
+
+          run_qemu \
+            GEN2 \
+            "$SIM/final-unpack/kernel" \
+            B
+
+          SOURCE_SIGNAL='NO'
+          GEN2_SIGNAL='NO'
+
+          if grep -Fxq 'EARLY_LINUX_SIGNAL=YES' \
+               "$OUTPUT/QEMU-SOURCE-A.txt" \
+             || grep -Fxq 'EARLY_LINUX_SIGNAL=YES' \
+               "$OUTPUT/QEMU-SOURCE-B.txt"; then
+            SOURCE_SIGNAL='YES'
+          fi
+
+          if grep -Fxq 'EARLY_LINUX_SIGNAL=YES' \
+               "$OUTPUT/QEMU-GEN2-A.txt" \
+             || grep -Fxq 'EARLY_LINUX_SIGNAL=YES' \
+               "$OUTPUT/QEMU-GEN2-B.txt"; then
+            GEN2_SIGNAL='YES'
+          fi
+
+          # Conservative differential gate:
+          # if the source kernel demonstrably reaches recognizable early Linux
+          # output on this same generic machine, GEN2 must do so in at least one
+          # of its two attempts as well.
+          if [ "$SOURCE_SIGNAL" = YES ] && [ "$GEN2_SIGNAL" != YES ]; then
+            echo "ERROR: source kernel reached early Linux output but GEN2 did not."
+            exit 1
+          fi
+
+          {
+            echo "GENERIC_QEMU_DIFFERENTIAL_LOAD=PASS"
+            echo "SOURCE_HARD_LOADER_REJECT=NO"
+            echo "GEN2_HARD_LOADER_REJECT=NO"
+            echo "SOURCE_ANY_EARLY_LINUX_SIGNAL=$SOURCE_SIGNAL"
+            echo "GEN2_ANY_EARLY_LINUX_SIGNAL=$GEN2_SIGNAL"
+            echo "DIFFERENTIAL_EARLY_BOOT_REGRESSION=NO"
+            echo "QEMU_VIRT_IS_NOT_VEUX=YES"
+            echo "QEMU_TIMEOUT_OR_PLATFORM_PANIC_IS_INCONCLUSIVE_FOR_REAL_VEUX=YES"
+          } | tee "$OUTPUT/QEMU-DIFFERENTIAL-VERDICT.txt"
+
+      - name: Derive W39 v3 simulated boot safety verdict
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          grep -Fxq 'W38_PREREQUISITE=PASS' \
+            "$OUTPUT/PREREQUISITE-GATE.txt"
+          grep -Fxq 'W37_PREREQUISITE=PASS' \
+            "$OUTPUT/PREREQUISITE-GATE.txt"
+
+          grep -Fxq 'W38_FINAL_BOOT_REPRODUCTION=PASS' \
+            "$OUTPUT/FINAL-BOOT-REPRODUCTION.txt"
+          grep -Fxq 'BYTE_IDENTICAL_TO_W38_RECORDED_RESULT=YES' \
+            "$OUTPUT/FINAL-BOOT-REPRODUCTION.txt"
+
+          grep -Fxq 'MAGISKBOOT_SOURCE_FINAL_UNPACK=PASS' \
+            "$OUTPUT/UNPACK-GATE.txt"
+          grep -Fxq 'W33_KERNEL_SHA256_MATCH=YES' \
+            "$OUTPUT/UNPACK-GATE.txt"
+          grep -Fxq 'RAMDISK_LOGICAL_BYTES_PRESERVED=YES' \
+            "$OUTPUT/UNPACK-GATE.txt"
+
+          jq -e \
+            '.result == "PASS"
+             and .boot.header_version_preserved == true
+             and .boot.header_size_preserved == true
+             and .boot.os_version_patch_preserved == true
+             and .boot.reserved_preserved == true
+             and .boot.cmdline_preserved == true
+             and .boot.cmdline_json_safe == true
+             and .arm64.both_valid_arm64_images == true
+             and .arm64.geometry_sane == true
+             and .arm64.text_offset_matches_source == true
+             and .arm64.flags_match_source == true
+             and .arm64.res5_matches_source == true
+             and .arm64.legacy_fixed_0x80000_assumption_used == false' \
+            "$OUTPUT/BOOT-STRUCTURE.json" \
+            > /dev/null
+
+          grep -Fxq 'RAMDISK_CPIO=PASS' \
+            "$OUTPUT/RAMDISK-CPIO-GATE.txt"
+          grep -Fxq 'FILELIST_IDENTICAL=YES' \
+            "$OUTPUT/RAMDISK-CPIO-GATE.txt"
+
+          grep -Fxq 'GENERIC_QEMU_DIFFERENTIAL_LOAD=PASS' \
+            "$OUTPUT/QEMU-DIFFERENTIAL-VERDICT.txt"
+          grep -Fxq 'SOURCE_HARD_LOADER_REJECT=NO' \
+            "$OUTPUT/QEMU-DIFFERENTIAL-VERDICT.txt"
+          grep -Fxq 'GEN2_HARD_LOADER_REJECT=NO' \
+            "$OUTPUT/QEMU-DIFFERENTIAL-VERDICT.txt"
+          grep -Fxq 'DIFFERENTIAL_EARLY_BOOT_REGRESSION=NO' \
+            "$OUTPUT/QEMU-DIFFERENTIAL-VERDICT.txt"
+
+          {
+            echo "FINAL_RESULT=PASS_GEN2_39_V3_SIMULATED_BOOT_DIFFERENTIAL_SAFETY_AUDIT"
+            echo "W38_FINAL_BOOT_BYTES_REPRODUCED_EXACTLY=YES"
+            echo "BOOT_HEADER_V3=PASS"
+            echo "ANDROID16_PATCH_2026_04_PRESERVED=YES"
+            echo "CMDLINE_PRESERVED=YES"
+            echo "W33_KERNEL_INSERTED_EXACTLY=YES"
+            echo "ARM64_IMAGE_HEADER=PASS"
+            echo "ARM64_LOAD_SEMANTICS_MATCH_VALIDATED_SOURCE=YES"
+            echo "ARM64_FIXED_TEXT_OFFSET_ASSUMPTION=NO"
+            echo "RAMDISK_LOGICAL_BYTES_PRESERVED=YES"
+            echo "RAMDISK_CPIO_READABLE=YES"
+            echo "GENERIC_QEMU_SOURCE_KERNEL_LOAD=PASS_NO_HARD_REJECT"
+            echo "GENERIC_QEMU_GEN2_KERNEL_LOAD=PASS_NO_HARD_REJECT"
+            echo "GENERIC_QEMU_DIFFERENTIAL_REGRESSION=NO"
+            echo "QEMU_IS_FULL_VEUX_EMULATION=NO"
+            echo "REAL_DEVICE_BOOT_GUARANTEED=NO"
+            echo "REAL_DEVICE_ACCESSED=NO"
+            echo "ADB_USED=NO"
+            echo "FASTBOOT_USED=NO"
+            echo "FLASHING_PERFORMED=NO"
+            echo "INSTALLABLE_ZIP_CREATED=NO"
+            echo "REAL_DEVICE_FLASH_READY=NO"
+            echo "NEXT_STEP=FURTHER_PRE_FLASH_STATIC_OR_SIMULATED_GATES_OR_EXPLICIT_USER_APPROVAL_FOR_REAL_DEVICE_TEST"
+          } | tee "$OUTPUT/W39-V3-VERDICT.txt"
+
+      - name: Build failure safe W39 v3 audit report
+        if: always()
+        shell: bash
+        run: |
+          set +e
+
+          REPORT='GEN2_39_V3_SIMULATED_BOOT_DIFFERENTIAL_SAFETY_AUDIT.txt'
+
+          {
+            cat "$OUTPUT/AUDIT-HEADER.txt" 2>/dev/null
+            echo
+            echo "=== SCOPE ==="
+            cat "$OUTPUT/SCOPE.txt" 2>/dev/null
+            echo
+
+            for f in \
+              "$OUTPUT/INPUT-ARTIFACTS.txt" \
+              "$OUTPUT/PREREQUISITE-GATE.txt" \
+              "$OUTPUT/SOURCE-BOOT.txt" \
+              "$OUTPUT/FINAL-BOOT-REPRODUCTION.txt" \
+              "$OUTPUT/UNPACK-GATE.txt" \
+              "$OUTPUT/BOOT-STRUCTURE.json" \
+              "$OUTPUT/RAMDISK-CPIO-GATE.txt" \
+              "$OUTPUT/QEMU-SOURCE-A.txt" \
+              "$OUTPUT/QEMU-SOURCE-B.txt" \
+              "$OUTPUT/QEMU-GEN2-A.txt" \
+              "$OUTPUT/QEMU-GEN2-B.txt" \
+              "$OUTPUT/QEMU-DIFFERENTIAL-VERDICT.txt" \
+              "$OUTPUT/W39-V3-VERDICT.txt"
+            do
+              if [ -f "$f" ]; then
+                echo "=== $(basename "$f") ==="
+                cat "$f"
+                echo
+              fi
+            done
+
+            echo "REAL_DEVICE_ACCESSED=NO"
+            echo "FLASHING_PERFORMED=NO"
+            echo "INSTALLABLE_ZIP_CREATED=NO"
+          } > "$REPORT"
+
+          test -s "$REPORT"
+
+      - name: Upload W39 v3 audit artifact
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: GEN2_39_V3_SIMULATED_BOOT_DIFFERENTIAL_SAFETY_AUDIT-${{ github.run_number }}
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 6
+          path: |
+            GEN2_39_V3_SIMULATED_BOOT_DIFFERENTIAL_SAFETY_AUDIT.txt
+            w39v3/output/
+
+      - name: Fail only after preserving W39 v3 diagnostics
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if ! grep -Fxq \
+            'FINAL_RESULT=PASS_GEN2_39_V3_SIMULATED_BOOT_DIFFERENTIAL_SAFETY_AUDIT' \
+            "$OUTPUT/W39-V3-VERDICT.txt" 2>/dev/null; then
+            echo "ERROR: W39 v3 simulated boot PASS verdict was not produced."
+            exit 1
+          fi
+
+          echo "W39 v3 simulated boot PASS verdict confirmed after artifact upload."
