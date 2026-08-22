@@ -1,0 +1,966 @@
+name: 34 - GEN2 LineageOS AOSP Compatibility Audit v2
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: gen2-34-lineage-aosp-compat-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    name: GEN2 34 LineageOS AOSP compatibility audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    env:
+      GEN2_REPO: https://github.com/dereference23/kernel_xiaomi_sm6375.git
+      GEN2_COMMIT: f4b8a13a43a130a9aab83cc985ce4d4421291ae6
+
+      VEUX_DEVICE_REPO: https://github.com/xiaomi-sm6375-devs/android_device_xiaomi_veux.git
+      SM6375_COMMON_REPO: https://github.com/xiaomi-sm6375-devs/android_device_xiaomi_sm6375-common.git
+      LINEAGE_KERNEL_REPO: https://github.com/xiaomi-sm6375-devs/android_kernel_xiaomi_sm6375.git
+
+      LINEAGE_23_2_VEUX_PIN: 423b9b6e00301e181a85d886b3c67c47c48d096e
+      LINEAGE_23_2_COMMON_PIN: 4cd108d5cd933e5cdaf1293bee233621e8008ac8
+
+      W33_IMAGE_SHA256: 98e608f7c30540b6cb5a1731b0edecd9a3b4960ebf388763452685858916037f
+      W33_VMLINUX_SHA256: 878d8d36e03ae4971a48c403cba6608fe8eba60d572b0d336e477779f998762c
+      W33_SYSTEM_MAP_SHA256: 4d8969722e5b881bdff90f377cfd6992cd6a87b6d5539fb255ed182976de3e93
+      W33_VEUX_DTB_SHA256: 28a174d174cda7619bf674b29fa4e91625a6ad02f6ca4815ac7a943137b3df8c
+      W33_VEUX_DTBO_SHA256: 486ec73935e9805722df531cc3ddd5460f971c1edeec813fd25bef63500c0ca3
+      W33_CONFIG_SHA256: 2931b6b74bf34a85f2a71cb4b76d1a3277a5538514411dd1047c841d46e92cbb
+      W33_NAMEI_PATCH_SHA256: a57c2e0da171a1f2fdbc74a018f72c381c198510bca49a70832bbb8480c580bf
+      W33_TASK_MMU_PATCH_SHA256: 50bca9235dbec5e8f558298ff4b330191a814368c276adfe108032732990a95a
+
+    steps:
+      - name: Checkout builder repository
+        uses: actions/checkout@v6
+
+      - name: Initialize W34 audit workspace
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p w34/evidence w34/trees w34/lineage w34/gen2
+
+          {
+            echo "AUDIT=GEN2_34_V2_LINEAGE_AOSP_COMPATIBILITY"
+            echo "DATE_UTC=$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+            echo "RUN_ID=$GITHUB_RUN_ID"
+            echo "RUN_NUMBER=$GITHUB_RUN_NUMBER"
+            echo "REPOSITORY=$GITHUB_REPOSITORY"
+            echo "BUILDER_COMMIT=$GITHUB_SHA"
+            echo "AUDIT_MODE=READ_ONLY_STATIC_COMPATIBILITY"
+            echo "KERNEL_REBUILD=NO"
+            echo "BOOT_IMAGE_CREATED=NO"
+            echo "ANYKERNEL_PACKAGE_CREATED=NO"
+            echo "DEVICE_ACCESSED=NO"
+            echo "FLASHING_PERFORMED=NO"
+            echo "W34_V1_FAILURE_CLASSIFICATION=AUDIT_IMPLEMENTATION_BUG"
+            echo "W34_V1_FAILURE_DETAIL=LINUX_DISABLED_CONFIG_OPTIONS_USE_HASH_CONFIG_FOO_IS_NOT_SET_NOT_CONFIG_FOO_n"
+          } | tee w34/evidence/audit-header.txt
+
+      - name: Download latest W33 v7 final build artifact from this repository
+        id: w33_artifact
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          API="$GITHUB_API_URL/repos/$GITHUB_REPOSITORY"
+          AUTH="Authorization: Bearer $GH_TOKEN"
+          ACCEPT="Accept: application/vnd.github+json"
+          VERSION="X-GitHub-Api-Version: 2022-11-28"
+
+          curl -fsSL \
+            -H "$AUTH" \
+            -H "$ACCEPT" \
+            -H "$VERSION" \
+            "$API/actions/artifacts?per_page=100" \
+            -o w34/evidence/artifacts.json
+
+          ARTIFACT_ID="$(
+            jq -r '
+              [
+                .artifacts[]
+                | select(
+                    (.expired == false)
+                    and
+                    (.name | startswith("GEN2_33_V7_FINAL_FULL_IMAGE_DTB_DTBO_BUILD_AUDIT-"))
+                  )
+              ]
+              | sort_by(.created_at)
+              | reverse
+              | .[0].id // empty
+            ' w34/evidence/artifacts.json
+          )"
+
+          ARTIFACT_NAME="$(
+            jq -r --argjson id "$ARTIFACT_ID" '
+              .artifacts[]
+              | select(.id == $id)
+              | .name
+            ' w34/evidence/artifacts.json
+          )"
+
+          test -n "$ARTIFACT_ID"
+          test -n "$ARTIFACT_NAME"
+
+          curl -fLsS \
+            -H "$AUTH" \
+            -H "$ACCEPT" \
+            -H "$VERSION" \
+            "$API/actions/artifacts/$ARTIFACT_ID/zip" \
+            -o w34/W33_V7_FINAL_ARTIFACT.zip
+
+          unzip -t w34/W33_V7_FINAL_ARTIFACT.zip \
+            > w34/evidence/w33-artifact-zip-test.txt
+
+          mkdir -p w34/w33
+          unzip -q w34/W33_V7_FINAL_ARTIFACT.zip -d w34/w33
+
+          {
+            echo "W33_ARTIFACT_FETCH=PASS"
+            echo "W33_ARTIFACT_ID=$ARTIFACT_ID"
+            echo "W33_ARTIFACT_NAME=$ARTIFACT_NAME"
+            echo "W33_ARTIFACT_ZIP_SHA256=$(sha256sum w34/W33_V7_FINAL_ARTIFACT.zip | awk '{print $1}')"
+            echo "W33_ARTIFACT_FILE_COUNT=$(find w34/w33 -type f | wc -l | tr -d ' ')"
+          } | tee w34/evidence/w33-artifact-fetch-status.txt
+
+      - name: Verify exact W33 v7 binary and closure evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd w34/w33
+
+          required=(
+            GEN2_33_Image
+            GEN2_33_vmlinux
+            GEN2_33_System.map
+            GEN2_33_veux.dtb
+            GEN2_33_veux-overlay.dtbo
+            GEN2_33_final.config
+            workflow33-v7-namei-c90-warning-closure.patch
+            workflow33-v7-task-mmu-sus-map-negation.patch
+            GEN2_33_V7_SHA256SUMS
+            GEN2_33_V7_FINAL_FULL_IMAGE_DTB_DTBO_BUILD_AUDIT.txt
+            workflow33-compiler-diagnostics.txt
+          )
+
+          for f in "${required[@]}"; do
+            test -s "$f"
+          done
+
+          sha256sum -c GEN2_33_V7_SHA256SUMS \
+            | tee ../evidence/w33-manifest-verify.txt
+
+          test "$(sha256sum GEN2_33_Image | awk '{print $1}')" = "$W33_IMAGE_SHA256"
+          test "$(sha256sum GEN2_33_vmlinux | awk '{print $1}')" = "$W33_VMLINUX_SHA256"
+          test "$(sha256sum GEN2_33_System.map | awk '{print $1}')" = "$W33_SYSTEM_MAP_SHA256"
+          test "$(sha256sum GEN2_33_veux.dtb | awk '{print $1}')" = "$W33_VEUX_DTB_SHA256"
+          test "$(sha256sum GEN2_33_veux-overlay.dtbo | awk '{print $1}')" = "$W33_VEUX_DTBO_SHA256"
+          test "$(sha256sum GEN2_33_final.config | awk '{print $1}')" = "$W33_CONFIG_SHA256"
+          test "$(sha256sum workflow33-v7-namei-c90-warning-closure.patch | awk '{print $1}')" = \
+            "$W33_NAMEI_PATCH_SHA256"
+          test "$(sha256sum workflow33-v7-task-mmu-sus-map-negation.patch | awk '{print $1}')" = \
+            "$W33_TASK_MMU_PATCH_SHA256"
+
+          grep -q '^COMPILER_ERROR_COUNT=0$' workflow33-compiler-diagnostics.txt
+          grep -q '^TARGETED_WARNING_COUNT=0$' workflow33-compiler-diagnostics.txt
+          grep -q '^NONBASELINE_WARNING_COUNT=0$' workflow33-compiler-diagnostics.txt
+          grep -q '^# CONFIG_MODULES is not set$' GEN2_33_final.config
+          if grep -q '^CONFIG_MODULES=' GEN2_33_final.config; then
+            echo "ERROR: CONFIG_MODULES unexpectedly has an enabled/value assignment"
+            exit 1
+          fi
+          grep -q '^CONFIG_KSU=y$' GEN2_33_final.config
+          grep -q '^CONFIG_KSU_SUSFS=y$' GEN2_33_final.config
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import struct
+
+          for name in ("GEN2_33_veux.dtb", "GEN2_33_veux-overlay.dtbo"):
+              data = Path(name).read_bytes()
+              if len(data) < 8:
+                  raise RuntimeError(f"{name} too small")
+              magic = struct.unpack(">I", data[:4])[0]
+              if magic != 0xD00DFEED:
+                  raise RuntimeError(
+                      f"{name}: unexpected FDT magic 0x{magic:08x}"
+                  )
+              print(f"{name}_FDT_MAGIC=PASS")
+          PY
+
+          {
+            echo "W33_V7_EVIDENCE=PASS"
+            echo "W33_V7_MANIFEST=8_OF_8_PASS"
+            echo "W33_V7_COMPILER_ERRORS=0"
+            echo "W33_V7_TARGETED_WARNINGS=0"
+            echo "W33_V7_NONBASELINE_WARNINGS=0"
+            echo "W33_V7_CONFIG_MODULES_STATE=DISABLED"
+            echo "W33_V7_DTB_FDT_MAGIC=PASS"
+            echo "W33_V7_DTBO_FDT_MAGIC=PASS"
+          } | tee ../evidence/w33-v7-evidence-status.txt
+
+      - name: Record Linux disabled config semantics
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          CFG='w34/w33/GEN2_33_final.config'
+
+          test -f "$CFG"
+          grep -q '^# CONFIG_MODULES is not set$' "$CFG"
+
+          if grep -q '^CONFIG_MODULES=' "$CFG"; then
+            echo "ERROR: conflicting CONFIG_MODULES assignment present"
+            exit 1
+          fi
+
+          {
+            echo "LINUX_DOTCONFIG_DISABLED_OPTION_SEMANTICS=PASS"
+            echo "CONFIG_MODULES_STATE=DISABLED"
+            echo "CONFIG_MODULES_CANONICAL_LINE=# CONFIG_MODULES is not set"
+            echo "W34_V1_EXPECTED_CONFIG_MODULES_n=INCORRECT_AUDIT_ASSERTION"
+            echo "W34_V2_ASSERTION=CORRECTED"
+            echo "KERNEL_CONFIG_CHANGED=NO"
+          } | tee w34/evidence/config-modules-semantics.txt
+
+      - name: Fetch exact GEN2 source pin
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git clone \
+            --filter=blob:none \
+            --no-checkout \
+            "$GEN2_REPO" \
+            w34/gen2/kernel \
+            > w34/evidence/gen2-clone.log 2>&1
+
+          git -C w34/gen2/kernel checkout --detach "$GEN2_COMMIT" \
+            >> w34/evidence/gen2-clone.log 2>&1
+
+          test "$(git -C w34/gen2/kernel rev-parse HEAD)" = "$GEN2_COMMIT"
+
+          {
+            echo "GEN2_SOURCE_FETCH=PASS"
+            echo "GEN2_REPOSITORY=$GEN2_REPO"
+            echo "GEN2_COMMIT=$(git -C w34/gen2/kernel rev-parse HEAD)"
+            echo "GEN2_SUBJECT=$(git -C w34/gen2/kernel log -1 --format=%s)"
+          } | tee w34/evidence/gen2-source-status.txt
+
+      - name: Fetch LineageOS veux and sm6375 branch matrix
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          branches=(lineage-18.1 lineage-19.1 lineage-20 lineage-23.2)
+
+          : > w34/evidence/lineage-branch-pins.txt
+
+          for branch in "${branches[@]}"; do
+            safe="${branch//./_}"
+
+            git clone \
+              --depth=1 \
+              --branch "$branch" \
+              "$VEUX_DEVICE_REPO" \
+              "w34/lineage/veux-$safe" \
+              > "w34/evidence/clone-veux-$safe.log" 2>&1
+
+            git clone \
+              --depth=1 \
+              --branch "$branch" \
+              "$SM6375_COMMON_REPO" \
+              "w34/lineage/common-$safe" \
+              > "w34/evidence/clone-common-$safe.log" 2>&1
+
+            {
+              echo "BRANCH=$branch"
+              echo "VEUX_SHA=$(git -C "w34/lineage/veux-$safe" rev-parse HEAD)"
+              echo "COMMON_SHA=$(git -C "w34/lineage/common-$safe" rev-parse HEAD)"
+              echo
+            } >> w34/evidence/lineage-branch-pins.txt
+          done
+
+          test "$(
+            git -C w34/lineage/veux-lineage-23_2 rev-parse HEAD
+          )" = "$LINEAGE_23_2_VEUX_PIN"
+
+          test "$(
+            git -C w34/lineage/common-lineage-23_2 rev-parse HEAD
+          )" = "$LINEAGE_23_2_COMMON_PIN"
+
+          {
+            echo "LINEAGE_BRANCH_MATRIX_FETCH=PASS"
+            echo "LINEAGE_BRANCH_COUNT=4"
+            echo "LINEAGE_23_2_VEUX_PIN=PASS"
+            echo "LINEAGE_23_2_COMMON_PIN=PASS"
+          } | tee w34/evidence/lineage-branch-fetch-status.txt
+
+      - name: Fetch public Lineage kernel branches for historical contract comparison
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          for branch in lineage-19.1 lineage-20; do
+            safe="${branch//./_}"
+
+            git clone \
+              --depth=1 \
+              --branch "$branch" \
+              "$LINEAGE_KERNEL_REPO" \
+              "w34/lineage/kernel-$safe" \
+              > "w34/evidence/clone-kernel-$safe.log" 2>&1
+          done
+
+          {
+            echo "LINEAGE_PUBLIC_KERNEL_FETCH=PASS"
+            echo "LINEAGE_KERNEL_19_1_SHA=$(git -C w34/lineage/kernel-lineage-19_1 rev-parse HEAD)"
+            echo "LINEAGE_KERNEL_20_SHA=$(git -C w34/lineage/kernel-lineage-20 rev-parse HEAD)"
+          } | tee w34/evidence/lineage-kernel-fetch-status.txt
+
+      - name: Audit public kernel branch availability for current LineageOS tree
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git ls-remote --heads "$LINEAGE_KERNEL_REPO" \
+            > w34/evidence/lineage-kernel-remote-heads.txt
+
+          if grep -q 'refs/heads/lineage-23\.2$' \
+            w34/evidence/lineage-kernel-remote-heads.txt; then
+            KERNEL_23_2_BRANCH=YES
+          else
+            KERNEL_23_2_BRANCH=NO
+          fi
+
+          if test -f \
+            w34/lineage/kernel-lineage-20/arch/arm64/configs/veux_defconfig; then
+            LINEAGE20_VEUX_DEFCONFIG=YES
+          else
+            LINEAGE20_VEUX_DEFCONFIG=NO
+          fi
+
+          {
+            echo "PUBLIC_LINEAGE_KERNEL_23_2_BRANCH=$KERNEL_23_2_BRANCH"
+            echo "PUBLIC_LINEAGE20_VEUX_DEFCONFIG=$LINEAGE20_VEUX_DEFCONFIG"
+            echo "CLASSIFICATION=PUBLIC_DEVICE_TREE_KERNEL_DEPENDENCY_REQUIRES_CAUTION"
+            echo "DO_NOT_INFER_EXACT_LINEAGE_23_2_KERNEL_SOURCE_FROM_DEPENDENCY_NAME_ALONE=YES"
+          } | tee w34/evidence/public-kernel-branch-contract.txt
+
+      - name: Build Lineage boot and kernel contract matrix
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import csv
+          import json
+          import re
+
+          root = Path("w34")
+          branches = ["lineage-18.1", "lineage-19.1", "lineage-20", "lineage-23.2"]
+
+          def read(path):
+              return path.read_text(encoding="utf-8", errors="replace")
+
+          def value(text, key):
+              patterns = [
+                  rf"(?m)^\s*{re.escape(key)}\s*:?=\s*(.*?)\s*$",
+                  rf"(?m)^\s*{re.escape(key)}\s*\+=\s*(.*?)\s*$",
+              ]
+              for pat in patterns:
+                  m = re.search(pat, text)
+                  if m:
+                      return m.group(1).strip()
+              return ""
+
+          def yesno(cond):
+              return "YES" if cond else "NO"
+
+          fields = [
+              "branch",
+              "veux_sha",
+              "common_sha",
+              "target_kernel_config",
+              "target_kernel_source",
+              "target_force_prebuilt_kernel",
+              "target_prebuilt_kernel",
+              "board_kernel_image_name",
+              "board_boot_header_version",
+              "board_include_dtb_in_bootimg",
+              "board_kernel_separated_dtbo",
+              "board_uses_generic_kernel_image",
+              "board_bootimage_partition_size",
+              "board_dtbo_partition_size",
+              "board_vendor_boot_partition_size",
+              "ab_boot",
+              "ab_dtbo",
+              "ab_vendor_boot",
+              "recovery_resources_to_vendor_boot",
+              "recovery_as_boot",
+              "ramdisk_module_copy",
+              "vendor_module_copy",
+              "platform_holi",
+              "source_kernel_model",
+              "external_module_model",
+          ]
+
+          rows = []
+          for branch in branches:
+              safe = branch.replace(".", "_")
+              veux = root / "lineage" / f"veux-{safe}"
+              common = root / "lineage" / f"common-{safe}"
+
+              device_text = read(veux / "BoardConfig.mk")
+              common_text = read(common / "BoardConfigCommon.mk")
+              merged = device_text + "\n" + common_text
+
+              ab_block = ""
+              for m in re.finditer(
+                  r"(?ms)^AB_OTA_PARTITIONS\s*(?:\+?=|:=)\s*\\\n(?P<body>(?:\s+.*\\\n|\s+.*\n)+)",
+                  common_text,
+              ):
+                  ab_block += m.group("body")
+
+              force_prebuilt = value(merged, "TARGET_FORCE_PREBUILT_KERNEL")
+              prebuilt_kernel = value(merged, "TARGET_PREBUILT_KERNEL")
+              source = value(merged, "TARGET_KERNEL_SOURCE")
+
+              ramdisk_modules = "ramdisk-modules" in merged
+              vendor_modules = "vendor-modules" in merged
+              is_prebuilt = (
+                  force_prebuilt.lower() == "true"
+                  or bool(prebuilt_kernel)
+                  or "BOARD_PREBUILT_DTBOIMAGE" in merged
+              )
+
+              rows.append({
+                  "branch": branch,
+                  "veux_sha": (
+                      Path(veux / ".git").exists()
+                      and __import__("subprocess").check_output(
+                          ["git", "-C", str(veux), "rev-parse", "HEAD"],
+                          text=True,
+                      ).strip()
+                      or ""
+                  ),
+                  "common_sha": (
+                      Path(common / ".git").exists()
+                      and __import__("subprocess").check_output(
+                          ["git", "-C", str(common), "rev-parse", "HEAD"],
+                          text=True,
+                      ).strip()
+                      or ""
+                  ),
+                  "target_kernel_config": value(merged, "TARGET_KERNEL_CONFIG"),
+                  "target_kernel_source": source,
+                  "target_force_prebuilt_kernel": force_prebuilt,
+                  "target_prebuilt_kernel": prebuilt_kernel,
+                  "board_kernel_image_name": value(merged, "BOARD_KERNEL_IMAGE_NAME"),
+                  "board_boot_header_version": value(merged, "BOARD_BOOT_HEADER_VERSION"),
+                  "board_include_dtb_in_bootimg": value(merged, "BOARD_INCLUDE_DTB_IN_BOOTIMG"),
+                  "board_kernel_separated_dtbo": value(merged, "BOARD_KERNEL_SEPARATED_DTBO"),
+                  "board_uses_generic_kernel_image": value(merged, "BOARD_USES_GENERIC_KERNEL_IMAGE"),
+                  "board_bootimage_partition_size": value(merged, "BOARD_BOOTIMAGE_PARTITION_SIZE"),
+                  "board_dtbo_partition_size": value(merged, "BOARD_DTBOIMG_PARTITION_SIZE"),
+                  "board_vendor_boot_partition_size": value(merged, "BOARD_VENDOR_BOOTIMAGE_PARTITION_SIZE"),
+                  "ab_boot": yesno(bool(re.search(r"\bboot\b", ab_block))),
+                  "ab_dtbo": yesno(bool(re.search(r"\bdtbo\b", ab_block))),
+                  "ab_vendor_boot": yesno(bool(re.search(r"\bvendor_boot\b", ab_block))),
+                  "recovery_resources_to_vendor_boot": value(merged, "BOARD_MOVE_RECOVERY_RESOURCES_TO_VENDOR_BOOT"),
+                  "recovery_as_boot": value(merged, "BOARD_USES_RECOVERY_AS_BOOT"),
+                  "ramdisk_module_copy": yesno(ramdisk_modules),
+                  "vendor_module_copy": yesno(vendor_modules),
+                  "platform_holi": yesno(
+                      value(merged, "TARGET_BOARD_PLATFORM") == "holi"
+                  ),
+                  "source_kernel_model": yesno(
+                      bool(source) and not is_prebuilt
+                  ),
+                  "external_module_model": yesno(
+                      ramdisk_modules or vendor_modules
+                  ),
+              })
+
+          with open(root / "evidence" / "lineage-contract-matrix.csv", "w", newline="") as f:
+              w = csv.DictWriter(f, fieldnames=fields)
+              w.writeheader()
+              w.writerows(rows)
+
+          (root / "evidence" / "lineage-contract-matrix.json").write_text(
+              json.dumps(rows, indent=2) + "\n",
+              encoding="utf-8",
+          )
+
+          for row in rows:
+              print(row)
+          PY
+
+          test -s w34/evidence/lineage-contract-matrix.csv
+          test -s w34/evidence/lineage-contract-matrix.json
+
+      - name: Audit exact current LineageOS 23.2 boot contract
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          DEVICE='w34/lineage/veux-lineage-23_2/BoardConfig.mk'
+          COMMON='w34/lineage/common-lineage-23_2/BoardConfigCommon.mk'
+          DEPS_DEVICE='w34/lineage/veux-lineage-23_2/lineage.dependencies'
+          DEPS_COMMON='w34/lineage/common-lineage-23_2/lineage.dependencies'
+
+          grep -q 'TARGET_KERNEL_CONFIG := veux_defconfig' "$DEVICE"
+          grep -q 'TARGET_KERNEL_SOURCE := kernel/xiaomi/sm6375' "$COMMON"
+          grep -q 'BOARD_KERNEL_IMAGE_NAME := Image' "$COMMON"
+          grep -q 'BOARD_BOOT_HEADER_VERSION := 3' "$COMMON"
+          grep -q 'BOARD_INCLUDE_DTB_IN_BOOTIMG := true' "$COMMON"
+          grep -q 'BOARD_KERNEL_SEPARATED_DTBO := true' "$COMMON"
+          grep -q 'BOARD_USES_GENERIC_KERNEL_IMAGE := true' "$COMMON"
+          grep -q 'BOARD_MOVE_RECOVERY_RESOURCES_TO_VENDOR_BOOT := true' "$COMMON"
+          grep -q 'TARGET_BOARD_PLATFORM := holi' "$COMMON"
+
+          grep -q '"android_device_xiaomi_sm6375-common"' "$DEPS_DEVICE"
+          grep -q '"android_kernel_xiaomi_sm6375"' "$DEPS_COMMON"
+
+          python3 - <<'PY'
+          from pathlib import Path
+          text = Path(
+              "w34/lineage/common-lineage-23_2/BoardConfigCommon.mk"
+          ).read_text(encoding="utf-8", errors="replace")
+
+          for part in ("boot", "dtbo", "vendor_boot"):
+              if part not in text:
+                  raise RuntimeError(
+                      f"Expected {part} in current Lineage common contract"
+                  )
+          PY
+
+          {
+            echo "LINEAGE_23_2_STATIC_BOOT_CONTRACT=PASS"
+            echo "DEVICE=veux"
+            echo "PLATFORM=holi"
+            echo "KERNEL_IMAGE=Image"
+            echo "BOOT_HEADER_VERSION=3"
+            echo "DTB_LOCATION_CONTRACT=IN_BOOT_IMAGE"
+            echo "DTBO_LOCATION_CONTRACT=SEPARATE_DTBO_PARTITION"
+            echo "VENDOR_BOOT_PRESENT=YES"
+            echo "RECOVERY_RESOURCES_IN_VENDOR_BOOT=YES"
+            echo "A_B_BOOT=YES"
+            echo "A_B_DTBO=YES"
+            echo "A_B_VENDOR_BOOT=YES"
+          } | tee w34/evidence/lineage-23.2-boot-contract.txt
+
+      - name: Audit historical Lineage prebuilt kernel and module model
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import json
+
+          rows = json.loads(
+              Path("w34/evidence/lineage-contract-matrix.json").read_text()
+          )
+
+          out = []
+          for row in rows:
+              branch = row["branch"]
+              prebuilt = (
+                  row["target_force_prebuilt_kernel"].lower() == "true"
+                  or bool(row["target_prebuilt_kernel"])
+              )
+              modules = row["external_module_model"] == "YES"
+
+              if prebuilt or modules:
+                  cls = "LEGACY_PREBUILT_OR_EXTERNAL_MODULE_MODEL"
+              else:
+                  cls = "SOURCE_KERNEL_MODEL"
+
+              out.append(
+                  f"{branch}: classification={cls} "
+                  f"prebuilt={prebuilt} external_modules={modules}"
+              )
+
+          Path("w34/evidence/historical-kernel-model.txt").write_text(
+              "\n".join(out) + "\n",
+              encoding="utf-8",
+          )
+          print("\n".join(out))
+          PY
+
+          grep -q \
+            'lineage-20: classification=LEGACY_PREBUILT_OR_EXTERNAL_MODULE_MODEL' \
+            w34/evidence/historical-kernel-model.txt
+
+          grep -q '^# CONFIG_MODULES is not set$'             w34/w33/GEN2_33_final.config
+          if grep -q '^CONFIG_MODULES=' w34/w33/GEN2_33_final.config; then
+            echo "ERROR: CONFIG_MODULES unexpectedly has an enabled/value assignment"
+            exit 1
+          fi
+
+          {
+            echo "HISTORICAL_LINEAGE_MODULE_COMPAT_AUDIT=PASS"
+            echo "GEN2_CONFIG_MODULES_STATE=DISABLED"
+            echo "LEGACY_PREBUILT_EXTERNAL_MODULE_ROMS_UNIVERSAL_DROP_IN=NO"
+            echo "RATIONALE=ROM_EXTERNAL_KO_MODEL_CANNOT_BE_ASSUMED_COMPATIBLE_WITH_CONFIG_MODULES_disabled"
+          } | tee w34/evidence/historical-module-compat-status.txt
+
+      - name: Audit GEN2 source versus current LineageOS device expectations
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          K='w34/gen2/kernel'
+
+          test -f "$K/arch/arm64/configs/veux_defconfig"
+
+          grep -q '^VERSION = 5$' "$K/Makefile"
+          grep -q '^PATCHLEVEL = 4$' "$K/Makefile"
+          grep -q '^SUBLEVEL = 302$' "$K/Makefile"
+
+          grep -q 'CONFIG_ARCH_HOLI=y' "$K/arch/arm64/configs/veux_defconfig"
+          grep -q 'CONFIG_QGKI=y' "$K/arch/arm64/configs/veux_defconfig"
+
+          find "$K/arch/arm64/boot/dts" \
+            -type f \
+            \( -name '*veux*.dts' -o -name '*veux*.dtsi' -o -name '*veux*.dtso' \) \
+            -print \
+            | LC_ALL=C sort \
+            > w34/evidence/gen2-veux-dts-files.txt
+
+          test -s w34/evidence/gen2-veux-dts-files.txt
+
+          {
+            echo "GEN2_CURRENT_LINEAGE_SOURCE_CONTRACT=PASS"
+            echo "GEN2_KERNEL_VERSION=5.4.302"
+            echo "GEN2_VEUX_DEFCONFIG=YES"
+            echo "GEN2_ARCH_HOLI=YES"
+            echo "GEN2_QGKI=YES"
+            echo "GEN2_VEUX_DTS_SOURCE=YES"
+          } | tee w34/evidence/gen2-lineage-source-contract.txt
+
+      - name: Compare public historical Lineage kernel metadata to GEN2
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          def version(path):
+              t = Path(path).read_text(encoding="utf-8", errors="replace")
+              vals = {}
+              for key in ("VERSION", "PATCHLEVEL", "SUBLEVEL"):
+                  m = re.search(rf"(?m)^{key}\s*=\s*(\d+)", t)
+                  if not m:
+                      raise RuntimeError(f"{key} missing in {path}")
+                  vals[key] = m.group(1)
+              return f"{vals['VERSION']}.{vals['PATCHLEVEL']}.{vals['SUBLEVEL']}"
+
+          versions = {
+              "lineage-19.1": version(
+                  "w34/lineage/kernel-lineage-19_1/Makefile"
+              ),
+              "lineage-20": version(
+                  "w34/lineage/kernel-lineage-20/Makefile"
+              ),
+              "GEN2": version("w34/gen2/kernel/Makefile"),
+          }
+
+          out = "\n".join(f"{k}={v}" for k, v in versions.items()) + "\n"
+          Path("w34/evidence/kernel-version-comparison.txt").write_text(
+              out, encoding="utf-8"
+          )
+          print(out, end="")
+          PY
+
+          grep -q '^GEN2=5\.4\.302$' \
+            w34/evidence/kernel-version-comparison.txt
+
+          {
+            echo "KERNEL_VERSION_COMPARISON=PASS"
+            echo "GEN2_PATCHLEVEL_NEWER_THAN_PUBLIC_LINEAGE20_SNAPSHOT=YES"
+            echo "PATCHLEVEL_ALONE_PROVES_ROM_COMPATIBILITY=NO"
+          } | tee w34/evidence/kernel-version-comparison-status.txt
+
+      - name: Audit boot only AnyKernel3 feasibility without packaging
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import json
+
+          rows = json.loads(
+              Path("w34/evidence/lineage-contract-matrix.json").read_text()
+          )
+          current = next(r for r in rows if r["branch"] == "lineage-23.2")
+
+          checks = {
+              "image": current["board_kernel_image_name"] == "Image",
+              "header_v3": current["board_boot_header_version"] == "3",
+              "dtb_in_boot": current["board_include_dtb_in_bootimg"] == "true",
+              "separate_dtbo": current["board_kernel_separated_dtbo"] == "true",
+              "ab_boot": current["ab_boot"] == "YES",
+              "ab_dtbo": current["ab_dtbo"] == "YES",
+              "ab_vendor_boot": current["ab_vendor_boot"] == "YES",
+              "source_model": current["source_kernel_model"] == "YES",
+              "no_explicit_external_module_model":
+                  current["external_module_model"] == "NO",
+          }
+
+          for key, value in checks.items():
+              print(f"{key}={'PASS' if value else 'FAIL'}")
+
+          if not all(checks.values()):
+              raise RuntimeError("Current Lineage 23.2 static AK3 contract failed")
+
+          Path("w34/evidence/ak3-static-feasibility.txt").write_text(
+              "\n".join(
+                  [
+                      "AK3_BOOT_ONLY_REPACK_STATIC_FEASIBILITY=PASS",
+                      "REPLACE_KERNEL_IMAGE=FEASIBLE",
+                      "PRESERVE_CURRENT_ROM_RAMDISK=REQUIRED",
+                      "PRESERVE_VENDOR_BOOT=REQUIRED",
+                      "PRESERVE_DTBO_PARTITION=DEFAULT_REQUIRED",
+                      "DTB_POLICY=NOT_YET_FINALIZED",
+                      "BOOT_HEADER_VERSION=3",
+                      "A_B_SLOT_AWARE_INSTALLER_REQUIRED=YES",
+                      "RUNTIME_COMPATIBILITY_PROVEN=NO",
+                      "UNIVERSAL_ALL_LINEAGE_RELEASES_PROVEN=NO",
+                  ]
+              ) + "\n",
+              encoding="utf-8",
+          )
+          PY
+
+          cat w34/evidence/ak3-static-feasibility.txt
+
+      - name: Derive evidence based Lineage compatibility scope
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import json
+
+          rows = json.loads(
+              Path("w34/evidence/lineage-contract-matrix.json").read_text()
+          )
+
+          verdicts = []
+          for row in rows:
+              branch = row["branch"]
+              prebuilt_or_modules = (
+                  row["target_force_prebuilt_kernel"].lower() == "true"
+                  or bool(row["target_prebuilt_kernel"])
+                  or row["external_module_model"] == "YES"
+              )
+
+              if branch == "lineage-23.2":
+                  verdict = "PRIMARY_STATIC_CANDIDATE"
+                  reason = (
+                      "Image/header-v3/DTB-in-boot/separate-DTBO/"
+                      "vendor_boot/source-kernel contract matches GEN2 direction"
+                  )
+              elif prebuilt_or_modules:
+                  verdict = "NOT_UNIVERSAL_WITH_CURRENT_GEN2"
+                  reason = (
+                      "historical prebuilt/external-module kernel model conflicts "
+                      "with universal assumptions for GEN2 CONFIG_MODULES disabled"
+                  )
+              else:
+                  verdict = "REQUIRES_BRANCH_SPECIFIC_RUNTIME_VALIDATION"
+                  reason = "static boot contract alone is insufficient"
+
+              verdicts.append({
+                  "branch": branch,
+                  "verdict": verdict,
+                  "reason": reason,
+              })
+
+          Path("w34/evidence/lineage-compatibility-verdicts.json").write_text(
+              json.dumps(verdicts, indent=2) + "\n",
+              encoding="utf-8",
+          )
+          Path("w34/evidence/lineage-compatibility-verdicts.txt").write_text(
+              "\n".join(
+                  f"{v['branch']}: {v['verdict']} - {v['reason']}"
+                  for v in verdicts
+              ) + "\n",
+              encoding="utf-8",
+          )
+
+          print(
+              Path("w34/evidence/lineage-compatibility-verdicts.txt").read_text(),
+              end="",
+          )
+          PY
+
+          grep -q \
+            '^lineage-23\.2: PRIMARY_STATIC_CANDIDATE' \
+            w34/evidence/lineage-compatibility-verdicts.txt
+
+          {
+            echo "COMPATIBILITY_SCOPE_DERIVATION=PASS"
+            echo "PRIMARY_CURRENT_TARGET=lineage-23.2"
+            echo "ALL_HISTORICAL_LINEAGE_VERSIONS_UNIVERSAL=NO"
+            echo "RUNTIME_TEST_REQUIRED_BEFORE_RELEASE=YES"
+          } | tee w34/evidence/compatibility-scope-status.txt
+
+      - name: Write final W34 compatibility audit
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          REPORT='GEN2_34_V2_LINEAGE_AOSP_COMPATIBILITY_AUDIT.txt'
+
+          {
+            cat w34/evidence/audit-header.txt
+            echo
+            echo "=== W33 V7 FINAL BUILD EVIDENCE ==="
+            cat w34/evidence/w33-artifact-fetch-status.txt
+            cat w34/evidence/w33-v7-evidence-status.txt
+            cat w34/evidence/config-modules-semantics.txt
+            echo
+            echo "=== SOURCE PINS ==="
+            cat w34/evidence/gen2-source-status.txt
+            cat w34/evidence/lineage-branch-pins.txt
+            echo
+            echo "=== PUBLIC LINEAGE KERNEL DEPENDENCY CONTRACT ==="
+            cat w34/evidence/public-kernel-branch-contract.txt
+            echo
+            echo "=== LINEAGE 23.2 BOOT CONTRACT ==="
+            cat w34/evidence/lineage-23.2-boot-contract.txt
+            echo
+            echo "=== GEN2 SOURCE CONTRACT ==="
+            cat w34/evidence/gen2-lineage-source-contract.txt
+            echo
+            echo "=== HISTORICAL KERNEL MODEL ==="
+            cat w34/evidence/historical-kernel-model.txt
+            cat w34/evidence/historical-module-compat-status.txt
+            echo
+            echo "=== KERNEL VERSION COMPARISON ==="
+            cat w34/evidence/kernel-version-comparison.txt
+            cat w34/evidence/kernel-version-comparison-status.txt
+            echo
+            echo "=== ANYKERNEL3 STATIC FEASIBILITY ==="
+            cat w34/evidence/ak3-static-feasibility.txt
+            echo
+            echo "=== COMPATIBILITY VERDICTS ==="
+            cat w34/evidence/lineage-compatibility-verdicts.txt
+            cat w34/evidence/compatibility-scope-status.txt
+            echo
+            echo "FINAL_RESULT=PASS_GEN2_34_V2_LINEAGE_AOSP_STATIC_COMPATIBILITY_AUDIT"
+            echo "GEN2_KERNEL_BUILD_STATUS=W33_V7_FINAL_PASS"
+            echo "PRIMARY_STATIC_LINEAGE_TARGET=lineage-23.2"
+            echo "UNIVERSAL_ALL_LINEAGE_VERSIONS=NOT_PROVEN_AND_NOT_CLAIMED"
+            echo "AK3_BOOT_ONLY_DIRECTION=STATICALLY_FEASIBLE_FOR_CURRENT_COMPATIBLE_CONTRACT"
+            echo "DTB_POLICY=REQUIRES_NEXT_DEDICATED_REPACK_COMPATIBILITY_TEST"
+            echo "VENDOR_BOOT_POLICY=PRESERVE"
+            echo "DTBO_POLICY=PRESERVE_BY_DEFAULT_UNTIL_RUNTIME_EVIDENCE"
+            echo "NEXT_STEP=WORKFLOW35_ANYKERNEL3_BOOT_REPACK_CONTRACT_SIMULATION"
+            echo "DEVICE_FLASHING_ALLOWED_BY_THIS_AUDIT=NO"
+          } > "$REPORT"
+
+          test -s "$REPORT"
+
+      - name: Build failure safe W34 audit
+        if: always()
+        shell: bash
+        run: |
+          set +e
+
+          REPORT='GEN2_34_V2_LINEAGE_AOSP_COMPATIBILITY_AUDIT.txt'
+
+          if [ ! -s "$REPORT" ]; then
+            {
+              echo "AUDIT=GEN2_34_V2_LINEAGE_AOSP_COMPATIBILITY"
+              echo "RESULT=INCOMPLETE_OR_FAILED"
+              echo "FAILURE_SAFE_AUDIT_GENERATED=YES"
+              echo "DATE_UTC=$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+              echo
+              for f in \
+                w34/evidence/audit-header.txt \
+                w34/evidence/w33-artifact-fetch-status.txt \
+                w34/evidence/w33-v7-evidence-status.txt \
+                w34/evidence/config-modules-semantics.txt \
+                w34/evidence/gen2-source-status.txt \
+                w34/evidence/lineage-branch-fetch-status.txt \
+                w34/evidence/public-kernel-branch-contract.txt \
+                w34/evidence/lineage-23.2-boot-contract.txt \
+                w34/evidence/historical-module-compat-status.txt \
+                w34/evidence/kernel-version-comparison-status.txt \
+                w34/evidence/ak3-static-feasibility.txt \
+                w34/evidence/compatibility-scope-status.txt
+              do
+                if [ -f "$f" ]; then
+                  echo "=== $f ==="
+                  cat "$f"
+                  echo
+                fi
+              done
+              echo "BOOT_IMAGE_CREATED=NO"
+              echo "ANYKERNEL_PACKAGE_CREATED=NO"
+              echo "DEVICE_ACCESSED=NO"
+              echo "FLASHING_PERFORMED=NO"
+            } > "$REPORT"
+          fi
+
+          test -s "$REPORT"
+
+      - name: Upload W34 compatibility audit artifact
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: GEN2_34_V2_LINEAGE_AOSP_COMPATIBILITY_AUDIT-${{ github.run_number }}
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 6
+          path: |
+            GEN2_34_V2_LINEAGE_AOSP_COMPATIBILITY_AUDIT.txt
+            w34/evidence/audit-header.txt
+            w34/evidence/artifacts.json
+            w34/evidence/w33-artifact-zip-test.txt
+            w34/evidence/w33-artifact-fetch-status.txt
+            w34/evidence/w33-manifest-verify.txt
+            w34/evidence/w33-v7-evidence-status.txt
+            w34/evidence/config-modules-semantics.txt
+            w34/evidence/gen2-source-status.txt
+            w34/evidence/lineage-branch-pins.txt
+            w34/evidence/lineage-branch-fetch-status.txt
+            w34/evidence/lineage-kernel-fetch-status.txt
+            w34/evidence/lineage-kernel-remote-heads.txt
+            w34/evidence/public-kernel-branch-contract.txt
+            w34/evidence/lineage-contract-matrix.csv
+            w34/evidence/lineage-contract-matrix.json
+            w34/evidence/lineage-23.2-boot-contract.txt
+            w34/evidence/historical-kernel-model.txt
+            w34/evidence/historical-module-compat-status.txt
+            w34/evidence/gen2-veux-dts-files.txt
+            w34/evidence/gen2-lineage-source-contract.txt
+            w34/evidence/kernel-version-comparison.txt
+            w34/evidence/kernel-version-comparison-status.txt
+            w34/evidence/ak3-static-feasibility.txt
+            w34/evidence/lineage-compatibility-verdicts.json
+            w34/evidence/lineage-compatibility-verdicts.txt
+            w34/evidence/compatibility-scope-status.txt
+            w34/w33/GEN2_33_V7_SHA256SUMS
+            w34/w33/workflow33-compiler-diagnostics.txt
+            w34/w33/GEN2_33_final.config
