@@ -1,4 +1,4 @@
-name: 35 - GEN2 AnyKernel3 Boot Repack Contract Simulation v2
+name: 35 - GEN2 AnyKernel3 Boot Repack Contract Simulation v3
 
 on:
   workflow_dispatch:
@@ -50,7 +50,7 @@ jobs:
           mkdir -p w35/evidence w35/w33 w35/w34 w35/lineage w35/ak3 w35/sim
 
           {
-            echo "AUDIT=GEN2_35_V2_ANYKERNEL3_BOOT_REPACK_CONTRACT_SIMULATION"
+            echo "AUDIT=GEN2_35_V3_ANYKERNEL3_BOOT_REPACK_CONTRACT_SIMULATION"
             echo "DATE_UTC=$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
             echo "RUN_ID=$GITHUB_RUN_ID"
             echo "REPOSITORY=$GITHUB_REPOSITORY"
@@ -63,6 +63,9 @@ jobs:
             echo "W35_V1_FAILURE_CLASSIFICATION=AUDIT_IMPLEMENTATION_BUG"
             echo "W35_V1_FAILURE_DETAIL=SHA256SUM_MANIFEST_RELATIVE_PATHS_CHECKED_FROM_WRONG_CWD"
             echo "W35_V2_MANIFEST_FIX=VERIFY_FROM_W35_W33_DIRECTORY"
+            echo "W35_V2_SECOND_FAILURE_CLASSIFICATION=AUDIT_IMPLEMENTATION_BUG"
+            echo "W35_V2_SECOND_FAILURE_DETAIL=AK3_README_MATCHER_EXPECTED_COMMENT_WORDING_NOT_PRESENT_IN_README"
+            echo "W35_V3_AK3_METHOD_FIX=VERIFY_CORE_FUNCTIONS_PLUS_REFERENCE_SCRIPT_PLUS_README_METHOD_CONTRACT"
           } | tee w35/evidence/audit-header.txt
 
       - name: Download exact W33 v7 and W34 v2 artifacts
@@ -338,35 +341,76 @@ jobs:
 
           CORE='w35/ak3/repo/tools/ak3-core.sh'
           README='w35/ak3/repo/README.md'
+          REF='w35/ak3/repo/anykernel.sh'
 
-          grep -q '^split_boot() {' "$CORE"
-          grep -q '^flash_boot() {' "$CORE"
-          grep -q 'for i in zImage zImage-dtb Image Image-dtb' "$CORE"
-          grep -q 'magiskboot repack' "$CORE"
-          grep -q 'New image larger than target partition' "$CORE"
+          test -s "$CORE"
+          test -s "$README"
+          test -s "$REF"
 
-          grep -q \
-            'split_boot.*skip ramdisk unpack' \
+          # Core implementation contracts.
+          grep -Fq 'split_boot() {' "$CORE"
+          grep -Fq 'flash_boot() {' "$CORE"
+          grep -Fq 'for i in zImage zImage-dtb Image Image-dtb' "$CORE"
+          grep -Fq 'magiskboot repack' "$CORE"
+          grep -Fq 'New image larger than target partition' "$CORE"
+
+          # The reference anykernel.sh carries the exact operational comments
+          # for the boot-only mode we intend to use.
+          grep -Fq \
+            'dump_boot; # use split_boot to skip ramdisk unpack' \
+            "$REF"
+          grep -Fq \
+            'write_boot; # use flash_boot to skip ramdisk repack' \
+            "$REF"
+
+          # README contract: split/flash can be separated from ramdisk
+          # unpack/repack, slot-aware A/B operation is supported, and vbmeta
+          # flag behavior is configurable.
+          grep -Fq \
+            '_split_boot; unpack_ramdisk_ and _repack_ramdisk; flash_boot_' \
             "$README"
-          grep -q \
-            'flash_boot.*skip ramdisk repack' \
-            "$README"
-          grep -q \
-            'IS_SLOT_DEVICE=1' \
-            "$README"
-          grep -q \
-            'PATCH_VBMETA_FLAG=auto' \
-            "$README"
+          grep -Fq '`IS_SLOT_DEVICE=1`' "$README"
+          grep -Fq '`PATCH_VBMETA_FLAG=auto`' "$README"
 
           {
             echo "AK3_BOOT_ONLY_METHOD_AUDIT=PASS"
+            echo "AK3_CORE_SPLIT_BOOT_FUNCTION=PASS"
+            echo "AK3_CORE_FLASH_BOOT_FUNCTION=PASS"
+            echo "AK3_CORE_IMAGE_DISCOVERY=PASS"
+            echo "AK3_CORE_MAGISKBOOT_REPACK=PASS"
+            echo "AK3_CORE_SIZE_GUARD=PASS"
+            echo "AK3_REFERENCE_SPLIT_BOOT_COMMENT=PASS"
+            echo "AK3_REFERENCE_FLASH_BOOT_COMMENT=PASS"
+            echo "AK3_README_GRANULAR_METHOD_CONTRACT=PASS"
+            echo "AK3_README_SLOT_AWARE_CONTRACT=PASS"
+            echo "AK3_README_VBMETA_FLAG_CONTRACT=PASS"
             echo "USE_SPLIT_BOOT=YES"
             echo "USE_FLASH_BOOT=YES"
             echo "UNPACK_RAMDISK=NO"
             echo "REPACK_RAMDISK=NO"
             echo "KERNEL_FILENAME=Image"
             echo "SLOT_AWARE_REQUIRED=YES"
+            echo "W35_V2_README_MATCHER_BUG=CORRECTED"
           } | tee w35/evidence/ak3-method-status.txt
+
+      - name: Record corrected AnyKernel3 method matcher semantics
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          grep -q '^AK3_BOOT_ONLY_METHOD_AUDIT=PASS$' \
+            w35/evidence/ak3-method-status.txt
+
+          {
+            echo "AK3_METHOD_MATCHER_SEMANTICS=PASS"
+            echo "V2_FAILURE_SOURCE=README_WORDING_ASSUMPTION"
+            echo "V3_CORE_IMPLEMENTATION_CHECK=YES"
+            echo "V3_REFERENCE_SCRIPT_COMMENT_CHECK=YES"
+            echo "V3_README_METHOD_CONTRACT_CHECK=YES"
+            echo "AK3_PIN_CHANGED=NO"
+            echo "KERNEL_CHANGED=NO"
+            echo "LINEAGE_CONTRACT_CHANGED=NO"
+          } | tee w35/evidence/ak3-method-matcher-status.txt
 
       - name: Generate non flashable proposed AnyKernel3 policy script
         shell: bash
@@ -740,7 +784,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          REPORT='GEN2_35_V2_ANYKERNEL3_BOOT_REPACK_CONTRACT_AUDIT.txt'
+          REPORT='GEN2_35_V3_ANYKERNEL3_BOOT_REPACK_CONTRACT_AUDIT.txt'
 
           {
             cat w35/evidence/audit-header.txt
@@ -759,6 +803,7 @@ jobs:
             echo "=== ANYKERNEL3 ==="
             cat w35/evidence/ak3-pin-status.txt
             cat w35/evidence/ak3-method-status.txt
+            cat w35/evidence/ak3-method-matcher-status.txt
             cat w35/evidence/ak3-policy-status.txt
             echo
             echo "=== SYNTHETIC BOOT REPACK ==="
@@ -770,7 +815,7 @@ jobs:
             echo "=== VERDICT ==="
             cat w35/evidence/w35-verdict.txt
             echo
-            echo "FINAL_RESULT=PASS_GEN2_35_V2_ANYKERNEL3_BOOT_REPACK_STATIC_SYNTHETIC_CONTRACT"
+            echo "FINAL_RESULT=PASS_GEN2_35_V3_ANYKERNEL3_BOOT_REPACK_STATIC_SYNTHETIC_CONTRACT"
             echo "ANYKERNEL_FLASHABLE_ZIP_CREATED=NO"
             echo "DEVICE_ACCESSED=NO"
             echo "FLASHING_PERFORMED=NO"
@@ -784,11 +829,11 @@ jobs:
         run: |
           set +e
 
-          REPORT='GEN2_35_V2_ANYKERNEL3_BOOT_REPACK_CONTRACT_AUDIT.txt'
+          REPORT='GEN2_35_V3_ANYKERNEL3_BOOT_REPACK_CONTRACT_AUDIT.txt'
 
           if [ ! -s "$REPORT" ]; then
             {
-              echo "AUDIT=GEN2_35_V2_ANYKERNEL3_BOOT_REPACK_CONTRACT_SIMULATION"
+              echo "AUDIT=GEN2_35_V3_ANYKERNEL3_BOOT_REPACK_CONTRACT_SIMULATION"
               echo "RESULT=INCOMPLETE_OR_FAILED"
               echo "FAILURE_SAFE_AUDIT_GENERATED=YES"
               echo "DATE_UTC=$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
@@ -802,6 +847,7 @@ jobs:
                 w35/evidence/dtb-routing-status.txt \
                 w35/evidence/ak3-pin-status.txt \
                 w35/evidence/ak3-method-status.txt \
+                w35/evidence/ak3-method-matcher-status.txt \
                 w35/evidence/ak3-policy-status.txt \
                 w35/evidence/synthetic-repack-status.txt \
                 w35/evidence/partition-preservation-status.txt \
@@ -825,12 +871,12 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: GEN2_35_V2_ANYKERNEL3_BOOT_REPACK_CONTRACT_AUDIT-${{ github.run_number }}
+          name: GEN2_35_V3_ANYKERNEL3_BOOT_REPACK_CONTRACT_AUDIT-${{ github.run_number }}
           if-no-files-found: error
           retention-days: 30
           compression-level: 6
           path: |
-            GEN2_35_V2_ANYKERNEL3_BOOT_REPACK_CONTRACT_AUDIT.txt
+            GEN2_35_V3_ANYKERNEL3_BOOT_REPACK_CONTRACT_AUDIT.txt
             w35/evidence/audit-header.txt
             w35/evidence/input-artifact-status.txt
             w35/evidence/w33-manifest-check.txt
@@ -840,6 +886,7 @@ jobs:
             w35/evidence/dtb-routing-status.txt
             w35/evidence/ak3-pin-status.txt
             w35/evidence/ak3-method-status.txt
+            w35/evidence/ak3-method-matcher-status.txt
             w35/evidence/PROPOSED_ANYKERNEL35_POLICY.sh
             w35/evidence/ak3-policy-status.txt
             w35/evidence/synthetic-source-sha256.txt
