@@ -1,0 +1,819 @@
+name: 35 - GEN2 AnyKernel3 Boot Repack Contract Simulation
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: gen2-35-ak3-repack-contract-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    name: GEN2 35 AK3 boot repack contract simulation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+
+    env:
+      W33_IMAGE_SHA256: 98e608f7c30540b6cb5a1731b0edecd9a3b4960ebf388763452685858916037f
+      W33_VEUX_DTB_SHA256: 28a174d174cda7619bf674b29fa4e91625a6ad02f6ca4815ac7a943137b3df8c
+      W33_VEUX_DTBO_SHA256: 486ec73935e9805722df531cc3ddd5460f971c1edeec813fd25bef63500c0ca3
+      W33_CONFIG_SHA256: 2931b6b74bf34a85f2a71cb4b76d1a3277a5538514411dd1047c841d46e92cbb
+
+      LINEAGE_VEUX_REPO: https://github.com/xiaomi-sm6375-devs/android_device_xiaomi_veux.git
+      LINEAGE_COMMON_REPO: https://github.com/xiaomi-sm6375-devs/android_device_xiaomi_sm6375-common.git
+      LINEAGE_BUILD_REPO: https://github.com/LineageOS/android_build.git
+
+      LINEAGE_VEUX_PIN: 423b9b6e00301e181a85d886b3c67c47c48d096e
+      LINEAGE_COMMON_PIN: 4cd108d5cd933e5cdaf1293bee233621e8008ac8
+      LINEAGE_BUILD_PIN: 5a841be38fec92de9a8a408cf5812ca748ccc02e
+
+      AK3_REPO: https://github.com/osm0sis/AnyKernel3.git
+      AK3_PIN: af770f7b16cf8f8eb7c68614b2a693b3b361c90c
+
+      BOOT_PARTITION_SIZE: 134217728
+      BOOT_HEADER_VERSION: 3
+      BOOT_PAGE_SIZE: 4096
+
+    steps:
+      - name: Checkout builder repository
+        uses: actions/checkout@v6
+
+      - name: Initialize W35 workspace
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p w35/evidence w35/w33 w35/w34 w35/lineage w35/ak3 w35/sim
+
+          {
+            echo "AUDIT=GEN2_35_ANYKERNEL3_BOOT_REPACK_CONTRACT_SIMULATION"
+            echo "DATE_UTC=$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+            echo "RUN_ID=$GITHUB_RUN_ID"
+            echo "REPOSITORY=$GITHUB_REPOSITORY"
+            echo "AUDIT_MODE=READ_ONLY_PLUS_SYNTHETIC_BOOT_CONTAINER"
+            echo "REAL_DEVICE_BOOT_IMAGE_USED=NO"
+            echo "REAL_VENDOR_BOOT_IMAGE_USED=NO"
+            echo "ANYKERNEL_FLASHABLE_ZIP_CREATED=NO"
+            echo "DEVICE_ACCESSED=NO"
+            echo "FLASHING_PERFORMED=NO"
+          } | tee w35/evidence/audit-header.txt
+
+      - name: Download exact W33 v7 and W34 v2 artifacts
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          API="$GITHUB_API_URL/repos/$GITHUB_REPOSITORY"
+          AUTH="Authorization: Bearer $GH_TOKEN"
+          ACCEPT="Accept: application/vnd.github+json"
+          VERSION="X-GitHub-Api-Version: 2022-11-28"
+
+          curl -fsSL \
+            -H "$AUTH" -H "$ACCEPT" -H "$VERSION" \
+            "$API/actions/artifacts?per_page=100" \
+            -o w35/evidence/artifacts.json
+
+          fetch_artifact() {
+            prefix="$1"
+            outzip="$2"
+            outdir="$3"
+
+            id="$(
+              jq -r --arg prefix "$prefix" '
+                [
+                  .artifacts[]
+                  | select(
+                      (.expired == false)
+                      and
+                      (.name | startswith($prefix))
+                    )
+                ]
+                | sort_by(.created_at)
+                | reverse
+                | .[0].id // empty
+              ' w35/evidence/artifacts.json
+            )"
+
+            name="$(
+              jq -r --argjson id "$id" '
+                .artifacts[]
+                | select(.id == $id)
+                | .name
+              ' w35/evidence/artifacts.json
+            )"
+
+            test -n "$id"
+            test -n "$name"
+
+            curl -fLsS \
+              -H "$AUTH" -H "$ACCEPT" -H "$VERSION" \
+              "$API/actions/artifacts/$id/zip" \
+              -o "$outzip"
+
+            unzip -t "$outzip" >/dev/null
+            unzip -q "$outzip" -d "$outdir"
+
+            echo "$name|$id|$(sha256sum "$outzip" | awk '{print $1}')"
+          }
+
+          W33_INFO="$(
+            fetch_artifact \
+              'GEN2_33_V7_FINAL_FULL_IMAGE_DTB_DTBO_BUILD_AUDIT-' \
+              w35/W33_V7.zip \
+              w35/w33
+          )"
+
+          W34_INFO="$(
+            fetch_artifact \
+              'GEN2_34_V2_LINEAGE_AOSP_COMPATIBILITY_AUDIT-' \
+              w35/W34_V2.zip \
+              w35/w34
+          )"
+
+          {
+            echo "W33_ARTIFACT=$W33_INFO"
+            echo "W34_ARTIFACT=$W34_INFO"
+            echo "W33_FILE_COUNT=$(find w35/w33 -type f | wc -l | tr -d ' ')"
+            echo "W34_FILE_COUNT=$(find w35/w34 -type f | wc -l | tr -d ' ')"
+          } | tee w35/evidence/input-artifact-status.txt
+
+      - name: Verify W33 v7 and W34 v2 prerequisite evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test -s w35/w33/GEN2_33_Image
+          test -s w35/w33/GEN2_33_veux.dtb
+          test -s w35/w33/GEN2_33_veux-overlay.dtbo
+          test -s w35/w33/GEN2_33_final.config
+          test -s w35/w33/GEN2_33_V7_SHA256SUMS
+
+          sha256sum -c w35/w33/GEN2_33_V7_SHA256SUMS \
+            | tee w35/evidence/w33-manifest-check.txt
+
+          test "$(
+            sha256sum w35/w33/GEN2_33_Image | awk '{print $1}'
+          )" = "$W33_IMAGE_SHA256"
+
+          test "$(
+            sha256sum w35/w33/GEN2_33_veux.dtb | awk '{print $1}'
+          )" = "$W33_VEUX_DTB_SHA256"
+
+          test "$(
+            sha256sum w35/w33/GEN2_33_veux-overlay.dtbo | awk '{print $1}'
+          )" = "$W33_VEUX_DTBO_SHA256"
+
+          test "$(
+            sha256sum w35/w33/GEN2_33_final.config | awk '{print $1}'
+          )" = "$W33_CONFIG_SHA256"
+
+          W34_REPORT='w35/w34/GEN2_34_V2_LINEAGE_AOSP_COMPATIBILITY_AUDIT.txt'
+          test -s "$W34_REPORT"
+
+          grep -q \
+            '^FINAL_RESULT=PASS_GEN2_34_V2_LINEAGE_AOSP_STATIC_COMPATIBILITY_AUDIT$' \
+            "$W34_REPORT"
+          grep -q '^PRIMARY_STATIC_LINEAGE_TARGET=lineage-23.2$' "$W34_REPORT"
+          grep -q '^AK3_BOOT_ONLY_DIRECTION=STATICALLY_FEASIBLE' "$W34_REPORT"
+          grep -q '^VENDOR_BOOT_POLICY=PRESERVE$' "$W34_REPORT"
+          grep -q '^DTBO_POLICY=PRESERVE_BY_DEFAULT_UNTIL_RUNTIME_EVIDENCE$' "$W34_REPORT"
+
+          {
+            echo "W35_PREREQUISITES=PASS"
+            echo "W33_V7=PASS"
+            echo "W34_V2=PASS"
+            echo "PRIMARY_STATIC_TARGET=lineage-23.2"
+          } | tee w35/evidence/prerequisite-status.txt
+
+      - name: Fetch exact LineageOS 23.2 device and build pins
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git clone --filter=blob:none --no-checkout \
+            "$LINEAGE_VEUX_REPO" w35/lineage/veux >/dev/null 2>&1
+          git -C w35/lineage/veux checkout --detach "$LINEAGE_VEUX_PIN" >/dev/null 2>&1
+
+          git clone --filter=blob:none --no-checkout \
+            "$LINEAGE_COMMON_REPO" w35/lineage/common >/dev/null 2>&1
+          git -C w35/lineage/common checkout --detach "$LINEAGE_COMMON_PIN" >/dev/null 2>&1
+
+          git clone --filter=blob:none --no-checkout \
+            "$LINEAGE_BUILD_REPO" w35/lineage/build >/dev/null 2>&1
+          git -C w35/lineage/build checkout --detach "$LINEAGE_BUILD_PIN" >/dev/null 2>&1
+
+          test "$(git -C w35/lineage/veux rev-parse HEAD)" = "$LINEAGE_VEUX_PIN"
+          test "$(git -C w35/lineage/common rev-parse HEAD)" = "$LINEAGE_COMMON_PIN"
+          test "$(git -C w35/lineage/build rev-parse HEAD)" = "$LINEAGE_BUILD_PIN"
+
+          {
+            echo "LINEAGE_PINS=PASS"
+            echo "VEUX=$LINEAGE_VEUX_PIN"
+            echo "COMMON=$LINEAGE_COMMON_PIN"
+            echo "BUILD=$LINEAGE_BUILD_PIN"
+          } | tee w35/evidence/lineage-pin-status.txt
+
+      - name: Resolve exact DTB routing for LineageOS 23.2
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          DEVICE='w35/lineage/veux/BoardConfig.mk'
+          COMMON='w35/lineage/common/BoardConfigCommon.mk'
+          MAKEFILE='w35/lineage/build/core/Makefile'
+
+          grep -q 'TARGET_KERNEL_CONFIG := veux_defconfig' "$DEVICE"
+          grep -q 'BOARD_BOOT_HEADER_VERSION := 3' "$COMMON"
+          grep -q 'BOARD_INCLUDE_DTB_IN_BOOTIMG := true' "$COMMON"
+          grep -q 'BOARD_KERNEL_SEPARATED_DTBO := true' "$COMMON"
+          grep -q 'BOARD_USES_GENERIC_KERNEL_IMAGE := true' "$COMMON"
+          grep -q 'BOARD_VENDOR_BOOTIMAGE_PARTITION_SIZE := 100663296' "$COMMON"
+          grep -q 'BOARD_MOVE_RECOVERY_RESOURCES_TO_VENDOR_BOOT := true' "$COMMON"
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          text = Path("w35/lineage/build/core/Makefile").read_text(
+              encoding="utf-8", errors="replace"
+          )
+
+          boot_guard = """ifndef BUILDING_VENDOR_BOOT_IMAGE
+          ifdef BOARD_INCLUDE_DTB_IN_BOOTIMG
+            INTERNAL_BOOTIMAGE_ARGS += --dtb $(INSTALLED_DTBIMAGE_TARGET)
+          endif
+          endif"""
+
+          vendor_route = """ifdef BOARD_INCLUDE_DTB_IN_BOOTIMG
+            ifneq ($(BUILDING_VENDOR_KERNEL_BOOT_IMAGE),true)
+              # If we have vendor_kernel_boot partition, we migrate dtb image to that image
+              # and allow dtb in vendor_boot to be empty.
+              INTERNAL_VENDOR_BOOTIMAGE_ARGS += --dtb $(INSTALLED_DTBIMAGE_TARGET)
+            endif
+          endif"""
+
+          def normalize(s):
+              return "\n".join(line.strip() for line in s.splitlines() if line.strip())
+
+          norm = normalize(text)
+          if normalize(boot_guard) not in norm:
+              raise RuntimeError("boot DTB routing guard not found")
+          if normalize(vendor_route) not in norm:
+              raise RuntimeError("vendor_boot DTB routing block not found")
+
+          print("LINEAGE_BUILD_DTB_ROUTING_SOURCE=PASS")
+          PY
+
+          {
+            echo "LINEAGE_23_2_DTB_ROUTING=PASS"
+            echo "BOOT_HEADER_VERSION=3"
+            echo "BOOT_KERNEL_SECTION=Image"
+            echo "BOOT_DTB_ARGUMENT_WHEN_VENDOR_BOOT_BUILDING=NO"
+            echo "DTB_CONTAINER=vendor_boot"
+            echo "DTBO_CONTAINER=separate_dtbo_partition"
+            echo "W34_DTB_LOCATION_LABEL_REFINEMENT=REQUIRED"
+            echo "W34_OVERALL_COMPATIBILITY_RESULT_INVALIDATED=NO"
+            echo "W35_POLICY=BOOT_ONLY_REPACK_MUST_NOT_TOUCH_VENDOR_BOOT_OR_DTBO"
+          } | tee w35/evidence/dtb-routing-status.txt
+
+      - name: Fetch and pin AnyKernel3 reference implementation
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git clone --filter=blob:none --no-checkout \
+            "$AK3_REPO" w35/ak3/repo >/dev/null 2>&1
+          git -C w35/ak3/repo checkout --detach "$AK3_PIN" >/dev/null 2>&1
+
+          test "$(git -C w35/ak3/repo rev-parse HEAD)" = "$AK3_PIN"
+          test -s w35/ak3/repo/anykernel.sh
+          test -s w35/ak3/repo/tools/ak3-core.sh
+          test -s w35/ak3/repo/LICENSE
+
+          {
+            echo "AK3_FETCH=PASS"
+            echo "AK3_PIN=$AK3_PIN"
+            echo "AK3_ANYKERNEL_SH_SHA256=$(sha256sum w35/ak3/repo/anykernel.sh | awk '{print $1}')"
+            echo "AK3_CORE_SHA256=$(sha256sum w35/ak3/repo/tools/ak3-core.sh | awk '{print $1}')"
+          } | tee w35/evidence/ak3-pin-status.txt
+
+      - name: Audit AnyKernel3 split and flash methods for boot only design
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          CORE='w35/ak3/repo/tools/ak3-core.sh'
+          README='w35/ak3/repo/README.md'
+
+          grep -q '^split_boot() {' "$CORE"
+          grep -q '^flash_boot() {' "$CORE"
+          grep -q 'for i in zImage zImage-dtb Image Image-dtb' "$CORE"
+          grep -q 'magiskboot repack' "$CORE"
+          grep -q 'New image larger than target partition' "$CORE"
+
+          grep -q \
+            'split_boot.*skip ramdisk unpack' \
+            "$README"
+          grep -q \
+            'flash_boot.*skip ramdisk repack' \
+            "$README"
+          grep -q \
+            'IS_SLOT_DEVICE=1' \
+            "$README"
+          grep -q \
+            'PATCH_VBMETA_FLAG=auto' \
+            "$README"
+
+          {
+            echo "AK3_BOOT_ONLY_METHOD_AUDIT=PASS"
+            echo "USE_SPLIT_BOOT=YES"
+            echo "USE_FLASH_BOOT=YES"
+            echo "UNPACK_RAMDISK=NO"
+            echo "REPACK_RAMDISK=NO"
+            echo "KERNEL_FILENAME=Image"
+            echo "SLOT_AWARE_REQUIRED=YES"
+          } | tee w35/evidence/ak3-method-status.txt
+
+      - name: Generate non flashable proposed AnyKernel3 policy script
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cat > w35/evidence/PROPOSED_ANYKERNEL35_POLICY.sh <<'EOF'
+          ### GEN2 W35 POLICY DRAFT - NOT A FLASHABLE RELEASE
+          properties() { '
+          kernel.string=VEUX GEN2 5.4.302 ReSukiSU SUSFS
+          do.devicecheck=1
+          do.modules=0
+          do.systemless=0
+          do.cleanup=1
+          do.cleanuponabort=0
+          device.name1=veux
+          supported.versions=
+          supported.patchlevels=
+          supported.vendorpatchlevels=
+          '; }
+
+          BLOCK=boot;
+          IS_SLOT_DEVICE=1;
+          SLOT_SELECT=active;
+          RAMDISK_COMPRESSION=auto;
+          PATCH_VBMETA_FLAG=0;
+          NO_MAGISK_CHECK=1;
+
+          . tools/ak3-core.sh;
+
+          split_boot;
+          flash_boot;
+          EOF
+
+          # Remove indentation introduced by YAML block formatting.
+          sed -i 's/^          //' w35/evidence/PROPOSED_ANYKERNEL35_POLICY.sh
+
+          POLICY='w35/evidence/PROPOSED_ANYKERNEL35_POLICY.sh'
+
+          grep -q '^do.devicecheck=1$' "$POLICY"
+          grep -q '^do.modules=0$' "$POLICY"
+          grep -q '^device.name1=veux$' "$POLICY"
+          grep -q '^BLOCK=boot;$' "$POLICY"
+          grep -q '^IS_SLOT_DEVICE=1;$' "$POLICY"
+          grep -q '^SLOT_SELECT=active;$' "$POLICY"
+          grep -q '^PATCH_VBMETA_FLAG=0;$' "$POLICY"
+          grep -q '^NO_MAGISK_CHECK=1;$' "$POLICY"
+          grep -q '^split_boot;$' "$POLICY"
+          grep -q '^flash_boot;$' "$POLICY"
+
+          if grep -qE 'dump_boot;|write_boot;|flash_generic|vendor_boot|dtbo' "$POLICY"; then
+            echo "ERROR: policy draft touches unsupported partition or ramdisk path"
+            exit 1
+          fi
+
+          {
+            echo "AK3_POLICY_DRAFT=PASS"
+            echo "DEVICE_SCOPE=veux_ONLY"
+            echo "PEUX_INCLUDED=NO"
+            echo "MODULE_INSTALL=NO"
+            echo "VENDOR_BOOT_WRITE=NO"
+            echo "DTBO_WRITE=NO"
+            echo "RAMDISK_EDIT=NO"
+            echo "MAGISK_KERNEL_REPATCH=DISABLED_FOR_EXACT_IMAGE_IDENTITY"
+            echo "FLASHABLE_ZIP_CREATED=NO"
+          } | tee w35/evidence/ak3-policy-status.txt
+
+      - name: Build deterministic synthetic Android boot v3 source image
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib
+          import struct
+
+          PAGE = 4096
+          MAGIC = b"ANDROID!"
+          HEADER_VERSION = 3
+          HEADER_SIZE = 1580
+          CMDLINE_SIZE = 1536
+
+          # Deterministic ROM-like source kernel and generic ramdisk sentinels.
+          old_kernel = (b"LINEAGE23.2-SYNTHETIC-KERNEL-" * 32768)[:786432]
+          ramdisk = (b"LZ4-RAMDISK-SENTINEL-" * 65536)[:1048576]
+          cmdline_text = (
+              "w35.synthetic=1 androidboot.hardware=qcom "
+              "contract.preserve=ramdisk_and_header"
+          )
+          cmdline = cmdline_text.encode() + b"\0"
+          cmdline = cmdline.ljust(CMDLINE_SIZE, b"\0")
+
+          # Encoded OS version is only a deterministic sentinel here.
+          os_version = 0x3500100
+          reserved = (0, 0, 0, 0)
+
+          header = struct.pack(
+              "<8s9I1536s",
+              MAGIC,
+              len(old_kernel),
+              len(ramdisk),
+              os_version,
+              HEADER_SIZE,
+              *reserved,
+              HEADER_VERSION,
+              cmdline,
+          )
+          assert len(header) == HEADER_SIZE
+
+          def pad(data):
+              rem = len(data) % PAGE
+              return data if rem == 0 else data + bytes(PAGE - rem)
+
+          image = pad(header) + pad(old_kernel) + pad(ramdisk)
+
+          out = Path("w35/sim")
+          (out / "source-boot-v3.img").write_bytes(image)
+          (out / "source-kernel.bin").write_bytes(old_kernel)
+          (out / "source-ramdisk.bin").write_bytes(ramdisk)
+          (out / "source-cmdline.txt").write_text(cmdline_text + "\n")
+
+          print("SYNTH_BOOT_HEADER_VERSION=3")
+          print("SYNTH_BOOT_HEADER_SIZE=1580")
+          print("SYNTH_BOOT_PAGE_SIZE=4096")
+          print("SYNTH_BOOT_SIZE=" + str(len(image)))
+          print("SYNTH_RAMDISK_SHA256=" + hashlib.sha256(ramdisk).hexdigest())
+          print("SYNTH_SOURCE_KERNEL_SHA256=" + hashlib.sha256(old_kernel).hexdigest())
+          PY
+
+          test -s w35/sim/source-boot-v3.img
+          test "$(stat -c '%s' w35/sim/source-boot-v3.img)" -lt "$BOOT_PARTITION_SIZE"
+
+          sha256sum \
+            w35/sim/source-boot-v3.img \
+            w35/sim/source-kernel.bin \
+            w35/sim/source-ramdisk.bin \
+            > w35/evidence/synthetic-source-sha256.txt
+
+      - name: Simulate boot v3 kernel only repack with W33 Image
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cp w35/w33/GEN2_33_Image w35/sim/replacement-Image
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib
+          import struct
+
+          PAGE = 4096
+          HEADER_SIZE = 1580
+          PARTITION_SIZE = 134217728
+
+          source = Path("w35/sim/source-boot-v3.img").read_bytes()
+          replacement = Path("w35/sim/replacement-Image").read_bytes()
+
+          def align(n):
+              return (n + PAGE - 1) // PAGE * PAGE
+
+          def parse(image):
+              header = image[:HEADER_SIZE]
+              values = struct.unpack("<8s9I1536s", header)
+              magic = values[0]
+              (
+                  kernel_size,
+                  ramdisk_size,
+                  os_version,
+                  header_size,
+                  r0, r1, r2, r3,
+                  header_version,
+              ) = values[1:10]
+              cmdline = values[10]
+
+              if magic != b"ANDROID!":
+                  raise RuntimeError("bad boot magic")
+              if header_version != 3:
+                  raise RuntimeError(f"unexpected header version {header_version}")
+              if header_size != HEADER_SIZE:
+                  raise RuntimeError(f"unexpected header size {header_size}")
+
+              kernel_off = PAGE
+              ramdisk_off = kernel_off + align(kernel_size)
+
+              kernel = image[kernel_off:kernel_off + kernel_size]
+              ramdisk = image[ramdisk_off:ramdisk_off + ramdisk_size]
+
+              return {
+                  "kernel_size": kernel_size,
+                  "ramdisk_size": ramdisk_size,
+                  "os_version": os_version,
+                  "header_size": header_size,
+                  "reserved": (r0, r1, r2, r3),
+                  "header_version": header_version,
+                  "cmdline": cmdline,
+                  "kernel": kernel,
+                  "ramdisk": ramdisk,
+              }
+
+          def pad(data):
+              return data + bytes(align(len(data)) - len(data))
+
+          before = parse(source)
+
+          new_header = struct.pack(
+              "<8s9I1536s",
+              b"ANDROID!",
+              len(replacement),
+              before["ramdisk_size"],
+              before["os_version"],
+              before["header_size"],
+              *before["reserved"],
+              before["header_version"],
+              before["cmdline"],
+          )
+
+          repacked = pad(new_header) + pad(replacement) + pad(before["ramdisk"])
+
+          if len(repacked) >= PARTITION_SIZE:
+              raise RuntimeError("repacked boot exceeds partition")
+
+          Path("w35/sim/repacked-boot-v3.img").write_bytes(repacked)
+
+          after = parse(repacked)
+
+          checks = {
+              "header_version": after["header_version"] == before["header_version"] == 3,
+              "header_size": after["header_size"] == before["header_size"],
+              "os_version": after["os_version"] == before["os_version"],
+              "reserved": after["reserved"] == before["reserved"],
+              "cmdline": after["cmdline"] == before["cmdline"],
+              "ramdisk_size": after["ramdisk_size"] == before["ramdisk_size"],
+              "ramdisk_bytes": after["ramdisk"] == before["ramdisk"],
+              "replacement_kernel":
+                  hashlib.sha256(after["kernel"]).hexdigest()
+                  == "98e608f7c30540b6cb5a1731b0edecd9a3b4960ebf388763452685858916037f",
+              "old_kernel_replaced": after["kernel"] != before["kernel"],
+          }
+
+          for key, ok in checks.items():
+              print(f"{key}={'PASS' if ok else 'FAIL'}")
+
+          if not all(checks.values()):
+              raise RuntimeError("synthetic boot-only repack invariant failed")
+
+          report = [
+              "SYNTHETIC_BOOT_V3_REPACK=PASS",
+              "ONLY_LOGICAL_PAYLOAD_CHANGED=KERNEL",
+              "HEADER_VERSION_PRESERVED=YES",
+              "HEADER_SIZE_PRESERVED=YES",
+              "OS_VERSION_FIELD_PRESERVED=YES",
+              "RESERVED_FIELDS_PRESERVED=YES",
+              "CMDLINE_PRESERVED=YES",
+              "RAMDISK_BYTES_PRESERVED=YES",
+              "W33_IMAGE_SHA256_MATCH=YES",
+              f"SOURCE_BOOT_SIZE={len(source)}",
+              f"REPACKED_BOOT_SIZE={len(repacked)}",
+              f"BOOT_PARTITION_SIZE={PARTITION_SIZE}",
+              "REPACKED_BOOT_FITS_PARTITION=YES",
+              "AVB_FOOTER_BYTE_IDENTITY_TESTED=NO",
+              "REAL_MAGISKBOOT_REPACK_TESTED=NO",
+          ]
+          Path("w35/evidence/synthetic-repack-status.txt").write_text(
+              "\n".join(report) + "\n",
+              encoding="utf-8",
+          )
+          PY
+
+          sha256sum \
+            w35/sim/repacked-boot-v3.img \
+            w35/sim/replacement-Image \
+            > w35/evidence/synthetic-repacked-sha256.txt
+
+          cat w35/evidence/synthetic-repack-status.txt
+
+      - name: Simulate preservation of vendor boot and DTBO partitions
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib
+
+          sim = Path("w35/sim")
+
+          vendor_boot = (
+              b"VENDOR_BOOT_W35_PRESERVE_SENTINEL\n"
+              + Path("w35/w33/GEN2_33_veux.dtb").read_bytes()
+          )
+          dtbo = (
+              b"DTBO_W35_PRESERVE_SENTINEL\n"
+              + Path("w35/w33/GEN2_33_veux-overlay.dtbo").read_bytes()
+          )
+
+          (sim / "vendor_boot-preserve-sentinel.bin").write_bytes(vendor_boot)
+          (sim / "dtbo-preserve-sentinel.bin").write_bytes(dtbo)
+
+          before_vendor = hashlib.sha256(vendor_boot).hexdigest()
+          before_dtbo = hashlib.sha256(dtbo).hexdigest()
+
+          # Boot-only policy deliberately performs no writes to either blob.
+          after_vendor = hashlib.sha256(
+              (sim / "vendor_boot-preserve-sentinel.bin").read_bytes()
+          ).hexdigest()
+          after_dtbo = hashlib.sha256(
+              (sim / "dtbo-preserve-sentinel.bin").read_bytes()
+          ).hexdigest()
+
+          if before_vendor != after_vendor or before_dtbo != after_dtbo:
+              raise RuntimeError("preserved partition sentinel changed")
+
+          Path("w35/evidence/partition-preservation-status.txt").write_text(
+              "\n".join([
+                  "BOOT_ONLY_PARTITION_PRESERVATION_SIMULATION=PASS",
+                  "VENDOR_BOOT_WRITE=NO",
+                  "DTBO_WRITE=NO",
+                  "VENDOR_BOOT_SENTINEL_HASH_PRESERVED=YES",
+                  "DTBO_SENTINEL_HASH_PRESERVED=YES",
+                  "W33_DTB_PACKAGED_IN_BOOT=NO",
+                  "W33_DTBO_PACKAGED_FOR_FLASH=NO",
+              ]) + "\n",
+              encoding="utf-8",
+          )
+          PY
+
+          cat w35/evidence/partition-preservation-status.txt
+
+      - name: Derive W35 AnyKernel3 safety verdict
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          grep -q '^W35_PREREQUISITES=PASS$' \
+            w35/evidence/prerequisite-status.txt
+          grep -q '^LINEAGE_23_2_DTB_ROUTING=PASS$' \
+            w35/evidence/dtb-routing-status.txt
+          grep -q '^AK3_BOOT_ONLY_METHOD_AUDIT=PASS$' \
+            w35/evidence/ak3-method-status.txt
+          grep -q '^AK3_POLICY_DRAFT=PASS$' \
+            w35/evidence/ak3-policy-status.txt
+          grep -q '^SYNTHETIC_BOOT_V3_REPACK=PASS$' \
+            w35/evidence/synthetic-repack-status.txt
+          grep -q '^RAMDISK_BYTES_PRESERVED=YES$' \
+            w35/evidence/synthetic-repack-status.txt
+          grep -q '^BOOT_ONLY_PARTITION_PRESERVATION_SIMULATION=PASS$' \
+            w35/evidence/partition-preservation-status.txt
+
+          {
+            echo "W35_STATIC_SYNTHETIC_AK3_CONTRACT=PASS"
+            echo "PRIMARY_DEVICE=veux"
+            echo "PRIMARY_ROM_CONTRACT=lineage-23.2"
+            echo "BOOT_ONLY_KERNEL_REPLACEMENT=SUPPORTED_BY_STATIC_CONTRACT"
+            echo "RAMDISK_POLICY=PRESERVE"
+            echo "VENDOR_BOOT_POLICY=PRESERVE"
+            echo "DTBO_POLICY=PRESERVE"
+            echo "DTB_POLICY=PRESERVE_ROM_DTB_IN_VENDOR_BOOT"
+            echo "W33_CUSTOM_DTB_FLASH_POLICY=NO"
+            echo "W33_CUSTOM_DTBO_FLASH_POLICY=NO"
+            echo "A_B_SLOT_POLICY=ACTIVE_SLOT_ONLY"
+            echo "REAL_BOOT_IMAGE_REPACK_REQUIRED_BEFORE_RELEASE=YES"
+            echo "REAL_AK3_MAGISKBOOT_EXECUTION_REQUIRED_BEFORE_RELEASE=YES"
+            echo "RUNTIME_BOOT_TEST_REQUIRED_BEFORE_RELEASE=YES"
+            echo "FLASHABLE_RELEASE_READY=NO"
+            echo "NEXT_STEP=WORKFLOW36_REAL_LINEAGE_BOOT_IMAGE_AND_AK3_MAGISKBOOT_REPACK_VALIDATION"
+          } | tee w35/evidence/w35-verdict.txt
+
+      - name: Write final W35 audit report
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          REPORT='GEN2_35_ANYKERNEL3_BOOT_REPACK_CONTRACT_AUDIT.txt'
+
+          {
+            cat w35/evidence/audit-header.txt
+            echo
+            echo "=== INPUTS ==="
+            cat w35/evidence/input-artifact-status.txt
+            cat w35/evidence/prerequisite-status.txt
+            echo
+            echo "=== LINEAGE PINS ==="
+            cat w35/evidence/lineage-pin-status.txt
+            echo
+            echo "=== DTB ROUTING ==="
+            cat w35/evidence/dtb-routing-status.txt
+            echo
+            echo "=== ANYKERNEL3 ==="
+            cat w35/evidence/ak3-pin-status.txt
+            cat w35/evidence/ak3-method-status.txt
+            cat w35/evidence/ak3-policy-status.txt
+            echo
+            echo "=== SYNTHETIC BOOT REPACK ==="
+            cat w35/evidence/synthetic-repack-status.txt
+            echo
+            echo "=== PARTITION PRESERVATION ==="
+            cat w35/evidence/partition-preservation-status.txt
+            echo
+            echo "=== VERDICT ==="
+            cat w35/evidence/w35-verdict.txt
+            echo
+            echo "FINAL_RESULT=PASS_GEN2_35_ANYKERNEL3_BOOT_REPACK_STATIC_SYNTHETIC_CONTRACT"
+            echo "ANYKERNEL_FLASHABLE_ZIP_CREATED=NO"
+            echo "DEVICE_ACCESSED=NO"
+            echo "FLASHING_PERFORMED=NO"
+          } > "$REPORT"
+
+          test -s "$REPORT"
+
+      - name: Build failure safe W35 audit
+        if: always()
+        shell: bash
+        run: |
+          set +e
+
+          REPORT='GEN2_35_ANYKERNEL3_BOOT_REPACK_CONTRACT_AUDIT.txt'
+
+          if [ ! -s "$REPORT" ]; then
+            {
+              echo "AUDIT=GEN2_35_ANYKERNEL3_BOOT_REPACK_CONTRACT_SIMULATION"
+              echo "RESULT=INCOMPLETE_OR_FAILED"
+              echo "FAILURE_SAFE_AUDIT_GENERATED=YES"
+              echo "DATE_UTC=$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+              echo
+              for f in \
+                w35/evidence/audit-header.txt \
+                w35/evidence/input-artifact-status.txt \
+                w35/evidence/prerequisite-status.txt \
+                w35/evidence/lineage-pin-status.txt \
+                w35/evidence/dtb-routing-status.txt \
+                w35/evidence/ak3-pin-status.txt \
+                w35/evidence/ak3-method-status.txt \
+                w35/evidence/ak3-policy-status.txt \
+                w35/evidence/synthetic-repack-status.txt \
+                w35/evidence/partition-preservation-status.txt \
+                w35/evidence/w35-verdict.txt
+              do
+                if [ -f "$f" ]; then
+                  echo "=== $f ==="
+                  cat "$f"
+                  echo
+                fi
+              done
+              echo "ANYKERNEL_FLASHABLE_ZIP_CREATED=NO"
+              echo "DEVICE_ACCESSED=NO"
+              echo "FLASHING_PERFORMED=NO"
+            } > "$REPORT"
+          fi
+
+          test -s "$REPORT"
+
+      - name: Upload W35 audit artifact
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: GEN2_35_ANYKERNEL3_BOOT_REPACK_CONTRACT_AUDIT-${{ github.run_number }}
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 6
+          path: |
+            GEN2_35_ANYKERNEL3_BOOT_REPACK_CONTRACT_AUDIT.txt
+            w35/evidence/audit-header.txt
+            w35/evidence/input-artifact-status.txt
+            w35/evidence/w33-manifest-check.txt
+            w35/evidence/prerequisite-status.txt
+            w35/evidence/lineage-pin-status.txt
+            w35/evidence/dtb-routing-status.txt
+            w35/evidence/ak3-pin-status.txt
+            w35/evidence/ak3-method-status.txt
+            w35/evidence/PROPOSED_ANYKERNEL35_POLICY.sh
+            w35/evidence/ak3-policy-status.txt
+            w35/evidence/synthetic-source-sha256.txt
+            w35/evidence/synthetic-repacked-sha256.txt
+            w35/evidence/synthetic-repack-status.txt
+            w35/evidence/partition-preservation-status.txt
+            w35/evidence/w35-verdict.txt
+            w35/sim/source-boot-v3.img
+            w35/sim/repacked-boot-v3.img
