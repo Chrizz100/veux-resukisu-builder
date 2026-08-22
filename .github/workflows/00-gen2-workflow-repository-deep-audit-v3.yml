@@ -1,0 +1,892 @@
+name: 00 - GEN2 Workflow Repository Deep Audit v3
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: gen2-workflow-repository-deep-audit-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    name: Read-only audit of every workflow file
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    env:
+      AUDIT_ROOT: ${{ github.workspace }}/workflow-audit
+      REPORT_DIR: ${{ github.workspace }}/workflow-audit/report
+      ACTIONLINT_VERSION: "1.7.12"
+      ACTIONLINT_LINUX_AMD64_SHA256: "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8"
+
+    steps:
+      - name: Checkout builder repository read only
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Initialize audit workspace
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -rf "$AUDIT_ROOT"
+          mkdir -p "$REPORT_DIR" "$AUDIT_ROOT/scripts"
+
+          {
+            echo "AUDIT=GEN2_WORKFLOW_REPOSITORY_DEEP_AUDIT_V3"
+            echo "DATE_UTC=$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+            echo "RUN_ID=$GITHUB_RUN_ID"
+            echo "REPOSITORY=$GITHUB_REPOSITORY"
+            echo "BUILDER_SHA=$GITHUB_SHA"
+            echo "READ_ONLY_AUDIT=YES"
+            echo "REPOSITORY_MUTATION=NO"
+            echo "V2_FIX_ACTIONLINT_HIDDEN_OUTPUT=YES"
+            echo "V2_FIX_SHELLCHECK_OUTPUT_LOCATION=YES"
+            echo "V2_FIX_BASH_N_ERROR_CAPTURE=YES"
+            echo "V2_PAGINATION_PER_CALL_ALGORITHM=RETAINED"
+            echo "V3_FIX_PER_PAGE_FALSE_PAGE_MATCH=YES"
+            echo "V3_PAGINATION_DETECTOR_SELFTEST=REQUIRED"
+            echo "DEVICE_ACCESSED=NO"
+            echo "ADB_USED=NO"
+            echo "FASTBOOT_USED=NO"
+            echo "FLASHING_PERFORMED=NO"
+          } > "$REPORT_DIR/AUDIT-HEADER.txt"
+
+      - name: Install pinned static audit tools
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            python3-yaml \
+            shellcheck
+
+          archive="$AUDIT_ROOT/actionlint.tar.gz"
+          url="https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+
+          curl \
+            --fail \
+            --location \
+            --retry 4 \
+            --retry-all-errors \
+            --connect-timeout 20 \
+            --max-time 180 \
+            "$url" \
+            -o "$archive"
+
+          test "$(sha256sum "$archive" | awk '{print $1}')" = \
+            "$ACTIONLINT_LINUX_AMD64_SHA256"
+
+          tar -xzf "$archive" -C "$AUDIT_ROOT"
+          test -x "$AUDIT_ROOT/actionlint"
+
+          {
+            "$AUDIT_ROOT/actionlint" -version
+            shellcheck --version | head -n 2
+            python3 --version
+          } > "$REPORT_DIR/TOOL-VERSIONS.txt"
+
+      - name: Inventory every workflow path and repository hygiene issue
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test -d .github/workflows
+
+          find .github/workflows \
+            -maxdepth 1 \
+            -type f \
+            \( -name '*.yml' -o -name '*.yaml' \) \
+            -print \
+            | LC_ALL=C sort \
+            > "$REPORT_DIR/TOPLEVEL-WORKFLOWS.txt"
+
+          find .github/workflows \
+            -mindepth 2 \
+            -type f \
+            \( -name '*.yml' -o -name '*.yaml' \) \
+            -print \
+            | LC_ALL=C sort \
+            > "$REPORT_DIR/NESTED-YAML-IGNORED-BY-GITHUB.txt"
+
+          find .github/workflows \
+            -maxdepth 1 \
+            -type f \
+            ! -name '*.yml' \
+            ! -name '*.yaml' \
+            -print \
+            | LC_ALL=C sort \
+            > "$REPORT_DIR/NON-YAML-IN-WORKFLOW-DIR.txt"
+
+          find .github/workflows \
+            -mindepth 1 \
+            -maxdepth 1 \
+            -type d \
+            -print \
+            | LC_ALL=C sort \
+            > "$REPORT_DIR/SUBDIRECTORIES-IN-WORKFLOW-DIR.txt"
+
+          while IFS= read -r file; do
+            [ -n "$file" ] || continue
+            printf '%12d  %s\n' "$(stat -c '%s' "$file")" "$file"
+          done < "$REPORT_DIR/TOPLEVEL-WORKFLOWS.txt" \
+            | sort -nr \
+            > "$REPORT_DIR/WORKFLOW-SIZES.txt"
+
+          {
+            echo "TOPLEVEL_WORKFLOW_COUNT=$(wc -l < "$REPORT_DIR/TOPLEVEL-WORKFLOWS.txt" | tr -d ' ')"
+            echo "NESTED_YAML_COUNT=$(wc -l < "$REPORT_DIR/NESTED-YAML-IGNORED-BY-GITHUB.txt" | tr -d ' ')"
+            echo "NON_YAML_TOPLEVEL_COUNT=$(wc -l < "$REPORT_DIR/NON-YAML-IN-WORKFLOW-DIR.txt" | tr -d ' ')"
+            echo "WORKFLOW_SUBDIRECTORY_COUNT=$(wc -l < "$REPORT_DIR/SUBDIRECTORIES-IN-WORKFLOW-DIR.txt" | tr -d ' ')"
+            echo "GEN2_TOPLEVEL_COUNT=$(grep -Eci '/[^/]*gen2[^/]*\.ya?ml$' "$REPORT_DIR/TOPLEVEL-WORKFLOWS.txt" || true)"
+          } > "$REPORT_DIR/INVENTORY-SUMMARY.txt"
+
+      - name: Parse every YAML and run actionlint per top-level workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          : > "$REPORT_DIR/YAML-PARSE.tsv"
+          : > "$REPORT_DIR/ACTIONLINT.tsv"
+          mkdir -p "$REPORT_DIR/actionlint" "$REPORT_DIR/failures"
+
+          while IFS= read -r file; do
+            [ -n "$file" ] || continue
+            safe="wf_$(printf '%s' "$file" | sed 's#[^A-Za-z0-9._-]#_#g')"
+
+            if python3 - "$file" <<'PY'
+          import sys
+          import yaml
+          from pathlib import Path
+
+          p = Path(sys.argv[1])
+          text = p.read_text(encoding="utf-8")
+          obj = yaml.load(text, Loader=yaml.BaseLoader)
+          if not isinstance(obj, dict):
+              raise SystemExit("top-level YAML value is not a mapping")
+          if "jobs" not in obj:
+              raise SystemExit("missing top-level jobs mapping")
+          if not isinstance(obj["jobs"], dict) or not obj["jobs"]:
+              raise SystemExit("jobs mapping is empty or invalid")
+          print("PASS")
+          PY
+            then
+              printf 'PASS\t%s\n' "$file" >> "$REPORT_DIR/YAML-PARSE.tsv"
+            else
+              printf 'FAIL\t%s\n' "$file" >> "$REPORT_DIR/YAML-PARSE.tsv"
+            fi
+
+            set +e
+            timeout --signal=TERM --kill-after=3s 30s \
+              "$AUDIT_ROOT/actionlint" \
+              -no-color \
+              -shellcheck= \
+              -pyflakes= \
+              "$file" \
+              > "$REPORT_DIR/actionlint/${safe}.txt" \
+              2>&1
+            rc=$?
+            set -e
+
+            case "$rc" in
+              0) status='PASS' ;;
+              124|137|143) status='TIMEOUT' ;;
+              *) status='FAIL' ;;
+            esac
+
+            printf '%s\t%s\tRC=%s\n' "$status" "$file" "$rc" \
+              >> "$REPORT_DIR/ACTIONLINT.tsv"
+          done < "$REPORT_DIR/TOPLEVEL-WORKFLOWS.txt"
+
+      - name: Extract and syntax-check every Bash run block
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - \
+            "$REPORT_DIR/TOPLEVEL-WORKFLOWS.txt" \
+            "$AUDIT_ROOT/scripts" \
+            "$REPORT_DIR/RUN-BLOCKS.tsv" <<'PY'
+          import re
+          import sys
+          from pathlib import Path
+          import yaml
+
+          listing = Path(sys.argv[1])
+          outdir = Path(sys.argv[2])
+          index = Path(sys.argv[3])
+
+          expr = re.compile(r"\$\{\{.*?\}\}", re.S)
+          rows = []
+          counter = 0
+
+          for raw in listing.read_text(encoding="utf-8").splitlines():
+              if not raw:
+                  continue
+              path = Path(raw)
+              try:
+                  doc = yaml.load(path.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
+              except Exception as exc:
+                  rows.append(("YAML_PARSE_FAIL", raw, "", "", str(exc).replace("\t", " ")))
+                  continue
+
+              jobs = doc.get("jobs", {}) if isinstance(doc, dict) else {}
+              if not isinstance(jobs, dict):
+                  continue
+
+              for job_name, job in jobs.items():
+                  if not isinstance(job, dict):
+                      continue
+                  steps = job.get("steps", [])
+                  if not isinstance(steps, list):
+                      continue
+
+                  for step_i, step in enumerate(steps, 1):
+                      if not isinstance(step, dict) or "run" not in step:
+                          continue
+                      run = step.get("run")
+                      if not isinstance(run, str):
+                          continue
+                      shell = step.get("shell", "bash")
+                      if shell is None:
+                          shell = "bash"
+                      shell_s = str(shell)
+                      if not (shell_s.startswith("bash") or shell_s.startswith("sh")):
+                          rows.append(("SKIP_NON_BASH", raw, str(job_name), str(step_i), shell_s))
+                          continue
+
+                      counter += 1
+                      sanitized = expr.sub("GH_EXPR", run)
+                      script = outdir / f"run-{counter:04d}.sh"
+                      script.write_text(sanitized, encoding="utf-8")
+                      rows.append(("CHECK", raw, str(job_name), str(step_i), str(script)))
+
+          with index.open("w", encoding="utf-8") as f:
+              for row in rows:
+                  f.write("\t".join(row) + "\n")
+          PY
+
+          : > "$REPORT_DIR/BASH-N.tsv"
+          : > "$REPORT_DIR/SHELLCHECK.tsv"
+
+          while IFS=$'\t' read -r mode file job step detail; do
+            [ -n "$mode" ] || continue
+
+            if [ "$mode" != CHECK ]; then
+              printf '%s\t%s\t%s\t%s\t%s\n' "$mode" "$file" "$job" "$step" "$detail" \
+                >> "$REPORT_DIR/BASH-N.tsv"
+              continue
+            fi
+
+            script_base="$(basename "$detail" .sh)"
+            bash_log="$REPORT_DIR/failures/${script_base}.bash-n.txt"
+            shellcheck_log="$REPORT_DIR/failures/${script_base}.shellcheck.txt"
+            failure_script="$REPORT_DIR/failures/${script_base}.sh"
+
+            if bash -n "$detail" > "$bash_log" 2>&1; then
+              rm -f "$bash_log"
+              printf 'PASS\t%s\t%s\t%s\t%s\n' "$file" "$job" "$step" "$detail" \
+                >> "$REPORT_DIR/BASH-N.tsv"
+            else
+              cp "$detail" "$failure_script"
+              {
+                printf 'SOURCE_WORKFLOW=%s\n' "$file"
+                printf 'JOB=%s\n' "$job"
+                printf 'STEP=%s\n' "$step"
+              } > "$REPORT_DIR/failures/${script_base}.metadata.txt"
+              printf 'FAIL\t%s\t%s\t%s\t%s\n' "$file" "$job" "$step" "$detail" \
+                >> "$REPORT_DIR/BASH-N.tsv"
+            fi
+
+            set +e
+            timeout --signal=TERM --kill-after=3s 20s \
+              shellcheck \
+              --shell=bash \
+              --severity=error \
+              "$detail" \
+              > "$shellcheck_log" \
+              2>&1
+            rc=$?
+            set -e
+
+            case "$rc" in
+              0)
+                sc='PASS'
+                rm -f "$shellcheck_log"
+                ;;
+              124|137|143)
+                sc='TIMEOUT'
+                cp "$detail" "$failure_script"
+                ;;
+              *)
+                sc='FAIL'
+                cp "$detail" "$failure_script"
+                ;;
+            esac
+            printf '%s\t%s\t%s\t%s\tRC=%s\n' "$sc" "$file" "$job" "$step" "$rc" \
+              >> "$REPORT_DIR/SHELLCHECK.tsv"
+          done < "$REPORT_DIR/RUN-BLOCKS.tsv"
+
+      - name: Analyze versions actions artifact logic permissions and safety patterns
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - \
+            "$REPORT_DIR/TOPLEVEL-WORKFLOWS.txt" \
+            "$REPORT_DIR/STATIC-ANALYSIS.json" \
+            "$REPORT_DIR/STATIC-FINDINGS.tsv" <<'PY'
+          import collections
+          import hashlib
+          import json
+          import re
+          import sys
+          from pathlib import Path
+          import yaml
+
+          listing = Path(sys.argv[1])
+          json_out = Path(sys.argv[2])
+          tsv_out = Path(sys.argv[3])
+
+          files = [Path(x) for x in listing.read_text(encoding="utf-8").splitlines() if x]
+
+          uses_re = re.compile(r"(?m)^\s*uses:\s*([^\s#]+)")
+          file_tail_version_re = re.compile(r"(?i)-v(\d+)$")
+          name_version_re = re.compile(r"(?i)\bv(\d+)\b")
+          sha_ref_re = re.compile(r"^[0-9a-fA-F]{40,64}$")
+
+          findings = []
+          action_refs = []
+          names = collections.defaultdict(list)
+          concurrency = collections.defaultdict(list)
+          families = collections.defaultdict(list)
+          records = []
+
+          def add(severity, code, path, detail):
+              findings.append({
+                  "severity": severity,
+                  "code": code,
+                  "path": str(path),
+                  "detail": detail,
+              })
+
+          for path in files:
+              text = path.read_text(encoding="utf-8", errors="replace")
+              size = path.stat().st_size
+              sha = hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+              try:
+                  doc = yaml.load(text, Loader=yaml.BaseLoader)
+              except Exception as exc:
+                  doc = {}
+                  add("CRITICAL", "YAML_PARSE", path, str(exc))
+
+              wf_name = str(doc.get("name", "")) if isinstance(doc, dict) else ""
+              names[wf_name].append(str(path))
+
+              conc_group = ""
+              if isinstance(doc, dict):
+                  conc = doc.get("concurrency")
+                  if isinstance(conc, dict):
+                      conc_group = str(conc.get("group", ""))
+              if conc_group:
+                  concurrency[conc_group].append(str(path))
+
+              stem = path.stem
+              family = re.sub(r"(?i)(?:-v\d+)+$", "", stem)
+              families[family].append(str(path))
+
+              file_v = None
+              m = file_tail_version_re.search(stem)
+              if m:
+                  file_v = int(m.group(1))
+              name_v = None
+              name_versions = name_version_re.findall(wf_name)
+              if name_versions:
+                  name_v = int(name_versions[-1])
+              if file_v is not None and name_v is not None and file_v != name_v:
+                  add("HIGH", "FILENAME_INTERNAL_VERSION_MISMATCH", path,
+                      f"filename v{file_v} but workflow name v{name_v}")
+
+              if size >= 250_000:
+                  add("HIGH", "VERY_LARGE_WORKFLOW", path, f"{size} bytes")
+              elif size >= 100_000:
+                  add("MEDIUM", "LARGE_WORKFLOW", path, f"{size} bytes")
+
+              for ref in uses_re.findall(text):
+                  item = {"path": str(path), "uses": ref}
+                  action_refs.append(item)
+                  if ref.startswith("./") or ref.startswith("docker://"):
+                      continue
+                  if "@" not in ref:
+                      add("HIGH", "ACTION_WITHOUT_REF", path, ref)
+                      continue
+                  action, version = ref.rsplit("@", 1)
+                  if not sha_ref_re.fullmatch(version):
+                      add("MEDIUM", "MUTABLE_ACTION_REF", path, ref)
+                  if re.search(r"@v[1-4](?:$|\D)", ref):
+                      add("MEDIUM", "LEGACY_MAJOR_ACTION_REF", path, ref)
+
+              # Audit each artifact-API request independently.
+              #
+              # v1 treated pagination as a file-wide property.
+              # v2 moved to per-call analysis but tested `"page=" not in call`;
+              # that is wrong because `per_page=` itself contains `page=`.
+              # v3 parses the exact query tail and requires an independent
+              # `page=` parameter beginning at query start or after `&`.
+              unpaged_calls = []
+              artifact_call_re = re.compile(
+                  r"actions/artifacts\?per_page=100(?P<tail>[^\"'\n]*)"
+              )
+
+              for match in artifact_call_re.finditer(text):
+                  call = match.group(0)
+                  query = call.split("?", 1)[1]
+
+                  has_explicit_page = bool(
+                      re.search(
+                          r"(?:^|&)page=",
+                          query,
+                      )
+                  )
+
+                  if not has_explicit_page:
+                      unpaged_calls.append(call)
+
+              if unpaged_calls:
+                  add(
+                      "HIGH",
+                      "ARTIFACT_API_FIRST_PAGE_ONLY",
+                      path,
+                      (
+                          f"{len(unpaged_calls)} artifact API request(s) use "
+                          "per_page=100 without an independent page= query "
+                          "parameter in that exact request"
+                      ),
+                  )
+
+              # Versioned workspace/output mismatch. This specifically catches
+              # cases such as WORK=.../w39v2 while upload-artifact still points
+              # at w39/output/, which silently preserves only other listed files.
+              workspace_versions = re.findall(
+                  r"github\.workspace\s*}}/(w\d+v\d+)", text
+              )
+              for versioned_dir in sorted(set(workspace_versions)):
+                  base_dir = re.sub(r"v\d+$", "", versioned_dir)
+                  stale_path_re = re.compile(
+                      rf"(?m)^\s+{re.escape(base_dir)}/(?:output|evidence)/\s*$"
+                  )
+                  if stale_path_re.search(text):
+                      add("HIGH", "STALE_VERSIONED_ARTIFACT_PATH", path,
+                          f"workspace uses {versioned_dir}/ but artifact path references {base_dir}/")
+
+              prefix_latest = (
+                  "startswith($prefix)" in text
+                  and "sort_by(.created_at)" in text
+                  and "reverse" in text
+                  and (".[0]" in text or ".[0].id" in text)
+              )
+              if prefix_latest:
+                  mitigation = "sha256sum" in text
+                  add("MEDIUM" if mitigation else "HIGH",
+                      "LATEST_ARTIFACT_BY_PREFIX",
+                      path,
+                      "selects newest matching prefix; SHA/content gates present=" + ("YES" if mitigation else "NO"))
+
+              if re.search(r"(?m)^\s*permissions:\s*write-all\s*$", text):
+                  add("CRITICAL", "WRITE_ALL_PERMISSIONS", path, "permissions: write-all")
+              if re.search(r"(?m)^\s*(contents|actions|packages|id-token):\s*write\s*$", text):
+                  add("HIGH", "WRITE_PERMISSION", path, "contains repository/token write permission")
+              if re.search(r"(?m)^\s*pull_request_target\s*:", text):
+                  add("HIGH", "PULL_REQUEST_TARGET_TRIGGER", path, "privileged PR trigger requires manual security review")
+
+              command_patterns = [
+                  (r"(?mi)^\s*(?:sudo\s+)?fastboot\s+(?:flash|boot|erase|format)\b", "REAL_FASTBOOT_COMMAND"),
+                  (r"(?mi)^\s*(?:sudo\s+)?adb\s+(?:push|root|remount|reboot)\b", "ADB_MUTATING_COMMAND"),
+                  (r"(?mi)^\s*dd\b[^\n]*\bof=/dev/block/", "DIRECT_BLOCK_DD"),
+              ]
+              for pattern, code in command_patterns:
+                  if re.search(pattern, text):
+                      add("CRITICAL", code, path, "potential real-device write command; inspect before execution")
+
+              if "json.dumps(" in text:
+                  binary_slice_vars = re.findall(
+                      r"(?m)^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*data\[[^\]\n]*:[^\]\n]*\]\s*$",
+                      text,
+                  )
+                  for binary_var in sorted(set(binary_slice_vars)):
+                      bare_json_value = re.compile(
+                          rf'["\'][^"\'\n]+["\']\s*:\s*{re.escape(binary_var)}\s*,'
+                      )
+                      if bare_json_value.search(text):
+                          add("HIGH", "PYTHON_RAW_BYTES_IN_JSON", path,
+                              f"binary slice variable {binary_var} is inserted directly into JSON mapping")
+
+              records.append({
+                  "path": str(path),
+                  "bytes": size,
+                  "sha256": sha,
+                  "workflow_name": wf_name,
+                  "concurrency_group": conc_group,
+                  "family": family,
+              })
+
+          for name, paths in names.items():
+              if name and len(paths) > 1:
+                  for p in paths:
+                      add("MEDIUM", "DUPLICATE_WORKFLOW_DISPLAY_NAME", p,
+                          f"display name shared by {len(paths)} files")
+
+          for group, paths in concurrency.items():
+              if group and len(paths) > 1:
+                  for p in paths:
+                      add("LOW", "SHARED_CONCURRENCY_GROUP", p,
+                          f"group shared by {len(paths)} workflow files")
+
+          for family, paths in families.items():
+              if len(paths) > 1:
+                  for p in paths:
+                      add("LOW", "MULTIPLE_LIVE_VERSIONS", p,
+                          f"family {family} has {len(paths)} top-level versions")
+
+          severity_order = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3}
+          findings.sort(key=lambda x: (severity_order.get(x["severity"], 9), x["code"], x["path"]))
+
+          payload = {
+              "workflow_count": len(records),
+              "records": records,
+              "action_refs": action_refs,
+              "findings": findings,
+              "finding_counts": dict(collections.Counter(x["severity"] for x in findings)),
+          }
+          json_out.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+          with tsv_out.open("w", encoding="utf-8") as f:
+              for x in findings:
+                  f.write("\t".join([
+                      x["severity"], x["code"], x["path"], x["detail"].replace("\t", " ")
+                  ]) + "\n")
+          PY
+
+      - name: Self test artifact pagination detector
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - "$REPORT_DIR/PAGINATION-DETECTOR-SELFTEST.txt" <<'PY'
+          import re
+          import sys
+          from pathlib import Path
+
+          out = Path(sys.argv[1])
+
+          artifact_call_re = re.compile(
+              r"actions/artifacts\?per_page=100(?P<tail>[^\"'\n]*)"
+          )
+
+          def detect(text):
+              hits = []
+
+              for match in artifact_call_re.finditer(text):
+                  call = match.group(0)
+                  query = call.split("?", 1)[1]
+
+                  has_explicit_page = bool(
+                      re.search(
+                          r"(?:^|&)page=",
+                          query,
+                      )
+                  )
+
+                  if not has_explicit_page:
+                      hits.append(call)
+
+              return hits
+
+          cases = {
+              "UNPAGED": (
+                  '"$API/actions/artifacts?per_page=100"',
+                  1,
+              ),
+              "PAGED_LITERAL": (
+                  '"$API/actions/artifacts?per_page=100&page=2"',
+                  0,
+              ),
+              "PAGED_VARIABLE": (
+                  '"$API/actions/artifacts?per_page=100&page=${page}"',
+                  0,
+              ),
+              "MIXED_SEPARATE_CALLS": (
+                  '\n'.join([
+                      '"$API/actions/artifacts?per_page=100"',
+                      '"$API/actions/artifacts?per_page=100&page=${page}"',
+                  ]),
+                  1,
+              ),
+          }
+
+          lines = []
+
+          for name, (sample, expected) in cases.items():
+              actual = len(detect(sample))
+              status = "PASS" if actual == expected else "FAIL"
+
+              lines.append(
+                  f"{name}={status}|EXPECTED={expected}|ACTUAL={actual}"
+              )
+
+              if actual != expected:
+                  raise SystemExit(
+                      f"pagination detector self-test failed: {name}"
+                  )
+
+          lines.extend([
+              "PAGINATION_DETECTOR_SELFTEST=PASS",
+              "V1_FILE_WIDE_PAGINATION_BUG=FIXED",
+              "V2_PER_PAGE_CONTAINS_PAGE_FALSE_MATCH=FIXED",
+              "PER_REQUEST_QUERY_PARAMETER_CLASSIFICATION=YES",
+          ])
+
+          out.write_text(
+              "\n".join(lines) + "\n",
+              encoding="utf-8",
+          )
+          PY
+
+          cat "$REPORT_DIR/PAGINATION-DETECTOR-SELFTEST.txt"
+
+      - name: Classify canonical GEN2 chain and historical workflows
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - \
+            "$REPORT_DIR/TOPLEVEL-WORKFLOWS.txt" \
+            "$REPORT_DIR/WORKFLOW-CLASSIFICATION.tsv" \
+            "$REPORT_DIR/CANONICAL-GEN2-CHAIN.txt" <<'PY'
+          import re
+          import sys
+          from pathlib import Path
+
+          listing = Path(sys.argv[1])
+          classification_out = Path(sys.argv[2])
+          canonical_out = Path(sys.argv[3])
+
+          canonical = [
+              ".github/workflows/33-gen2-5.4.302-v7-final-full-image-dtb-dtbo-build.yml",
+              ".github/workflows/34-gen2-lineage-aosp-compatibility-audit-v2.yml",
+              ".github/workflows/35-gen2-anykernel3-boot-repack-contract-simulation-v2.yml",
+              ".github/workflows/36-gen2-real-lineage-boot-anykernel3-magiskboot-validation-v13.yml",
+              ".github/workflows/37-gen2-nonflashing-ak3-release-candidate-and-device-test-plan.yml",
+              ".github/workflows/38-gen2-production-candidate-runtime-promotion-gate.yml",
+              ".github/workflows/39-gen2-simulated-boot-differential-safety-audit-v3.yml",
+          ]
+
+          files = [
+              x
+              for x in listing.read_text(encoding="utf-8").splitlines()
+              if x
+          ]
+          present = set(files)
+
+          rows = []
+          for path in files:
+              if path in canonical:
+                  status = "CANONICAL_GEN2_CHAIN"
+              elif path.endswith("/00-gen2-workflow-repository-deep-audit-v2.yml"):
+                  status = "AUDITOR_CURRENT"
+              elif re.search(r"/(?:33|34|35|36|37|38|39)-gen2", path):
+                  status = "GEN2_HISTORICAL_OR_SUPERSEDED"
+              elif "gen2" in path.lower():
+                  status = "GEN2_EARLIER_AUDIT_OR_BUILD"
+              else:
+                  status = "GEN1_OR_LEGACY_READ_ONLY"
+              rows.append((status, path))
+
+          with classification_out.open("w", encoding="utf-8") as f:
+              for status, path in rows:
+                  f.write(f"{status}\t{path}\n")
+
+          with canonical_out.open("w", encoding="utf-8") as f:
+              f.write("GEN2_CANONICAL_CHAIN_VERSION=2026-08-22-W39V3\n")
+              f.write("GEN1_MUTATION=NO\n")
+              f.write("REPOSITORY_MUTATION=NO\n")
+              for i, path in enumerate(canonical, 1):
+                  status = "PRESENT" if path in present else "MISSING"
+                  f.write(f"CHAIN_{i:02d}={status}|{path}\n")
+
+              missing = [p for p in canonical if p not in present]
+              f.write(f"CANONICAL_CHAIN_COUNT={len(canonical)}\n")
+              f.write(f"CANONICAL_CHAIN_MISSING={len(missing)}\n")
+          PY
+
+          cat "$REPORT_DIR/CANONICAL-GEN2-CHAIN.txt"
+
+      - name: Build comprehensive repository workflow audit report
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          yaml_pass="$(grep -c '^PASS' "$REPORT_DIR/YAML-PARSE.tsv" || true)"
+          yaml_fail="$(grep -c '^FAIL' "$REPORT_DIR/YAML-PARSE.tsv" || true)"
+          al_pass="$(grep -c '^PASS' "$REPORT_DIR/ACTIONLINT.tsv" || true)"
+          al_fail="$(grep -c '^FAIL' "$REPORT_DIR/ACTIONLINT.tsv" || true)"
+          al_timeout="$(grep -c '^TIMEOUT' "$REPORT_DIR/ACTIONLINT.tsv" || true)"
+          bash_pass="$(grep -c '^PASS' "$REPORT_DIR/BASH-N.tsv" || true)"
+          bash_fail="$(grep -c '^FAIL' "$REPORT_DIR/BASH-N.tsv" || true)"
+          sc_pass="$(grep -c '^PASS' "$REPORT_DIR/SHELLCHECK.tsv" || true)"
+          sc_fail="$(grep -c '^FAIL' "$REPORT_DIR/SHELLCHECK.tsv" || true)"
+          sc_timeout="$(grep -c '^TIMEOUT' "$REPORT_DIR/SHELLCHECK.tsv" || true)"
+
+          critical="$(jq -r '.finding_counts.CRITICAL // 0' "$REPORT_DIR/STATIC-ANALYSIS.json")"
+          high="$(jq -r '.finding_counts.HIGH // 0' "$REPORT_DIR/STATIC-ANALYSIS.json")"
+          medium="$(jq -r '.finding_counts.MEDIUM // 0' "$REPORT_DIR/STATIC-ANALYSIS.json")"
+          low="$(jq -r '.finding_counts.LOW // 0' "$REPORT_DIR/STATIC-ANALYSIS.json")"
+
+          top_count="$(sed -n 's/^TOPLEVEL_WORKFLOW_COUNT=//p' "$REPORT_DIR/INVENTORY-SUMMARY.txt")"
+          nested_count="$(sed -n 's/^NESTED_YAML_COUNT=//p' "$REPORT_DIR/INVENTORY-SUMMARY.txt")"
+          non_yaml_count="$(sed -n 's/^NON_YAML_TOPLEVEL_COUNT=//p' "$REPORT_DIR/INVENTORY-SUMMARY.txt")"
+
+          cat > "$REPORT_DIR/GEN2_WORKFLOW_REPOSITORY_DEEP_AUDIT_V3.md" <<EOF
+          # GEN2 Workflow Repository Deep Audit v3
+
+          This is a read-only diagnostic audit. No repository or device mutation is performed.
+
+          ## Inventory
+
+          - Top-level executable workflow YAML files: $top_count
+          - Nested YAML files ignored by GitHub Actions: $nested_count
+          - Non-YAML files directly inside .github/workflows: $non_yaml_count
+
+          ## Syntax and semantic lint
+
+          - YAML parse PASS: $yaml_pass
+          - YAML parse FAIL: $yaml_fail
+          - actionlint PASS: $al_pass
+          - actionlint FAIL: $al_fail
+          - actionlint TIMEOUT: $al_timeout
+          - Bash run-block syntax PASS: $bash_pass
+          - Bash run-block syntax FAIL: $bash_fail
+          - ShellCheck(error severity) PASS: $sc_pass
+          - ShellCheck(error severity) FAIL: $sc_fail
+          - ShellCheck TIMEOUT: $sc_timeout
+
+          ## Static findings
+
+          - CRITICAL: $critical
+          - HIGH: $high
+          - MEDIUM: $medium
+          - LOW: $low
+
+          Detailed findings are in STATIC-FINDINGS.tsv and STATIC-ANALYSIS.json.
+
+          ## Interpretation
+
+          CRITICAL/HIGH findings require manual review before trusting the affected workflow.
+          MEDIUM findings are usually reproducibility or fragility risks rather than proof of a runtime bug.
+          LOW findings primarily document maintainability, version-sprawl, or heuristic concerns.
+
+          Historical workflow versions are intentionally not changed or deleted by this audit.
+          GEN1 and GEN2 are both read only.
+          EOF
+
+          {
+            echo
+            echo "## Canonical GEN2 chain"
+            echo
+            sed 's/^/- /' "$REPORT_DIR/CANONICAL-GEN2-CHAIN.txt"
+            echo
+            echo "## Exact non-PASS indices"
+            echo
+            echo "### actionlint"
+            grep -E '^(FAIL|TIMEOUT)' "$REPORT_DIR/ACTIONLINT.tsv" || echo "none"
+            echo
+            echo "### bash -n"
+            grep '^FAIL' "$REPORT_DIR/BASH-N.tsv" || echo "none"
+            echo
+            echo "### ShellCheck error severity"
+            grep -E '^(FAIL|TIMEOUT)' "$REPORT_DIR/SHELLCHECK.tsv" || echo "none"
+            echo
+            echo "Detailed non-hidden linter diagnostics are preserved under actionlint/ and failures/."
+            echo
+            echo "## Pagination detector self-test"
+            echo
+            cat "$REPORT_DIR/PAGINATION-DETECTOR-SELFTEST.txt"
+          } >> "$REPORT_DIR/GEN2_WORKFLOW_REPOSITORY_DEEP_AUDIT_V3.md"
+
+          {
+            echo "WORKFLOW_REPOSITORY_AUDIT=COMPLETE"
+            echo "TOPLEVEL_WORKFLOW_COUNT=$top_count"
+            echo "YAML_PARSE_FAIL=$yaml_fail"
+            echo "ACTIONLINT_FAIL=$al_fail"
+            echo "ACTIONLINT_TIMEOUT=$al_timeout"
+            echo "BASH_N_FAIL=$bash_fail"
+            echo "SHELLCHECK_ERROR_FAIL=$sc_fail"
+            echo "SHELLCHECK_TIMEOUT=$sc_timeout"
+            echo "STATIC_CRITICAL=$critical"
+            echo "STATIC_HIGH=$high"
+            echo "STATIC_MEDIUM=$medium"
+            echo "STATIC_LOW=$low"
+            echo "READ_ONLY_AUDIT=YES"
+            echo "REPOSITORY_MUTATION=NO"
+            echo "DEVICE_ACCESSED=NO"
+            echo "FLASHING_PERFORMED=NO"
+          } | tee "$REPORT_DIR/FINAL-SUMMARY.txt"
+
+      - name: Package audit diagnostics
+        if: always()
+        shell: bash
+        run: |
+          set +e
+
+          report="$REPORT_DIR/GEN2_WORKFLOW_REPOSITORY_DEEP_AUDIT_V3.md"
+          if [ ! -s "$report" ]; then
+            {
+              echo '# GEN2 Workflow Repository Deep Audit v3'
+              echo
+              echo 'The audit stopped before the normal report could be completed.'
+              echo 'Inspect the preserved partial diagnostics in this artifact.'
+            } > "$report"
+          fi
+
+          {
+            echo "ACTIONLINT_DETAIL_FILE_COUNT=$(find "$REPORT_DIR/actionlint" -type f | wc -l | tr -d ' ')"
+            echo "FAILURE_DETAIL_FILE_COUNT=$(find "$REPORT_DIR/failures" -type f | wc -l | tr -d ' ')"
+            echo "ACTIONLINT_DETAILS_INSIDE_REPORT=YES"
+            echo "BASH_N_FAILURE_DETAILS_INSIDE_REPORT=YES"
+            echo "SHELLCHECK_FAILURE_DETAILS_INSIDE_REPORT=YES"
+            echo "UPLOAD_INCLUDE_HIDDEN_FILES=YES"
+            echo "ARTIFACT_PAGINATION_CHECK=PER_CALL"
+            echo "ARTIFACT_PAGINATION_QUERY_PARAMETER_TEST=V3"
+            if grep -qFx               'PAGINATION_DETECTOR_SELFTEST=PASS'               "$REPORT_DIR/PAGINATION-DETECTOR-SELFTEST.txt"
+            then
+              echo "PAGINATION_DETECTOR_SELFTEST=PASS"
+            else
+              echo "PAGINATION_DETECTOR_SELFTEST=FAIL"
+              exit 1
+            fi
+          } > "$REPORT_DIR/DIAGNOSTIC-COMPLETENESS.txt"
+
+          find "$REPORT_DIR" -maxdepth 3 -type f -print0 \
+            | sort -z \
+            | xargs -0 sha256sum \
+            > "$REPORT_DIR/REPORT-SHA256SUMS.txt"
+
+      - name: Upload complete workflow repository audit
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: GEN2_WORKFLOW_REPOSITORY_DEEP_AUDIT_V3-${{ github.run_number }}
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 6
+          include-hidden-files: true
+          path: |
+            workflow-audit/report/
