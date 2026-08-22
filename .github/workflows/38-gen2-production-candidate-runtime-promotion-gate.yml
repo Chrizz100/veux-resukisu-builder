@@ -1,0 +1,868 @@
+name: 38 - GEN2 Production Candidate Runtime Promotion Gate
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: gen2-38-production-candidate-runtime-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  W37_ARTIFACT_PREFIX: "GEN2_37_NONFLASHING_AK3_RELEASE_CANDIDATE_AUDIT-"
+  BOOT_INPUT_ARTIFACT_NAME: "GEN2_W36_VALIDATED_LINEAGE_ANDROID16_BOOT_INPUT"
+
+  W37_STAGING_NAME: "DO_NOT_FLASH_GEN2_VEUX_5.4.302_ReSukiSU_SUSFS_W37_AK3_RC_CONTENTS.zip"
+  W37_STAGING_SHA256: "5df4a693e10995a707f607dc1f02f2abc5e6af535daf7569267426ec5d02e15e"
+  W37_STAGING_BYTES: "17884855"
+
+  W33_IMAGE_SHA256: "98e608f7c30540b6cb5a1731b0edecd9a3b4960ebf388763452685858916037f"
+  PRODUCTION_CANDIDATE_SHA256: "4e1a731b9454e17697ba38051c5e2aa63f274305875152900f6222e34b45791a"
+  AK3_CORE_SHA256: "f7a51cfe2e093016a34a76e16de6c9885c2d1992c3482fcabc668680e1f0f6bb"
+  AK3_NATIVE_MAGISKBOOT_SHA256: "0b19472b291ce9033c29a83155ff4c1b18be9d1d17d901d63e50f57436378762"
+
+  VALIDATED_BOOT_GZIP_SHA256: "183984c727524325b36696a43419802fa9894a56bfc4c51c3b3cc6fa242a7bfa"
+  VALIDATED_BOOT_GZIP_SIZE: "16498759"
+  VALIDATED_BOOT_SHA256: "b4f8a81c19f89f2cfc0a179a3a01b3079119411e0325bbde758e885bf9d4aa8d"
+  VALIDATED_BOOT_SIZE: "133300224"
+
+  BOOT_PARTITION_SIZE: "134217728"
+
+jobs:
+  audit:
+    name: Execute exact W37 production candidate against fake A/B boot partitions
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    env:
+      WORK: ${{ github.workspace }}/w38
+      INPUTS: ${{ github.workspace }}/w38/inputs
+      W37: ${{ github.workspace }}/w38/w37
+      PACKAGE: ${{ github.workspace }}/w38/package
+      BOOT_INPUT: ${{ github.workspace }}/w38/boot-input
+      CASES: ${{ github.workspace }}/w38/cases
+      OUTPUT: ${{ github.workspace }}/w38/output
+
+    steps:
+      - name: Prepare W38 read only promotion gate
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -rf "$WORK"
+          mkdir -p \
+            "$INPUTS" \
+            "$W37" \
+            "$PACKAGE" \
+            "$BOOT_INPUT" \
+            "$CASES" \
+            "$OUTPUT"
+
+          cat > "$OUTPUT/SCOPE.txt" <<'EOF'
+          GEN2 Workflow 38
+          =================
+
+          PURPOSE:
+          Execute the exact anykernel.production-candidate.sh preserved by the
+          successful W37 nonflashing staging archive against fake active-slot
+          boot partitions only.
+
+          TEST CASES:
+          1. active slot _a -> exact kernel-only AK3 runtime path must succeed
+          2. active slot _b -> exact kernel-only AK3 runtime path must succeed
+          3. invalid slot _c -> must fail closed and modify neither fake partition
+
+          IMPORTANT HOST-SANDBOX ADAPTERS:
+          - /dev/block/by-name/boot_a and boot_b are symlinks to ordinary files
+            inside the ephemeral GitHub workspace.
+          - getprop is a host wrapper returning the selected fake slot.
+          - blockdev is a no-op host wrapper because targets are regular files.
+          - magiskboot is NOT replaced: a wrapper invokes the exact Android ARM
+            binary from the W37 package under qemu-arm-static.
+          - CUSTOMDD is bounded to 128 MiB only because a regular file has no
+            natural block-device end. The production candidate script itself
+            remains byte-identical and unmodified.
+
+          THIS WORKFLOW DOES NOT:
+          - create a recovery-installable ZIP
+          - promote anykernel.production-candidate.sh to a released installer
+          - access a phone
+          - use adb
+          - use fastboot
+          - write a physical partition
+          - modify vendor_boot
+          - modify dtbo
+          - modify top-level vbmeta
+
+          A real-device write or installable-package promotion still requires
+          explicit user approval after this audit.
+          EOF
+
+          {
+            echo "AUDIT=GEN2_38_PRODUCTION_CANDIDATE_RUNTIME_PROMOTION_GATE"
+            echo "DATE_UTC=$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+            echo "RUN_ID=$GITHUB_RUN_ID"
+            echo "REPOSITORY=$GITHUB_REPOSITORY"
+            echo "REAL_DEVICE_ACCESSED=NO"
+            echo "FLASHING_PERFORMED=NO"
+            echo "RECOVERY_INSTALLABLE_ZIP_CREATED=NO"
+          } > "$OUTPUT/AUDIT-HEADER.txt"
+
+      - name: Install host runtime dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            file \
+            jq \
+            qemu-user-static \
+            unzip
+
+          command -v qemu-arm-static
+          command -v sha256sum
+          command -v unzip
+          command -v gzip
+
+          {
+            echo "QEMU_ARM=$(command -v qemu-arm-static)"
+            qemu-arm-static --version | head -n 1
+          } > "$OUTPUT/HOST-RUNTIME.txt"
+
+      - name: Download exact W37 and canonical real boot input artifacts
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          API="$GITHUB_API_URL/repos/$GITHUB_REPOSITORY"
+          AUTH="Authorization: Bearer $GH_TOKEN"
+          ACCEPT="Accept: application/vnd.github+json"
+          VERSION="X-GitHub-Api-Version: 2022-11-28"
+          ALL="$WORK/artifacts.ndjson"
+          : > "$ALL"
+
+          page=1
+          while :; do
+            page_json="$WORK/artifacts-page-${page}.json"
+
+            curl -fsSL \
+              -H "$AUTH" \
+              -H "$ACCEPT" \
+              -H "$VERSION" \
+              "$API/actions/artifacts?per_page=100&page=${page}" \
+              -o "$page_json"
+
+            count="$(jq '.artifacts | length' "$page_json")"
+            jq -c '.artifacts[]' "$page_json" >> "$ALL"
+
+            [ "$count" -lt 100 ] && break
+
+            page=$((page + 1))
+            [ "$page" -le 30 ] || {
+              echo "ERROR: artifact pagination safety limit reached"
+              exit 1
+            }
+          done
+
+          select_prefix() {
+            local prefix="$1"
+            jq -s -c --arg prefix "$prefix" '
+              [
+                .[]
+                | select(
+                    (.expired == false)
+                    and (.name | startswith($prefix))
+                  )
+              ]
+              | sort_by(.created_at)
+              | reverse
+              | .[0] // empty
+            ' "$ALL"
+          }
+
+          select_exact() {
+            local name="$1"
+            jq -s -c --arg name "$name" '
+              [
+                .[]
+                | select(
+                    (.expired == false)
+                    and (.name == $name)
+                  )
+              ]
+              | sort_by(.created_at)
+              | reverse
+              | .[0] // empty
+            ' "$ALL"
+          }
+
+          download_selected() {
+            local selected="$1"
+            local dest="$2"
+            local meta="$3"
+
+            [ -n "$selected" ] || {
+              echo "ERROR: required artifact selection is empty"
+              exit 1
+            }
+
+            local id name url
+            id="$(jq -r '.id // empty' <<<"$selected")"
+            name="$(jq -r '.name // empty' <<<"$selected")"
+            url="$(jq -r '.archive_download_url // empty' <<<"$selected")"
+
+            test -n "$id"
+            test -n "$name"
+            test -n "$url"
+
+            jq . <<<"$selected" > "$meta"
+
+            curl -fLsS \
+              -H "$AUTH" \
+              -H "$ACCEPT" \
+              -H "$VERSION" \
+              "$url" \
+              -o "$dest"
+
+            unzip -t "$dest" > "${dest}.ziptest.txt"
+
+            echo "$name|$id|$(sha256sum "$dest" | awk '{print $1}')"
+          }
+
+          W37_SELECTED="$(select_prefix "$W37_ARTIFACT_PREFIX")"
+          BOOT_SELECTED="$(select_exact "$BOOT_INPUT_ARTIFACT_NAME")"
+
+          W37_INFO="$(
+            download_selected \
+              "$W37_SELECTED" \
+              "$INPUTS/w37.zip" \
+              "$OUTPUT/W37-ARTIFACT.json"
+          )"
+
+          BOOT_INFO="$(
+            download_selected \
+              "$BOOT_SELECTED" \
+              "$INPUTS/boot-input.zip" \
+              "$OUTPUT/BOOT-INPUT-ARTIFACT.json"
+          )"
+
+          unzip -q "$INPUTS/w37.zip" -d "$W37"
+          unzip -q "$INPUTS/boot-input.zip" -d "$BOOT_INPUT"
+
+          {
+            echo "W37_ARTIFACT=$W37_INFO"
+            echo "BOOT_INPUT_ARTIFACT=$BOOT_INFO"
+          } | tee "$OUTPUT/INPUT-ARTIFACTS.txt"
+
+      - name: Verify exact successful W37 staging archive
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          W37_REPORT="$W37/GEN2_37_NONFLASHING_AK3_RELEASE_CANDIDATE_AUDIT.txt"
+          W37_VERDICT="$W37/w37/output/W37-VERDICT.txt"
+          STAGING="$W37/w37/output/$W37_STAGING_NAME"
+
+          test -s "$W37_REPORT"
+          test -s "$W37_VERDICT"
+          test -s "$STAGING"
+
+          grep -Fxq \
+            'FINAL_RESULT=PASS_GEN2_37_NONFLASHING_AK3_RELEASE_CANDIDATE_ARCHIVE_AND_DEVICE_TEST_PLAN' \
+            "$W37_VERDICT"
+          grep -Fxq 'W36_V13_PREREQUISITE=PASS' "$W37_VERDICT"
+          grep -Fxq 'AK3_PACKAGED_NATIVE_MAGISKBOOT_QEMU=PASS' "$W37_VERDICT"
+          grep -Fxq 'DETERMINISTIC_PACKAGE_BYTES=YES' "$W37_VERDICT"
+          grep -Fxq 'STAGING_ARCHIVE_RECOVERY_INSTALLABLE=NO' "$W37_VERDICT"
+          grep -Fxq 'REAL_DEVICE_ACCESSED=NO' "$W37_VERDICT"
+
+          test "$(stat -c '%s' "$STAGING")" = "$W37_STAGING_BYTES"
+          test "$(sha256sum "$STAGING" | awk '{print $1}')" = "$W37_STAGING_SHA256"
+
+          unzip -t "$STAGING" > "$OUTPUT/W37-STAGING-CRC.txt"
+          unzip -q "$STAGING" -d "$PACKAGE"
+
+          (
+            cd "$PACKAGE"
+            sha256sum -c PACKAGE-SHA256SUMS
+          ) > "$OUTPUT/W37-PACKAGE-SHA256SUMS.verify.txt"
+
+          test "$(sha256sum "$PACKAGE/Image" | awk '{print $1}')" = "$W33_IMAGE_SHA256"
+          test "$(sha256sum "$PACKAGE/anykernel.production-candidate.sh" | awk '{print $1}')" = "$PRODUCTION_CANDIDATE_SHA256"
+          test "$(sha256sum "$PACKAGE/tools/ak3-core.sh" | awk '{print $1}')" = "$AK3_CORE_SHA256"
+          test "$(sha256sum "$PACKAGE/tools/magiskboot" | awk '{print $1}')" = "$AK3_NATIVE_MAGISKBOOT_SHA256"
+
+          test ! -e "$PACKAGE/META-INF"
+          test ! -e "$PACKAGE/boot.img"
+          test ! -e "$PACKAGE/vendor_boot.img"
+          test ! -e "$PACKAGE/dtbo.img"
+          test ! -e "$PACKAGE/vbmeta.img"
+
+          grep -Fq 'device.name1=veux' "$PACKAGE/anykernel.production-candidate.sh"
+          grep -Fq 'supported.versions=16' "$PACKAGE/anykernel.production-candidate.sh"
+          grep -Fq 'BLOCK=boot' "$PACKAGE/anykernel.production-candidate.sh"
+          grep -Fq 'IS_SLOT_DEVICE=1' "$PACKAGE/anykernel.production-candidate.sh"
+          grep -Fq 'SLOT_SELECT=active' "$PACKAGE/anykernel.production-candidate.sh"
+          grep -Fq 'NO_MAGISK_CHECK=1' "$PACKAGE/anykernel.production-candidate.sh"
+          grep -Fxq 'split_boot' <(
+            sed -n 's/^[[:space:]]*\(split_boot\)[[:space:]]*$/\1/p' \
+              "$PACKAGE/anykernel.production-candidate.sh"
+          )
+          grep -Fxq 'flash_boot' <(
+            sed -n 's/^[[:space:]]*\(flash_boot\)[[:space:]]*$/\1/p' \
+              "$PACKAGE/anykernel.production-candidate.sh"
+          )
+
+          {
+            echo "W37_INPUT_GATE=PASS"
+            echo "W37_STAGING_SHA256=$W37_STAGING_SHA256"
+            echo "W37_STAGING_BYTES=$W37_STAGING_BYTES"
+            echo "PRODUCTION_CANDIDATE_SHA256=$PRODUCTION_CANDIDATE_SHA256"
+            echo "AK3_CORE_SHA256=$AK3_CORE_SHA256"
+            echo "AK3_NATIVE_MAGISKBOOT_SHA256=$AK3_NATIVE_MAGISKBOOT_SHA256"
+            echo "W33_IMAGE_SHA256=$W33_IMAGE_SHA256"
+            echo "INSTALLABLE_PACKAGE_PROMOTED=NO"
+          } | tee "$OUTPUT/W37-INPUT-GATE.txt"
+
+      - name: Recover and authenticate canonical real Lineage boot input
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          GZIP="$BOOT_INPUT/GEN2_W36_VALIDATED_LINEAGE_VEUX_ANDROID16_BOOT.img.gz"
+          BOOT="$INPUTS/validated-real-boot.img"
+
+          test -s "$GZIP"
+          test "$(stat -c '%s' "$GZIP")" = "$VALIDATED_BOOT_GZIP_SIZE"
+          test "$(sha256sum "$GZIP" | awk '{print $1}')" = "$VALIDATED_BOOT_GZIP_SHA256"
+
+          gzip -t "$GZIP"
+          gzip -dc "$GZIP" > "$BOOT"
+
+          test "$(stat -c '%s' "$BOOT")" = "$VALIDATED_BOOT_SIZE"
+          test "$(sha256sum "$BOOT" | awk '{print $1}')" = "$VALIDATED_BOOT_SHA256"
+
+          python3 - "$BOOT" <<'PY'
+          import struct
+          import sys
+          from pathlib import Path
+
+          data = Path(sys.argv[1]).read_bytes()
+
+          if data[:8] != b"ANDROID!":
+              raise SystemExit("ERROR: Android boot magic missing")
+
+          header_version = struct.unpack_from("<I", data, 40)[0]
+          if header_version != 3:
+              raise SystemExit(
+                  f"ERROR: expected boot header v3, got {header_version}"
+              )
+
+          if len(data) > 134217728:
+              raise SystemExit("ERROR: boot exceeds 128 MiB partition")
+
+          if b"Redmi/lineage_veux/veux:16/" not in data:
+              raise SystemExit("ERROR: validated Lineage veux Android 16 fingerprint missing")
+
+          print("REAL_BOOT_STRUCTURE=PASS")
+          PY
+
+          {
+            echo "VALIDATED_REAL_BOOT_INPUT=PASS"
+            echo "BOOT_SHA256=$VALIDATED_BOOT_SHA256"
+            echo "BOOT_SIZE=$VALIDATED_BOOT_SIZE"
+            echo "BOOT_HEADER_VERSION=3"
+          } | tee "$OUTPUT/REAL-BOOT-INPUT.txt"
+
+      - name: Prepare exact production candidate host runtime harness
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          file "$PACKAGE/tools/magiskboot" \
+            | tee "$OUTPUT/PACKAGED-MAGISKBOOT-FILE.txt"
+
+          grep -Fq 'ELF 32-bit LSB' "$OUTPUT/PACKAGED-MAGISKBOOT-FILE.txt"
+          grep -Fq 'ARM' "$OUTPUT/PACKAGED-MAGISKBOOT-FILE.txt"
+
+          QEMU_ARM="$(command -v qemu-arm-static)"
+          test -x "$QEMU_ARM"
+          echo "QEMU_ARM=$QEMU_ARM" >> "$GITHUB_ENV"
+
+          mkdir -p "$WORK/harness/bin"
+
+          cat > "$WORK/harness/bin/getprop" <<'EOF'
+          #!/usr/bin/env bash
+          case "${1:-}" in
+            ro.boot.slot_suffix)
+              printf '%s\n' "${FAKE_SLOT:-}"
+              ;;
+            ro.boot.slot)
+              case "${FAKE_SLOT:-}" in
+                _a) printf '%s\n' 'a' ;;
+                _b) printf '%s\n' 'b' ;;
+                _c) printf '%s\n' 'c' ;;
+              esac
+              ;;
+            *)
+              exit 0
+              ;;
+          esac
+          EOF
+
+          cat > "$WORK/harness/bin/blockdev" <<'EOF'
+          #!/usr/bin/env bash
+          case "${1:-}" in
+            --setrw)
+              exit 0
+              ;;
+            --getro)
+              printf '%s\n' '0'
+              exit 0
+              ;;
+            *)
+              exit 0
+              ;;
+          esac
+          EOF
+
+          cat > "$WORK/harness/bin/magiskboot" <<'EOF'
+          #!/usr/bin/env bash
+          exec "$QEMU_ARM" "$AKHOME/tools/magiskboot" "$@"
+          EOF
+
+          chmod 755 \
+            "$WORK/harness/bin/getprop" \
+            "$WORK/harness/bin/blockdev" \
+            "$WORK/harness/bin/magiskboot"
+
+          bash -n "$WORK/harness/bin/getprop"
+          bash -n "$WORK/harness/bin/blockdev"
+          bash -n "$WORK/harness/bin/magiskboot"
+
+          {
+            echo "W38_HOST_HARNESS=PASS"
+            echo "PRODUCTION_CANDIDATE_MODIFIED=NO"
+            echo "MAGISKBOOT_RUNTIME=EXACT_PACKAGED_ANDROID_BINARY_VIA_QEMU"
+            echo "GETPROP=FAKE_SLOT_ONLY"
+            echo "BLOCKDEV=REGULAR_FILE_NO_OP"
+            echo "CUSTOMDD=HOST_ONLY_BOUNDED_128_MIB"
+            echo "REAL_DEVICE_BLOCKS=NO"
+          } | tee "$OUTPUT/HARNESS-STATUS.txt"
+
+      - name: Execute exact production candidate for active slots A and B
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cleanup_dev_links() {
+            sudo rm -f \
+              /dev/block/by-name/boot_a \
+              /dev/block/by-name/boot_b \
+              /dev/block/by-name/boot_c \
+              /dev/block/by-name/boot \
+              2>/dev/null || true
+
+            sudo rmdir /dev/block/by-name 2>/dev/null || true
+            sudo rmdir /dev/block 2>/dev/null || true
+          }
+
+          trap cleanup_dev_links EXIT
+          cleanup_dev_links
+
+          sudo mkdir -p /dev/block/by-name
+
+          run_valid_case() {
+            local label="$1"
+            local slot="$2"
+            local target_name="$3"
+            local other_name="$4"
+
+            local dir="$CASES/$label"
+            local pkg="$dir/package"
+            local target="$dir/$target_name.img"
+            local other="$dir/$other_name.img"
+
+            rm -rf "$dir"
+            mkdir -p "$dir"
+            cp -a "$PACKAGE" "$pkg"
+
+            # Promote only inside this ephemeral test copy.
+            cp \
+              "$pkg/anykernel.production-candidate.sh" \
+              "$pkg/anykernel.sh"
+
+            test "$(sha256sum "$pkg/anykernel.sh" | awk '{print $1}')" = \
+              "$PRODUCTION_CANDIDATE_SHA256"
+
+            truncate -s "$BOOT_PARTITION_SIZE" "$target"
+            truncate -s "$BOOT_PARTITION_SIZE" "$other"
+
+            dd \
+              if="$INPUTS/validated-real-boot.img" \
+              of="$target" \
+              bs=1048576 \
+              conv=notrunc \
+              status=none
+
+            dd \
+              if="$INPUTS/validated-real-boot.img" \
+              of="$other" \
+              bs=1048576 \
+              conv=notrunc \
+              status=none
+
+            local target_before other_before
+            target_before="$(sha256sum "$target" | awk '{print $1}')"
+            other_before="$(sha256sum "$other" | awk '{print $1}')"
+
+            sudo ln -s "$target" "/dev/block/by-name/$target_name"
+            sudo ln -s "$other" "/dev/block/by-name/$other_name"
+
+            (
+              cd "$pkg"
+
+              export AKHOME="$pkg"
+              export OUTFD=1
+              export FAKE_SLOT="$slot"
+              export PATH="$WORK/harness/bin:$PATH"
+
+              # Host-only bounded dd geometry. A real block partition naturally
+              # terminates at its device size; an ordinary test file does not.
+              export CUSTOMDD="bs=1048576 count=128 conv=notrunc status=none"
+
+              bash anykernel.sh
+            ) > "$OUTPUT/${label}-runtime.log" 2>&1
+
+            local target_after other_after
+            target_after="$(sha256sum "$target" | awk '{print $1}')"
+            other_after="$(sha256sum "$other" | awk '{print $1}')"
+
+            test "$target_after" != "$target_before"
+            test "$other_after" = "$other_before"
+
+            rm -rf "$dir/final-unpack"
+            mkdir -p "$dir/final-unpack"
+            cp "$target" "$dir/final-unpack/boot-partition.img"
+
+            (
+              cd "$dir/final-unpack"
+              "$QEMU_ARM" \
+                "$pkg/tools/magiskboot" \
+                unpack \
+                -h \
+                boot-partition.img \
+                > "$OUTPUT/${label}-final-unpack.log" \
+                2>&1
+            )
+
+            test -s "$dir/final-unpack/kernel"
+            test -s "$dir/final-unpack/ramdisk.cpio"
+            test "$(sha256sum "$dir/final-unpack/kernel" | awk '{print $1}')" = \
+              "$W33_IMAGE_SHA256"
+
+            rm -rf "$dir/source-unpack"
+            mkdir -p "$dir/source-unpack"
+            cp \
+              "$INPUTS/validated-real-boot.img" \
+              "$dir/source-unpack/source.img"
+
+            (
+              cd "$dir/source-unpack"
+              "$QEMU_ARM" \
+                "$pkg/tools/magiskboot" \
+                unpack \
+                -h \
+                source.img \
+                > "$OUTPUT/${label}-source-unpack.log" \
+                2>&1
+            )
+
+            test -s "$dir/source-unpack/ramdisk.cpio"
+            cmp -s \
+              "$dir/source-unpack/ramdisk.cpio" \
+              "$dir/final-unpack/ramdisk.cpio"
+
+            {
+              echo "CASE=$label"
+              echo "RESULT=PASS"
+              echo "FAKE_SLOT=$slot"
+              echo "TARGET=$target_name"
+              echo "TARGET_BEFORE_SHA256=$target_before"
+              echo "TARGET_AFTER_SHA256=$target_after"
+              echo "OTHER_BEFORE_SHA256=$other_before"
+              echo "OTHER_AFTER_SHA256=$other_after"
+              echo "OTHER_PARTITION_UNCHANGED=YES"
+              echo "W33_KERNEL_SHA256_MATCH=YES"
+              echo "RAMDISK_LOGICAL_BYTES_PRESERVED=YES"
+              echo "REAL_DEVICE_WRITE=NO"
+            } | tee "$OUTPUT/${label}-status.txt"
+
+            sudo rm -f \
+              "/dev/block/by-name/$target_name" \
+              "/dev/block/by-name/$other_name"
+          }
+
+          run_valid_case \
+            "CASE-A-ACTIVE" \
+            "_a" \
+            "boot_a" \
+            "boot_b"
+
+          run_valid_case \
+            "CASE-B-ACTIVE" \
+            "_b" \
+            "boot_b" \
+            "boot_a"
+
+          A_FINAL="$CASES/CASE-A-ACTIVE/boot_a.img"
+          B_FINAL="$CASES/CASE-B-ACTIVE/boot_b.img"
+
+          A_SHA="$(sha256sum "$A_FINAL" | awk '{print $1}')"
+          B_SHA="$(sha256sum "$B_FINAL" | awk '{print $1}')"
+
+          test "$A_SHA" = "$B_SHA"
+          cmp -s "$A_FINAL" "$B_FINAL"
+
+          {
+            echo "VALID_SLOT_RUNTIME=PASS"
+            echo "SLOT_A_FINAL_SHA256=$A_SHA"
+            echo "SLOT_B_FINAL_SHA256=$B_SHA"
+            echo "VALID_SLOT_OUTPUTS_BYTE_IDENTICAL=YES"
+            echo "W33_KERNEL_MATCH=YES"
+            echo "RAMDISK_LOGICAL_BYTES_PRESERVED=YES"
+            echo "REAL_DEVICE_WRITE=NO"
+          } | tee "$OUTPUT/VALID-SLOT-VERDICT.txt"
+
+      - name: Verify invalid slot fails closed without writes
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cleanup_dev_links() {
+            sudo rm -f \
+              /dev/block/by-name/boot_a \
+              /dev/block/by-name/boot_b \
+              /dev/block/by-name/boot_c \
+              /dev/block/by-name/boot \
+              2>/dev/null || true
+          }
+
+          trap cleanup_dev_links EXIT
+          cleanup_dev_links
+          sudo mkdir -p /dev/block/by-name
+
+          DIR="$CASES/CASE-C-INVALID"
+          PKG="$DIR/package"
+
+          rm -rf "$DIR"
+          mkdir -p "$DIR"
+          cp -a "$PACKAGE" "$PKG"
+          cp \
+            "$PKG/anykernel.production-candidate.sh" \
+            "$PKG/anykernel.sh"
+
+          truncate -s "$BOOT_PARTITION_SIZE" "$DIR/boot_a.img"
+          truncate -s "$BOOT_PARTITION_SIZE" "$DIR/boot_b.img"
+
+          dd \
+            if="$INPUTS/validated-real-boot.img" \
+            of="$DIR/boot_a.img" \
+            bs=1048576 \
+            conv=notrunc \
+            status=none
+
+          dd \
+            if="$INPUTS/validated-real-boot.img" \
+            of="$DIR/boot_b.img" \
+            bs=1048576 \
+            conv=notrunc \
+            status=none
+
+          A_BEFORE="$(sha256sum "$DIR/boot_a.img" | awk '{print $1}')"
+          B_BEFORE="$(sha256sum "$DIR/boot_b.img" | awk '{print $1}')"
+
+          sudo ln -s "$DIR/boot_a.img" /dev/block/by-name/boot_a
+          sudo ln -s "$DIR/boot_b.img" /dev/block/by-name/boot_b
+
+          set +e
+          (
+            cd "$PKG"
+
+            export AKHOME="$PKG"
+            export OUTFD=1
+            export FAKE_SLOT="_c"
+            export PATH="$WORK/harness/bin:$PATH"
+            export CUSTOMDD="bs=1048576 count=128 conv=notrunc status=none"
+
+            bash anykernel.sh
+          ) > "$OUTPUT/CASE-C-INVALID-runtime.log" 2>&1
+          INVALID_RC=$?
+          set -e
+
+          test "$INVALID_RC" -ne 0
+
+          A_AFTER="$(sha256sum "$DIR/boot_a.img" | awk '{print $1}')"
+          B_AFTER="$(sha256sum "$DIR/boot_b.img" | awk '{print $1}')"
+
+          test "$A_AFTER" = "$A_BEFORE"
+          test "$B_AFTER" = "$B_BEFORE"
+
+          grep -Eq \
+            'Unable to determine .*boot.*partition|Unable to determine boot partition|Invalid partition|Aborting' \
+            "$OUTPUT/CASE-C-INVALID-runtime.log"
+
+          {
+            echo "CASE=CASE-C-INVALID"
+            echo "RESULT=PASS_FAIL_CLOSED"
+            echo "EXIT_CODE=$INVALID_RC"
+            echo "FAKE_SLOT=_c"
+            echo "BOOT_A_BEFORE_SHA256=$A_BEFORE"
+            echo "BOOT_A_AFTER_SHA256=$A_AFTER"
+            echo "BOOT_B_BEFORE_SHA256=$B_BEFORE"
+            echo "BOOT_B_AFTER_SHA256=$B_AFTER"
+            echo "TARGETS_UNCHANGED=YES"
+            echo "REAL_DEVICE_WRITE=NO"
+          } | tee "$OUTPUT/CASE-C-INVALID-status.txt"
+
+          cleanup_dev_links
+
+      - name: Derive W38 promotion readiness verdict
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          grep -Fxq 'W37_INPUT_GATE=PASS' \
+            "$OUTPUT/W37-INPUT-GATE.txt"
+          grep -Fxq 'VALIDATED_REAL_BOOT_INPUT=PASS' \
+            "$OUTPUT/REAL-BOOT-INPUT.txt"
+          grep -Fxq 'W38_HOST_HARNESS=PASS' \
+            "$OUTPUT/HARNESS-STATUS.txt"
+
+          grep -Fxq 'RESULT=PASS' \
+            "$OUTPUT/CASE-A-ACTIVE-status.txt"
+          grep -Fxq 'FAKE_SLOT=_a' \
+            "$OUTPUT/CASE-A-ACTIVE-status.txt"
+          grep -Fxq 'OTHER_PARTITION_UNCHANGED=YES' \
+            "$OUTPUT/CASE-A-ACTIVE-status.txt"
+          grep -Fxq 'W33_KERNEL_SHA256_MATCH=YES' \
+            "$OUTPUT/CASE-A-ACTIVE-status.txt"
+          grep -Fxq 'RAMDISK_LOGICAL_BYTES_PRESERVED=YES' \
+            "$OUTPUT/CASE-A-ACTIVE-status.txt"
+
+          grep -Fxq 'RESULT=PASS' \
+            "$OUTPUT/CASE-B-ACTIVE-status.txt"
+          grep -Fxq 'FAKE_SLOT=_b' \
+            "$OUTPUT/CASE-B-ACTIVE-status.txt"
+          grep -Fxq 'OTHER_PARTITION_UNCHANGED=YES' \
+            "$OUTPUT/CASE-B-ACTIVE-status.txt"
+          grep -Fxq 'W33_KERNEL_SHA256_MATCH=YES' \
+            "$OUTPUT/CASE-B-ACTIVE-status.txt"
+          grep -Fxq 'RAMDISK_LOGICAL_BYTES_PRESERVED=YES' \
+            "$OUTPUT/CASE-B-ACTIVE-status.txt"
+
+          grep -Fxq 'VALID_SLOT_RUNTIME=PASS' \
+            "$OUTPUT/VALID-SLOT-VERDICT.txt"
+          grep -Fxq 'VALID_SLOT_OUTPUTS_BYTE_IDENTICAL=YES' \
+            "$OUTPUT/VALID-SLOT-VERDICT.txt"
+
+          grep -Fxq 'RESULT=PASS_FAIL_CLOSED' \
+            "$OUTPUT/CASE-C-INVALID-status.txt"
+          grep -Fxq 'TARGETS_UNCHANGED=YES' \
+            "$OUTPUT/CASE-C-INVALID-status.txt"
+
+          {
+            echo "FINAL_RESULT=PASS_GEN2_38_PRODUCTION_CANDIDATE_RUNTIME_PROMOTION_GATE"
+            echo "W37_NONFLASHING_STAGING_INPUT=PASS"
+            echo "EXACT_PRODUCTION_CANDIDATE_SCRIPT_EXECUTED=YES"
+            echo "PRODUCTION_CANDIDATE_SCRIPT_MODIFIED=NO"
+            echo "ACTIVE_SLOT_A_RUNTIME=PASS"
+            echo "ACTIVE_SLOT_B_RUNTIME=PASS"
+            echo "SLOT_A_B_OUTPUTS_BYTE_IDENTICAL=YES"
+            echo "INVALID_SLOT_FAIL_CLOSED=PASS"
+            echo "W33_KERNEL_INSERTED_EXACTLY=YES"
+            echo "RAMDISK_LOGICAL_BYTES_PRESERVED=YES"
+            echo "OTHER_SLOT_PRESERVED=YES"
+            echo "VENDOR_BOOT_TOUCHED=NO"
+            echo "DTBO_TOUCHED=NO"
+            echo "TOP_LEVEL_VBMETA_TOUCHED=NO"
+            echo "REAL_DEVICE_ACCESSED=NO"
+            echo "FLASHING_PERFORMED=NO"
+            echo "RECOVERY_INSTALLABLE_ZIP_CREATED=NO"
+            echo "FINAL_FLASHABLE_RELEASE_READY=NO"
+            echo "NEXT_STEP=EXPLICIT_USER_APPROVAL_REQUIRED_FOR_INSTALLABLE_PACKAGE_PROMOTION_OR_REAL_DEVICE_TEST"
+          } | tee "$OUTPUT/W38-VERDICT.txt"
+
+      - name: Write failure safe W38 audit report
+        if: always()
+        shell: bash
+        run: |
+          set +e
+
+          REPORT='GEN2_38_PRODUCTION_CANDIDATE_RUNTIME_PROMOTION_GATE_AUDIT.txt'
+
+          {
+            cat "$OUTPUT/AUDIT-HEADER.txt" 2>/dev/null
+            echo
+            echo "=== SCOPE ==="
+            cat "$OUTPUT/SCOPE.txt" 2>/dev/null
+            echo
+
+            for f in \
+              "$OUTPUT/INPUT-ARTIFACTS.txt" \
+              "$OUTPUT/W37-INPUT-GATE.txt" \
+              "$OUTPUT/REAL-BOOT-INPUT.txt" \
+              "$OUTPUT/PACKAGED-MAGISKBOOT-FILE.txt" \
+              "$OUTPUT/HARNESS-STATUS.txt" \
+              "$OUTPUT/CASE-A-ACTIVE-status.txt" \
+              "$OUTPUT/CASE-B-ACTIVE-status.txt" \
+              "$OUTPUT/VALID-SLOT-VERDICT.txt" \
+              "$OUTPUT/CASE-C-INVALID-status.txt" \
+              "$OUTPUT/W38-VERDICT.txt"
+            do
+              if [ -f "$f" ]; then
+                echo "=== $(basename "$f") ==="
+                cat "$f"
+                echo
+              fi
+            done
+
+            echo "REAL_DEVICE_ACCESSED=NO"
+            echo "FLASHING_PERFORMED=NO"
+            echo "RECOVERY_INSTALLABLE_ZIP_CREATED=NO"
+          } > "$REPORT"
+
+          test -s "$REPORT"
+
+      - name: Upload W38 audit artifact
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: GEN2_38_PRODUCTION_CANDIDATE_RUNTIME_PROMOTION_GATE_AUDIT-${{ github.run_number }}
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 6
+          path: |
+            GEN2_38_PRODUCTION_CANDIDATE_RUNTIME_PROMOTION_GATE_AUDIT.txt
+            w38/output/
+
+      - name: Fail only after preserving W38 diagnostics
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if ! grep -Fxq \
+            'FINAL_RESULT=PASS_GEN2_38_PRODUCTION_CANDIDATE_RUNTIME_PROMOTION_GATE' \
+            "$OUTPUT/W38-VERDICT.txt" 2>/dev/null; then
+            echo "ERROR: W38 final PASS verdict was not produced."
+            exit 1
+          fi
+
+          echo "W38 final PASS verdict confirmed after artifact upload."
