@@ -1,0 +1,413 @@
+name: 34 - GEN2 LineageOS AOSP Compatibility Audit v3
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: gen2-34-v3-lineage-aosp-compat-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    name: GEN2 34 v3 LineageOS AOSP compatibility audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+
+    env:
+      GEN2_REPO: https://github.com/dereference23/kernel_xiaomi_sm6375.git
+      GEN2_COMMIT: f4b8a13a43a130a9aab83cc985ce4d4421291ae6
+
+      VEUX_DEVICE_REPO: https://github.com/xiaomi-sm6375-devs/android_device_xiaomi_veux.git
+      SM6375_COMMON_REPO: https://github.com/xiaomi-sm6375-devs/android_device_xiaomi_sm6375-common.git
+      LINEAGE_BUILD_REPO: https://github.com/LineageOS/android_build.git
+
+      LINEAGE_23_2_VEUX_PIN: 423b9b6e00301e181a85d886b3c67c47c48d096e
+      LINEAGE_23_2_COMMON_PIN: 4cd108d5cd933e5cdaf1293bee233621e8008ac8
+      LINEAGE_BUILD_PIN: 5a841be38fec92de9a8a408cf5812ca748ccc02e
+
+      W33_ARTIFACT_PREFIX: GEN2_33_V7_FINAL_FULL_IMAGE_DTB_DTBO_BUILD_AUDIT-
+      W33_IMAGE_SHA256: 98e608f7c30540b6cb5a1731b0edecd9a3b4960ebf388763452685858916037f
+      W33_VMLINUX_SHA256: 878d8d36e03ae4971a48c403cba6608fe8eba60d572b0d336e477779f998762c
+      W33_SYSTEM_MAP_SHA256: 4d8969722e5b881bdff90f377cfd6992cd6a87b6d5539fb255ed182976de3e93
+      W33_VEUX_DTB_SHA256: 28a174d174cda7619bf674b29fa4e91625a6ad02f6ca4815ac7a943137b3df8c
+      W33_VEUX_DTBO_SHA256: 486ec73935e9805722df531cc3ddd5460f971c1edeec813fd25bef63500c0ca3
+      W33_CONFIG_SHA256: 2931b6b74bf34a85f2a71cb4b76d1a3277a5538514411dd1047c841d46e92cbb
+
+    steps:
+      - name: Checkout builder repository
+        uses: actions/checkout@v6
+
+      - name: Initialize W34 v3 workspace
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -rf w34v3
+          mkdir -p w34v3/evidence w34v3/w33 w34v3/gen2 w34v3/lineage
+
+          {
+            echo "AUDIT=GEN2_34_V3_LINEAGE_AOSP_COMPATIBILITY"
+            echo "DATE_UTC=$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+            echo "RUN_ID=$GITHUB_RUN_ID"
+            echo "RUN_NUMBER=$GITHUB_RUN_NUMBER"
+            echo "REPOSITORY=$GITHUB_REPOSITORY"
+            echo "BUILDER_COMMIT=$GITHUB_SHA"
+            echo "PARENT=W34_V2"
+            echo "V3_SCOPE=CURRENT_LINEAGE_23_2_CONTRACT_ONLY"
+            echo "HISTORICAL_BRANCH_MATRIX_RERUN=NO"
+            echo "UNIVERSAL_ALL_LINEAGE_VERSIONS=NOT_CLAIMED"
+            echo "ARTIFACT_LOOKUP=FULL_PAGINATION"
+            echo "KERNEL_REBUILD=NO"
+            echo "BOOT_IMAGE_CREATED=NO"
+            echo "ANYKERNEL_PACKAGE_CREATED=NO"
+            echo "DEVICE_ACCESSED=NO"
+            echo "FLASHING_PERFORMED=NO"
+          } | tee w34v3/evidence/audit-header.txt
+
+      - name: Download exact W33 v7 artifact with full pagination
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          API="$GITHUB_API_URL/repos/$GITHUB_REPOSITORY"
+          AUTH="Authorization: Bearer $GH_TOKEN"
+          ACCEPT="Accept: application/vnd.github+json"
+          VERSION="X-GitHub-Api-Version: 2022-11-28"
+
+          ALL='w34v3/evidence/artifacts.ndjson'
+          : > "$ALL"
+
+          page=1
+          while :; do
+            page_json="w34v3/evidence/artifacts-page-${page}.json"
+
+            curl -fsSL \
+              -H "$AUTH" \
+              -H "$ACCEPT" \
+              -H "$VERSION" \
+              "$API/actions/artifacts?per_page=100&page=${page}" \
+              -o "$page_json"
+
+            count="$(jq '.artifacts | length' "$page_json")"
+            jq -c '.artifacts[]' "$page_json" >> "$ALL"
+
+            if [ "$count" -lt 100 ]; then
+              break
+            fi
+
+            page=$((page + 1))
+            if [ "$page" -gt 100 ]; then
+              echo "ERROR: artifact pagination safety limit reached"
+              exit 1
+            fi
+          done
+
+          jq -s '{artifacts: .}' "$ALL" > w34v3/evidence/artifacts.json
+
+          ARTIFACT_ID="$(
+            jq -r --arg prefix "$W33_ARTIFACT_PREFIX" '
+              [
+                .artifacts[]
+                | select(
+                    (.expired == false)
+                    and
+                    (.name | startswith($prefix))
+                  )
+              ]
+              | sort_by(.created_at)
+              | reverse
+              | .[0].id // empty
+            ' w34v3/evidence/artifacts.json
+          )"
+
+          test -n "$ARTIFACT_ID"
+
+          ARTIFACT_NAME="$(
+            jq -r --argjson id "$ARTIFACT_ID" '
+              .artifacts[]
+              | select(.id == $id)
+              | .name
+            ' w34v3/evidence/artifacts.json
+          )"
+
+          test -n "$ARTIFACT_NAME"
+
+          curl -fLsS \
+            -H "$AUTH" \
+            -H "$ACCEPT" \
+            -H "$VERSION" \
+            "$API/actions/artifacts/$ARTIFACT_ID/zip" \
+            -o w34v3/W33_V7.zip
+
+          unzip -t w34v3/W33_V7.zip \
+            > w34v3/evidence/w33-zip-test.txt
+
+          unzip -q w34v3/W33_V7.zip -d w34v3/w33
+
+          {
+            echo "W33_ARTIFACT_FETCH=PASS"
+            echo "ARTIFACT_PAGINATION=PASS"
+            echo "ARTIFACT_PAGE_COUNT=$page"
+            echo "ARTIFACT_TOTAL_COUNT=$(wc -l < "$ALL" | tr -d ' ')"
+            echo "W33_ARTIFACT_ID=$ARTIFACT_ID"
+            echo "W33_ARTIFACT_NAME=$ARTIFACT_NAME"
+            echo "W33_ARTIFACT_ZIP_SHA256=$(sha256sum w34v3/W33_V7.zip | awk '{print $1}')"
+          } | tee w34v3/evidence/w33-artifact-status.txt
+
+      - name: Verify exact W33 v7 evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd w34v3/w33
+
+          required=(
+            GEN2_33_Image
+            GEN2_33_vmlinux
+            GEN2_33_System.map
+            GEN2_33_veux.dtb
+            GEN2_33_veux-overlay.dtbo
+            GEN2_33_final.config
+            GEN2_33_V7_SHA256SUMS
+            workflow33-compiler-diagnostics.txt
+          )
+
+          for f in "${required[@]}"; do
+            test -s "$f"
+          done
+
+          sha256sum -c GEN2_33_V7_SHA256SUMS \
+            | tee ../evidence/w33-manifest-check.txt
+
+          test "$(grep -c ': OK$' ../evidence/w33-manifest-check.txt)" -eq 8
+          test "$(sha256sum GEN2_33_Image | awk '{print $1}')" = "$W33_IMAGE_SHA256"
+          test "$(sha256sum GEN2_33_vmlinux | awk '{print $1}')" = "$W33_VMLINUX_SHA256"
+          test "$(sha256sum GEN2_33_System.map | awk '{print $1}')" = "$W33_SYSTEM_MAP_SHA256"
+          test "$(sha256sum GEN2_33_veux.dtb | awk '{print $1}')" = "$W33_VEUX_DTB_SHA256"
+          test "$(sha256sum GEN2_33_veux-overlay.dtbo | awk '{print $1}')" = "$W33_VEUX_DTBO_SHA256"
+          test "$(sha256sum GEN2_33_final.config | awk '{print $1}')" = "$W33_CONFIG_SHA256"
+
+          grep -q '^COMPILER_ERROR_COUNT=0$' workflow33-compiler-diagnostics.txt
+          grep -q '^TARGETED_WARNING_COUNT=0$' workflow33-compiler-diagnostics.txt
+          grep -q '^NONBASELINE_WARNING_COUNT=0$' workflow33-compiler-diagnostics.txt
+          grep -q '^# CONFIG_MODULES is not set$' GEN2_33_final.config
+          grep -q '^CONFIG_KSU=y$' GEN2_33_final.config
+          grep -q '^CONFIG_KSU_SUSFS=y$' GEN2_33_final.config
+
+          {
+            echo "W33_V7_EVIDENCE=PASS"
+            echo "W33_V7_MANIFEST=8_OF_8_PASS"
+            echo "W33_V7_COMPILER_ERRORS=0"
+            echo "W33_V7_TARGETED_WARNINGS=0"
+            echo "W33_V7_NONBASELINE_WARNINGS=0"
+            echo "W33_V7_CONFIG_MODULES_STATE=DISABLED"
+          } | tee ../evidence/w33-evidence-status.txt
+
+      - name: Fetch exact GEN2 and Lineage pins
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git clone --filter=blob:none --no-checkout \
+            "$GEN2_REPO" w34v3/gen2/kernel >/dev/null 2>&1
+          git -C w34v3/gen2/kernel checkout --detach "$GEN2_COMMIT" >/dev/null 2>&1
+
+          git clone --filter=blob:none --no-checkout \
+            "$VEUX_DEVICE_REPO" w34v3/lineage/veux >/dev/null 2>&1
+          git -C w34v3/lineage/veux checkout --detach "$LINEAGE_23_2_VEUX_PIN" >/dev/null 2>&1
+
+          git clone --filter=blob:none --no-checkout \
+            "$SM6375_COMMON_REPO" w34v3/lineage/common >/dev/null 2>&1
+          git -C w34v3/lineage/common checkout --detach "$LINEAGE_23_2_COMMON_PIN" >/dev/null 2>&1
+
+          git clone --filter=blob:none --no-checkout \
+            "$LINEAGE_BUILD_REPO" w34v3/lineage/build >/dev/null 2>&1
+          git -C w34v3/lineage/build checkout --detach "$LINEAGE_BUILD_PIN" >/dev/null 2>&1
+
+          test "$(git -C w34v3/gen2/kernel rev-parse HEAD)" = "$GEN2_COMMIT"
+          test "$(git -C w34v3/lineage/veux rev-parse HEAD)" = "$LINEAGE_23_2_VEUX_PIN"
+          test "$(git -C w34v3/lineage/common rev-parse HEAD)" = "$LINEAGE_23_2_COMMON_PIN"
+          test "$(git -C w34v3/lineage/build rev-parse HEAD)" = "$LINEAGE_BUILD_PIN"
+
+          {
+            echo "SOURCE_PINS=PASS"
+            echo "GEN2_COMMIT=$GEN2_COMMIT"
+            echo "LINEAGE_VEUX_PIN=$LINEAGE_23_2_VEUX_PIN"
+            echo "LINEAGE_COMMON_PIN=$LINEAGE_23_2_COMMON_PIN"
+            echo "LINEAGE_BUILD_PIN=$LINEAGE_BUILD_PIN"
+          } | tee w34v3/evidence/source-pins.txt
+
+      - name: Verify GEN2 5.4.302 source contract
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          K='w34v3/gen2/kernel'
+
+          test -f "$K/arch/arm64/configs/veux_defconfig"
+          grep -q '^VERSION = 5$' "$K/Makefile"
+          grep -q '^PATCHLEVEL = 4$' "$K/Makefile"
+          grep -q '^SUBLEVEL = 302$' "$K/Makefile"
+          grep -q '^CONFIG_ARCH_HOLI=y$' "$K/arch/arm64/configs/veux_defconfig"
+          grep -q '^CONFIG_QGKI=y$' "$K/arch/arm64/configs/veux_defconfig"
+
+          {
+            echo "GEN2_SOURCE_CONTRACT=PASS"
+            echo "KERNEL_VERSION=5.4.302"
+            echo "DEVICE_CONFIG=veux_defconfig"
+            echo "PLATFORM=holi"
+            echo "QGKI=YES"
+          } | tee w34v3/evidence/gen2-source-contract.txt
+
+      - name: Verify current Lineage 23.2 boot routing contract
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          DEVICE='w34v3/lineage/veux/BoardConfig.mk'
+          COMMON='w34v3/lineage/common/BoardConfigCommon.mk'
+          MAKEFILE='w34v3/lineage/build/core/Makefile'
+
+          grep -q 'TARGET_KERNEL_CONFIG := veux_defconfig' "$DEVICE"
+          grep -q 'TARGET_KERNEL_SOURCE := kernel/xiaomi/sm6375' "$COMMON"
+          grep -q 'BOARD_KERNEL_IMAGE_NAME := Image' "$COMMON"
+          grep -q 'BOARD_BOOT_HEADER_VERSION := 3' "$COMMON"
+          grep -q 'BOARD_INCLUDE_DTB_IN_BOOTIMG := true' "$COMMON"
+          grep -q 'BOARD_KERNEL_SEPARATED_DTBO := true' "$COMMON"
+          grep -q 'BOARD_USES_GENERIC_KERNEL_IMAGE := true' "$COMMON"
+          grep -q 'BOARD_BOOTIMAGE_PARTITION_SIZE := 134217728' "$COMMON"
+          grep -q 'BOARD_VENDOR_BOOTIMAGE_PARTITION_SIZE := 100663296' "$COMMON"
+          grep -q 'BOARD_MOVE_RECOVERY_RESOURCES_TO_VENDOR_BOOT := true' "$COMMON"
+          grep -q 'TARGET_BOARD_PLATFORM := holi' "$COMMON"
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          text = Path("w34v3/lineage/build/core/Makefile").read_text(
+              encoding="utf-8",
+              errors="replace",
+          )
+
+          boot_guard = """ifndef BUILDING_VENDOR_BOOT_IMAGE
+          ifdef BOARD_INCLUDE_DTB_IN_BOOTIMG
+            INTERNAL_BOOTIMAGE_ARGS += --dtb $(INSTALLED_DTBIMAGE_TARGET)
+          endif
+          endif"""
+
+          vendor_route = """ifdef BOARD_INCLUDE_DTB_IN_BOOTIMG
+            ifneq ($(BUILDING_VENDOR_KERNEL_BOOT_IMAGE),true)
+              # If we have vendor_kernel_boot partition, we migrate dtb image to that image
+              # and allow dtb in vendor_boot to be empty.
+              INTERNAL_VENDOR_BOOTIMAGE_ARGS += --dtb $(INSTALLED_DTBIMAGE_TARGET)
+            endif
+          endif"""
+
+          def normalize(value):
+              return "\n".join(
+                  line.strip()
+                  for line in value.splitlines()
+                  if line.strip()
+              )
+
+          normalized = normalize(text)
+
+          if normalize(boot_guard) not in normalized:
+              raise RuntimeError("Lineage boot DTB routing guard missing")
+
+          if normalize(vendor_route) not in normalized:
+              raise RuntimeError("Lineage vendor_boot DTB routing block missing")
+          PY
+
+          {
+            echo "LINEAGE_23_2_STATIC_BOOT_CONTRACT=PASS"
+            echo "DEVICE=veux"
+            echo "PLATFORM=holi"
+            echo "KERNEL_IMAGE=Image"
+            echo "BOOT_HEADER_VERSION=3"
+            echo "BOOT_PARTITION_SIZE=134217728"
+            echo "DTB_CONTAINER=vendor_boot"
+            echo "DTBO_CONTAINER=separate_dtbo_partition"
+            echo "VENDOR_BOOT_POLICY=PRESERVE"
+            echo "DTBO_POLICY=PRESERVE"
+            echo "RAMDISK_POLICY=PRESERVE"
+            echo "SOURCE_KERNEL_MODEL=YES"
+          } | tee w34v3/evidence/lineage-23.2-contract.txt
+
+      - name: Write final W34 v3 report
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          grep -q '^W33_V7_EVIDENCE=PASS$' w34v3/evidence/w33-evidence-status.txt
+          grep -q '^SOURCE_PINS=PASS$' w34v3/evidence/source-pins.txt
+          grep -q '^GEN2_SOURCE_CONTRACT=PASS$' w34v3/evidence/gen2-source-contract.txt
+          grep -q '^LINEAGE_23_2_STATIC_BOOT_CONTRACT=PASS$' w34v3/evidence/lineage-23.2-contract.txt
+          grep -q '^ARTIFACT_PAGINATION=PASS$' w34v3/evidence/w33-artifact-status.txt
+
+          REPORT='GEN2_34_V3_LINEAGE_AOSP_COMPATIBILITY_AUDIT.txt'
+
+          {
+            cat w34v3/evidence/audit-header.txt
+            echo
+            cat w34v3/evidence/w33-artifact-status.txt
+            cat w34v3/evidence/w33-evidence-status.txt
+            echo
+            cat w34v3/evidence/source-pins.txt
+            cat w34v3/evidence/gen2-source-contract.txt
+            echo
+            cat w34v3/evidence/lineage-23.2-contract.txt
+            echo
+            echo "FINAL_RESULT=PASS_GEN2_34_V3_LINEAGE_AOSP_STATIC_COMPATIBILITY_AUDIT"
+            echo "PRIMARY_STATIC_LINEAGE_TARGET=lineage-23.2"
+            echo "UNIVERSAL_ALL_LINEAGE_VERSIONS=NOT_PROVEN_AND_NOT_CLAIMED"
+            echo "AK3_BOOT_ONLY_DIRECTION=STATICALLY_FEASIBLE"
+            echo "DTB_POLICY=PRESERVE_ROM_DTB_IN_VENDOR_BOOT"
+            echo "VENDOR_BOOT_POLICY=PRESERVE"
+            echo "DTBO_POLICY=PRESERVE"
+            echo "NEXT_STEP=WORKFLOW35_V4_ANYKERNEL3_BOOT_REPACK_CONTRACT_SIMULATION"
+            echo "DEVICE_FLASHING_ALLOWED_BY_THIS_AUDIT=NO"
+          } > "$REPORT"
+
+          test -s "$REPORT"
+
+      - name: Build failure safe W34 v3 report
+        if: always()
+        shell: bash
+        run: |
+          set +e
+
+          REPORT='GEN2_34_V3_LINEAGE_AOSP_COMPATIBILITY_AUDIT.txt'
+
+          if [ ! -s "$REPORT" ]; then
+            {
+              echo "AUDIT=GEN2_34_V3_LINEAGE_AOSP_COMPATIBILITY"
+              echo "RESULT=INCOMPLETE_OR_FAILED"
+              echo "FAILURE_SAFE_AUDIT_GENERATED=YES"
+              echo "DATE_UTC=$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+              find w34v3/evidence -maxdepth 1 -type f -print 2>/dev/null | sort
+              echo "BOOT_IMAGE_CREATED=NO"
+              echo "ANYKERNEL_PACKAGE_CREATED=NO"
+              echo "DEVICE_ACCESSED=NO"
+              echo "FLASHING_PERFORMED=NO"
+            } > "$REPORT"
+          fi
+
+          test -s "$REPORT"
+
+      - name: Upload W34 v3 audit artifact
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: GEN2_34_V3_LINEAGE_AOSP_COMPATIBILITY_AUDIT-${{ github.run_number }}
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 6
+          path: |
+            GEN2_34_V3_LINEAGE_AOSP_COMPATIBILITY_AUDIT.txt
+            w34v3/evidence/
