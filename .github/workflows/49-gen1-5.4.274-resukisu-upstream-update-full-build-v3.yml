@@ -1,0 +1,1018 @@
+name: 49 - GEN1 5.4.274 ReSukiSU Upstream Update Full Build v3
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gen1-49-v3-resukisu-upstream-update-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  full-build:
+    name: GEN1 49 v3 Linux 5.4.274 ReSukiSU upstream update
+    runs-on: ubuntu-22.04
+    timeout-minutes: 180
+
+    env:
+      PARENT_WORKFLOW_BLOB: "281402ae932d48e4c2e355cf37f3a6253484360a"
+      OLD_RESUKISU_COMMIT: "faccf4c5edc7be37776216e7d43dd3dca0239331"
+      NEW_RESUKISU_COMMIT: "b2ac2fc8703ce9f5226e2a38a59f8b72f8a3005c"
+      REQUIRED_SUCOMPAT_REFACTOR: "75b99e3e2f312377fc9e5d3720324c0caaf1e610"
+      REQUIRED_EXECVEAT_UPDATE: "9671b9d11e459467d41884c98e1366b13aaae2cc"
+      REQUIRED_OLD_HOOK_COMPAT: "cc44ff62d9dc8b84dbd7c3e4d2703f6a6fb844c3"
+      EXPECTED_UPSTREAM_COMMITS: "18"
+
+      GEN1_ARTIFACT_DIR: ${{ github.workspace }}/gen1-49-resukisu-update-v3
+      GEN1_REPRO_SNAPSHOT: ${{ github.workspace }}/gen1-49-v3-repro-snapshot
+
+    steps:
+      - name: Initialize GEN1 W49 update workspace
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -rf \
+            "$GEN1_ARTIFACT_DIR" \
+            "$GEN1_REPRO_SNAPSHOT" \
+            "$GITHUB_WORKSPACE/gen1-49-v3-driver"
+
+          mkdir -p \
+            "$GEN1_ARTIFACT_DIR" \
+            "$GITHUB_WORKSPACE/gen1-49-v3-driver"
+
+          {
+            echo "AUDIT=GEN1_49_V3_LINUX_5_4_274_RESUKISU_UPSTREAM_UPDATE"
+            echo "DATE_UTC=$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+            echo "REPOSITORY=$GITHUB_REPOSITORY"
+            echo "RUN_ID=$GITHUB_RUN_ID"
+            echo "KERNEL_LINE=GEN1"
+            echo "KERNEL_VERSION=5.4.274"
+            echo "PARENT_WORKFLOW=46C7"
+            echo "PARENT_WORKFLOW_BLOB=$PARENT_WORKFLOW_BLOB"
+            echo "RESUKISU_UPDATE_FROM=$OLD_RESUKISU_COMMIT"
+            echo "RESUKISU_UPDATE_TO=$NEW_RESUKISU_COMMIT"
+            echo "EXPECTED_UPSTREAM_COMMITS=$EXPECTED_UPSTREAM_COMMITS"
+            echo "SUSFS_VERSION=v2.2.0"
+            echo "SUSFS_INTEGRATION_POLICY=PRESERVE_EXACT_46C7_APPROVED_BACKPORT_AND_ADAPTATION"
+            echo "BOOT_IMAGE_CREATED=NO"
+            echo "FLASHABLE_ZIP_CREATED=NO"
+            echo "DEVICE_ACCESSED=NO"
+            echo "FLASHING_PERFORMED=NO"
+            echo "W49_V1_FAILURE_CLASSIFICATION=AUTHORING_BUG_CAUGHT_BEFORE_GITHUB_RUN"
+            echo "W49_V1_FAILURE_DETAIL=STALE_46C8_REFERENCE_STATUS_FINAL_GATE"
+            echo "W49_V2_FAILURE_CLASSIFICATION=DRIVER_EXPRESSION_RESOLUTION_AUTHORING_BUG"
+            echo "W49_V2_FAILURE_STEP=Apply_SUSFS_base_and_verify_known_VEUX_reject"
+            echo "W49_V2_FAILURE_DETAIL=LITERAL_GITHUB_WORKSPACE_EXPRESSION_LEFT_IN_PARENT_RUN_SCRIPT"
+            echo "W49_V2_KERNEL_BUILD_REACHED=NO"
+            echo "W49_V2_RESUKISU_INTEGRATION_REACHED=NO"
+          } | tee "$GEN1_ARTIFACT_DIR/W49-HEADER.txt"
+
+      - name: Install W49 driver dependency
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 -m pip install \
+            --disable-pip-version-check \
+            --no-input \
+            'PyYAML==6.0.2'
+
+          python3 - <<'PY'
+          import yaml
+          print("PYYAML_VERSION=" + yaml.__version__)
+          if yaml.__version__ != "6.0.2":
+              raise SystemExit("unexpected PyYAML version")
+          PY
+
+      - name: Recover and authenticate exact immutable 46C7 parent recipe
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          DRIVER="$GITHUB_WORKSPACE/gen1-49-v3-driver"
+          JSON="$DRIVER/parent-blob.json"
+          PARENT="$DRIVER/46C7-parent.yml"
+
+          curl -fsSL \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/git/blobs/$PARENT_WORKFLOW_BLOB" \
+            -o "$JSON"
+
+          test "$(jq -r '.sha' "$JSON")" = "$PARENT_WORKFLOW_BLOB"
+          test "$(jq -r '.encoding' "$JSON")" = "base64"
+
+          jq -r '.content' "$JSON" \
+            | tr -d '\n' \
+            | base64 -d \
+            > "$PARENT"
+
+          test -s "$PARENT"
+
+          ACTUAL_BLOB="$(
+            git hash-object "$PARENT"
+          )"
+
+          test "$ACTUAL_BLOB" = "$PARENT_WORKFLOW_BLOB"
+
+          grep -Fxq \
+            'name: 46C7 - VEUX Final Cumulative ReSukiSU SUSFS Deterministic Cross-Run Reference' \
+            "$PARENT"
+
+          grep -Fq \
+            'COMMON_REF: "android11-5.4.274_r00"' \
+            "$PARENT"
+
+          grep -Fq \
+            'RESUKISU_COMMIT: "faccf4c5edc7be37776216e7d43dd3dca0239331"' \
+            "$PARENT"
+
+          grep -Fq \
+            'BACKPORT_COMMIT: "90d9f91d43ecaaee044e79c75a01d6a512508eb3"' \
+            "$PARENT"
+
+          {
+            echo "PARENT_RECIPE_AUTHENTICATION=PASS"
+            echo "PARENT_GIT_BLOB=$ACTUAL_BLOB"
+            echo "PARENT_BYTES=$(stat -c '%s' "$PARENT")"
+            echo "PARENT_LINES=$(wc -l < "$PARENT" | tr -d ' ')"
+          } | tee "$GEN1_ARTIFACT_DIR/PARENT-RECIPE-IDENTITY.txt"
+
+      - name: Write deterministic GEN1 46C7 recipe driver
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          DRIVER="$GITHUB_WORKSPACE/gen1-49-v3-driver/run_parent.py"
+
+          cat > "$DRIVER" <<'PY'
+          import os
+          import re
+          import shlex
+          import subprocess
+          import sys
+          from pathlib import Path
+
+          import yaml
+
+
+          workspace = Path(os.environ["GITHUB_WORKSPACE"]).resolve()
+          driver_dir = workspace / "gen1-49-v3-driver"
+          parent_path = driver_dir / "46C7-parent.yml"
+          artifact_dir = Path(os.environ["GEN1_ARTIFACT_DIR"]).resolve()
+          repro_snapshot = Path(os.environ["GEN1_REPRO_SNAPSHOT"]).resolve()
+
+          old = os.environ["OLD_RESUKISU_COMMIT"]
+          new = os.environ["NEW_RESUKISU_COMMIT"]
+          required = [
+              os.environ["REQUIRED_SUCOMPAT_REFACTOR"],
+              os.environ["REQUIRED_EXECVEAT_UPDATE"],
+              os.environ["REQUIRED_OLD_HOOK_COMPAT"],
+          ]
+          expected_count = int(os.environ["EXPECTED_UPSTREAM_COMMITS"])
+
+          parent_text = parent_path.read_text(encoding="utf-8")
+
+          # Exact parent expectations: fail if the parent recipe structure moved.
+          exact_tokens = [
+              'RESUKISU_COMMIT: "faccf4c5edc7be37776216e7d43dd3dca0239331"',
+              'RESUKISU_AUDIT_HEAD: "06390a6acbb7e966b3e1cda00fc1b93e89f11086"',
+              'EXPECTED_RESUKISU_POST_PIN_COMMITS: "10"',
+              'EXPECTED_RESUKISU_VERSION: "v4.2.0-rc1-faccf4c5@ReSukiSU"',
+              'BACKPORT_COMMIT: "90d9f91d43ecaaee044e79c75a01d6a512508eb3"',
+              'BACKPORT_PATCH_SHA256: "21233ce9a0a02590d977cd193aa493b23df7008e73fed402901e033a303b9631"',
+              'EXPECTED_WARNING_CLEAN_DIFF_SHA256: "5cca5614c8a34afc3e9c9d9719f8f0ed52dbf4d2296be15797dc9530630d9665"',
+              'EXPECTED_CUMULATIVE_CONFIG_SHA256: "d7cd955abd59da45804acc9c5e450cf8fc953da3e66bbc274212b40ee9a0b372"',
+          ]
+
+          for token in exact_tokens:
+              if parent_text.count(token) != 1:
+                  raise SystemExit(
+                      f"parent recipe token count mismatch: {token!r}"
+                  )
+
+          recipe = yaml.load(parent_text, Loader=yaml.BaseLoader)
+          job = recipe["jobs"]["full-build"]
+
+          def github_expr(name):
+              # Construct the GitHub expression marker at Python runtime.
+              # This prevents the outer Actions expression engine from
+              # pre-expanding markers that belong to the fetched 46C7 YAML.
+              return "$" + "{{ " + name + " }}"
+
+          def resolve_expr(value):
+              value = str(value)
+
+              replacements = {
+                  github_expr("github.workspace"): str(workspace),
+                  github_expr("runner.temp"): os.environ["RUNNER_TEMP"],
+                  github_expr("github.repository"): os.environ[
+                      "GITHUB_REPOSITORY"
+                  ],
+                  github_expr("github.sha"): os.environ.get(
+                      "GITHUB_SHA",
+                      "",
+                  ),
+                  github_expr("github.ref"): os.environ.get(
+                      "GITHUB_REF",
+                      "",
+                  ),
+              }
+
+              for marker, replacement in replacements.items():
+                  value = value.replace(marker, replacement)
+
+              return value
+
+          env = dict(os.environ)
+          for key, value in job.get("env", {}).items():
+              env[str(key)] = resolve_expr(value)
+
+          # Intentional W49 update overrides.
+          env["RESUKISU_UPDATE_FROM"] = old
+          env["RESUKISU_COMMIT"] = new
+          env["EXPECTED_RESUKISU_VERSION"] = "DYNAMIC_AFTER_CHECKOUT"
+          env["ARTIFACT_DIR"] = str(artifact_dir)
+          env["REPRO_A_SNAPSHOT"] = str(repro_snapshot)
+
+          # Preserve 46C7 deterministic compile metadata deliberately.
+          # This isolates the ReSukiSU source update from build-host metadata.
+          if env.get("KBUILD_BUILD_HOST") != "veux-46c7":
+              raise SystemExit("unexpected 46C7 KBUILD_BUILD_HOST")
+
+          dynamic_env_file = driver_dir / "dynamic-github-env.txt"
+          dynamic_path_file = driver_dir / "dynamic-github-path.txt"
+          dynamic_env_file.write_text("", encoding="utf-8")
+          dynamic_path_file.write_text("", encoding="utf-8")
+
+          env["GITHUB_ENV"] = str(dynamic_env_file)
+          env["GITHUB_PATH"] = str(dynamic_path_file)
+
+          seen_env_lines = 0
+          seen_path_lines = 0
+
+          def absorb_github_files():
+              global seen_env_lines, seen_path_lines
+
+              env_lines = dynamic_env_file.read_text(
+                  encoding="utf-8"
+              ).splitlines()
+
+              i = seen_env_lines
+              while i < len(env_lines):
+                  line = env_lines[i]
+
+                  if "<<" in line:
+                      key, marker = line.split("<<", 1)
+                      key = key.strip()
+                      marker = marker.strip()
+                      i += 1
+                      values = []
+                      while i < len(env_lines) and env_lines[i] != marker:
+                          values.append(env_lines[i])
+                          i += 1
+                      if i >= len(env_lines):
+                          raise SystemExit(
+                              f"unterminated GITHUB_ENV multiline: {key}"
+                          )
+                      env[key] = "\n".join(values)
+                  elif "=" in line:
+                      key, value = line.split("=", 1)
+                      env[key] = value
+                  elif line.strip():
+                      raise SystemExit(
+                          f"unsupported GITHUB_ENV line: {line!r}"
+                      )
+                  i += 1
+
+              seen_env_lines = len(env_lines)
+
+              path_lines = dynamic_path_file.read_text(
+                  encoding="utf-8"
+              ).splitlines()
+
+              new_paths = [
+                  p
+                  for p in path_lines[seen_path_lines:]
+                  if p.strip()
+              ]
+              if new_paths:
+                  env["PATH"] = ":".join(
+                      list(reversed(new_paths))
+                      + [env.get("PATH", "")]
+                  )
+              seen_path_lines = len(path_lines)
+
+          def run_cmd(args, cwd=None, check=True):
+              print("+", " ".join(shlex.quote(str(x)) for x in args))
+              cp = subprocess.run(
+                  [str(x) for x in args],
+                  cwd=str(cwd) if cwd else None,
+                  env=env,
+              )
+              if check and cp.returncode:
+                  raise subprocess.CalledProcessError(
+                      cp.returncode,
+                      args,
+                  )
+              return cp.returncode
+
+          def checkout_action(step):
+              cfg = step.get("with", {})
+              repo = resolve_expr(
+                  cfg.get(
+                      "repository",
+                      os.environ["GITHUB_REPOSITORY"],
+                  )
+              )
+              ref = resolve_expr(cfg.get("ref", "main"))
+              rel_path = resolve_expr(cfg.get("path", "."))
+
+              for label, value in (
+                  ("repository", repo),
+                  ("ref", ref),
+                  ("path", rel_path),
+              ):
+                  if "$" + "{{" in value:
+                      raise SystemExit(
+                          f"unresolved checkout expression in {label}: "
+                          f"{value}"
+                      )
+
+              dest = (
+                  workspace
+                  if rel_path in (".", "")
+                  else workspace / rel_path
+              )
+
+              if dest == workspace:
+                  raise SystemExit(
+                      "unexpected dynamic checkout into workspace root"
+                  )
+
+              if dest.exists():
+                  run_cmd(["rm", "-rf", str(dest)])
+
+              run_cmd(
+                  [
+                      "git",
+                      "clone",
+                      "--no-tags",
+                      f"https://github.com/{repo}.git",
+                      str(dest),
+                  ]
+              )
+              run_cmd(
+                  [
+                      "git",
+                      "fetch",
+                      "--no-tags",
+                      "origin",
+                      ref,
+                  ],
+                  cwd=dest,
+              )
+              run_cmd(
+                  [
+                      "git",
+                      "checkout",
+                      "--detach",
+                      "FETCH_HEAD",
+                  ],
+                  cwd=dest,
+              )
+
+              if cfg.get("fetch-depth") == "0":
+                  shallow = dest / ".git" / "shallow"
+                  if shallow.exists():
+                      run_cmd(
+                          ["git", "fetch", "--unshallow"],
+                          cwd=dest,
+                      )
+
+          def derive_resukisu_version_and_gate():
+              ksu = workspace / "kernel" / "KernelSU"
+              if not (ksu / ".git").exists():
+                  raise SystemExit(
+                      "KernelSU checkout missing at update gate"
+                  )
+
+              actual = subprocess.check_output(
+                  ["git", "rev-parse", "HEAD"],
+                  cwd=ksu,
+                  text=True,
+                  env=env,
+              ).strip()
+
+              if actual != new:
+                  raise SystemExit(
+                      f"updated ReSukiSU pin mismatch: {actual}"
+                  )
+
+              run_cmd(
+                  [
+                      "git",
+                      "merge-base",
+                      "--is-ancestor",
+                      old,
+                      new,
+                  ],
+                  cwd=ksu,
+              )
+
+              for commit in required:
+                  run_cmd(
+                      [
+                          "git",
+                          "merge-base",
+                          "--is-ancestor",
+                          commit,
+                          new,
+                      ],
+                      cwd=ksu,
+                  )
+
+              ahead = int(
+                  subprocess.check_output(
+                      [
+                          "git",
+                          "rev-list",
+                          "--count",
+                          f"{old}..{new}",
+                      ],
+                      cwd=ksu,
+                      text=True,
+                      env=env,
+                  ).strip()
+              )
+
+              if ahead != expected_count:
+                  raise SystemExit(
+                      f"ReSukiSU ahead count {ahead} != {expected_count}"
+                  )
+
+              tag = subprocess.run(
+                  [
+                      "git",
+                      "describe",
+                      "--abbrev=0",
+                      "--tags",
+                      "HEAD",
+                  ],
+                  cwd=ksu,
+                  text=True,
+                  env=env,
+                  capture_output=True,
+              )
+
+              if tag.returncode:
+                  tag_name = "v4.1.0"
+              else:
+                  tag_name = tag.stdout.strip()
+
+              short8 = subprocess.check_output(
+                  [
+                      "git",
+                      "rev-parse",
+                      "--short=8",
+                      "HEAD",
+                  ],
+                  cwd=ksu,
+                  text=True,
+                  env=env,
+              ).strip()
+
+              version = f"{tag_name}-{short8}@ReSukiSU"
+              env["EXPECTED_RESUKISU_VERSION"] = version
+
+              evidence = artifact_dir / "RESUKISU-UPSTREAM-UPDATE.txt"
+              evidence.write_text(
+                  "\n".join(
+                      [
+                          "RESUKISU_UPDATE_GATE=PASS",
+                          f"RESUKISU_UPDATE_FROM={old}",
+                          f"RESUKISU_UPDATE_TO={new}",
+                          f"RESUKISU_UPSTREAM_COMMITS={ahead}",
+                          f"RESUKISU_SUCOMPAT_REFACTOR={required[0]}",
+                          f"RESUKISU_EXECVEAT_UPDATE={required[1]}",
+                          f"RESUKISU_OLD_HOOK_COMPAT={required[2]}",
+                          f"RESUKISU_TAG={tag_name}",
+                          f"RESUKISU_SHORT_SHA={short8}",
+                          f"EXPECTED_RESUKISU_VERSION={version}",
+                          "SUSFS_VERSION=v2.2.0",
+                          "SUSFS_FIXSET_CHANGED=NO",
+                          "SUSFS_APPROVED_46C7_ADAPTATION=PRESERVED",
+                      ]
+                  )
+                  + "\n",
+                  encoding="utf-8",
+              )
+
+              print(evidence.read_text(encoding="utf-8"))
+
+          def patch_script_for_w49(name, script):
+              # Do not alter functional source/build scripts.
+              # Only repair old reporting statements that are no longer true
+              # after an intentional upstream ReSukiSU update.
+              if name == "Prepare full build audit":
+                  script = script.replace(
+                      "- build pin: faccf4c5edc7be37776216e7d43dd3dca0239331",
+                      "- previous build pin: faccf4c5edc7be37776216e7d43dd3dca0239331\n"
+                      "- updated build pin: b2ac2fc8703ce9f5226e2a38a59f8b72f8a3005c",
+                  )
+                  script = script.replace(
+                      "- audit head: 06390a6acbb7e966b3e1cda00fc1b93e89f11086\n"
+                      "- expected post-pin commits: 10\n"
+                      "- kernel/ delta between pin and audit head must be empty",
+                      "- update ancestry and exact 18-commit delta are hard-gated\n"
+                      "- sucompat, execveat and old-hook compatibility commits are required",
+                  )
+
+              if name == "Prepare final 46C7 result":
+                  script = script.replace(
+                      'echo "WORKFLOW=46C7"',
+                      'echo "WORKFLOW=GEN1_49_V3"',
+                  )
+                  script = script.replace(
+                      'echo "RESUKISU_AUDIT_HEAD=$RESUKISU_AUDIT_HEAD"\n'
+                      '            echo "RESUKISU_NEW_KERNEL_DELTA=NO"',
+                      'echo "RESUKISU_UPDATE_FROM=$RESUKISU_UPDATE_FROM"\n'
+                      '            echo "RESUKISU_UPDATE_TO=$RESUKISU_COMMIT"\n'
+                      '            echo "RESUKISU_UPSTREAM_COMMITS=18"\n'
+                      '            echo "RESUKISU_NEW_KERNEL_DELTA=YES_EXPECTED"',
+                  )
+
+                  script = script.replace(
+                      "'REFERENCE_STATUS=READY_FOR_INDEPENDENT_46C8_VERIFICATION'",
+                      "'REFERENCE_STATUS=READY_FOR_NEW_GEN1_UPDATE_VERIFIER'",
+                  )
+
+              if name == "Write deterministic cross-run reference manifest":
+                  script = script.replace(
+                      'echo "REFERENCE_FORMAT=VEUX_46C7_V1"',
+                      'echo "REFERENCE_FORMAT=VEUX_GEN1_49_V3"',
+                  )
+                  script = script.replace(
+                      'echo "REFERENCE_STATUS=READY_FOR_INDEPENDENT_46C8_VERIFICATION"',
+                      'echo "REFERENCE_STATUS=READY_FOR_NEW_GEN1_UPDATE_VERIFIER"',
+                  )
+                  script = script.replace(
+                      'echo "CROSS_RUN_REPRODUCIBILITY=NOT_YET_CLAIMED"',
+                      'echo "CROSS_RUN_REPRODUCIBILITY=NOT_YET_CLAIMED_FOR_UPDATED_RESUKISU"',
+                  )
+
+              return script
+
+          # Exact regression self-test for the W49-v2 failure form.
+          expression_selftests = {
+              github_expr("github.workspace")
+              + "/reference-patches/susfs.patch":
+                  str(workspace)
+                  + "/reference-patches/susfs.patch",
+              github_expr("runner.temp") + "/scratch":
+                  os.environ["RUNNER_TEMP"] + "/scratch",
+              github_expr("github.repository"):
+                  os.environ["GITHUB_REPOSITORY"],
+          }
+
+          for source, expected in expression_selftests.items():
+              actual = resolve_expr(source)
+              if actual != expected:
+                  raise SystemExit(
+                      "W49-v3 expression self-test failed: "
+                      f"{source!r} -> {actual!r}; expected {expected!r}"
+                  )
+              if "$" + "{{" in actual:
+                  raise SystemExit(
+                      "W49-v3 expression self-test left unresolved token: "
+                      + actual
+                  )
+
+          expression_evidence = (
+              artifact_dir / "W49-EXPRESSION-RESOLUTION-SELFTEST.txt"
+          )
+          expression_evidence.write_text(
+              "\n".join(
+                  [
+                      "W49_EXPRESSION_RESOLUTION_SELFTEST=PASS",
+                      "GITHUB_WORKSPACE_PARENT_RUN_RESOLUTION=PASS",
+                      "RUNNER_TEMP_PARENT_RUN_RESOLUTION=PASS",
+                      "GITHUB_REPOSITORY_PARENT_RUN_RESOLUTION=PASS",
+                      "W49_V2_LITERAL_GITHUB_WORKSPACE_FAILURE_CLOSED=YES",
+                  ]
+              )
+              + "\n",
+              encoding="utf-8",
+          )
+
+          # W49-v3 authoring guard: the updated reference status must be
+          # patched both where it is written and where 46C7 later verifies it.
+          driver_source = Path(__file__).read_text(encoding="utf-8")
+          for authoring_token in [
+              "REFERENCE_STATUS=READY_FOR_INDEPENDENT_46C8_VERIFICATION",
+              "REFERENCE_STATUS=READY_FOR_NEW_GEN1_UPDATE_VERIFIER",
+          ]:
+              if authoring_token not in driver_source:
+                  raise SystemExit(
+                      "W49-v3 driver authoring token missing: "
+                      + authoring_token
+                  )
+
+          def execute_run_step(step):
+              name = step.get("name", "<unnamed>")
+
+              if name == "Audit newer ReSukiSU head for kernel delta":
+                  print(
+                      "SKIP obsolete 46C7 no-kernel-delta audit; "
+                      "W49 update gate replaces it."
+                  )
+                  derive_resukisu_version_and_gate()
+                  return
+
+              script = resolve_expr(step["run"])
+              script = patch_script_for_w49(name, script)
+
+              unresolved = [
+                  token
+                  for token in (
+                      github_expr("github.workspace"),
+                      github_expr("runner.temp"),
+                      github_expr("github.repository"),
+                      github_expr("github.sha"),
+                      github_expr("github.ref"),
+                  )
+                  if token in script
+              ]
+              if unresolved:
+                  raise SystemExit(
+                      "unresolved GitHub expression in parent run step "
+                      f"{name}: {unresolved}"
+                  )
+
+              workdir = step.get("working-directory")
+              resolved_workdir = (
+                  resolve_expr(workdir)
+                  if workdir
+                  else None
+              )
+              if resolved_workdir and "$" + "{{" in resolved_workdir:
+                  raise SystemExit(
+                      "unresolved working-directory expression: "
+                      + resolved_workdir
+                  )
+
+              cwd = (
+                  workspace / resolved_workdir
+                  if resolved_workdir
+                  else workspace
+              )
+
+              step_env = dict(env)
+              for key, value in step.get("env", {}).items():
+                  resolved = resolve_expr(value)
+                  if "$" + "{{" in resolved:
+                      raise SystemExit(
+                          "unresolved step env expression "
+                          f"{key}={resolved}"
+                      )
+                  step_env[str(key)] = resolved
+
+              script_path = driver_dir / "current-step.sh"
+              script_path.write_text(script, encoding="utf-8")
+
+              print(f"\n===== RUN: {name} =====")
+              cp = subprocess.run(
+                  ["bash", str(script_path)],
+                  cwd=str(cwd),
+                  env=step_env,
+              )
+
+              absorb_github_files()
+
+              if cp.returncode:
+                  raise subprocess.CalledProcessError(
+                      cp.returncode,
+                      ["bash", str(script_path)],
+                  )
+
+              if name == "Replace legacy KernelSU with pinned ReSukiSU":
+                  # The next parent step is the obsolete audit; leave the
+                  # definitive ancestry/version gate at that exact position.
+                  pass
+
+          steps = job["steps"]
+          failed = False
+          failure_rc = 0
+
+          for step in steps:
+              name = step.get("name", "<unnamed>")
+              cond = step.get("if", "")
+
+              if cond == "failure()" and not failed:
+                  continue
+
+              if failed and cond != "failure()" and cond != "always()":
+                  continue
+
+              uses = step.get("uses")
+              try:
+                  if uses:
+                      if uses.startswith("actions/checkout@"):
+                          if failed:
+                              continue
+                          print(f"\n===== ACTION EMULATION: {name} =====")
+                          checkout_action(step)
+                      elif uses.startswith("actions/upload-artifact@"):
+                          # Outer W49 workflow performs the actual artifact upload.
+                          print(
+                              "\n===== SKIP PARENT UPLOAD: "
+                              f"{name} ====="
+                          )
+                      else:
+                          raise SystemExit(
+                              f"unsupported parent action: {uses}"
+                          )
+                  elif "run" in step:
+                      execute_run_step(step)
+              except subprocess.CalledProcessError as exc:
+                  if not failed:
+                      failed = True
+                      failure_rc = exc.returncode or 1
+                      print(
+                          f"PRIMARY_PARENT_STEP_FAILURE={name}",
+                          file=sys.stderr,
+                      )
+                  elif cond in ("failure()", "always()"):
+                      print(
+                          f"DIAGNOSTIC_STEP_FAILURE={name}",
+                          file=sys.stderr,
+                      )
+
+          status = artifact_dir / "W49-DRIVER-STATUS.txt"
+          with status.open("w", encoding="utf-8") as fh:
+              fh.write("PARENT_WORKFLOW_BLOB=" + os.environ[
+                  "PARENT_WORKFLOW_BLOB"
+              ] + "\n")
+              fh.write(f"RESUKISU_UPDATE_FROM={old}\n")
+              fh.write(f"RESUKISU_UPDATE_TO={new}\n")
+              fh.write(
+                  "SUSFS_APPROVED_46C7_ADAPTATION=PRESERVED\n"
+              )
+              fh.write(
+                  "DYNAMIC_PARENT_RECIPE_FUNCTIONAL_BUILD_STEPS="
+                  "UNCHANGED_EXCEPT_OBSOLETE_RESUKISU_HEAD_AUDIT\n"
+              )
+              fh.write(
+                  "PARENT_GITHUB_EXPRESSION_RESOLUTION="
+                  "RUN_SCRIPT_ENV_WORKDIR_CHECKOUT_FIELDS\n"
+              )
+              fh.write(
+                  "W49_V2_LITERAL_EXPRESSION_FAILURE_CLOSED=YES\n"
+              )
+              fh.write(
+                  "OUTER_W49_DEVICE_ACCESS=NO\n"
+                  "OUTER_W49_FLASHING=NO\n"
+              )
+              fh.write(
+                  "DRIVER_RESULT="
+                  + ("FAIL" if failed else "PASS")
+                  + "\n"
+              )
+
+          if failed:
+              raise SystemExit(failure_rc)
+
+          # Hard final updated-source gates.
+          required_files = [
+              artifact_dir / "RESULT.txt",
+              artifact_dir / "REPRODUCIBILITY.txt",
+              artifact_dir / "RESUKISU-UPSTREAM-UPDATE.txt",
+              artifact_dir / "SOURCE-ADAPTATION-CHECK.txt",
+              artifact_dir / "BUILD-IDENTITY-AUDIT.txt",
+              artifact_dir / "NO-FLASH-GUARD.txt",
+              artifact_dir / "W49-EXPRESSION-RESOLUTION-SELFTEST.txt",
+          ]
+
+          for path in required_files:
+              if not path.is_file() or path.stat().st_size == 0:
+                  raise SystemExit(
+                      f"required W49 evidence missing: {path}"
+                  )
+
+          result = (artifact_dir / "RESULT.txt").read_text(
+              encoding="utf-8"
+          )
+          repro = (artifact_dir / "REPRODUCIBILITY.txt").read_text(
+              encoding="utf-8"
+          )
+          update = (
+              artifact_dir / "RESUKISU-UPSTREAM-UPDATE.txt"
+          ).read_text(encoding="utf-8")
+          adaptation = (
+              artifact_dir / "SOURCE-ADAPTATION-CHECK.txt"
+          ).read_text(encoding="utf-8")
+          identity = (
+              artifact_dir / "BUILD-IDENTITY-AUDIT.txt"
+          ).read_text(encoding="utf-8")
+
+          checks = [
+              ("RESULT=PASS", result),
+              ("WORKFLOW=GEN1_49_V3", result),
+              (f"RESUKISU_COMMIT={new}", result),
+              ("FULL_KERNEL_BUILD=PASS", result),
+              ("REPRODUCTION_BUILD_B=PASS", result),
+              ("REPRODUCIBILITY=PASS", repro),
+              ("IMAGE_BYTE_IDENTICAL=YES", repro),
+              ("VEUX_DTB_BYTE_IDENTICAL=YES", repro),
+              ("RESUKISU_UPDATE_GATE=PASS", update),
+              ("RESUKISU_UPSTREAM_COMMITS=18", update),
+              ("SUSFS_FIXSET_CHANGED=NO", update),
+              ("SOURCE_ADAPTATION=PASS", adaptation),
+              ("OPEN_REDIRECT_SRCU_UAF_FIX_PRESENT=YES", adaptation),
+              (
+                  "OPEN_REDIRECT_MAPS_POINTER_SRCU_FIX_PRESENT=YES",
+                  adaptation,
+              ),
+              ("BUILD_IDENTITY_AUDIT=PASS", identity),
+              ("SUSFS_VERSION=v2.2.0", identity),
+              (
+                  "W49_EXPRESSION_RESOLUTION_SELFTEST=PASS",
+                  (
+                      artifact_dir
+                      / "W49-EXPRESSION-RESOLUTION-SELFTEST.txt"
+                  ).read_text(encoding="utf-8"),
+              ),
+          ]
+
+          for token, content in checks:
+              if token not in content:
+                  raise SystemExit(
+                      f"final W49 gate missing token: {token}"
+                  )
+
+          final = artifact_dir / "W49-FINAL-VERDICT.txt"
+          final.write_text(
+              "\n".join(
+                  [
+                      "FINAL_RESULT=PASS_GEN1_49_V3_LINUX_5_4_274_RESUKISU_B2AC_SUSFS_2_2_FULL_REPRODUCIBLE_BUILD",
+                      "KERNEL_VERSION=5.4.274",
+                      f"RESUKISU_UPDATE_FROM={old}",
+                      f"RESUKISU_UPDATE_TO={new}",
+                      "RESUKISU_UPSTREAM_COMMITS=18",
+                      f"RESUKISU_SUCOMPAT_REFACTOR={required[0]}",
+                      f"RESUKISU_EXECVEAT_UPDATE={required[1]}",
+                      f"RESUKISU_OLD_HOOK_COMPAT={required[2]}",
+                      "SUSFS_VERSION=v2.2.0",
+                      "SUSFS_APPROVED_46C7_ADAPTATION=PRESERVED",
+                      "SUSFS_FIXSET_CHANGED=NO",
+                      "W49_V2_EXPRESSION_RESOLUTION_FAILURE_CLOSED=YES",
+                      "PARENT_RUN_GITHUB_EXPRESSIONS_RESOLVED=YES",
+                      "FULL_KERNEL_BUILD=PASS",
+                      "BUILD_A_B_REPRODUCIBILITY=PASS",
+                      "BOOT_IMAGE_CREATED=NO",
+                      "FLASHABLE_ZIP_CREATED=NO",
+                      "DEVICE_ACCESSED=NO",
+                      "FLASHING_PERFORMED=NO",
+                  ]
+              )
+              + "\n",
+              encoding="utf-8",
+          )
+
+          print(final.read_text(encoding="utf-8"))
+          PY
+
+          python3 -m py_compile "$DRIVER"
+
+          {
+            echo "W49_DRIVER_WRITE=PASS"
+            echo "W49_DRIVER_PY_COMPILE=PASS"
+            echo "PARENT_RECIPE_FUNCTIONAL_BUILD_LOGIC=PINNED_TO_IMMUTABLE_46C7_BLOB"
+            echo "PARENT_46C7_FILE_MODIFIED=NO"
+          } | tee "$GEN1_ARTIFACT_DIR/W49-DRIVER-IDENTITY.txt"
+
+      - name: Execute pinned 46C7 build recipe with ReSukiSU update
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 \
+            "$GITHUB_WORKSPACE/gen1-49-v3-driver/run_parent.py"
+
+      - name: Verify W49 final update verdict
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          VERDICT="$GEN1_ARTIFACT_DIR/W49-FINAL-VERDICT.txt"
+
+          test -s "$VERDICT"
+
+          grep -Fxq \
+            'FINAL_RESULT=PASS_GEN1_49_V3_LINUX_5_4_274_RESUKISU_B2AC_SUSFS_2_2_FULL_REPRODUCIBLE_BUILD' \
+            "$VERDICT"
+
+          grep -Fxq \
+            "RESUKISU_UPDATE_TO=$NEW_RESUKISU_COMMIT" \
+            "$VERDICT"
+
+          grep -Fxq \
+            'RESUKISU_UPSTREAM_COMMITS=18' \
+            "$VERDICT"
+
+          grep -Fxq \
+            'SUSFS_VERSION=v2.2.0' \
+            "$VERDICT"
+
+          grep -Fxq \
+            'SUSFS_FIXSET_CHANGED=NO' \
+            "$VERDICT"
+
+          grep -Fxq \
+            'FULL_KERNEL_BUILD=PASS' \
+            "$VERDICT"
+
+          grep -Fxq \
+            'BUILD_A_B_REPRODUCIBILITY=PASS' \
+            "$VERDICT"
+
+          grep -Fxq \
+            'PARENT_RUN_GITHUB_EXPRESSIONS_RESOLVED=YES' \
+            "$VERDICT"
+
+          grep -Fxq \
+            'W49_EXPRESSION_RESOLUTION_SELFTEST=PASS' \
+            "$GEN1_ARTIFACT_DIR/W49-EXPRESSION-RESOLUTION-SELFTEST.txt"
+
+          grep -Fxq \
+            'DEVICE_ACCESSED=NO' \
+            "$VERDICT"
+
+          grep -Fxq \
+            'FLASHING_PERFORMED=NO' \
+            "$VERDICT"
+
+          echo "GEN1_W49_V3_FINAL_GATE=PASS" \
+            | tee "$GEN1_ARTIFACT_DIR/W49-FINAL-GATE.txt"
+
+      - name: Collect W49 failure summary
+        if: failure()
+        shell: bash
+        run: |
+          set +e
+
+          mkdir -p "$GEN1_ARTIFACT_DIR"
+
+          {
+            echo "GEN1 W49 v3 ReSukiSU update: FAILURE"
+            echo "DATE_UTC=$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+            echo "RESUKISU_UPDATE_FROM=$OLD_RESUKISU_COMMIT"
+            echo "RESUKISU_UPDATE_TO=$NEW_RESUKISU_COMMIT"
+            echo "SUSFS_POLICY=PRESERVE_46C7_V2_2"
+            echo "BOOT_IMAGE_CREATED=NO"
+            echo "FLASHABLE_ZIP_CREATED=NO"
+            echo "DEVICE_ACCESSED=NO"
+            echo "FLASHING_PERFORMED=NO"
+          } > "$GEN1_ARTIFACT_DIR/W49-FAILURE-SUMMARY.txt"
+
+          if [ -d "$GITHUB_WORKSPACE/kernel/KernelSU/.git" ]; then
+            git -C "$GITHUB_WORKSPACE/kernel/KernelSU" \
+              rev-parse HEAD \
+              > "$GEN1_ARTIFACT_DIR/W49-FAILURE-RESUKISU-HEAD.txt" \
+              2>&1 \
+              || true
+          fi
+
+      - name: Upload GEN1 W49 updated full build and diagnostics
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: GEN1_49_V3_5.4.274_ReSukiSU_B2AC_SUSFS_2.2_FULL_BUILD-${{ github.run_number }}
+          path: gen1-49-resukisu-update-v3/
+          if-no-files-found: error
+          include-hidden-files: true
+          retention-days: 30
+          compression-level: 0
+
+      - name: Fail only after preserving W49 diagnostics
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if ! grep -Fxq \
+            'FINAL_RESULT=PASS_GEN1_49_V3_LINUX_5_4_274_RESUKISU_B2AC_SUSFS_2_2_FULL_REPRODUCIBLE_BUILD' \
+            "$GEN1_ARTIFACT_DIR/W49-FINAL-VERDICT.txt" \
+            2>/dev/null
+          then
+            echo "ERROR: GEN1 W49 final PASS verdict was not produced."
+            exit 1
+          fi
+
+          echo "GEN1 W49 v3 PASS confirmed after artifact upload."
