@@ -1,0 +1,261 @@
+name: 54 - Promote Validated Kernel Workflow Organization v3
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: promote-validated-kernel-workflow-organization-v3
+  cancel-in-progress: false
+
+jobs:
+  promote:
+    name: Promote exact validated 5.4.274 and 5.4.302 organization commit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    env:
+      EXPECTED_PARENT: "ab7ae6e2f4b16e42065badeac8698ee42739e77a"
+      VALIDATED_COMMIT: "fce6ddc9ca3819bac1d76a260418b453ee89d610"
+      VALIDATED_TREE: "a0b8024ad59ceaedbaf2c7cef58112bbca2be6d5"
+
+    steps:
+      - name: Checkout current main
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Validate promotion preconditions
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.WORKFLOW_PAT }}
+        run: |
+          set -euo pipefail
+
+          mkdir -p promotion-output
+
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "ERROR: repository secret WORKFLOW_PAT is missing."
+            exit 1
+          fi
+
+          API="$GITHUB_API_URL/repos/$GITHUB_REPOSITORY"
+          AUTH="Authorization: Bearer $GH_TOKEN"
+          ACCEPT="Accept: application/vnd.github+json"
+          VERSION="X-GitHub-Api-Version: 2022-11-28"
+
+          curl -fsSL \
+            -H "$AUTH" \
+            -H "$ACCEPT" \
+            -H "$VERSION" \
+            "$API/branches/main" \
+            -o promotion-output/MAIN-BEFORE.json
+
+          CURRENT_MAIN="$(
+            jq -r '.commit.sha // empty' \
+              promotion-output/MAIN-BEFORE.json
+          )"
+
+          test -n "$CURRENT_MAIN"
+
+          if [ "$CURRENT_MAIN" != "$EXPECTED_PARENT" ]; then
+            {
+              echo "ERROR: main changed since W54-v2 validation."
+              echo "EXPECTED_PARENT=$EXPECTED_PARENT"
+              echo "CURRENT_MAIN=$CURRENT_MAIN"
+            } | tee promotion-output/PRECONDITION-FAILURE.txt
+
+            exit 1
+          fi
+
+          curl -fsSL \
+            -H "$AUTH" \
+            -H "$ACCEPT" \
+            -H "$VERSION" \
+            "$API/commits/$VALIDATED_COMMIT" \
+            -o promotion-output/VALIDATED-COMMIT.json
+
+          SERVER_COMMIT="$(
+            jq -r '.sha // empty' \
+              promotion-output/VALIDATED-COMMIT.json
+          )"
+
+          SERVER_TREE="$(
+            jq -r '.commit.tree.sha // empty' \
+              promotion-output/VALIDATED-COMMIT.json
+          )"
+
+          SERVER_PARENT="$(
+            jq -r '.parents[0].sha // empty' \
+              promotion-output/VALIDATED-COMMIT.json
+          )"
+
+          test "$SERVER_COMMIT" = "$VALIDATED_COMMIT"
+          test "$SERVER_TREE" = "$VALIDATED_TREE"
+          test "$SERVER_PARENT" = "$EXPECTED_PARENT"
+
+          {
+            echo "PROMOTION_PRECONDITIONS=PASS"
+            echo "CURRENT_MAIN=$CURRENT_MAIN"
+            echo "VALIDATED_COMMIT=$SERVER_COMMIT"
+            echo "VALIDATED_TREE=$SERVER_TREE"
+            echo "VALIDATED_PARENT=$SERVER_PARENT"
+            echo "FORCE_UPDATE=NO"
+            echo "REAL_DEVICE_ACCESSED=NO"
+            echo "ADB_USED=NO"
+            echo "FASTBOOT_USED=NO"
+            echo "FLASHING_PERFORMED=NO"
+          } | tee promotion-output/PRECONDITIONS.txt
+
+      - name: Promote exact validated commit to main
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.WORKFLOW_PAT }}
+        run: |
+          set -euo pipefail
+
+          API="$GITHUB_API_URL/repos/$GITHUB_REPOSITORY"
+          AUTH="Authorization: Bearer $GH_TOKEN"
+          ACCEPT="Accept: application/vnd.github+json"
+          VERSION="X-GitHub-Api-Version: 2022-11-28"
+
+          HTTP_CODE="$(
+            curl -sS \
+              -o promotion-output/REF-UPDATE-RESPONSE.json \
+              -w '%{http_code}' \
+              -X PATCH \
+              -H "$AUTH" \
+              -H "$ACCEPT" \
+              -H "$VERSION" \
+              "$API/git/refs/heads/main" \
+              -d "$(
+                jq -n \
+                  --arg sha "$VALIDATED_COMMIT" \
+                  '{
+                    sha: $sha,
+                    force: false
+                  }'
+              )"
+          )"
+
+          echo "REF_UPDATE_HTTP=$HTTP_CODE" \
+            | tee promotion-output/REF-UPDATE-STATUS.txt
+
+          if [ "$HTTP_CODE" != "200" ]; then
+            cat promotion-output/REF-UPDATE-RESPONSE.json
+            exit 1
+          fi
+
+          UPDATED_SHA="$(
+            jq -r '.object.sha // empty' \
+              promotion-output/REF-UPDATE-RESPONSE.json
+          )"
+
+          test "$UPDATED_SHA" = "$VALIDATED_COMMIT"
+
+          {
+            echo "REF_UPDATE=PASS"
+            echo "UPDATED_MAIN=$UPDATED_SHA"
+            echo "FORCE_UPDATE=NO"
+          } | tee -a promotion-output/REF-UPDATE-STATUS.txt
+
+      - name: Verify organized main repository
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.WORKFLOW_PAT }}
+        run: |
+          set -euo pipefail
+
+          API="$GITHUB_API_URL/repos/$GITHUB_REPOSITORY"
+          AUTH="Authorization: Bearer $GH_TOKEN"
+          ACCEPT="Accept: application/vnd.github+json"
+          VERSION="X-GitHub-Api-Version: 2022-11-28"
+
+          curl -fsSL \
+            -H "$AUTH" \
+            -H "$ACCEPT" \
+            -H "$VERSION" \
+            "$API/branches/main" \
+            -o promotion-output/MAIN-AFTER.json
+
+          CURRENT_MAIN="$(
+            jq -r '.commit.sha // empty' \
+              promotion-output/MAIN-AFTER.json
+          )"
+
+          test "$CURRENT_MAIN" = "$VALIDATED_COMMIT"
+
+          curl -fsSL \
+            -H "$AUTH" \
+            -H "$ACCEPT" \
+            -H "$VERSION" \
+            "$API/contents/.github/workflows?ref=main" \
+            -o promotion-output/ACTIVE-WORKFLOWS.json
+
+          jq -r '
+            .[]
+            | select(.type == "file")
+            | .name
+          ' promotion-output/ACTIVE-WORKFLOWS.json \
+            | LC_ALL=C sort \
+            > promotion-output/ACTIVE-WORKFLOWS.txt
+
+          cat > promotion-output/EXPECTED-ACTIVE-WORKFLOWS.txt <<'EOF'
+          5.4.274-49-resukisu-upstream-update-full-build-v3.yml
+          5.4.274-52-github-built-standalone-ak3-v1.yml
+          5.4.274-53-github-built-boot-img-v1.yml
+          5.4.302-36-lineage-boot-validation-v14.yml
+          5.4.302-43-resukisu-upstream-update-full-build-v2.yml
+          5.4.302-44-veux-peux-updated-clean-ak3-release-v1.yml
+          EOF
+
+          diff -u \
+            promotion-output/EXPECTED-ACTIVE-WORKFLOWS.txt \
+            promotion-output/ACTIVE-WORKFLOWS.txt
+
+          for DIR in \
+            archive/workflows/5.4.274 \
+            archive/workflows/5.4.302 \
+            assets/5.4.302
+          do
+            CODE="$(
+              curl -sS \
+                -o /dev/null \
+                -w '%{http_code}' \
+                -H "$AUTH" \
+                -H "$ACCEPT" \
+                -H "$VERSION" \
+                "$API/contents/$DIR?ref=main"
+            )"
+
+            test "$CODE" = "200"
+          done
+
+          {
+            echo "FINAL_RESULT=PASS_W54_V3_PROMOTED_VALIDATED_ORGANIZATION_TO_MAIN"
+            echo "MAIN_COMMIT=$CURRENT_MAIN"
+            echo "ACTIVE_WORKFLOW_COUNT=6"
+            echo "KERNEL_5_4_274_ACTIVE=3"
+            echo "KERNEL_5_4_302_ACTIVE=3"
+            echo "ARCHIVE_5_4_274=PRESENT"
+            echo "ARCHIVE_5_4_302=PRESENT"
+            echo "ASSETS_5_4_302=PRESENT"
+            echo "FORCE_UPDATE=NO"
+            echo "REAL_DEVICE_ACCESSED=NO"
+            echo "ADB_USED=NO"
+            echo "FASTBOOT_USED=NO"
+            echo "FLASHING_PERFORMED=NO"
+          } | tee promotion-output/FINAL-RESULT.txt
+
+      - name: Upload promotion report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: KERNEL_WORKFLOW_ORGANIZATION_V3_PROMOTION_REPORT-${{ github.run_number }}
+          path: promotion-output/
+          if-no-files-found: warn
+          retention-days: 90
+          compression-level: 9
