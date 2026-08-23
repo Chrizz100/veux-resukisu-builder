@@ -1,0 +1,944 @@
+name: 54 - Organize Workflows by Kernel Version v2
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: organize-workflows-by-kernel-version-v2
+  cancel-in-progress: false
+
+jobs:
+  organize:
+    name: Prepare exact 5.4.274 and 5.4.302 repository organization
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout current repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Record immutable starting state
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p organization-output
+
+          {
+            echo "ORGANIZATION=KERNEL_VERSION_BASED_V2"
+            echo "ACTIVE_KERNEL_LINE_1=5.4.274"
+            echo "ACTIVE_KERNEL_LINE_2=5.4.302"
+            echo "SOURCE_COMMIT=$(git rev-parse HEAD)"
+            echo "SOURCE_TREE=$(git rev-parse HEAD^{tree})"
+            echo "TARGET_BRANCH=${GITHUB_REF_NAME}"
+            echo "V1_PUSH_REACHED_MAIN=NO"
+            echo "V1_INTERNAL_ARTIFACT_NAME_REWRITE_BUG=FIXED_IN_V2"
+            echo "REAL_DEVICE_ACCESSED=NO"
+            echo "ADB_USED=NO"
+            echo "FASTBOOT_USED=NO"
+            echo "FLASHING_PERFORMED=NO"
+          } | tee organization-output/STARTING-STATE.txt
+
+          git ls-tree -r --name-only HEAD \
+            | LC_ALL=C sort \
+            > organization-output/BEFORE-FILE-LIST.txt
+
+      - name: Reorganize without changing internal artifact contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib
+          import shutil
+
+          root = Path.cwd()
+          workflows = root / ".github" / "workflows"
+          archive = root / "archive" / "workflows"
+          archive_274 = archive / "5.4.274"
+          archive_302 = archive / "5.4.302"
+          maintenance = archive / "repository-maintenance"
+          assets_302 = root / "assets" / "5.4.302"
+
+          for directory in (
+              archive_274,
+              archive_302,
+              maintenance,
+              assets_302,
+          ):
+              directory.mkdir(parents=True, exist_ok=True)
+
+          organizer_name = "54-organize-workflows-by-kernel-version-v2.yml"
+
+          active = {
+              "49-gen1-5.4.274-resukisu-upstream-update-full-build-v3.yml":
+                  (
+                      "5.4.274-49-resukisu-upstream-update-full-build-v3.yml",
+                      "name: 5.4.274 - ReSukiSU Upstream Update Full Build v3",
+                  ),
+              "52-gen1-5.4.274-github-built-standalone-ak3-v1.yml":
+                  (
+                      "5.4.274-52-github-built-standalone-ak3-v1.yml",
+                      "name: 5.4.274 - GitHub-built Standalone AK3 v1",
+                  ),
+              "53-gen1-5.4.274-github-built-boot-img-v1.yml":
+                  (
+                      "5.4.274-53-github-built-boot-img-v1.yml",
+                      "name: 5.4.274 - GitHub-built boot.img v1",
+                  ),
+              "36-gen2-real-lineage-boot-anykernel3-magiskboot-validation-v14.yml":
+                  (
+                      "5.4.302-36-lineage-boot-validation-v14.yml",
+                      "name: 5.4.302 - Real Lineage Boot Validation v14",
+                  ),
+              "43-gen2-5.4.302-resukisu-upstream-update-full-build-v2.yml":
+                  (
+                      "5.4.302-43-resukisu-upstream-update-full-build-v2.yml",
+                      "name: 5.4.302 - ReSukiSU Upstream Update Full Build v2",
+                  ),
+              "44-gen2-veux-peux-resukisu-updated-clean-ak3-release-v1.yml":
+                  (
+                      "5.4.302-44-veux-peux-updated-clean-ak3-release-v1.yml",
+                      "name: 5.4.302 - VEUX PEUX Updated CLEAN AK3 Release v1",
+                  ),
+          }
+
+          missing = [
+              source
+              for source in active
+              if not (workflows / source).is_file()
+          ]
+
+          if missing:
+              raise SystemExit(
+                  "ERROR: required current workflow(s) missing: "
+                  + ", ".join(missing)
+              )
+
+          # Capture contract-sensitive text before any move/edit.
+          original_contracts = {}
+
+          for source_name in active:
+              original_contracts[source_name] = (
+                  workflows / source_name
+              ).read_text(encoding="utf-8")
+
+          def move_file(source: Path, destination: Path):
+              destination.parent.mkdir(parents=True, exist_ok=True)
+
+              if destination.exists():
+                  raise SystemExit(
+                      f"ERROR: destination already exists: {destination}"
+                  )
+
+              shutil.move(str(source), str(destination))
+
+          def replace_top_level_name_only(path: Path, new_name_line: str):
+              text = path.read_text(encoding="utf-8")
+              lines = text.splitlines(keepends=True)
+
+              if not lines:
+                  raise SystemExit(
+                      f"ERROR: empty workflow: {path}"
+                  )
+
+              first = lines[0].rstrip("\r\n")
+
+              if not first.startswith("name:"):
+                  raise SystemExit(
+                      f"ERROR: first workflow line is not name: {path}"
+                  )
+
+              newline = "\n"
+
+              if lines[0].endswith("\r\n"):
+                  newline = "\r\n"
+
+              lines[0] = new_name_line + newline
+              path.write_text(
+                  "".join(lines),
+                  encoding="utf-8",
+              )
+
+          # Promote exactly six current workflows under version-first filenames.
+          promoted = {}
+
+          for source_name, (target_name, visible_name) in active.items():
+              source = workflows / source_name
+              target = workflows / target_name
+
+              move_file(source, target)
+              replace_top_level_name_only(target, visible_name)
+
+              promoted[source_name] = target
+
+          # W36 is the only active workflow whose body must change:
+          # its repo seed moves out of .github/workflows/.
+          w36_source = (
+              "36-gen2-real-lineage-boot-anykernel3-magiskboot-validation-v14.yml"
+          )
+          w36 = promoted[w36_source]
+          w36_text = w36.read_text(encoding="utf-8")
+
+          old_seed = (
+              "VALIDATED_BOOT_REPO_SEED_PATH: "
+              ".github/workflows/"
+              "GEN2_W36_VALIDATED_LINEAGE_VEUX_ANDROID16_BOOT.img.gz"
+          )
+
+          new_seed = (
+              "VALIDATED_BOOT_REPO_SEED_PATH: "
+              "assets/5.4.302/"
+              "GEN2_W36_VALIDATED_LINEAGE_VEUX_ANDROID16_BOOT.img.gz"
+          )
+
+          if w36_text.count(old_seed) != 1:
+              raise SystemExit(
+                  "ERROR: W36 old boot seed path was not found exactly once"
+              )
+
+          w36.write_text(
+              w36_text.replace(old_seed, new_seed, 1),
+              encoding="utf-8",
+          )
+
+          # Move validated binary seed with exact identity gate.
+          boot_seed_name = (
+              "GEN2_W36_VALIDATED_LINEAGE_VEUX_ANDROID16_BOOT.img.gz"
+          )
+          boot_seed = workflows / boot_seed_name
+          boot_seed_target = assets_302 / boot_seed_name
+
+          if not boot_seed.is_file():
+              raise SystemExit(
+                  "ERROR: validated 5.4.302 boot seed is missing"
+              )
+
+          expected_seed_sha = (
+              "183984c727524325b36696a43419802fa"
+              "9894a56bfc4c51c3b3cc6fa242a7bfa"
+          )
+          expected_seed_size = 16498759
+
+          seed_data = boot_seed.read_bytes()
+
+          if len(seed_data) != expected_seed_size:
+              raise SystemExit(
+                  "ERROR: validated boot seed size mismatch"
+              )
+
+          if hashlib.sha256(seed_data).hexdigest() != expected_seed_sha:
+              raise SystemExit(
+                  "ERROR: validated boot seed SHA-256 mismatch"
+              )
+
+          move_file(boot_seed, boot_seed_target)
+
+          # All remaining top-level historical workflow YAMLs are archived.
+          for item in sorted(workflows.iterdir()):
+              if not item.is_file():
+                  continue
+
+              if item.name == organizer_name:
+                  continue
+
+              if item.name in {
+                  target_name
+                  for target_name, _ in active.values()
+              }:
+                  continue
+
+              if item.suffix.lower() not in {".yml", ".yaml"}:
+                  raise SystemExit(
+                      "ERROR: unexpected non-workflow file remains in "
+                      f".github/workflows: {item.name}"
+                  )
+
+              lower = item.name.lower()
+
+              if lower.startswith("54-organize-workflows-by-kernel-version-"):
+                  destination_root = maintenance
+              elif "gen2" in lower or "5.4.302" in lower:
+                  destination_root = archive_302
+              else:
+                  destination_root = archive_274
+
+              move_file(
+                  item,
+                  destination_root / item.name,
+              )
+
+          # Recover accidentally nested workflow copy.
+          nested = (
+              workflows
+              / ".github"
+              / "workflows"
+              / "13-susfs-adaptation-probe.yml"
+          )
+
+          if nested.is_file():
+              move_file(
+                  nested,
+                  archive_274
+                  / "misplaced"
+                  / "13-susfs-adaptation-probe.yml",
+              )
+
+          nested_root = workflows / ".github"
+
+          if nested_root.exists():
+              shutil.rmtree(nested_root)
+
+          # Remove the accidental root github/workflows duplicate only when
+          # it is byte-identical to the canonical archived file.
+          wrong_root = root / "github" / "workflows"
+          wrong_file = wrong_root / "20-packaging-avb-audit.yml"
+          canonical_archive = archive_274 / "20-packaging-avb-audit.yml"
+
+          if wrong_file.is_file():
+              if (
+                  canonical_archive.is_file()
+                  and hashlib.sha256(wrong_file.read_bytes()).digest()
+                  == hashlib.sha256(canonical_archive.read_bytes()).digest()
+              ):
+                  wrong_file.unlink()
+              else:
+                  move_file(
+                      wrong_file,
+                      archive_274
+                      / "misplaced-root"
+                      / "20-packaging-avb-audit.yml",
+                  )
+
+          wrong_parent = root / "github"
+
+          if wrong_parent.exists():
+              remaining = [
+                  p
+                  for p in wrong_parent.rglob("*")
+                  if p.is_file()
+              ]
+
+              if remaining:
+                  raise SystemExit(
+                      "ERROR: unexpected files remain under root github/: "
+                      + ", ".join(
+                          str(p.relative_to(root))
+                          for p in remaining
+                      )
+                  )
+
+              shutil.rmtree(wrong_parent)
+
+          # Preserve all contract-sensitive internal identifiers.
+          required_contract_tokens = {
+              "49-gen1-5.4.274-resukisu-upstream-update-full-build-v3.yml": [
+                  "GEN1_49_V3_5.4.274_ReSukiSU_B2AC_SUSFS_2.2_FULL_BUILD-",
+              ],
+              "52-gen1-5.4.274-github-built-standalone-ak3-v1.yml": [
+                  "GEN1_49_V3_5.4.274_ReSukiSU_B2AC_SUSFS_2.2_FULL_BUILD-1",
+                  "GEN1_52_V1_GITHUB_BUILT_STANDALONE_AK3-",
+              ],
+              "53-gen1-5.4.274-github-built-boot-img-v1.yml": [
+                  "GEN1_49_V3_5.4.274_ReSukiSU_B2AC_SUSFS_2.2_FULL_BUILD-1",
+                  "GEN1_53_V1_GITHUB_BUILT_BOOT_IMG-",
+              ],
+              "36-gen2-real-lineage-boot-anykernel3-magiskboot-validation-v14.yml": [
+                  "GEN2_W36_VALIDATED_LINEAGE_ANDROID16_BOOT_INPUT",
+                  "GEN2_36_V14_REAL_LINEAGE_BOOT_AK3_MAGISKBOOT_VALIDATION_AUDIT-",
+              ],
+              "43-gen2-5.4.302-resukisu-upstream-update-full-build-v2.yml": [
+                  "GEN2_43_V2_FINAL_FULL_IMAGE_DTB_DTBO_BUILD_AUDIT-",
+              ],
+              "44-gen2-veux-peux-resukisu-updated-clean-ak3-release-v1.yml": [
+                  'W43_ARTIFACT_PREFIX: "GEN2_43_V2_FINAL_FULL_IMAGE_DTB_DTBO_BUILD_AUDIT-"',
+                  'BOOT_INPUT_ARTIFACT_NAME: "GEN2_W36_VALIDATED_LINEAGE_ANDROID16_BOOT_INPUT"',
+              ],
+          }
+
+          for source_name, tokens in required_contract_tokens.items():
+              target = promoted[source_name]
+              target_text = target.read_text(encoding="utf-8")
+
+              for token in tokens:
+                  if token not in target_text:
+                      raise SystemExit(
+                          "ERROR: internal artifact contract token changed: "
+                          f"{target.name}: {token}"
+                      )
+
+          # For five active workflows only the first line is allowed to differ.
+          # W36 additionally has exactly one boot-seed path replacement.
+          for source_name, original in original_contracts.items():
+              target = promoted[source_name]
+              current = target.read_text(encoding="utf-8")
+
+              original_lines = original.splitlines()
+              current_lines = current.splitlines()
+
+              if source_name == w36_source:
+                  normalized_current = current.replace(new_seed, old_seed, 1)
+                  current_lines = normalized_current.splitlines()
+
+              if original_lines[1:] != current_lines[1:]:
+                  raise SystemExit(
+                      "ERROR: workflow body changed outside approved W36 seed path: "
+                      f"{target.name}"
+                  )
+
+          # Archive this one-time organizer too.
+          organizer = workflows / organizer_name
+
+          if not organizer.is_file():
+              raise SystemExit(
+                  "ERROR: organizer workflow cannot archive itself"
+              )
+
+          move_file(
+              organizer,
+              maintenance / organizer_name,
+          )
+
+          expected_active = sorted(
+              target_name
+              for target_name, _ in active.values()
+          )
+
+          actual_active = sorted(
+              p.name
+              for p in workflows.iterdir()
+              if p.is_file()
+              and p.suffix.lower() in {".yml", ".yaml"}
+          )
+
+          if actual_active != expected_active:
+              raise SystemExit(
+                  "ERROR: active workflow set mismatch\n"
+                  f"expected={expected_active}\n"
+                  f"actual={actual_active}"
+              )
+
+          if any(p.is_dir() for p in workflows.iterdir()):
+              raise SystemExit(
+                  "ERROR: nested workflow directory remains"
+              )
+
+          archive_readme = archive / "README.md"
+          archive_readme.write_text(
+              """# Workflow Archive
+
+          Historical workflows are separated by kernel version.
+
+          - `5.4.274/` contains superseded Linux 5.4.274 workflows.
+          - `5.4.302/` contains superseded Linux 5.4.302 workflows.
+          - `repository-maintenance/` contains one-time repository maintenance workflows.
+
+          Only current workflows remain under `.github/workflows/`.
+
+          Historical internal GitHub Actions artifact identifiers such as
+          `GEN1_*` and `GEN2_*` are intentionally preserved inside workflow
+          bodies where existing artifact dependencies require their exact names.
+          """.replace("          ", ""),
+              encoding="utf-8",
+          )
+
+          readme = root / "README.md"
+          readme.write_text(
+              """# VEUX / PEUX ReSukiSU + SUSFS Kernel Builds
+
+          This repository maintains two separate Linux 5.4 kernel lines for Xiaomi/POCO SM6375 devices.
+
+          ## Linux 5.4.274
+
+          Target:
+          - VEUX
+          - Xiaomi HyperOS stock `OS1.0.12.0.TKCMIXM`
+          - Android 13
+          - security patch `2024-12`
+
+          Current integration:
+          - ReSukiSU `b2ac2fc8`
+          - SUSFS 2.2.0
+          - relevant Linux 5.4 OPEN_REDIRECT / SRCU stability fixes
+
+          Current active workflows:
+          - `5.4.274-49-resukisu-upstream-update-full-build-v3.yml`
+          - `5.4.274-52-github-built-standalone-ak3-v1.yml`
+          - `5.4.274-53-github-built-boot-img-v1.yml`
+
+          ## Linux 5.4.302
+
+          Target:
+          - VEUX / PEUX
+          - LineageOS 23.2 / Android 16 QPR2
+          - Android boot image v3
+
+          Current integration:
+          - ReSukiSU `b2ac2fc8`
+          - SUSFS 2.2.0
+          - validated VEUX Lineage Android 16 boot input
+          - unified VEUX/PEUX AnyKernel3 packaging
+
+          Current active workflows:
+          - `5.4.302-36-lineage-boot-validation-v14.yml`
+          - `5.4.302-43-resukisu-upstream-update-full-build-v2.yml`
+          - `5.4.302-44-veux-peux-updated-clean-ak3-release-v1.yml`
+
+          The validated 5.4.302 boot seed is stored under `assets/5.4.302/`.
+
+          ## Historical workflows
+
+          Superseded workflow revisions are retained under:
+          - `archive/workflows/5.4.274/`
+          - `archive/workflows/5.4.302/`
+
+          Internal historical artifact identifiers are preserved where required
+          so existing GitHub Actions artifact dependencies continue to work.
+
+          ## Device testing
+
+          Offline build, package, boot-image and runtime simulations do not
+          replace a physical-device boot test.
+          """.replace("          ", ""),
+              encoding="utf-8",
+          )
+          PY
+
+      - name: Validate exact active contracts after organization
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 -m pip install \
+            --disable-pip-version-check \
+            --no-input \
+            'PyYAML==6.0.2'
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib
+          import subprocess
+          import tempfile
+          import yaml
+
+          root = Path.cwd()
+          workflow_dir = root / ".github" / "workflows"
+
+          expected = [
+              "5.4.274-49-resukisu-upstream-update-full-build-v3.yml",
+              "5.4.274-52-github-built-standalone-ak3-v1.yml",
+              "5.4.274-53-github-built-boot-img-v1.yml",
+              "5.4.302-36-lineage-boot-validation-v14.yml",
+              "5.4.302-43-resukisu-upstream-update-full-build-v2.yml",
+              "5.4.302-44-veux-peux-updated-clean-ak3-release-v1.yml",
+          ]
+
+          expected_names = {
+              "5.4.274-49-resukisu-upstream-update-full-build-v3.yml":
+                  "name: 5.4.274 - ReSukiSU Upstream Update Full Build v3",
+              "5.4.274-52-github-built-standalone-ak3-v1.yml":
+                  "name: 5.4.274 - GitHub-built Standalone AK3 v1",
+              "5.4.274-53-github-built-boot-img-v1.yml":
+                  "name: 5.4.274 - GitHub-built boot.img v1",
+              "5.4.302-36-lineage-boot-validation-v14.yml":
+                  "name: 5.4.302 - Real Lineage Boot Validation v14",
+              "5.4.302-43-resukisu-upstream-update-full-build-v2.yml":
+                  "name: 5.4.302 - ReSukiSU Upstream Update Full Build v2",
+              "5.4.302-44-veux-peux-updated-clean-ak3-release-v1.yml":
+                  "name: 5.4.302 - VEUX PEUX Updated CLEAN AK3 Release v1",
+          }
+
+          actual = sorted(
+              p.name
+              for p in workflow_dir.iterdir()
+              if p.is_file()
+          )
+
+          if actual != sorted(expected):
+              raise SystemExit(
+                  "ERROR: unexpected active workflow contents\n"
+                  f"expected={sorted(expected)}\n"
+                  f"actual={actual}"
+              )
+
+          if any(p.is_dir() for p in workflow_dir.iterdir()):
+              raise SystemExit(
+                  "ERROR: nested directory still exists in .github/workflows"
+              )
+
+          total_runs = 0
+
+          for filename in expected:
+              path = workflow_dir / filename
+              text = path.read_text(encoding="utf-8")
+
+              if text.splitlines()[0] != expected_names[filename]:
+                  raise SystemExit(
+                      f"ERROR: visible workflow name mismatch: {filename}"
+                  )
+
+              document = yaml.load(
+                  text,
+                  Loader=yaml.BaseLoader,
+              )
+
+              if not isinstance(document, dict):
+                  raise SystemExit(
+                      f"ERROR: YAML root invalid: {filename}"
+                  )
+
+              jobs = document.get("jobs")
+
+              if not isinstance(jobs, dict):
+                  raise SystemExit(
+                      f"ERROR: jobs map missing: {filename}"
+                  )
+
+              for job in jobs.values():
+                  if not isinstance(job, dict):
+                      continue
+
+                  for step in job.get("steps", []) or []:
+                      if not isinstance(step, dict):
+                          continue
+
+                      run = step.get("run")
+
+                      if not isinstance(run, str):
+                          continue
+
+                      total_runs += 1
+
+                      with tempfile.NamedTemporaryFile(
+                          mode="w",
+                          suffix=".sh",
+                          encoding="utf-8",
+                          delete=False,
+                      ) as handle:
+                          handle.write(run)
+                          script = Path(handle.name)
+
+                      result = subprocess.run(
+                          ["bash", "-n", str(script)],
+                          capture_output=True,
+                          text=True,
+                      )
+
+                      script.unlink(missing_ok=True)
+
+                      if result.returncode != 0:
+                          raise SystemExit(
+                              "ERROR: bash -n failed in "
+                              f"{filename}\n{result.stderr}"
+                          )
+
+          required_tokens = {
+              "5.4.274-49-resukisu-upstream-update-full-build-v3.yml": [
+                  "GEN1_49_V3_5.4.274_ReSukiSU_B2AC_SUSFS_2.2_FULL_BUILD-",
+              ],
+              "5.4.274-52-github-built-standalone-ak3-v1.yml": [
+                  "GEN1_49_V3_5.4.274_ReSukiSU_B2AC_SUSFS_2.2_FULL_BUILD-1",
+                  "GEN1_52_V1_GITHUB_BUILT_STANDALONE_AK3-",
+              ],
+              "5.4.274-53-github-built-boot-img-v1.yml": [
+                  "GEN1_49_V3_5.4.274_ReSukiSU_B2AC_SUSFS_2.2_FULL_BUILD-1",
+                  "GEN1_53_V1_GITHUB_BUILT_BOOT_IMG-",
+              ],
+              "5.4.302-36-lineage-boot-validation-v14.yml": [
+                  "GEN2_W36_VALIDATED_LINEAGE_ANDROID16_BOOT_INPUT",
+                  "GEN2_36_V14_REAL_LINEAGE_BOOT_AK3_MAGISKBOOT_VALIDATION_AUDIT-",
+              ],
+              "5.4.302-43-resukisu-upstream-update-full-build-v2.yml": [
+                  "GEN2_43_V2_FINAL_FULL_IMAGE_DTB_DTBO_BUILD_AUDIT-",
+              ],
+              "5.4.302-44-veux-peux-updated-clean-ak3-release-v1.yml": [
+                  'W43_ARTIFACT_PREFIX: "GEN2_43_V2_FINAL_FULL_IMAGE_DTB_DTBO_BUILD_AUDIT-"',
+                  'BOOT_INPUT_ARTIFACT_NAME: "GEN2_W36_VALIDATED_LINEAGE_ANDROID16_BOOT_INPUT"',
+              ],
+          }
+
+          for filename, tokens in required_tokens.items():
+              text = (
+                  workflow_dir / filename
+              ).read_text(encoding="utf-8")
+
+              for token in tokens:
+                  if token not in text:
+                      raise SystemExit(
+                          "ERROR: internal artifact contract token missing: "
+                          f"{filename}: {token}"
+                      )
+
+          seed = (
+              root
+              / "assets"
+              / "5.4.302"
+              / "GEN2_W36_VALIDATED_LINEAGE_VEUX_ANDROID16_BOOT.img.gz"
+          )
+
+          if not seed.is_file():
+              raise SystemExit(
+                  "ERROR: 5.4.302 boot seed missing"
+              )
+
+          if seed.stat().st_size != 16498759:
+              raise SystemExit(
+                  "ERROR: 5.4.302 boot seed size mismatch"
+              )
+
+          if hashlib.sha256(seed.read_bytes()).hexdigest() != (
+              "183984c727524325b36696a43419802fa"
+              "9894a56bfc4c51c3b3cc6fa242a7bfa"
+          ):
+              raise SystemExit(
+                  "ERROR: 5.4.302 boot seed hash mismatch"
+              )
+
+          w36 = (
+              workflow_dir
+              / "5.4.302-36-lineage-boot-validation-v14.yml"
+          ).read_text(encoding="utf-8")
+
+          if (
+              "VALIDATED_BOOT_REPO_SEED_PATH: "
+              "assets/5.4.302/"
+              "GEN2_W36_VALIDATED_LINEAGE_VEUX_ANDROID16_BOOT.img.gz"
+          ) not in w36:
+              raise SystemExit(
+                  "ERROR: W36 new seed path missing"
+              )
+
+          if (root / "github").exists():
+              raise SystemExit(
+                  "ERROR: obsolete root github/ directory remains"
+              )
+
+          if (
+              root
+              / ".github"
+              / "workflows"
+              / ".github"
+          ).exists():
+              raise SystemExit(
+                  "ERROR: obsolete nested .github directory remains"
+              )
+
+          print("ACTIVE_WORKFLOW_COUNT=6")
+          print("ACTIVE_YAML_PARSE=6/6 PASS")
+          print(f"ACTIVE_SHELL_RUN_BLOCKS_BASH_N_PASS={total_runs}/{total_runs}")
+          print("INTERNAL_ARTIFACT_CONTRACTS=PRESERVED")
+          print("KERNEL_VERSION_SEPARATION=PASS")
+          print("BOOT_SEED_RELOCATION=PASS")
+          PY
+
+          git diff --check
+
+          {
+            echo "ACTIVE_WORKFLOWS=6"
+            echo "KERNEL_5_4_274_ACTIVE=3"
+            echo "KERNEL_5_4_302_ACTIVE=3"
+            echo "INTERNAL_ARTIFACT_CONTRACTS=PRESERVED"
+            echo "ARCHIVE_5_4_274_COUNT=$(find archive/workflows/5.4.274 -type f \( -name '*.yml' -o -name '*.yaml' \) | wc -l | tr -d ' ')"
+            echo "ARCHIVE_5_4_302_COUNT=$(find archive/workflows/5.4.302 -type f \( -name '*.yml' -o -name '*.yaml' \) | wc -l | tr -d ' ')"
+            echo "ROOT_GITHUB_DIRECTORY_PRESENT=$(test -e github && echo YES || echo NO)"
+            echo "NESTED_WORKFLOW_GITHUB_DIRECTORY_PRESENT=$(test -e .github/workflows/.github && echo YES || echo NO)"
+            echo "BOOT_SEED_PATH=assets/5.4.302/GEN2_W36_VALIDATED_LINEAGE_VEUX_ANDROID16_BOOT.img.gz"
+            echo "BOOT_SEED_SHA256=$(sha256sum assets/5.4.302/GEN2_W36_VALIDATED_LINEAGE_VEUX_ANDROID16_BOOT.img.gz | awk '{print $1}')"
+            echo "VISIBLE_WORKFLOW_CLASSIFICATION=KERNEL_VERSION_ONLY"
+          } | tee organization-output/ORGANIZATION-VALIDATION.txt
+
+          find .github/workflows \
+            -maxdepth 1 \
+            -type f \
+            -printf '%f\n' \
+            | LC_ALL=C sort \
+            > organization-output/AFTER-ACTIVE-WORKFLOWS.txt
+
+          find archive/workflows/5.4.274 \
+            -type f \
+            -printf '%P\n' \
+            | LC_ALL=C sort \
+            > organization-output/ARCHIVE-5.4.274.txt
+
+          find archive/workflows/5.4.302 \
+            -type f \
+            -printf '%P\n' \
+            | LC_ALL=C sort \
+            > organization-output/ARCHIVE-5.4.302.txt
+
+      - name: Create exact organization commit and attempt promotion
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email \
+            "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add -A
+          git diff --cached --check
+
+          git status --short \
+            | tee organization-output/GIT-STATUS-BEFORE-COMMIT.txt
+
+          if git diff --cached --quiet; then
+            echo "ERROR: no repository organization changes detected"
+            exit 1
+          fi
+
+          git commit \
+            -m "Organize workflows by kernel version 5.4.274 and 5.4.302 v2"
+
+          NEW_COMMIT="$(git rev-parse HEAD)"
+          NEW_TREE="$(git rev-parse HEAD^{tree})"
+
+          {
+            echo "ORGANIZATION_COMMIT=$NEW_COMMIT"
+            echo "ORGANIZATION_TREE=$NEW_TREE"
+            echo "ORGANIZATION_PARENT=$(git rev-parse HEAD^)"
+          } | tee organization-output/ORGANIZATION-COMMIT.txt
+
+          set +e
+          git push origin HEAD:main \
+            > organization-output/PUSH-STDOUT.txt \
+            2> organization-output/PUSH-STDERR.txt
+          PUSH_RC=$?
+          set -e
+
+          echo "PUSH_RC=$PUSH_RC" \
+            | tee organization-output/PUSH-RESULT.txt
+
+          if [ "$PUSH_RC" -eq 0 ]; then
+            echo "PUSH_STATUS=PASS_DIRECT" \
+              | tee -a organization-output/PUSH-RESULT.txt
+          else
+            echo "PUSH_STATUS=BLOCKED_OR_REJECTED" \
+              | tee -a organization-output/PUSH-RESULT.txt
+
+            # A rejected workflow-file ref update can still leave the uploaded
+            # commit/tree objects reachable by SHA on GitHub. Check that state
+            # so the exact validated commit can be promoted separately.
+            HTTP_CODE="$(
+              curl -sS \
+                -o organization-output/SERVER-COMMIT.json \
+                -w '%{http_code}' \
+                -H "Authorization: Bearer $GH_TOKEN" \
+                -H "Accept: application/vnd.github+json" \
+                -H "X-GitHub-Api-Version: 2022-11-28" \
+                "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/commits/$NEW_COMMIT"
+            )"
+
+            echo "SERVER_COMMIT_HTTP=$HTTP_CODE" \
+              | tee -a organization-output/PUSH-RESULT.txt
+
+            if [ "$HTTP_CODE" != "200" ]; then
+              echo "ERROR: organization commit was not preserved on GitHub"
+              cat organization-output/PUSH-STDERR.txt
+              exit 1
+            fi
+
+            test "$(
+              jq -r '.sha // empty' \
+                organization-output/SERVER-COMMIT.json
+            )" = "$NEW_COMMIT"
+
+            echo "SERVER_COMMIT_OBJECT_PRESENT=YES" \
+              | tee -a organization-output/PUSH-RESULT.txt
+          fi
+
+      - name: Derive organization status
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          NEW_COMMIT="$(
+            sed -n \
+              's/^ORGANIZATION_COMMIT=//p' \
+              organization-output/ORGANIZATION-COMMIT.txt
+          )"
+
+          test -n "$NEW_COMMIT"
+
+          REMOTE_MAIN="$(
+            git ls-remote origin refs/heads/main \
+              | awk '{print $1}'
+          )"
+
+          test -n "$REMOTE_MAIN"
+
+          PUSH_RC="$(
+            sed -n \
+              's/^PUSH_RC=//p' \
+              organization-output/PUSH-RESULT.txt
+          )"
+
+          if [ "$REMOTE_MAIN" = "$NEW_COMMIT" ]; then
+            FINAL_STATUS="PASS_DIRECTLY_PROMOTED_TO_MAIN"
+            PROMOTION_REQUIRED="NO"
+          else
+            grep -Fxq \
+              'SERVER_COMMIT_OBJECT_PRESENT=YES' \
+              organization-output/PUSH-RESULT.txt
+
+            FINAL_STATUS="PASS_VALIDATED_COMMIT_READY_FOR_PROMOTION"
+            PROMOTION_REQUIRED="YES"
+          fi
+
+          {
+            echo "FINAL_RESULT=$FINAL_STATUS"
+            echo "ORGANIZATION_COMMIT=$NEW_COMMIT"
+            echo "REMOTE_MAIN=$REMOTE_MAIN"
+            echo "PUSH_RC=$PUSH_RC"
+            echo "PROMOTION_REQUIRED=$PROMOTION_REQUIRED"
+            echo "ACTIVE_WORKFLOWS=6"
+            echo "KERNEL_5_4_274_ACTIVE=3"
+            echo "KERNEL_5_4_302_ACTIVE=3"
+            echo "INTERNAL_ARTIFACT_CONTRACTS=PRESERVED"
+            echo "REAL_DEVICE_ACCESSED=NO"
+            echo "ADB_USED=NO"
+            echo "FASTBOOT_USED=NO"
+            echo "FLASHING_PERFORMED=NO"
+          } | tee organization-output/FINAL-RESULT.txt
+
+      - name: Upload organization report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: KERNEL_WORKFLOW_ORGANIZATION_V2_REPORT-${{ github.run_number }}
+          path: organization-output/
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 9
+
+      - name: Final W54 v2 gate
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test -s organization-output/FINAL-RESULT.txt
+
+          if grep -Fxq \
+            'FINAL_RESULT=PASS_DIRECTLY_PROMOTED_TO_MAIN' \
+            organization-output/FINAL-RESULT.txt
+          then
+            echo "W54 v2 organization completed directly on main."
+            exit 0
+          fi
+
+          grep -Fxq \
+            'FINAL_RESULT=PASS_VALIDATED_COMMIT_READY_FOR_PROMOTION' \
+            organization-output/FINAL-RESULT.txt
+
+          echo "W54 v2 exact organization commit is validated and present on GitHub."
+          echo "A separate authenticated ref promotion is required."
