@@ -1,0 +1,569 @@
+name: 55 - Root Manager 3-Way Linux 5.4 Compatibility Audit v3
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: w55-v3-root-manager-three-way-5-4-audit-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  root-manager-three-way-audit:
+    name: 3-way audit - Linux ${{ matrix.kernel_version }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - id: linux-5_4_274
+            kernel_version: "5.4.274"
+            kernel_ref: "20240619"
+            merge_common: "yes"
+          - id: linux-5_4_302
+            kernel_version: "5.4.302"
+            kernel_ref: "f4b8a13a43a130a9aab83cc985ce4d4421291ae6"
+            merge_common: "no"
+
+    env:
+      KERNEL_REPOSITORY: dereference23/kernel_xiaomi_sm6375
+      COMMON_REPOSITORY: https://android.googlesource.com/kernel/common
+      COMMON_REF: android11-5.4.274_r00
+
+      KSU_REPOSITORY: tiann/KernelSU
+      KSU_REF: b766b98513b5a7eb33bc1c4a76b5702bf1288f07
+      KSU_LABEL: KernelSU-v0.9.5
+
+      KSUN_REPOSITORY: KernelSU-Next/KernelSU-Next
+      KSUN_REF: a54e4fa46c6cc25bcaa055cf14d790194beffed8
+      KSUN_LABEL: KernelSU-Next-legacy
+
+      RESUKISU_REPOSITORY: ReSukiSU/ReSukiSU
+      RESUKISU_REF: b2ac2fc8703ce9f5226e2a38a59f8b72f8a3005c
+      RESUKISU_LABEL: ReSukiSU-b2ac2fc8
+
+      REQUIRED_RESUKISU_OLD_HOOK_COMPAT: cc44ff62d9dc8b84dbd7c3e4d2703f6a6fb844c3
+      EXPECTED_SUSFS_TARGET: v2.2.0
+
+    steps:
+      - name: Checkout VEUX kernel source
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ env.KERNEL_REPOSITORY }}
+          ref: ${{ matrix.kernel_ref }}
+          path: kernel
+          fetch-depth: 0
+
+      - name: Reconstruct Linux 5.4.274 source lane
+        if: ${{ matrix.merge_common == 'yes' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd "$GITHUB_WORKSPACE/kernel"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git remote remove android-common >/dev/null 2>&1 || true
+          git remote add android-common "$COMMON_REPOSITORY"
+          git fetch --no-tags --depth=1 android-common \
+            "refs/tags/${COMMON_REF}:refs/tags/${COMMON_REF}"
+          git merge --no-edit "$COMMON_REF"
+
+          test "$(make -s kernelversion)" = "5.4.274"
+
+      - name: Verify Linux 5.4.302 source identity
+        if: ${{ matrix.merge_common == 'no' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd "$GITHUB_WORKSPACE/kernel"
+          test "$(git rev-parse HEAD)" = "${{ matrix.kernel_ref }}"
+          test "$(make -s kernelversion)" = "5.4.302"
+
+      - name: Checkout KernelSU v0.9.5
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ env.KSU_REPOSITORY }}
+          ref: ${{ env.KSU_REF }}
+          path: candidates/kernelsu
+          fetch-depth: 1
+
+      - name: Checkout KernelSU-Next legacy
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ env.KSUN_REPOSITORY }}
+          ref: ${{ env.KSUN_REF }}
+          path: candidates/kernelsu-next
+          fetch-depth: 50
+
+      - name: Checkout ReSukiSU reference
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ env.RESUKISU_REPOSITORY }}
+          ref: ${{ env.RESUKISU_REF }}
+          path: candidates/resukisu
+          fetch-depth: 100
+
+      - name: Verify immutable candidate identities
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test "$(git -C "$GITHUB_WORKSPACE/candidates/kernelsu" rev-parse HEAD)" = "$KSU_REF"
+          test "$(git -C "$GITHUB_WORKSPACE/candidates/kernelsu-next" rev-parse HEAD)" = "$KSUN_REF"
+          test "$(git -C "$GITHUB_WORKSPACE/candidates/resukisu" rev-parse HEAD)" = "$RESUKISU_REF"
+
+          # ReSukiSU's old-hook compatibility fix must be an ancestor of the pinned reference.
+          git -C "$GITHUB_WORKSPACE/candidates/resukisu" \
+            merge-base --is-ancestor \
+            "$REQUIRED_RESUKISU_OLD_HOOK_COMPAT" \
+            "$RESUKISU_REF"
+
+          echo "CANDIDATE_IDENTITY_CHECK=PASS"
+
+      - name: Generate baseline VEUX config
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd "$GITHUB_WORKSPACE/kernel"
+          test -f arch/arm64/configs/veux_defconfig
+
+          rm -rf out-w55-v3-baseline
+          make O=out-w55-v3-baseline ARCH=arm64 veux_defconfig
+          test -s out-w55-v3-baseline/.config
+
+      - name: Audit base kernel and all three root managers
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ROOT="$GITHUB_WORKSPACE"
+          KERNEL="$ROOT/kernel"
+          OUT="$ROOT/w55-v3-${{ matrix.id }}"
+          BASE_CFG="$KERNEL/out-w55-v3-baseline/.config"
+
+          rm -rf "$OUT"
+          mkdir -p "$OUT/candidates"
+
+          test -d "$KERNEL/drivers/kernelsu"
+          test -f "$KERNEL/drivers/kernelsu/Makefile"
+          test -f "$KERNEL/drivers/kernelsu/Kconfig"
+
+          kernel_version="$(make -s -C "$KERNEL" kernelversion)"
+          kernel_head="$(git -C "$KERNEL" rev-parse HEAD)"
+          kernel_tree="$(git -C "$KERNEL" rev-parse HEAD^{tree})"
+
+          embedded_version="$(
+            sed -nE \
+              's/^[[:space:]]*ccflags-y[[:space:]]*\+=[[:space:]]*-DKSU_VERSION=([0-9]+).*/\1/p' \
+              "$KERNEL/drivers/kernelsu/Makefile" \
+              | head -n1
+          )"
+          if [[ ! "$embedded_version" =~ ^[0-9]+$ ]]; then
+            embedded_version="<unknown>"
+          fi
+
+          config_value() {
+            local symbol="$1"
+            if grep -qE "^${symbol}=" "$BASE_CFG"; then
+              grep -E "^${symbol}=" "$BASE_CFG" | head -n1
+            elif grep -qF "# ${symbol} is not set" "$BASE_CFG"; then
+              grep -F "# ${symbol} is not set" "$BASE_CFG" | head -n1
+            else
+              echo "${symbol}=<absent>"
+            fi
+          }
+
+          function_present() {
+            local regex="$1"
+            shift
+            if grep -RqsE "$regex" "$@" 2>/dev/null; then
+              echo YES
+            else
+              echo NO
+            fi
+          }
+
+          count_candidate_refs() {
+            local regex="$1"
+            local path="$2"
+            {
+              grep -RIEh "$regex" "$path" 2>/dev/null || true
+            } | wc -l | tr -d ' '
+          }
+
+          # KernelSU symbols already referenced outside the embedded driver.
+          # These are the most important compatibility contract when swapping root cores.
+          grep -RhoE '\bksu_[A-Za-z0-9_]+' \
+            "$KERNEL/fs" \
+            "$KERNEL/kernel" \
+            "$KERNEL/security" \
+            "$KERNEL/drivers/input" \
+            "$KERNEL/include" \
+            --exclude-dir=kernelsu \
+            --exclude='*.o' \
+            2>/dev/null \
+            | LC_ALL=C sort -u \
+            > "$OUT/base-external-ksu-symbols.txt" || true
+
+          external_symbol_count="$(
+            wc -l < "$OUT/base-external-ksu-symbols.txt" | tr -d ' '
+          )"
+
+          # SUSFS-related surface already present in the reconstructed kernel lane.
+          grep -RInEi \
+            'susfs|sus_path|sus_mount|sus_kstat|open_redirect|spoof_uname|spoof_cmdline' \
+            "$KERNEL/fs" "$KERNEL/kernel" "$KERNEL/security" "$KERNEL/include" \
+            --exclude='*.o' \
+            2>/dev/null \
+            | sed "s#${KERNEL}/##" \
+            | head -n 2000 \
+            > "$OUT/base-susfs-references.txt" || true
+
+          susfs_base_refs="$(
+            wc -l < "$OUT/base-susfs-references.txt" | tr -d ' '
+          )"
+
+          # Generic hook/capability inventory of the two 5.4 source lanes.
+          {
+            echo "KERNEL_VERSION=$kernel_version"
+            echo "KERNEL_HEAD=$kernel_head"
+            echo "KERNEL_TREE=$kernel_tree"
+            echo "KERNEL_INPUT_REF=${{ matrix.kernel_ref }}"
+            echo "ANDROID_COMMON_MERGED=${{ matrix.merge_common }}"
+            echo "EMBEDDED_KSU_VERSION=$embedded_version"
+            echo "EXTERNAL_KSU_SYMBOL_COUNT=$external_symbol_count"
+            echo "BASE_SUSFS_REFERENCE_LINES=$susfs_base_refs"
+            echo
+            config_value CONFIG_KSU
+            config_value CONFIG_KPROBES
+            config_value CONFIG_HAVE_KPROBES
+            config_value CONFIG_KPROBE_EVENTS
+            config_value CONFIG_KPROBES_QGKI
+            config_value CONFIG_MODULES
+            config_value CONFIG_KALLSYMS
+            config_value CONFIG_OVERLAY_FS
+            echo
+            echo "PATH_UMOUNT_PRESENT=$(function_present '(^|[[:space:]])path_umount[[:space:]]*\(' "$KERNEL/fs")"
+            echo "DO_EXECVEAT_COMMON_PRESENT=$(function_present 'do_execveat_common[[:space:]]*\(' "$KERNEL/fs" "$KERNEL/kernel")"
+            echo "VFS_READ_PRESENT=$(function_present 'vfs_read[[:space:]]*\(' "$KERNEL/fs")"
+            echo "DO_FACCESSAT_PRESENT=$(function_present 'do_faccessat[[:space:]]*\(' "$KERNEL/fs")"
+            echo "DO_STATX_PRESENT=$(function_present 'do_statx[[:space:]]*\(' "$KERNEL/fs")"
+            echo "INPUT_HANDLE_EVENT_PRESENT=$(function_present 'input_handle_event[[:space:]]*\(' "$KERNEL/drivers/input")"
+          } > "$OUT/BASE-KERNEL-CAPABILITY.txt"
+
+          # Save the original embedded driver so every candidate Kconfig smoke test
+          # starts from exactly the same source lane.
+          cp -a "$KERNEL/drivers/kernelsu" "$OUT/original-embedded-kernelsu"
+
+          audit_candidate() {
+            local id="$1"
+            local label="$2"
+            local repo_dir="$3"
+            local expected_ref="$4"
+            local candidate_kernel="$repo_dir/kernel"
+            local cdir="$OUT/candidates/$id"
+            local report="$cdir/report.txt"
+
+            mkdir -p "$cdir"
+
+            test -d "$candidate_kernel"
+            test -f "$candidate_kernel/Kconfig"
+            test -f "$candidate_kernel/Makefile"
+            test "$(git -C "$repo_dir" rev-parse HEAD)" = "$expected_ref"
+
+            local candidate_head
+            candidate_head="$(git -C "$repo_dir" rev-parse HEAD)"
+
+            local candidate_version
+            candidate_version="$(
+              sed -nE \
+                's/.*-DKSU_VERSION=([0-9]+).*/\1/p' \
+                "$candidate_kernel/Makefile" \
+                | head -n1
+            )"
+            [[ -n "$candidate_version" ]] || candidate_version="<dynamic-or-unknown>"
+
+            find "$candidate_kernel" -type f -printf '%P\n' \
+              | LC_ALL=C sort > "$cdir/kernel-file-list.txt"
+
+            grep -RhoE '\bksu_[A-Za-z0-9_]+' "$candidate_kernel" 2>/dev/null \
+              | LC_ALL=C sort -u > "$cdir/candidate-ksu-symbols.txt" || true
+
+            : > "$cdir/missing-base-hook-symbols.txt"
+            while IFS= read -r sym; do
+              [[ -n "$sym" ]] || continue
+              if ! grep -Fxq "$sym" "$cdir/candidate-ksu-symbols.txt"; then
+                echo "$sym" >> "$cdir/missing-base-hook-symbols.txt"
+              fi
+            done < "$OUT/base-external-ksu-symbols.txt"
+
+            local missing_count
+            missing_count="$(
+              wc -l < "$cdir/missing-base-hook-symbols.txt" | tr -d ' '
+            )"
+
+            grep -RInEi \
+              'susfs|sus_path|sus_mount|sus_kstat|open_redirect|spoof_uname|spoof_cmdline' \
+              "$candidate_kernel" 2>/dev/null \
+              | sed "s#${repo_dir}/##" \
+              | head -n 2000 \
+              > "$cdir/susfs-references.txt" || true
+
+            local susfs_refs
+            susfs_refs="$(wc -l < "$cdir/susfs-references.txt" | tr -d ' ')"
+
+            local kprobe_refs manual_refs module_filter_refs old_hook_refs
+            kprobe_refs="$(
+              count_candidate_refs \
+                'CONFIG_KSU_KPROBE_HOOKS|register_kprobe|kprobe' \
+                "$candidate_kernel"
+            )"
+            manual_refs="$(
+              count_candidate_refs \
+                'CONFIG_KSU_MANUAL_HOOK|manual.hook|manual_hook' \
+                "$candidate_kernel"
+            )"
+            module_filter_refs="$(
+              count_candidate_refs \
+                'module_load_filter|blocked.modules|block_modules' \
+                "$candidate_kernel"
+            )"
+            old_hook_refs="$(
+              count_candidate_refs \
+                'AT_FDCWD|old hooks|old_hooks|compat.*hook' \
+                "$candidate_kernel"
+            )"
+
+            set +e
+            git diff --no-index --stat \
+              "$OUT/original-embedded-kernelsu" "$candidate_kernel" \
+              > "$cdir/diff-vs-embedded.stat.txt" 2>&1
+            diff_rc=$?
+            set -e
+            if [[ "$diff_rc" -gt 1 ]]; then
+              echo "diff against embedded KernelSU failed" >&2
+              exit 1
+            fi
+
+            # Kconfig-only smoke test:
+            # replace only drivers/kernelsu in the working tree, keep all existing
+            # external hook sites untouched, and ask Kconfig to resolve veux_defconfig.
+            rm -rf "$KERNEL/drivers/kernelsu"
+            cp -a "$candidate_kernel" "$KERNEL/drivers/kernelsu"
+
+            local smoke_out="$KERNEL/out-w55-v3-${id}"
+            rm -rf "$smoke_out"
+
+            set +e
+            make -C "$KERNEL" O="$smoke_out" ARCH=arm64 veux_defconfig \
+              > "$cdir/kconfig-smoke.log" 2>&1
+            smoke_rc=$?
+            set -e
+
+            if [[ "$smoke_rc" -eq 0 && -s "$smoke_out/.config" ]]; then
+              kconfig_smoke="PASS"
+            else
+              kconfig_smoke="FAIL"
+            fi
+
+            rm -rf "$KERNEL/drivers/kernelsu"
+            cp -a "$OUT/original-embedded-kernelsu" "$KERNEL/drivers/kernelsu"
+
+            # Static risk flags are intentionally diagnostic, not a boot verdict.
+            if [[ "$missing_count" -gt 0 ]]; then
+              hook_contract="ADAPTATION_REQUIRED"
+            else
+              hook_contract="NO_MISSING_EXISTING_KSU_SYMBOLS"
+            fi
+
+            if [[ "$susfs_refs" -gt 0 ]]; then
+              susfs_awareness="SOURCE_REFERENCES_PRESENT"
+            else
+              susfs_awareness="NO_SOURCE_REFERENCES_FOUND"
+            fi
+
+            if [[ "$id" == "resukisu" ]]; then
+              project_baseline="PREVIOUS_PROJECT_BUILD_BASELINE"
+            else
+              project_baseline="UNTESTED_IN_THIS_PROJECT"
+            fi
+
+            {
+              echo "W55_VERSION=v3"
+              echo "AUDIT=ROOT_MANAGER_THREE_WAY_LINUX_5_4_COMPATIBILITY"
+              echo "KERNEL_VERSION=$kernel_version"
+              echo "CANDIDATE_ID=$id"
+              echo "CANDIDATE_LABEL=$label"
+              echo "CANDIDATE_HEAD=$candidate_head"
+              echo "CANDIDATE_KSU_VERSION=$candidate_version"
+              echo "PROJECT_BASELINE_STATUS=$project_baseline"
+              echo
+              echo "BASE_EXTERNAL_KSU_SYMBOLS=$external_symbol_count"
+              echo "MISSING_EXISTING_KSU_SYMBOLS=$missing_count"
+              echo "EXISTING_HOOK_CONTRACT=$hook_contract"
+              echo "KCONFIG_SMOKE=$kconfig_smoke"
+              echo
+              echo "KPROBE_REFERENCE_LINES=$kprobe_refs"
+              echo "MANUAL_HOOK_REFERENCE_LINES=$manual_refs"
+              echo "OLD_HOOK_COMPAT_REFERENCE_LINES=$old_hook_refs"
+              echo "SUSFS_REFERENCE_LINES=$susfs_refs"
+              echo "SUSFS_SOURCE_AWARENESS=$susfs_awareness"
+              echo "MODULE_LOAD_FILTER_REFERENCE_LINES=$module_filter_refs"
+              echo "EXPECTED_PROJECT_SUSFS_TARGET=$EXPECTED_SUSFS_TARGET"
+              echo
+              echo "FULL_KERNEL_BUILD_PERFORMED=NO"
+              echo "BOOT_COMPATIBILITY_PROVEN=NO"
+              echo "PHYSICAL_BOOT_TEST_PERFORMED=NO"
+              echo "INTEGRATION_COMMITTED=NO"
+              echo "REPOSITORY_PUSH_PERFORMED=NO"
+              echo "BOOT_IMAGE_CREATED=NO"
+              echo "FLASHABLE_ZIP_CREATED=NO"
+              echo "FLASHING_PERFORMED=NO"
+            } | tee "$report"
+
+            sha256sum "$report" > "$report.sha256"
+          }
+
+          audit_candidate \
+            "kernelsu" "$KSU_LABEL" \
+            "$ROOT/candidates/kernelsu" "$KSU_REF"
+
+          audit_candidate \
+            "kernelsu-next" "$KSUN_LABEL" \
+            "$ROOT/candidates/kernelsu-next" "$KSUN_REF"
+
+          audit_candidate \
+            "resukisu" "$RESUKISU_LABEL" \
+            "$ROOT/candidates/resukisu" "$RESUKISU_REF"
+
+          # Ensure the kernel source driver was fully restored after all dry staging.
+          test -d "$KERNEL/drivers/kernelsu"
+          diff -qr \
+            "$OUT/original-embedded-kernelsu" \
+            "$KERNEL/drivers/kernelsu" \
+            > "$OUT/driver-restore.diff" || {
+              cat "$OUT/driver-restore.diff"
+              exit 1
+            }
+
+          echo "DRIVER_RESTORE_AFTER_DRY_STAGING=PASS" \
+            > "$OUT/DRIVER-RESTORE.txt"
+
+      - name: Build three-way comparison summary
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          OUT="$GITHUB_WORKSPACE/w55-v3-${{ matrix.id }}"
+          SUMMARY="$OUT/W55-${{ matrix.kernel_version }}-THREE-WAY-SUMMARY.md"
+          TSV="$OUT/W55-${{ matrix.kernel_version }}-THREE-WAY-SUMMARY.tsv"
+
+          printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+            "candidate" \
+            "head" \
+            "kconfig_smoke" \
+            "missing_existing_ksu_symbols" \
+            "kprobe_refs" \
+            "manual_hook_refs" \
+            "susfs_refs" \
+            "module_filter_refs" \
+            > "$TSV"
+
+          for id in kernelsu kernelsu-next resukisu; do
+            report="$OUT/candidates/$id/report.txt"
+
+            value() {
+              grep -E "^$1=" "$report" | head -n1 | cut -d= -f2-
+            }
+
+            printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+              "$(value CANDIDATE_LABEL)" \
+              "$(value CANDIDATE_HEAD)" \
+              "$(value KCONFIG_SMOKE)" \
+              "$(value MISSING_EXISTING_KSU_SYMBOLS)" \
+              "$(value KPROBE_REFERENCE_LINES)" \
+              "$(value MANUAL_HOOK_REFERENCE_LINES)" \
+              "$(value SUSFS_REFERENCE_LINES)" \
+              "$(value MODULE_LOAD_FILTER_REFERENCE_LINES)" \
+              >> "$TSV"
+          done
+
+          {
+            echo "# W55-v3 Root Manager 3-Way Audit - Linux ${{ matrix.kernel_version }}"
+            echo
+            echo "This is a source/Kconfig compatibility audit only."
+            echo "It does not prove that any candidate boots."
+            echo
+            echo "| Candidate | Kconfig | Missing existing ksu_* symbols | Kprobe refs | Manual-hook refs | SUSFS refs | Module-filter refs |"
+            echo "|---|---:|---:|---:|---:|---:|---:|"
+
+            tail -n +2 "$TSV" | while IFS=$'\t' read -r \
+              candidate head smoke missing kprobe manual susfs modfilter; do
+              echo "| $candidate | $smoke | $missing | $kprobe | $manual | $susfs | $modfilter |"
+            done
+
+            echo
+            echo "## Candidate heads"
+            echo
+            tail -n +2 "$TSV" | while IFS=$'\t' read -r \
+              candidate head smoke missing kprobe manual susfs modfilter; do
+              echo "- \`$candidate\`: \`$head\`"
+            done
+
+            echo
+            echo "## Interpretation guard"
+            echo
+            echo "- Kconfig PASS means only that the candidate Kconfig/Makefile can be staged into this source lane and veux_defconfig resolves."
+            echo "- Missing existing ksu_* symbols indicates that the current external hook contract would need adaptation before a real build."
+            echo "- SUSFS reference counts are compatibility clues only; they do not prove SUSFS v2.2.0 compatibility."
+            echo "- No full kernel compile, boot image generation, device access or flashing occurs in W55-v3."
+          } | tee "$SUMMARY"
+
+          sha256sum "$SUMMARY" > "$SUMMARY.sha256"
+          sha256sum "$TSV" > "$TSV.sha256"
+
+          cat "$SUMMARY" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Enforce read-only comparison contract
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          OUT="$GITHUB_WORKSPACE/w55-v3-${{ matrix.id }}"
+
+          test -s "$OUT/W55-${{ matrix.kernel_version }}-THREE-WAY-SUMMARY.md"
+          test -s "$OUT/W55-${{ matrix.kernel_version }}-THREE-WAY-SUMMARY.tsv"
+          grep -Fxq \
+            'DRIVER_RESTORE_AFTER_DRY_STAGING=PASS' \
+            "$OUT/DRIVER-RESTORE.txt"
+
+          for id in kernelsu kernelsu-next resukisu; do
+            report="$OUT/candidates/$id/report.txt"
+            test -s "$report"
+            grep -Fxq 'FULL_KERNEL_BUILD_PERFORMED=NO' "$report"
+            grep -Fxq 'BOOT_COMPATIBILITY_PROVEN=NO' "$report"
+            grep -Fxq 'PHYSICAL_BOOT_TEST_PERFORMED=NO' "$report"
+            grep -Fxq 'INTEGRATION_COMMITTED=NO' "$report"
+            grep -Fxq 'REPOSITORY_PUSH_PERFORMED=NO' "$report"
+            grep -Fxq 'BOOT_IMAGE_CREATED=NO' "$report"
+            grep -Fxq 'FLASHABLE_ZIP_CREATED=NO' "$report"
+            grep -Fxq 'FLASHING_PERFORMED=NO' "$report"
+          done
+
+          echo "W55_V3_READ_ONLY_THREE_WAY_AUDIT_CONTRACT=PASS"
+
+      - name: Upload W55-v3 three-way audit artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: W55-v3-root-manager-3way-${{ matrix.id }}
+          path: w55-v3-${{ matrix.id }}/
+          if-no-files-found: error
+          retention-days: 14
