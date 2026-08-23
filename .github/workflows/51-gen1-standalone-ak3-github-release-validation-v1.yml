@@ -1,0 +1,1593 @@
+name: 51 - GEN1 Standalone AK3 GitHub Release Validation v1
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "GitHub Release tag containing the exact GEN1 standalone AK3 ZIP"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gen1-51-v1-standalone-validation-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  ASSET_NAME: "VEUX_5.4.274_ReSukiSU_B2AC_SUSFS_2.2_HyperOS_OS1.0.12.0_TKCMIXM_AK3_STANDALONE.zip"
+  ASSET_SHA256: "c140dc2a9b202f9d14623cd5aae1c193ffa13d3c7104bd8332efdd37e78b0626"
+  ASSET_BYTES: "55391222"
+
+  KERNEL_RELEASE: "5.4.274~positron/4b671233"
+  IMAGE_SHA256: "0a00b12dc8d4f114b4343f473054b03d6e32767961077e43d345f0dc7271b4d3"
+  IMAGE_BYTES: "29843968"
+  RESUKISU_COMMIT: "b2ac2fc8703ce9f5226e2a38a59f8b72f8a3005c"
+  SUSFS_VERSION: "v2.2.0"
+
+  STOCK_ROM_VERSION: "OS1.0.12.0.TKCMIXM"
+  STOCK_ANDROID_VERSION: "13"
+  STOCK_SECURITY_PATCH: "2024-12"
+  STOCK_BOOT_SHA256: "ac6522e4eed55782dd2ae61362e9d345d01a1f229c87333818511d5537fa79c5"
+  STOCK_BOOT_BYTES: "134217728"
+  STOCK_RAMDISK_SHA256: "0bc8b54373b5501818e8b252517419786db207771047b6def7ec9bc89beb607a"
+  STOCK_RAMDISK_BYTES: "22061278"
+
+  EXPECTED_BOOT_SHA256: "ab02eda6e4315ea20d672a580acb09a7d48646dd709ff07f7ebbe70b5cc4c96b"
+  EXPECTED_BOOT_BYTES: "134217728"
+  EXPECTED_BOOT_RAMDISK_OFFSET: "29851648"
+  EXPECTED_BOOT_PAYLOAD_END: "51916800"
+  EXPECTED_EMBEDDED_AVB_DIGEST: "4d68bc5bb1f4c4d59e3f7a83e5470502ab9c0d87d5b8b68d7792b096f0324dc2"
+
+  HEADER_SHA256: "fda70b19269443dca783ec0198ad0117de8dc895f95a70fce3698fd8cb523bd6"
+  VBMETA_SHA256: "ad684b315b9c3f006123fac2cf5efe57f1b7de4e243624e98e51999690ee7cc3"
+  FOOTER_SHA256: "04cccbbae2ffcce73c324de576be36cca6e00b809e387157619e2d4226537790"
+  ROLLBACK_GZIP_SHA256: "9a1532ccfc57b465256bba97863f927b80823fa8812a4d13e4f4c8bf9af0c78b"
+
+jobs:
+  validate:
+    name: Validate exact GEN1 standalone AK3 release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    env:
+      WORK: ${{ github.workspace }}/gen1-51-v1
+      INPUT: ${{ github.workspace }}/gen1-51-v1/input
+      PACKAGE: ${{ github.workspace }}/gen1-51-v1/package
+      BUILD: ${{ github.workspace }}/gen1-51-v1/build
+      HARNESS: ${{ github.workspace }}/gen1-51-v1/harness
+      OUTPUT: ${{ github.workspace }}/gen1-51-v1/output
+
+    steps:
+      - name: Prepare W51 validation workspace
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -rf "$WORK"
+
+          mkdir -p \
+            "$INPUT" \
+            "$PACKAGE" \
+            "$BUILD" \
+            "$HARNESS" \
+            "$OUTPUT"
+
+          {
+            echo "AUDIT=GEN1_51_V1_STANDALONE_AK3_GITHUB_RELEASE_VALIDATION"
+            echo "RELEASE_TAG=${{ inputs.release_tag }}"
+            echo "ASSET_NAME=$ASSET_NAME"
+            echo "KERNEL_RELEASE=$KERNEL_RELEASE"
+            echo "RESUKISU_COMMIT=$RESUKISU_COMMIT"
+            echo "SUSFS_VERSION=$SUSFS_VERSION"
+            echo "TARGET_DEVICE=veux"
+            echo "TARGET_ROM=$STOCK_ROM_VERSION"
+            echo "ANDROID_VERSION=$STOCK_ANDROID_VERSION"
+            echo "SECURITY_PATCH=$STOCK_SECURITY_PATCH"
+            echo "REAL_DEVICE_ACCESSED=NO"
+            echo "ADB_USED=NO"
+            echo "FASTBOOT_USED=NO"
+            echo "FLASHING_PERFORMED=NO"
+          } | tee "$OUTPUT/W51-SCOPE.txt"
+
+      - name: Download exact standalone ZIP from GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+
+          ENCODED_TAG="$(
+            python3 - "$RELEASE_TAG" <<'PY'
+          import sys
+          import urllib.parse
+
+          print(
+              urllib.parse.quote(
+                  sys.argv[1],
+                  safe="",
+              )
+          )
+          PY
+          )"
+
+          RELEASE_JSON="$WORK/release.json"
+
+          curl \
+            --fail \
+            --silent \
+            --show-error \
+            --retry 3 \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/releases/tags/$ENCODED_TAG" \
+            -o "$RELEASE_JSON"
+
+          MATCHES="$(
+            jq \
+              --arg NAME "$ASSET_NAME" \
+              '[.assets[] | select(.name == $NAME)]' \
+              "$RELEASE_JSON"
+          )"
+
+          test "$(jq 'length' <<< "$MATCHES")" = "1"
+
+          ASSET="$(
+            jq '.[0]' <<< "$MATCHES"
+          )"
+
+          ASSET_ID="$(
+            jq -r '.id' <<< "$ASSET"
+          )"
+
+          ASSET_API_URL="$(
+            jq -r '.url' <<< "$ASSET"
+          )"
+
+          REPORTED_BYTES="$(
+            jq -r '.size' <<< "$ASSET"
+          )"
+
+          test "$REPORTED_BYTES" = "$ASSET_BYTES"
+
+          jq . <<< "$ASSET" \
+            > "$OUTPUT/GITHUB-RELEASE-ASSET-METADATA.json"
+
+          curl \
+            --fail \
+            --location \
+            --silent \
+            --show-error \
+            --retry 3 \
+            -H "Accept: application/octet-stream" \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "$ASSET_API_URL" \
+            -o "$INPUT/$ASSET_NAME"
+
+          test "$(stat -c '%s' "$INPUT/$ASSET_NAME")" = \
+            "$ASSET_BYTES"
+
+          test "$(sha256sum "$INPUT/$ASSET_NAME" | awk '{print $1}')" = \
+            "$ASSET_SHA256"
+
+          unzip -t "$INPUT/$ASSET_NAME" \
+            > "$OUTPUT/STANDALONE-ZIP-CRC.txt"
+
+          {
+            echo "GITHUB_RELEASE_ASSET_DOWNLOAD=PASS"
+            echo "RELEASE_TAG=$RELEASE_TAG"
+            echo "ASSET_ID=$ASSET_ID"
+            echo "ASSET_NAME=$ASSET_NAME"
+            echo "ASSET_BYTES=$ASSET_BYTES"
+            echo "ASSET_SHA256=$ASSET_SHA256"
+            echo "ZIP_CRC=PASS"
+          } | tee "$OUTPUT/GITHUB-RELEASE-ASSET-GATE.txt"
+
+      - name: Verify exact standalone package file set and hashes
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          unzip -q \
+            "$INPUT/$ASSET_NAME" \
+            -d "$PACKAGE"
+
+          cat > "$WORK/expected-sha256.txt" <<'EOF'
+          0a00b12dc8d4f114b4343f473054b03d6e32767961077e43d345f0dc7271b4d3  Image
+          df6f65da47d459fdf2a2ef0eadb34f37d838befc91352b64a84f35507bea95cd  LICENSE
+          cf3ebe7183d5e3f25e9215cde7ef9dd956e836232a70f2a671891ab4889c7e7d  META-INF/com/google/android/update-binary
+          735f790dea74c583ed94885d65e3b3e34616cf282d1469f1ce88662978667fe0  META-INF/com/google/android/updater-script
+          feb20f815e528eb0c29e3d7cd9be0f0ec96064f2003cbb85c09f2304f5896d9d  anykernel.sh
+          9a1532ccfc57b465256bba97863f927b80823fa8812a4d13e4f4c8bf9af0c78b  rollback_stock_boot.img.gz
+          f7a51cfe2e093016a34a76e16de6c9885c2d1992c3482fcabc668680e1f0f6bb  tools/ak3-core.sh
+          04cccbbae2ffcce73c324de576be36cca6e00b809e387157619e2d4226537790  tools/boot-footer-v3.bin
+          fda70b19269443dca783ec0198ad0117de8dc895f95a70fce3698fd8cb523bd6  tools/boot-header-v3.bin
+          ad684b315b9c3f006123fac2cf5efe57f1b7de4e243624e98e51999690ee7cc3  tools/boot-vbmeta-v3.bin
+          66436dc1e97d22886ed2d35bd69a9cb82bb0fdba4e4267c5184cee1d39a2f5f4  tools/busybox
+          93e567ffbdfb5be127bfaa87c803d1d3189cc0a88a3c50034927ca00fec663a8  tools/fec
+          14452e76ac06ea982a8ec597eeca96c91fe20fce12a784de547cd763d508b33f  tools/httools_static
+          28f288a0312fecbab4422d3d425d9c973591f92400036a19d9536f7f22299d67  tools/lptools_static
+          0b19472b291ce9033c29a83155ff4c1b18be9d1d17d901d63e50f57436378762  tools/magiskboot
+          e5fafc1fa9486950ce9ba476f5723754d260014515ced72b4560238e6c560f3a  tools/magiskpolicy
+          80114a51ed79f4f96d0fc6d6e002496c7c11b7e4308293a0c618392cb0e6168c  tools/snapshotupdater_static
+          EOF
+
+          cat > "$WORK/expected-sizes.txt" <<'EOF'
+          29843968  Image
+          11630  LICENSE
+          19724  META-INF/com/google/android/update-binary
+          115  META-INF/com/google/android/updater-script
+          7215  anykernel.sh
+          40180080  rollback_stock_boot.img.gz
+          35350  tools/ak3-core.sh
+          64  tools/boot-footer-v3.bin
+          4096  tools/boot-header-v3.bin
+          896  tools/boot-vbmeta-v3.bin
+          1399484  tools/busybox
+          112836  tools/fec
+          497540  tools/httools_static
+          430756  tools/lptools_static
+          751684  tools/magiskboot
+          256104  tools/magiskpolicy
+          1718412  tools/snapshotupdater_static
+          EOF
+
+          (
+            cd "$PACKAGE"
+            sha256sum -c "$WORK/expected-sha256.txt"
+          ) > "$OUTPUT/EXACT-FILE-SHA256.verify.txt"
+
+          python3 - \
+            "$PACKAGE" \
+            "$WORK/expected-sizes.txt" \
+            "$OUTPUT/EXACT-FILE-SET.json" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          root = Path(sys.argv[1])
+          sizes_path = Path(sys.argv[2])
+          out = Path(sys.argv[3])
+
+          expected = {}
+
+          for raw in sizes_path.read_text(
+              encoding="utf-8"
+          ).splitlines():
+              size, path = raw.split("  ", 1)
+              expected[path] = int(size)
+
+          actual = {
+              p.relative_to(root).as_posix():
+                  p.stat().st_size
+              for p in root.rglob("*")
+              if p.is_file()
+          }
+
+          if actual != expected:
+              raise SystemExit(
+                  "ERROR: exact standalone file set/size mismatch\n"
+                  f"missing={sorted(set(expected) - set(actual))}\n"
+                  f"extra={sorted(set(actual) - set(expected))}\n"
+                  f"changed_sizes={sorted(
+                      path
+                      for path in set(actual) & set(expected)
+                      if actual[path] != expected[path]
+                  )}"
+              )
+
+          if "boot.img" in actual:
+              raise SystemExit(
+                  "ERROR: standalone package unexpectedly contains boot.img"
+              )
+
+          result = {
+              "result": "PASS",
+              "file_count": len(actual),
+              "contains_boot_img": False,
+              "contains_kernel_image": "Image" in actual,
+              "files": actual,
+          }
+
+          out.write_text(
+              json.dumps(
+                  result,
+                  indent=2,
+                  sort_keys=True,
+              ) + "\n",
+              encoding="utf-8",
+          )
+          PY
+
+          test "$(stat -c '%s' "$PACKAGE/Image")" = \
+            "$IMAGE_BYTES"
+
+          test "$(sha256sum "$PACKAGE/Image" | awk '{print $1}')" = \
+            "$IMAGE_SHA256"
+
+          test "$(sha256sum "$PACKAGE/tools/boot-header-v3.bin" | awk '{print $1}')" = \
+            "$HEADER_SHA256"
+
+          test "$(sha256sum "$PACKAGE/tools/boot-vbmeta-v3.bin" | awk '{print $1}')" = \
+            "$VBMETA_SHA256"
+
+          test "$(sha256sum "$PACKAGE/tools/boot-footer-v3.bin" | awk '{print $1}')" = \
+            "$FOOTER_SHA256"
+
+          test "$(sha256sum "$PACKAGE/rollback_stock_boot.img.gz" | awk '{print $1}')" = \
+            "$ROLLBACK_GZIP_SHA256"
+
+          bash -n "$PACKAGE/anykernel.sh"
+
+          {
+            echo "EXACT_STANDALONE_FILE_SET=PASS"
+            echo "FILE_COUNT=17"
+            echo "BOOT_IMG_PACKAGED=NO"
+            echo "KERNEL_IMAGE_PACKAGED=YES"
+            echo "PER_FILE_SHA256=PASS"
+            echo "PER_FILE_SIZE=PASS"
+            echo "ANYKERNEL_BASH_N=PASS"
+          } | tee "$OUTPUT/STANDALONE-PACKAGE-GATE.txt"
+
+      - name: Audit clean package and installer contract
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          AK="$PACKAGE/anykernel.sh"
+
+          grep -Fq \
+            'device.name1=veux' \
+            "$AK"
+
+          grep -Fq \
+            'supported.versions=13' \
+            "$AK"
+
+          grep -Fq \
+            'supported.patchlevels=2024-12 - 2024-12' \
+            "$AK"
+
+          grep -Fq \
+            'supported.vendorpatchlevels=2024-12 - 2024-12' \
+            "$AK"
+
+          grep -Fq \
+            'IS_SLOT_DEVICE=1;' \
+            "$AK"
+
+          grep -Fq \
+            'SLOT_SELECT=active;' \
+            "$AK"
+
+          grep -Fq \
+            'PATCH_VBMETA_FLAG=0;' \
+            "$AK"
+
+          grep -Fq \
+            'NO_VBMETA_PARTITION_PATCH=1;' \
+            "$AK"
+
+          grep -Fq \
+            "$STOCK_BOOT_SHA256" \
+            "$AK"
+
+          grep -Fq \
+            "$IMAGE_SHA256" \
+            "$AK"
+
+          grep -Fq \
+            "$EXPECTED_BOOT_SHA256" \
+            "$AK"
+
+          grep -Fq \
+            "$ROLLBACK_GZIP_SHA256" \
+            "$AK"
+
+          grep -Fq \
+            'restore_stock()' \
+            "$AK"
+
+          grep -Fq \
+            'dd if="$NEWBOOT" of="$TARGET" bs=1048576' \
+            "$AK"
+
+          grep -Fq \
+            'Constructed boot image SHA-256 mismatch.' \
+            "$AK"
+
+          grep -Fq \
+            'Nothing has been written.' \
+            "$AK"
+
+          if grep -Eq \
+            '^[[:space:]]*split_boot;' \
+            "$AK"
+          then
+            echo "ERROR: split_boot invocation found"
+            exit 1
+          fi
+
+          if grep -Eq \
+            '^[[:space:]]*flash_boot;' \
+            "$AK"
+          then
+            echo "ERROR: flash_boot invocation found"
+            exit 1
+          fi
+
+          python3 - "$PACKAGE" <<'PY' \
+            | tee "$OUTPUT/CLEAN-TEXT-SCAN.txt"
+          import re
+          import sys
+          from pathlib import Path
+
+          root = Path(sys.argv[1])
+
+          patterns = {
+              "ai_ki": re.compile(
+                  r"(?i)(?:\bAI\b|\bKI\b|ChatGPT|OpenAI|"
+                  r"artificial intelligence|künstliche intelligenz|"
+                  r"\bassistant\b)"
+              ),
+              "development_residue": re.compile(
+                  r"(?i)(?:\bworkflow\b|\baudit\b|provenance|"
+                  r"\btest plan\b|fake[- ]slot)"
+              ),
+          }
+
+          hits = []
+
+          for path in sorted(root.rglob("*")):
+              if not path.is_file():
+                  continue
+
+              try:
+                  text = path.read_bytes().decode("utf-8")
+              except UnicodeDecodeError:
+                  continue
+
+              for label, pattern in patterns.items():
+                  for line_no, line in enumerate(
+                      text.splitlines(),
+                      1,
+                  ):
+                      if pattern.search(line):
+                          hits.append({
+                              "category": label,
+                              "file":
+                                  path.relative_to(root).as_posix(),
+                              "line": line_no,
+                              "text": line,
+                          })
+
+          if hits:
+              for hit in hits:
+                  print(hit)
+
+              raise SystemExit(
+                  f"ERROR: clean text scan found {len(hits)} hit(s)"
+              )
+
+          print("AI_KI_CHATGPT_OPENAI_ASSISTANT_TEXT_HITS=0")
+          print("WORKFLOW_AUDIT_PROVENANCE_TESTPLAN_TEXT_HITS=0")
+          PY
+
+          {
+            echo "INSTALLER_CONTRACT=PASS"
+            echo "ACTIVE_SLOT_ONLY=YES"
+            echo "EXACT_STOCK_PREWRITE_GATE=YES"
+            echo "EXACT_IMAGE_GATE=YES"
+            echo "EXACT_CONSTRUCTED_BOOT_PREWRITE_GATE=YES"
+            echo "READBACK_GATE=YES"
+            echo "STOCK_ROLLBACK=YES"
+            echo "VENDOR_BOOT_WRITE=NO"
+            echo "DTBO_WRITE=NO"
+            echo "TOP_LEVEL_VBMETA_WRITE=NO"
+            echo "CLEAN_TEXT_SCAN=PASS"
+          } | tee "$OUTPUT/INSTALLER-CONTRACT-GATE.txt"
+
+      - name: Reconstruct exact W50 boot from standalone package
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          gzip -t \
+            "$PACKAGE/rollback_stock_boot.img.gz"
+
+          gzip -dc \
+            "$PACKAGE/rollback_stock_boot.img.gz" \
+            > "$BUILD/stock_boot.img"
+
+          test "$(stat -c '%s' "$BUILD/stock_boot.img")" = \
+            "$STOCK_BOOT_BYTES"
+
+          test "$(sha256sum "$BUILD/stock_boot.img" | awk '{print $1}')" = \
+            "$STOCK_BOOT_SHA256"
+
+          python3 - \
+            "$PACKAGE" \
+            "$BUILD/stock_boot.img" \
+            "$BUILD/reconstructed-boot.img" \
+            "$OUTPUT/BOOT-RECONSTRUCTION.json" \
+            "$OUTPUT/BOOT-RECONSTRUCTION.txt" <<'PY'
+          import hashlib
+          import json
+          import struct
+          import sys
+          from pathlib import Path
+
+          package = Path(sys.argv[1])
+          stock_path = Path(sys.argv[2])
+          output_path = Path(sys.argv[3])
+          json_path = Path(sys.argv[4])
+          text_path = Path(sys.argv[5])
+
+          EXPECTED_IMAGE_SHA = "0a00b12dc8d4f114b4343f473054b03d6e32767961077e43d345f0dc7271b4d3"
+          EXPECTED_STOCK_SHA = "ac6522e4eed55782dd2ae61362e9d345d01a1f229c87333818511d5537fa79c5"
+          EXPECTED_RAMDISK_SHA = "0bc8b54373b5501818e8b252517419786db207771047b6def7ec9bc89beb607a"
+          EXPECTED_BOOT_SHA = "ab02eda6e4315ea20d672a580acb09a7d48646dd709ff07f7ebbe70b5cc4c96b"
+          EXPECTED_AVB_DIGEST = "4d68bc5bb1f4c4d59e3f7a83e5470502ab9c0d87d5b8b68d7792b096f0324dc2"
+
+          image = (package / "Image").read_bytes()
+          header = (
+              package
+              / "tools"
+              / "boot-header-v3.bin"
+          ).read_bytes()
+          vbmeta = (
+              package
+              / "tools"
+              / "boot-vbmeta-v3.bin"
+          ).read_bytes()
+          footer = (
+              package
+              / "tools"
+              / "boot-footer-v3.bin"
+          ).read_bytes()
+          stock = stock_path.read_bytes()
+
+          def sha(data):
+              return hashlib.sha256(data).hexdigest()
+
+          def need(condition, message):
+              if not condition:
+                  raise SystemExit("ERROR: " + message)
+
+          need(
+              sha(image) == EXPECTED_IMAGE_SHA,
+              "kernel Image SHA-256",
+          )
+          need(
+              sha(stock) == EXPECTED_STOCK_SHA,
+              "stock boot SHA-256",
+          )
+
+          need(
+              len(stock) == 134217728,
+              "stock boot bytes",
+          )
+          need(
+              stock[:8] == b"ANDROID!",
+              "stock boot magic",
+          )
+
+          stock_kernel_size = struct.unpack_from(
+              "<I",
+              stock,
+              8,
+          )[0]
+          ramdisk_size = struct.unpack_from(
+              "<I",
+              stock,
+              12,
+          )[0]
+
+          def align(value, size=4096):
+              return (
+                  (value + size - 1)
+                  // size
+                  * size
+              )
+
+          stock_ramdisk_offset = (
+              4096 + align(stock_kernel_size)
+          )
+
+          ramdisk = stock[
+              stock_ramdisk_offset:
+              stock_ramdisk_offset
+              + ramdisk_size
+          ]
+
+          need(
+              sha(ramdisk) == EXPECTED_RAMDISK_SHA,
+              "stock ramdisk SHA-256",
+          )
+
+          output = bytearray(134217728)
+
+          output[:4096] = header
+
+          output[
+              4096:
+              4096 + len(image)
+          ] = image
+
+          new_ramdisk_offset = 29851648
+          ramdisk_padded_bytes = 22065152
+
+          output[
+              new_ramdisk_offset:
+              new_ramdisk_offset
+              + ramdisk_padded_bytes
+          ] = stock[
+              stock_ramdisk_offset:
+              stock_ramdisk_offset
+              + ramdisk_padded_bytes
+          ]
+
+          payload_end = 51916800
+
+          output[
+              payload_end:
+              payload_end + len(vbmeta)
+          ] = vbmeta
+
+          output[-64:] = footer
+
+          result = bytes(output)
+          result_sha = sha(result)
+
+          need(
+              result_sha == EXPECTED_BOOT_SHA,
+              "reconstructed W50 boot SHA-256",
+          )
+
+          need(
+              result[:8] == b"ANDROID!",
+              "reconstructed boot magic",
+          )
+
+          (
+              kernel_size,
+              result_ramdisk_size,
+              _,
+              header_size,
+          ) = struct.unpack_from(
+              "<4I",
+              result,
+              8,
+          )
+
+          header_version = struct.unpack_from(
+              "<I",
+              result,
+              40,
+          )[0]
+
+          need(
+              kernel_size == len(image),
+              "reconstructed kernel size",
+          )
+          need(
+              result_ramdisk_size == len(ramdisk),
+              "reconstructed ramdisk size",
+          )
+          need(
+              header_size == 1580,
+              "boot header size",
+          )
+          need(
+              header_version == 3,
+              "boot header version",
+          )
+
+          result_kernel = result[
+              4096:
+              4096 + kernel_size
+          ]
+
+          result_ramdisk = result[
+              new_ramdisk_offset:
+              new_ramdisk_offset
+              + result_ramdisk_size
+          ]
+
+          need(
+              result_kernel == image,
+              "exact kernel bytes inserted",
+          )
+          need(
+              result_ramdisk == ramdisk,
+              "exact stock ramdisk bytes preserved",
+          )
+
+          arm_text_offset, arm_image_size, arm_flags = (
+              struct.unpack_from(
+                  "<QQQ",
+                  image,
+                  8,
+              )
+          )
+
+          arm_magic, arm_res5 = struct.unpack_from(
+              "<II",
+              image,
+              56,
+          )
+
+          need(
+              arm_text_offset == 0x80000,
+              "ARM64 text_offset",
+          )
+          need(
+              arm_image_size == 38825984,
+              "ARM64 image_size",
+          )
+          need(
+              arm_flags == 0xA,
+              "ARM64 flags",
+          )
+          need(
+              arm_magic == 0x644D5241,
+              "ARM64 magic",
+          )
+          need(
+              arm_res5 == 0x40,
+              "ARM64 res5",
+          )
+
+          avb_footer = result[-64:]
+
+          need(
+              avb_footer[:4] == b"AVBf",
+              "AVB footer magic",
+          )
+
+          major, minor = struct.unpack_from(
+              ">II",
+              avb_footer,
+              4,
+          )
+
+          (
+              original_size,
+              vbmeta_offset,
+              vbmeta_size,
+          ) = struct.unpack_from(
+              ">QQQ",
+              avb_footer,
+              12,
+          )
+
+          need(
+              (major, minor) == (1, 0),
+              "AVB footer version",
+          )
+          need(
+              original_size == payload_end,
+              "AVB original image size",
+          )
+          need(
+              vbmeta_offset == payload_end,
+              "AVB vbmeta offset",
+          )
+          need(
+              vbmeta_size == 896,
+              "AVB vbmeta size",
+          )
+
+          vb = result[
+              vbmeta_offset:
+              vbmeta_offset + vbmeta_size
+          ]
+
+          need(
+              vb[:4] == b"AVB0",
+              "embedded vbmeta magic",
+          )
+
+          algorithm_type = struct.unpack_from(
+              ">I",
+              vb,
+              28,
+          )[0]
+
+          need(
+              algorithm_type == 0,
+              "embedded vbmeta algorithm NONE",
+          )
+
+          auth_size, aux_size = struct.unpack_from(
+              ">QQ",
+              vb,
+              12,
+          )
+
+          values = struct.unpack_from(
+              ">QQQQQQQQQQQ",
+              vb,
+              32,
+          )
+
+          descriptors_offset = values[8]
+          descriptors_size = values[9]
+
+          pos = (
+              256
+              + auth_size
+              + descriptors_offset
+          )
+
+          end = pos + descriptors_size
+
+          found = []
+
+          while pos < end:
+              tag, following = struct.unpack_from(
+                  ">QQ",
+                  vb,
+                  pos,
+              )
+
+              raw = vb[
+                  pos:
+                  pos + 16 + following
+              ]
+
+              need(
+                  len(raw) == 16 + following,
+                  "AVB descriptor truncation",
+              )
+
+              if tag == 2:
+                  image_size = struct.unpack_from(
+                      ">Q",
+                      raw,
+                      16,
+                  )[0]
+
+                  algorithm = (
+                      raw[24:56]
+                      .split(b"\0", 1)[0]
+                      .decode(
+                          "ascii",
+                          "replace",
+                      )
+                  )
+
+                  (
+                      name_len,
+                      salt_len,
+                      digest_len,
+                      flags,
+                  ) = struct.unpack_from(
+                      ">IIII",
+                      raw,
+                      56,
+                  )
+
+                  q = 132
+
+                  partition = raw[
+                      q:
+                      q + name_len
+                  ].decode(
+                      "ascii",
+                      "replace",
+                  )
+
+                  q += name_len
+
+                  salt = raw[
+                      q:
+                      q + salt_len
+                  ]
+
+                  q += salt_len
+
+                  digest = raw[
+                      q:
+                      q + digest_len
+                  ]
+
+                  calculated = hashlib.sha256(
+                      salt
+                      + result[:image_size]
+                  ).digest()
+
+                  if partition == "boot":
+                      found.append({
+                          "image_size":
+                              image_size,
+                          "algorithm":
+                              algorithm,
+                          "flags":
+                              flags,
+                          "digest":
+                              digest.hex(),
+                          "calculated":
+                              calculated.hex(),
+                          "verifies":
+                              digest == calculated,
+                      })
+
+              pos += 16 + following
+
+          need(
+              len(found) == 1,
+              "one embedded boot hash descriptor",
+          )
+
+          descriptor = found[0]
+
+          need(
+              descriptor["image_size"]
+              == payload_end,
+              "embedded AVB boot image_size",
+          )
+          need(
+              descriptor["algorithm"]
+              == "sha256",
+              "embedded AVB hash algorithm",
+          )
+          need(
+              descriptor["digest"]
+              == EXPECTED_AVB_DIGEST,
+              "embedded AVB digest",
+          )
+          need(
+              descriptor["calculated"]
+              == EXPECTED_AVB_DIGEST,
+              "embedded AVB calculated digest",
+          )
+          need(
+              descriptor["verifies"] is True,
+              "embedded AVB verification",
+          )
+
+          output_path.write_bytes(result)
+
+          report = {
+              "result":
+                  "PASS_EXACT_W50_BOOT_RECONSTRUCTION",
+              "boot": {
+                  "sha256":
+                      result_sha,
+                  "bytes":
+                      len(result),
+                  "header_version":
+                      header_version,
+                  "header_size":
+                      header_size,
+                  "kernel_sha256":
+                      sha(result_kernel),
+                  "kernel_bytes":
+                      kernel_size,
+                  "ramdisk_sha256":
+                      sha(result_ramdisk),
+                  "ramdisk_bytes":
+                      result_ramdisk_size,
+                  "ramdisk_offset":
+                      new_ramdisk_offset,
+                  "payload_end":
+                      payload_end,
+              },
+              "embedded_avb":
+                  descriptor,
+              "arm64": {
+                  "text_offset":
+                      arm_text_offset,
+                  "image_size":
+                      arm_image_size,
+                  "flags":
+                      arm_flags,
+                  "magic":
+                      arm_magic,
+                  "res5":
+                      arm_res5,
+              },
+          }
+
+          json_path.write_text(
+              json.dumps(
+                  report,
+                  indent=2,
+                  sort_keys=True,
+              ) + "\n",
+              encoding="utf-8",
+          )
+
+          text_path.write_text(
+              "\n".join([
+                  "EXACT_W50_BOOT_RECONSTRUCTION=PASS",
+                  f"BOOT_SHA256={result_sha}",
+                  f"BOOT_BYTES={len(result)}",
+                  f"KERNEL_SHA256={sha(result_kernel)}",
+                  f"RAMDISK_SHA256={sha(result_ramdisk)}",
+                  f"RAMDISK_OFFSET={new_ramdisk_offset}",
+                  f"PAYLOAD_END={payload_end}",
+                  (
+                      "EMBEDDED_AVB_DIGEST="
+                      f"{descriptor['digest']}"
+                  ),
+                  "EMBEDDED_AVB_VERIFIES=YES",
+              ]) + "\n",
+              encoding="utf-8",
+          )
+          PY
+
+          test "$(sha256sum "$BUILD/reconstructed-boot.img" | awk '{print $1}')" = \
+            "$EXPECTED_BOOT_SHA256"
+
+          {
+            echo "BOOT_RECONSTRUCTION_GATE=PASS"
+            echo "STOCK_BOOT_SHA256=$STOCK_BOOT_SHA256"
+            echo "IMAGE_SHA256=$IMAGE_SHA256"
+            echo "RECONSTRUCTED_BOOT_SHA256=$EXPECTED_BOOT_SHA256"
+            echo "STOCK_RAMDISK_SHA256=$STOCK_RAMDISK_SHA256"
+            echo "EMBEDDED_AVB_DIGEST=$EXPECTED_EMBEDDED_AVB_DIGEST"
+            echo "EMBEDDED_AVB_VERIFIES=YES"
+          } | tee "$OUTPUT/BOOT-RECONSTRUCTION-GATE.txt"
+
+      - name: Runtime simulate standalone installer on fake slot A and B
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cp -a \
+            "$PACKAGE" \
+            "$HARNESS/package"
+
+          mkdir -p \
+            "$HARNESS/bin"
+
+          cat > "$HARNESS/package/tools/ak3-core.sh" <<'EOF'
+          #!/bin/sh
+
+          AKHOME="${AKHOME:-$(pwd)}"
+
+          abort() {
+            printf '%s\n' "$*" >&2
+            exit 1
+          }
+
+          ui_print() {
+            printf '%s\n' "$*"
+          }
+          EOF
+
+          cat > "$HARNESS/package/tools/busybox" <<'EOF'
+          #!/bin/sh
+
+          cmd="${1:-}"
+          shift || true
+
+          case "$cmd" in
+            dd)
+              target=""
+              generated_write=0
+
+              for arg in "$@"; do
+                case "$arg" in
+                  of=*)
+                    target="${arg#of=}"
+                    ;;
+                  if=*.gen1-boot-new.img)
+                    generated_write=1
+                    ;;
+                esac
+              done
+
+              /usr/bin/dd "$@"
+              rc=$?
+
+              if [ "$rc" -eq 0 ] \
+                 && [ "${INJECT_POSTWRITE_CORRUPT:-0}" = "1" ] \
+                 && [ "$generated_write" = "1" ] \
+                 && [ -n "$target" ]
+              then
+                printf '\000' \
+                  | /usr/bin/dd \
+                      of="$target" \
+                      bs=1 \
+                      seek=0 \
+                      count=1 \
+                      conv=notrunc \
+                      status=none
+              fi
+
+              exit "$rc"
+              ;;
+            gzip)
+              exec /usr/bin/gzip "$@"
+              ;;
+            sha256sum)
+              exec /usr/bin/sha256sum "$@"
+              ;;
+            wc)
+              exec /usr/bin/wc "$@"
+              ;;
+            tr)
+              exec /usr/bin/tr "$@"
+              ;;
+            rm)
+              exec /usr/bin/rm "$@"
+              ;;
+            sync)
+              exec /usr/bin/sync "$@"
+              ;;
+            *)
+              exec "$cmd" "$@"
+              ;;
+          esac
+          EOF
+
+          cat > "$HARNESS/bin/getprop" <<'EOF'
+          #!/bin/sh
+
+          case "${1:-}" in
+            ro.boot.slot_suffix)
+              printf '%s\n' "${FAKE_SLOT:-}"
+              ;;
+            ro.boot.flash.locked)
+              printf '%s\n' "${FAKE_FLASH_LOCKED:-}"
+              ;;
+            ro.boot.vbmeta.device_state)
+              printf '%s\n' "${FAKE_VBMETA_STATE:-}"
+              ;;
+            *)
+              exit 0
+              ;;
+          esac
+          EOF
+
+          chmod 755 \
+            "$HARNESS/package/tools/ak3-core.sh" \
+            "$HARNESS/package/tools/busybox" \
+            "$HARNESS/bin/getprop"
+
+          sudo mkdir -p \
+            /dev/block/by-name
+
+          sudo rm -f \
+            /dev/block/by-name/boot_a \
+            /dev/block/by-name/boot_b
+
+          trap \
+            'sudo rm -f /dev/block/by-name/boot_a /dev/block/by-name/boot_b' \
+            EXIT
+
+          reset_slots() {
+            sudo cp \
+              "$BUILD/stock_boot.img" \
+              /dev/block/by-name/boot_a
+
+            sudo cp \
+              "$BUILD/stock_boot.img" \
+              /dev/block/by-name/boot_b
+
+            sudo chmod 666 \
+              /dev/block/by-name/boot_a \
+              /dev/block/by-name/boot_b
+          }
+
+          run_installer() {
+            local SLOT="$1"
+            local LOCKED="$2"
+            local STATE="$3"
+            local INJECT="${4:-0}"
+
+            (
+              cd "$HARNESS/package"
+
+              env \
+                PATH="$HARNESS/bin:$PATH" \
+                AKHOME="$HARNESS/package" \
+                FAKE_SLOT="$SLOT" \
+                FAKE_FLASH_LOCKED="$LOCKED" \
+                FAKE_VBMETA_STATE="$STATE" \
+                INJECT_POSTWRITE_CORRUPT="$INJECT" \
+                bash ./anykernel.sh
+            )
+          }
+
+          hash_slot() {
+            sha256sum "$1" \
+              | awk '{print $1}'
+          }
+
+          reset_slots
+
+          run_installer \
+            "_a" \
+            "0" \
+            "unlocked" \
+            "0" \
+            > "$OUTPUT/RUNTIME-SLOT-A.log" \
+            2>&1
+
+          test "$(hash_slot /dev/block/by-name/boot_a)" = \
+            "$EXPECTED_BOOT_SHA256"
+
+          test "$(hash_slot /dev/block/by-name/boot_b)" = \
+            "$STOCK_BOOT_SHA256"
+
+          reset_slots
+
+          run_installer \
+            "_b" \
+            "0" \
+            "unlocked" \
+            "0" \
+            > "$OUTPUT/RUNTIME-SLOT-B.log" \
+            2>&1
+
+          test "$(hash_slot /dev/block/by-name/boot_b)" = \
+            "$EXPECTED_BOOT_SHA256"
+
+          test "$(hash_slot /dev/block/by-name/boot_a)" = \
+            "$STOCK_BOOT_SHA256"
+
+          {
+            echo "STANDALONE_RUNTIME_SLOT_A=PASS"
+            echo "STANDALONE_RUNTIME_SLOT_B=PASS"
+            echo "EXPECTED_BOOT_SHA256=$EXPECTED_BOOT_SHA256"
+            echo "OTHER_SLOT_PRESERVED=YES"
+          } | tee "$OUTPUT/RUNTIME-A-B-GATE.txt"
+
+      - name: Runtime prove fail-closed gates and stock rollback
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          hash_slot() {
+            sha256sum "$1" \
+              | awk '{print $1}'
+          }
+
+          reset_slots() {
+            sudo cp \
+              "$BUILD/stock_boot.img" \
+              /dev/block/by-name/boot_a
+
+            sudo cp \
+              "$BUILD/stock_boot.img" \
+              /dev/block/by-name/boot_b
+
+            sudo chmod 666 \
+              /dev/block/by-name/boot_a \
+              /dev/block/by-name/boot_b
+          }
+
+          run_installer() {
+            local SLOT="$1"
+            local LOCKED="$2"
+            local STATE="$3"
+            local INJECT="${4:-0}"
+
+            (
+              cd "$HARNESS/package"
+
+              env \
+                PATH="$HARNESS/bin:$PATH" \
+                AKHOME="$HARNESS/package" \
+                FAKE_SLOT="$SLOT" \
+                FAKE_FLASH_LOCKED="$LOCKED" \
+                FAKE_VBMETA_STATE="$STATE" \
+                INJECT_POSTWRITE_CORRUPT="$INJECT" \
+                bash ./anykernel.sh
+            )
+          }
+
+          reset_slots
+
+          set +e
+
+          run_installer \
+            "_c" \
+            "0" \
+            "unlocked" \
+            "0" \
+            > "$OUTPUT/RUNTIME-INVALID-SLOT.log" \
+            2>&1
+
+          INVALID_RC=$?
+
+          set -e
+
+          test "$INVALID_RC" -ne 0
+
+          test "$(hash_slot /dev/block/by-name/boot_a)" = \
+            "$STOCK_BOOT_SHA256"
+
+          test "$(hash_slot /dev/block/by-name/boot_b)" = \
+            "$STOCK_BOOT_SHA256"
+
+          reset_slots
+
+          set +e
+
+          run_installer \
+            "_a" \
+            "1" \
+            "locked" \
+            "0" \
+            > "$OUTPUT/RUNTIME-LOCKED.log" \
+            2>&1
+
+          LOCKED_RC=$?
+
+          set -e
+
+          test "$LOCKED_RC" -ne 0
+
+          test "$(hash_slot /dev/block/by-name/boot_a)" = \
+            "$STOCK_BOOT_SHA256"
+
+          test "$(hash_slot /dev/block/by-name/boot_b)" = \
+            "$STOCK_BOOT_SHA256"
+
+          reset_slots
+
+          printf '\001' \
+            | dd \
+                of=/dev/block/by-name/boot_a \
+                bs=1 \
+                seek=0 \
+                count=1 \
+                conv=notrunc \
+                status=none
+
+          NONSTOCK_BEFORE="$(
+            hash_slot \
+              /dev/block/by-name/boot_a
+          )"
+
+          test "$NONSTOCK_BEFORE" != \
+            "$STOCK_BOOT_SHA256"
+
+          set +e
+
+          run_installer \
+            "_a" \
+            "0" \
+            "unlocked" \
+            "0" \
+            > "$OUTPUT/RUNTIME-NONSTOCK.log" \
+            2>&1
+
+          NONSTOCK_RC=$?
+
+          set -e
+
+          test "$NONSTOCK_RC" -ne 0
+
+          test "$(hash_slot /dev/block/by-name/boot_a)" = \
+            "$NONSTOCK_BEFORE"
+
+          test "$(hash_slot /dev/block/by-name/boot_b)" = \
+            "$STOCK_BOOT_SHA256"
+
+          reset_slots
+
+          cp \
+            "$HARNESS/package/Image" \
+            "$HARNESS/package/Image.original"
+
+          printf '\001' \
+            | dd \
+                of="$HARNESS/package/Image" \
+                bs=1 \
+                seek=0 \
+                count=1 \
+                conv=notrunc \
+                status=none
+
+          set +e
+
+          run_installer \
+            "_a" \
+            "0" \
+            "unlocked" \
+            "0" \
+            > "$OUTPUT/RUNTIME-TAMPERED-IMAGE.log" \
+            2>&1
+
+          TAMPER_RC=$?
+
+          set -e
+
+          test "$TAMPER_RC" -ne 0
+
+          test "$(hash_slot /dev/block/by-name/boot_a)" = \
+            "$STOCK_BOOT_SHA256"
+
+          test "$(hash_slot /dev/block/by-name/boot_b)" = \
+            "$STOCK_BOOT_SHA256"
+
+          mv \
+            "$HARNESS/package/Image.original" \
+            "$HARNESS/package/Image"
+
+          reset_slots
+
+          set +e
+
+          run_installer \
+            "_a" \
+            "0" \
+            "unlocked" \
+            "1" \
+            > "$OUTPUT/RUNTIME-ROLLBACK.log" \
+            2>&1
+
+          ROLLBACK_RC=$?
+
+          set -e
+
+          test "$ROLLBACK_RC" -ne 0
+
+          test "$(hash_slot /dev/block/by-name/boot_a)" = \
+            "$STOCK_BOOT_SHA256"
+
+          test "$(hash_slot /dev/block/by-name/boot_b)" = \
+            "$STOCK_BOOT_SHA256"
+
+          grep -Fq \
+            'Exact stock boot was restored and verified.' \
+            "$OUTPUT/RUNTIME-ROLLBACK.log"
+
+          {
+            echo "INVALID_SLOT_FAIL_CLOSED=PASS"
+            echo "LOCKED_BOOTLOADER_FAIL_CLOSED=PASS"
+            echo "NONSTOCK_BOOT_FAIL_CLOSED=PASS"
+            echo "TAMPERED_IMAGE_FAIL_CLOSED=PASS"
+            echo "POSTWRITE_CORRUPTION_ROLLBACK=PASS"
+            echo "ROLLBACK_STOCK_HASH_VERIFIED=YES"
+            echo "OTHER_SLOT_PRESERVED=YES"
+          } | tee "$OUTPUT/RUNTIME-FAIL-CLOSED-GATE.txt"
+
+      - name: Derive W51 final validation verdict
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          grep -Fxq \
+            'GITHUB_RELEASE_ASSET_DOWNLOAD=PASS' \
+            "$OUTPUT/GITHUB-RELEASE-ASSET-GATE.txt"
+
+          grep -Fxq \
+            'EXACT_STANDALONE_FILE_SET=PASS' \
+            "$OUTPUT/STANDALONE-PACKAGE-GATE.txt"
+
+          grep -Fxq \
+            'INSTALLER_CONTRACT=PASS' \
+            "$OUTPUT/INSTALLER-CONTRACT-GATE.txt"
+
+          grep -Fxq \
+            'BOOT_RECONSTRUCTION_GATE=PASS' \
+            "$OUTPUT/BOOT-RECONSTRUCTION-GATE.txt"
+
+          grep -Fxq \
+            'STANDALONE_RUNTIME_SLOT_A=PASS' \
+            "$OUTPUT/RUNTIME-A-B-GATE.txt"
+
+          grep -Fxq \
+            'STANDALONE_RUNTIME_SLOT_B=PASS' \
+            "$OUTPUT/RUNTIME-A-B-GATE.txt"
+
+          grep -Fxq \
+            'INVALID_SLOT_FAIL_CLOSED=PASS' \
+            "$OUTPUT/RUNTIME-FAIL-CLOSED-GATE.txt"
+
+          grep -Fxq \
+            'LOCKED_BOOTLOADER_FAIL_CLOSED=PASS' \
+            "$OUTPUT/RUNTIME-FAIL-CLOSED-GATE.txt"
+
+          grep -Fxq \
+            'NONSTOCK_BOOT_FAIL_CLOSED=PASS' \
+            "$OUTPUT/RUNTIME-FAIL-CLOSED-GATE.txt"
+
+          grep -Fxq \
+            'TAMPERED_IMAGE_FAIL_CLOSED=PASS' \
+            "$OUTPUT/RUNTIME-FAIL-CLOSED-GATE.txt"
+
+          grep -Fxq \
+            'POSTWRITE_CORRUPTION_ROLLBACK=PASS' \
+            "$OUTPUT/RUNTIME-FAIL-CLOSED-GATE.txt"
+
+          {
+            echo "FINAL_RESULT=PASS_GEN1_51_V1_STANDALONE_AK3_GITHUB_RELEASE_VALIDATION"
+            echo "RELEASE_TAG=${{ inputs.release_tag }}"
+            echo "ASSET_NAME=$ASSET_NAME"
+            echo "ASSET_SHA256=$ASSET_SHA256"
+            echo "ASSET_BYTES=$ASSET_BYTES"
+            echo "UNDER_65MB=YES"
+            echo "KERNEL_RELEASE=$KERNEL_RELEASE"
+            echo "IMAGE_SHA256=$IMAGE_SHA256"
+            echo "RESUKISU_COMMIT=$RESUKISU_COMMIT"
+            echo "SUSFS_VERSION=$SUSFS_VERSION"
+            echo "TARGET_DEVICE=veux"
+            echo "TARGET_ROM=$STOCK_ROM_VERSION"
+            echo "ANDROID_VERSION=$STOCK_ANDROID_VERSION"
+            echo "SECURITY_PATCH=$STOCK_SECURITY_PATCH"
+            echo "STOCK_BOOT_SHA256=$STOCK_BOOT_SHA256"
+            echo "BOOT_IMG_PACKAGED=NO"
+            echo "KERNEL_IMAGE_PACKAGED=YES"
+            echo "EXACT_W50_BOOT_RECONSTRUCTION=PASS"
+            echo "RECONSTRUCTED_BOOT_SHA256=$EXPECTED_BOOT_SHA256"
+            echo "STOCK_RAMDISK_PRESERVED=YES"
+            echo "EMBEDDED_AVB_VERIFIES=YES"
+            echo "EMBEDDED_AVB_DIGEST=$EXPECTED_EMBEDDED_AVB_DIGEST"
+            echo "ACTIVE_SLOT_A_RUNTIME=PASS"
+            echo "ACTIVE_SLOT_B_RUNTIME=PASS"
+            echo "INVALID_SLOT_FAIL_CLOSED=PASS"
+            echo "LOCKED_BOOTLOADER_FAIL_CLOSED=PASS"
+            echo "NONSTOCK_BOOT_FAIL_CLOSED=PASS"
+            echo "TAMPERED_IMAGE_FAIL_CLOSED=PASS"
+            echo "ROLLBACK_FAULT_INJECTION=PASS"
+            echo "OTHER_SLOT_PRESERVED=YES"
+            echo "AI_KI_CHATGPT_OPENAI_ASSISTANT_TEXT_HITS=0"
+            echo "WORKFLOW_AUDIT_PROVENANCE_TESTPLAN_TEXT_HITS=0"
+            echo "VENDOR_BOOT_TOUCHED=NO"
+            echo "DTBO_TOUCHED=NO"
+            echo "TOP_LEVEL_VBMETA_TOUCHED=NO"
+            echo "REAL_DEVICE_ACCESSED=NO"
+            echo "ADB_USED=NO"
+            echo "FASTBOOT_USED=NO"
+            echo "FLASHING_PERFORMED=NO"
+            echo "PHYSICAL_DEVICE_BOOT_TESTED=NO"
+          } | tee "$OUTPUT/W51-FINAL-VERDICT.txt"
+
+      - name: Write W51 failure summary
+        if: failure()
+        shell: bash
+        run: |
+          set +e
+
+          {
+            echo "GEN1 W51 v1: FAILURE"
+            echo "DATE_UTC=$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+            echo "RELEASE_TAG=${{ inputs.release_tag }}"
+            echo "ASSET_NAME=$ASSET_NAME"
+            echo "ASSET_SHA256=$ASSET_SHA256"
+            echo "KERNEL_RELEASE=$KERNEL_RELEASE"
+            echo "RESUKISU_COMMIT=$RESUKISU_COMMIT"
+            echo "SUSFS_VERSION=$SUSFS_VERSION"
+            echo "REAL_DEVICE_ACCESSED=NO"
+            echo "FLASHING_PERFORMED=NO"
+          } > "$OUTPUT/W51-FAILURE-SUMMARY.txt"
+
+      - name: Upload W51 validation diagnostics
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: GEN1_51_V1_STANDALONE_AK3_VALIDATION-${{ github.run_number }}
+          path: gen1-51-v1/output/
+          if-no-files-found: error
+          include-hidden-files: true
+          retention-days: 30
+          compression-level: 9
+
+      - name: Fail only after preserving W51 diagnostics
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if ! grep -Fxq \
+            'FINAL_RESULT=PASS_GEN1_51_V1_STANDALONE_AK3_GITHUB_RELEASE_VALIDATION' \
+            "$OUTPUT/W51-FINAL-VERDICT.txt" \
+            2>/dev/null
+          then
+            echo "ERROR: W51 final PASS verdict was not produced."
+            exit 1
+          fi
+
+          echo "GEN1 W51 v1 standalone AK3 validation PASS."
