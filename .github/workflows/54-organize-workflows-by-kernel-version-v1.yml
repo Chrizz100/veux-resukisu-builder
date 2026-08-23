@@ -1,0 +1,721 @@
+name: 54 - Organize Workflows by Kernel Version v1
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: organize-workflows-by-kernel-version
+  cancel-in-progress: false
+
+jobs:
+  organize:
+    name: Separate 5.4.274 and 5.4.302 workflow lines
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout current repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Record immutable starting state
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p organization-output
+
+          {
+            echo "ORGANIZATION=KERNEL_VERSION_BASED"
+            echo "ACTIVE_KERNEL_LINE_1=5.4.274"
+            echo "ACTIVE_KERNEL_LINE_2=5.4.302"
+            echo "SOURCE_COMMIT=$(git rev-parse HEAD)"
+            echo "SOURCE_TREE=$(git rev-parse HEAD^{tree})"
+            echo "TARGET_BRANCH=${GITHUB_REF_NAME}"
+            echo "REAL_DEVICE_ACCESSED=NO"
+            echo "ADB_USED=NO"
+            echo "FASTBOOT_USED=NO"
+            echo "FLASHING_PERFORMED=NO"
+          } | tee organization-output/STARTING-STATE.txt
+
+          git ls-tree -r --name-only HEAD \
+            | LC_ALL=C sort \
+            > organization-output/BEFORE-FILE-LIST.txt
+
+          find .github/workflows \
+            -maxdepth 1 \
+            -type f \
+            -printf '%f\n' \
+            | LC_ALL=C sort \
+            > organization-output/BEFORE-ACTIVE-WORKFLOW-DIR.txt
+
+      - name: Reorganize repository by kernel version
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib
+          import re
+          import shutil
+
+          root = Path.cwd()
+          workflows = root / ".github" / "workflows"
+          archive = root / "archive" / "workflows"
+          archive_274 = archive / "5.4.274"
+          archive_302 = archive / "5.4.302"
+          maintenance = archive / "repository-maintenance"
+          assets_302 = root / "assets" / "5.4.302"
+
+          for directory in (
+              archive_274,
+              archive_302,
+              maintenance,
+              assets_302,
+          ):
+              directory.mkdir(parents=True, exist_ok=True)
+
+          cleanup_name = "54-organize-workflows-by-kernel-version-v1.yml"
+
+          active = {
+              "49-gen1-5.4.274-resukisu-upstream-update-full-build-v3.yml":
+                  "5.4.274-49-resukisu-upstream-update-full-build-v3.yml",
+              "52-gen1-5.4.274-github-built-standalone-ak3-v1.yml":
+                  "5.4.274-52-github-built-standalone-ak3-v1.yml",
+              "53-gen1-5.4.274-github-built-boot-img-v1.yml":
+                  "5.4.274-53-github-built-boot-img-v1.yml",
+              "36-gen2-real-lineage-boot-anykernel3-magiskboot-validation-v14.yml":
+                  "5.4.302-36-lineage-boot-validation-v14.yml",
+              "43-gen2-5.4.302-resukisu-upstream-update-full-build-v2.yml":
+                  "5.4.302-43-resukisu-upstream-update-full-build-v2.yml",
+              "44-gen2-veux-peux-resukisu-updated-clean-ak3-release-v1.yml":
+                  "5.4.302-44-veux-peux-updated-clean-ak3-release-v1.yml",
+          }
+
+          missing = [
+              source
+              for source in active
+              if not (workflows / source).is_file()
+          ]
+
+          if missing:
+              raise SystemExit(
+                  "ERROR: required current workflow(s) missing: "
+                  + ", ".join(missing)
+              )
+
+          def move_file(source: Path, destination: Path):
+              destination.parent.mkdir(parents=True, exist_ok=True)
+
+              if destination.exists():
+                  raise SystemExit(
+                      f"ERROR: destination already exists: {destination}"
+                  )
+
+              shutil.move(str(source), str(destination))
+
+          def clean_visible_names(path: Path, kernel_version: str):
+              text = path.read_text(encoding="utf-8")
+              lines = []
+
+              for line in text.splitlines(keepends=True):
+                  if re.match(r"^\s*name\s*:", line):
+                      line = line.replace("GEN1", kernel_version)
+                      line = line.replace("GEN2", kernel_version)
+
+                  lines.append(line)
+
+              text = "".join(lines)
+
+              if kernel_version == "5.4.302":
+                  text = text.replace(
+                      "VALIDATED_BOOT_REPO_SEED_PATH: "
+                      ".github/workflows/"
+                      "GEN2_W36_VALIDATED_LINEAGE_VEUX_ANDROID16_BOOT.img.gz",
+                      "VALIDATED_BOOT_REPO_SEED_PATH: "
+                      "assets/5.4.302/"
+                      "GEN2_W36_VALIDATED_LINEAGE_VEUX_ANDROID16_BOOT.img.gz",
+                  )
+
+              path.write_text(text, encoding="utf-8")
+
+          # Promote exactly six current workflows under version-first names.
+          for source_name, target_name in active.items():
+              source = workflows / source_name
+              target = workflows / target_name
+
+              move_file(source, target)
+
+              kernel_version = (
+                  "5.4.302"
+                  if target_name.startswith("5.4.302-")
+                  else "5.4.274"
+              )
+
+              clean_visible_names(
+                  target,
+                  kernel_version,
+              )
+
+          # Move the validated 5.4.302 Lineage boot seed out of the workflow dir.
+          boot_seed_name = (
+              "GEN2_W36_VALIDATED_LINEAGE_VEUX_ANDROID16_BOOT.img.gz"
+          )
+          boot_seed = workflows / boot_seed_name
+          boot_seed_target = assets_302 / boot_seed_name
+
+          if not boot_seed.is_file():
+              raise SystemExit(
+                  "ERROR: validated 5.4.302 boot seed is missing"
+              )
+
+          expected_seed_sha = (
+              "183984c727524325b36696a43419802fa"
+              "9894a56bfc4c51c3b3cc6fa242a7bfa"
+          )
+
+          expected_seed_size = 16498759
+
+          data = boot_seed.read_bytes()
+
+          if len(data) != expected_seed_size:
+              raise SystemExit(
+                  "ERROR: validated boot seed size mismatch"
+              )
+
+          if hashlib.sha256(data).hexdigest() != expected_seed_sha:
+              raise SystemExit(
+                  "ERROR: validated boot seed SHA-256 mismatch"
+              )
+
+          move_file(
+              boot_seed,
+              boot_seed_target,
+          )
+
+          # Archive every remaining top-level workflow except this one.
+          for item in sorted(workflows.iterdir()):
+              if not item.is_file():
+                  continue
+
+              if item.name == cleanup_name:
+                  continue
+
+              if item.name in active.values():
+                  continue
+
+              if item.suffix.lower() not in {".yml", ".yaml"}:
+                  raise SystemExit(
+                      "ERROR: unexpected non-workflow file remains in "
+                      f".github/workflows: {item.name}"
+                  )
+
+              lower = item.name.lower()
+
+              destination_root = (
+                  archive_302
+                  if "gen2" in lower or "5.4.302" in lower
+                  else archive_274
+              )
+
+              move_file(
+                  item,
+                  destination_root / item.name,
+              )
+
+          # Recover the accidentally nested workflow copy.
+          nested = (
+              workflows
+              / ".github"
+              / "workflows"
+              / "13-susfs-adaptation-probe.yml"
+          )
+
+          if nested.is_file():
+              move_file(
+                  nested,
+                  archive_274
+                  / "misplaced"
+                  / "13-susfs-adaptation-probe.yml",
+              )
+
+          nested_root = workflows / ".github"
+
+          if nested_root.exists():
+              shutil.rmtree(nested_root)
+
+          # Remove or preserve the accidentally created root github/workflows copy.
+          wrong_root = root / "github" / "workflows"
+          wrong_file = wrong_root / "20-packaging-avb-audit.yml"
+          canonical_archive = archive_274 / "20-packaging-avb-audit.yml"
+
+          if wrong_file.is_file():
+              if (
+                  canonical_archive.is_file()
+                  and hashlib.sha256(wrong_file.read_bytes()).digest()
+                  == hashlib.sha256(canonical_archive.read_bytes()).digest()
+              ):
+                  wrong_file.unlink()
+              else:
+                  move_file(
+                      wrong_file,
+                      archive_274
+                      / "misplaced-root"
+                      / "20-packaging-avb-audit.yml",
+                  )
+
+          wrong_parent = root / "github"
+
+          if wrong_parent.exists():
+              remaining = [
+                  p
+                  for p in wrong_parent.rglob("*")
+                  if p.is_file()
+              ]
+
+              if remaining:
+                  raise SystemExit(
+                      "ERROR: unexpected files remain under root github/: "
+                      + ", ".join(
+                          str(p.relative_to(root))
+                          for p in remaining
+                      )
+                  )
+
+              shutil.rmtree(wrong_parent)
+
+          # Archive this one-time organizer too, so it disappears from Actions
+          # after the commit has been pushed.
+          organizer = workflows / cleanup_name
+
+          if not organizer.is_file():
+              raise SystemExit(
+                  "ERROR: organizer workflow cannot archive itself"
+              )
+
+          move_file(
+              organizer,
+              maintenance / cleanup_name,
+          )
+
+          active_expected = sorted(active.values())
+          active_actual = sorted(
+              p.name
+              for p in workflows.iterdir()
+              if p.is_file()
+              and p.suffix.lower() in {".yml", ".yaml"}
+          )
+
+          if active_actual != active_expected:
+              raise SystemExit(
+                  "ERROR: active workflow set mismatch\n"
+                  f"expected={active_expected}\n"
+                  f"actual={active_actual}"
+              )
+
+          directories_left = [
+              p
+              for p in workflows.iterdir()
+              if p.is_dir()
+          ]
+
+          if directories_left:
+              raise SystemExit(
+                  "ERROR: nested workflow directories remain: "
+                  + ", ".join(
+                      str(p.relative_to(root))
+                      for p in directories_left
+                  )
+              )
+
+          # Human-readable archive documentation.
+          archive_readme = archive / "README.md"
+          archive_readme.write_text(
+              """# Workflow Archive
+
+          Historical workflows are separated by the kernel version they belong to.
+
+          - `5.4.274/` — historical VEUX Linux 5.4.274 audits, builds and superseded workflow revisions.
+          - `5.4.302/` — historical VEUX/PEUX Linux 5.4.302 audits, builds and superseded workflow revisions.
+          - `repository-maintenance/` — one-time repository maintenance workflows.
+
+          Only the current workflows remain directly under `.github/workflows/`.
+          GitHub Actions does not load archived workflows from this directory.
+
+          Historical internal artifact identifiers such as `GEN1_*` or `GEN2_*`
+          can remain inside active workflows where changing them would break
+          references to already generated GitHub Actions artifacts.
+          """.replace("          ", ""),
+              encoding="utf-8",
+          )
+
+          # Clean root README: version based, no GEN1/GEN2 project naming.
+          readme = root / "README.md"
+          readme.write_text(
+              """# VEUX / PEUX ReSukiSU + SUSFS Kernel Builds
+
+          This repository maintains two separate Linux 5.4 kernel lines for Xiaomi/POCO SM6375 devices.
+
+          ## Linux 5.4.274
+
+          Target:
+          - VEUX
+          - Xiaomi HyperOS stock `OS1.0.12.0.TKCMIXM`
+          - Android 13
+          - security patch `2024-12`
+
+          Current integration:
+          - ReSukiSU `b2ac2fc8`
+          - SUSFS 2.2.0
+          - relevant Linux 5.4 OPEN_REDIRECT / SRCU stability fixes
+
+          Current active workflows:
+          - `5.4.274-49-resukisu-upstream-update-full-build-v3.yml`
+          - `5.4.274-52-github-built-standalone-ak3-v1.yml`
+          - `5.4.274-53-github-built-boot-img-v1.yml`
+
+          ## Linux 5.4.302
+
+          Target:
+          - VEUX / PEUX
+          - LineageOS 23.2 / Android 16 QPR2
+          - Android boot image v3
+
+          Current integration:
+          - ReSukiSU `b2ac2fc8`
+          - SUSFS 2.2.0
+          - validated VEUX Lineage Android 16 boot input
+          - unified VEUX/PEUX AnyKernel3 packaging
+
+          Current active workflows:
+          - `5.4.302-36-lineage-boot-validation-v14.yml`
+          - `5.4.302-43-resukisu-upstream-update-full-build-v2.yml`
+          - `5.4.302-44-veux-peux-updated-clean-ak3-release-v1.yml`
+
+          The validated 5.4.302 boot seed is stored under `assets/5.4.302/`,
+          not inside the GitHub Actions workflow directory.
+
+          ## Workflow archive
+
+          Superseded workflows are retained under:
+          - `archive/workflows/5.4.274/`
+          - `archive/workflows/5.4.302/`
+
+          This keeps the GitHub Actions list focused on the current build and
+          packaging paths while preserving the historical development chain.
+
+          ## Device testing
+
+          Offline build, package, boot-image and runtime simulations do not
+          replace a physical-device boot test. Physical compatibility is only
+          claimed where it has actually been tested.
+          """.replace("          ", ""),
+              encoding="utf-8",
+          )
+          PY
+
+      - name: Validate reorganized workflow structure
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 -m pip install \
+            --disable-pip-version-check \
+            --no-input \
+            'PyYAML==6.0.2'
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib
+          import subprocess
+          import tempfile
+          import yaml
+
+          root = Path.cwd()
+          workflow_dir = root / ".github" / "workflows"
+
+          expected = [
+              "5.4.274-49-resukisu-upstream-update-full-build-v3.yml",
+              "5.4.274-52-github-built-standalone-ak3-v1.yml",
+              "5.4.274-53-github-built-boot-img-v1.yml",
+              "5.4.302-36-lineage-boot-validation-v14.yml",
+              "5.4.302-43-resukisu-upstream-update-full-build-v2.yml",
+              "5.4.302-44-veux-peux-updated-clean-ak3-release-v1.yml",
+          ]
+
+          actual = sorted(
+              p.name
+              for p in workflow_dir.iterdir()
+              if p.is_file()
+          )
+
+          if actual != sorted(expected):
+              raise SystemExit(
+                  "ERROR: unexpected active workflow directory contents\n"
+                  f"expected={sorted(expected)}\n"
+                  f"actual={actual}"
+              )
+
+          if any(p.is_dir() for p in workflow_dir.iterdir()):
+              raise SystemExit(
+                  "ERROR: nested directory still exists in .github/workflows"
+              )
+
+          total_runs = 0
+
+          for filename in expected:
+              path = workflow_dir / filename
+              text = path.read_text(encoding="utf-8")
+
+              first_name = next(
+                  (
+                      line
+                      for line in text.splitlines()
+                      if line.startswith("name:")
+                  ),
+                  "",
+              )
+
+              if "GEN1" in first_name or "GEN2" in first_name:
+                  raise SystemExit(
+                      f"ERROR: legacy generation label in visible name: "
+                      f"{filename}: {first_name}"
+                  )
+
+              document = yaml.load(
+                  text,
+                  Loader=yaml.BaseLoader,
+              )
+
+              if not isinstance(document, dict):
+                  raise SystemExit(
+                      f"ERROR: YAML root invalid: {filename}"
+                  )
+
+              jobs = document.get("jobs")
+
+              if not isinstance(jobs, dict):
+                  raise SystemExit(
+                      f"ERROR: jobs map missing: {filename}"
+                  )
+
+              for job in jobs.values():
+                  if not isinstance(job, dict):
+                      continue
+
+                  for step in job.get("steps", []) or []:
+                      if not isinstance(step, dict):
+                          continue
+
+                      run = step.get("run")
+
+                      if not isinstance(run, str):
+                          continue
+
+                      total_runs += 1
+
+                      with tempfile.NamedTemporaryFile(
+                          mode="w",
+                          suffix=".sh",
+                          encoding="utf-8",
+                          delete=False,
+                      ) as handle:
+                          handle.write(run)
+                          script = Path(handle.name)
+
+                      result = subprocess.run(
+                          ["bash", "-n", str(script)],
+                          capture_output=True,
+                          text=True,
+                      )
+
+                      script.unlink(missing_ok=True)
+
+                      if result.returncode != 0:
+                          raise SystemExit(
+                              "ERROR: bash -n failed in "
+                              f"{filename}\n{result.stderr}"
+                          )
+
+          seed = (
+              root
+              / "assets"
+              / "5.4.302"
+              / "GEN2_W36_VALIDATED_LINEAGE_VEUX_ANDROID16_BOOT.img.gz"
+          )
+
+          if not seed.is_file():
+              raise SystemExit(
+                  "ERROR: 5.4.302 boot seed is missing from assets/"
+              )
+
+          if seed.stat().st_size != 16498759:
+              raise SystemExit(
+                  "ERROR: 5.4.302 boot seed size mismatch"
+              )
+
+          if hashlib.sha256(seed.read_bytes()).hexdigest() != (
+              "183984c727524325b36696a43419802fa"
+              "9894a56bfc4c51c3b3cc6fa242a7bfa"
+          ):
+              raise SystemExit(
+                  "ERROR: 5.4.302 boot seed hash mismatch"
+              )
+
+          w36 = (
+              workflow_dir
+              / "5.4.302-36-lineage-boot-validation-v14.yml"
+          ).read_text(encoding="utf-8")
+
+          required_seed_path = (
+              "VALIDATED_BOOT_REPO_SEED_PATH: "
+              "assets/5.4.302/"
+              "GEN2_W36_VALIDATED_LINEAGE_VEUX_ANDROID16_BOOT.img.gz"
+          )
+
+          if required_seed_path not in w36:
+              raise SystemExit(
+                  "ERROR: W36 active workflow does not use new asset path"
+              )
+
+          if (root / "github").exists():
+              raise SystemExit(
+                  "ERROR: obsolete root github/ directory remains"
+              )
+
+          if (
+              root
+              / ".github"
+              / "workflows"
+              / ".github"
+          ).exists():
+              raise SystemExit(
+                  "ERROR: obsolete nested .github directory remains"
+              )
+
+          if not any(
+              (root / "archive" / "workflows" / "5.4.274").rglob("*.yml")
+          ):
+              raise SystemExit(
+                  "ERROR: 5.4.274 archive is unexpectedly empty"
+              )
+
+          if not any(
+              (root / "archive" / "workflows" / "5.4.302").rglob("*.yml")
+          ):
+              raise SystemExit(
+                  "ERROR: 5.4.302 archive is unexpectedly empty"
+              )
+
+          print("ACTIVE_WORKFLOW_COUNT=6")
+          print(f"ACTIVE_SHELL_RUN_BLOCKS_BASH_N_PASS={total_runs}/{total_runs}")
+          print("ACTIVE_YAML_PARSE=6/6 PASS")
+          print("KERNEL_VERSION_SEPARATION=PASS")
+          print("NESTED_WORKFLOW_DIRECTORY_CLEANUP=PASS")
+          print("MISPLACED_ROOT_GITHUB_DIRECTORY_CLEANUP=PASS")
+          print("BOOT_SEED_RELOCATION=PASS")
+          PY
+
+          git diff --check
+
+          {
+            echo "ACTIVE_WORKFLOWS=6"
+            echo "KERNEL_5_4_274_ACTIVE=3"
+            echo "KERNEL_5_4_302_ACTIVE=3"
+            echo "ARCHIVE_5_4_274_COUNT=$(find archive/workflows/5.4.274 -type f \( -name '*.yml' -o -name '*.yaml' \) | wc -l | tr -d ' ')"
+            echo "ARCHIVE_5_4_302_COUNT=$(find archive/workflows/5.4.302 -type f \( -name '*.yml' -o -name '*.yaml' \) | wc -l | tr -d ' ')"
+            echo "ROOT_GITHUB_DIRECTORY_PRESENT=$(test -e github && echo YES || echo NO)"
+            echo "NESTED_WORKFLOW_GITHUB_DIRECTORY_PRESENT=$(test -e .github/workflows/.github && echo YES || echo NO)"
+            echo "BOOT_SEED_PATH=assets/5.4.302/GEN2_W36_VALIDATED_LINEAGE_VEUX_ANDROID16_BOOT.img.gz"
+            echo "BOOT_SEED_SHA256=$(sha256sum assets/5.4.302/GEN2_W36_VALIDATED_LINEAGE_VEUX_ANDROID16_BOOT.img.gz | awk '{print $1}')"
+            echo "VISIBLE_GEN1_GEN2_WORKFLOW_NAMES=0"
+          } | tee organization-output/ORGANIZATION-VALIDATION.txt
+
+          find .github/workflows \
+            -maxdepth 1 \
+            -type f \
+            -printf '%f\n' \
+            | LC_ALL=C sort \
+            > organization-output/AFTER-ACTIVE-WORKFLOWS.txt
+
+          find archive/workflows/5.4.274 \
+            -type f \
+            -printf '%P\n' \
+            | LC_ALL=C sort \
+            > organization-output/ARCHIVE-5.4.274.txt
+
+          find archive/workflows/5.4.302 \
+            -type f \
+            -printf '%P\n' \
+            | LC_ALL=C sort \
+            > organization-output/ARCHIVE-5.4.302.txt
+
+      - name: Commit organized repository atomically
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email \
+            "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add -A
+
+          git status --short \
+            | tee organization-output/GIT-STATUS-BEFORE-COMMIT.txt
+
+          git diff --cached --check
+
+          if git diff --cached --quiet; then
+            echo "ERROR: no repository organization changes detected"
+            exit 1
+          fi
+
+          git commit \
+            -m "Organize workflows by kernel version 5.4.274 and 5.4.302"
+
+          NEW_COMMIT="$(git rev-parse HEAD)"
+          NEW_TREE="$(git rev-parse HEAD^{tree})"
+
+          {
+            echo "ORGANIZATION_COMMIT=$NEW_COMMIT"
+            echo "ORGANIZATION_TREE=$NEW_TREE"
+          } | tee organization-output/ORGANIZATION-COMMIT.txt
+
+          git push origin HEAD:main
+
+      - name: Verify pushed main branch
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git fetch origin main
+
+          LOCAL="$(git rev-parse HEAD)"
+          REMOTE="$(git rev-parse origin/main)"
+
+          test "$LOCAL" = "$REMOTE"
+
+          {
+            echo "PUSH=PASS"
+            echo "LOCAL_COMMIT=$LOCAL"
+            echo "REMOTE_MAIN_COMMIT=$REMOTE"
+            echo "WORKFLOW_ORGANIZATION=PASS"
+            echo "KERNEL_5_4_274_AND_5_4_302_SEPARATION=PASS"
+          } | tee organization-output/FINAL-RESULT.txt
+
+      - name: Upload organization report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: KERNEL_WORKFLOW_ORGANIZATION_REPORT-${{ github.run_number }}
+          path: organization-output/
+          if-no-files-found: warn
+          retention-days: 90
+          compression-level: 9
