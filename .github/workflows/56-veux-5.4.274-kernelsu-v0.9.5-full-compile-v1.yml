@@ -1,0 +1,573 @@
+name: 56 - VEUX 5.4.274 KernelSU v0.9.5 Full Compile v1
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: w56-v1-veux-5-4-274-kernelsu-v095-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: KernelSU v0.9.5 - Linux 5.4.274
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+
+    env:
+      KERNEL_REPOSITORY: dereference23/kernel_xiaomi_sm6375
+      KERNEL_BASE_REF: "20240619"
+      COMMON_REPOSITORY: https://android.googlesource.com/kernel/common
+      COMMON_REF: android11-5.4.274_r00
+
+      KSU_REPOSITORY: tiann/KernelSU
+      KSU_REF: b766b98513b5a7eb33bc1c4a76b5702bf1288f07
+      KSU_EXPECTED_VERSION: "11872"
+
+      CLANG_REVISION: r416183b
+      CLANG_URL: https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android12L-gsi/clang-r416183b.tar.gz
+
+    steps:
+      - name: Checkout VEUX 5.4.268 source
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ env.KERNEL_REPOSITORY }}
+          ref: ${{ env.KERNEL_BASE_REF }}
+          path: kernel
+          fetch-depth: 0
+          filter: blob:none
+
+      - name: Install build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          sudo apt-get update
+          sudo apt-get install -y \
+            bc \
+            bison \
+            flex \
+            libssl-dev \
+            libelf-dev \
+            cpio \
+            rsync \
+            python3 \
+            xz-utils \
+            zstd
+
+      - name: Reconstruct verified Linux 5.4.274 source lane
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd "$GITHUB_WORKSPACE/kernel"
+
+          git config user.name "VEUX W56 Builder"
+          git config user.email "veux-w56-builder@users.noreply.github.com"
+
+          base_head="$(git rev-parse HEAD)"
+          base_version="$(make -s kernelversion)"
+
+          test "$base_version" = "5.4.268"
+          test "$base_head" = "$(git rev-parse "$KERNEL_BASE_REF^{commit}")"
+
+          git remote remove android-common >/dev/null 2>&1 || true
+          git remote add android-common "$COMMON_REPOSITORY"
+
+          {
+            echo "W56_VERSION=v1"
+            echo "BASE_REF=$KERNEL_BASE_REF"
+            echo "BASE_HEAD=$base_head"
+            echo "BASE_VERSION=$base_version"
+            echo "COMMON_REF=$COMMON_REF"
+          } | tee "$GITHUB_WORKSPACE/reconstruction.log"
+
+          git fetch android-common \
+            "refs/tags/${COMMON_REF}:refs/tags/${COMMON_REF}" \
+            2>&1 | tee -a "$GITHUB_WORKSPACE/reconstruction.log"
+
+          git merge \
+            --no-edit \
+            --no-ff \
+            "$COMMON_REF" \
+            2>&1 | tee -a "$GITHUB_WORKSPACE/reconstruction.log"
+
+          merged_head="$(git rev-parse HEAD)"
+          merged_tree="$(git rev-parse HEAD^{tree})"
+          merged_version="$(make -s kernelversion)"
+
+          {
+            echo "MERGED_HEAD=$merged_head"
+            echo "MERGED_TREE=$merged_tree"
+            echo "MERGED_VERSION=$merged_version"
+          } | tee -a "$GITHUB_WORKSPACE/reconstruction.log"
+
+          test "$merged_version" = "5.4.274"
+          test -f arch/arm64/configs/veux_defconfig
+          test -f arch/arm64/boot/dts/vendor/xiaomi/veux.dts
+          test -d drivers/kernelsu
+          test -f drivers/kernelsu/Makefile
+          test -f drivers/kernelsu/Kconfig
+
+      - name: Snapshot original KernelSU integration contract
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd "$GITHUB_WORKSPACE/kernel"
+          mkdir -p "$GITHUB_WORKSPACE/pre-integration"
+
+          makefile_count="$(
+            grep -Ec '^[[:space:]]*obj-\$\(CONFIG_KSU\)[[:space:]]*\+=[[:space:]]*kernelsu/[[:space:]]*$' \
+              drivers/Makefile || true
+          )"
+
+          kconfig_count="$(
+            grep -Fc 'source "drivers/kernelsu/Kconfig"' drivers/Kconfig || true
+          )"
+
+          test "$makefile_count" -eq 1
+          test "$kconfig_count" -eq 1
+
+          embedded_version="$(
+            sed -nE \
+              's/^[[:space:]]*ccflags-y[[:space:]]*\+=[[:space:]]*-DKSU_VERSION=([0-9]+).*/\1/p' \
+              drivers/kernelsu/Makefile \
+              | head -n1
+          )"
+
+          test "$embedded_version" = "11872"
+
+          grep -RhoE '\bksu_[A-Za-z0-9_]+' \
+            fs kernel security drivers/input include \
+            --exclude-dir=kernelsu \
+            --exclude='*.o' \
+            2>/dev/null \
+            | LC_ALL=C sort -u \
+            > "$GITHUB_WORKSPACE/pre-integration/external-ksu-symbols.txt" || true
+
+          external_count="$(
+            wc -l < "$GITHUB_WORKSPACE/pre-integration/external-ksu-symbols.txt" \
+              | tr -d ' '
+          )"
+
+          test "$external_count" -eq 8
+
+          grep -RIlE '\bksu_[A-Za-z0-9_]+' \
+            fs kernel security drivers/input include \
+            --exclude-dir=kernelsu \
+            --exclude='*.o' \
+            2>/dev/null \
+            | LC_ALL=C sort -u \
+            > "$GITHUB_WORKSPACE/pre-integration/hook-source-files.txt" || true
+
+          test -s "$GITHUB_WORKSPACE/pre-integration/hook-source-files.txt"
+
+          while IFS= read -r file; do
+            sha256sum "$file"
+          done < "$GITHUB_WORKSPACE/pre-integration/hook-source-files.txt" \
+            > "$GITHUB_WORKSPACE/pre-integration/hook-source-files.sha256"
+
+          susfs_refs="$(
+            {
+              grep -RInEi \
+                'susfs|sus_path|sus_mount|sus_kstat|open_redirect|spoof_uname|spoof_cmdline' \
+                fs kernel security include \
+                --exclude='*.o' \
+                2>/dev/null || true
+            } | wc -l | tr -d ' '
+          )"
+
+          test "$susfs_refs" -eq 0
+
+          {
+            echo "ORIGINAL_EMBEDDED_KSU_VERSION=$embedded_version"
+            echo "DRIVERS_MAKEFILE_KSU_ENTRY_COUNT=$makefile_count"
+            echo "DRIVERS_KCONFIG_KSU_ENTRY_COUNT=$kconfig_count"
+            echo "EXTERNAL_KSU_SYMBOL_COUNT=$external_count"
+            echo "BASE_SUSFS_REFERENCE_LINES=$susfs_refs"
+            echo
+            cat "$GITHUB_WORKSPACE/pre-integration/external-ksu-symbols.txt"
+          } | tee "$GITHUB_WORKSPACE/pre-integration/BASE-CONTRACT.txt"
+
+      - name: Checkout immutable KernelSU v0.9.5
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ env.KSU_REPOSITORY }}
+          ref: ${{ env.KSU_REF }}
+          path: kernel/KernelSU
+          fetch-depth: 0
+
+      - name: Verify KernelSU identity and version
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd "$GITHUB_WORKSPACE/kernel"
+
+          test "$(git -C KernelSU rev-parse HEAD)" = "$KSU_REF"
+          test -d KernelSU/.git
+          test -d KernelSU/kernel
+          test -f KernelSU/kernel/Kconfig
+          test -f KernelSU/kernel/Makefile
+
+          ksu_git_count="$(git -C KernelSU rev-list --count HEAD)"
+          ksu_version="$((10000 + ksu_git_count + 200))"
+
+          {
+            echo "KSU_REF=$KSU_REF"
+            echo "KSU_HEAD=$(git -C KernelSU rev-parse HEAD)"
+            echo "KSU_GIT_COUNT=$ksu_git_count"
+            echo "KSU_CALCULATED_VERSION=$ksu_version"
+            echo "KSU_EXPECTED_VERSION=$KSU_EXPECTED_VERSION"
+          } | tee "$GITHUB_WORKSPACE/ksu-identity.txt"
+
+          test "$ksu_version" = "$KSU_EXPECTED_VERSION"
+
+          grep -q 'depends on OVERLAY_FS' KernelSU/kernel/Kconfig
+          grep -q 'obj-\$(CONFIG_KSU) += kernelsu.o' KernelSU/kernel/Makefile
+          grep -q 'KSU_GIT_VERSION.*git rev-list --count HEAD' KernelSU/kernel/Makefile
+
+          # The candidate must satisfy every existing external ksu_* hook symbol.
+          grep -RhoE '\bksu_[A-Za-z0-9_]+' \
+            KernelSU/kernel \
+            2>/dev/null \
+            | LC_ALL=C sort -u \
+            > "$GITHUB_WORKSPACE/candidate-ksu-symbols.txt" || true
+
+          : > "$GITHUB_WORKSPACE/missing-candidate-symbols.txt"
+
+          while IFS= read -r symbol; do
+            [[ -n "$symbol" ]] || continue
+            if ! grep -Fxq "$symbol" "$GITHUB_WORKSPACE/candidate-ksu-symbols.txt"; then
+              echo "$symbol" >> "$GITHUB_WORKSPACE/missing-candidate-symbols.txt"
+            fi
+          done < "$GITHUB_WORKSPACE/pre-integration/external-ksu-symbols.txt"
+
+          test ! -s "$GITHUB_WORKSPACE/missing-candidate-symbols.txt"
+
+      - name: Replace embedded KernelSU with pinned v0.9.5 symlink
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd "$GITHUB_WORKSPACE/kernel"
+
+          rm -rf drivers/kernelsu
+          ln -s ../KernelSU/kernel drivers/kernelsu
+
+          test -L drivers/kernelsu
+          test "$(readlink drivers/kernelsu)" = "../KernelSU/kernel"
+          test "$(realpath drivers/kernelsu)" = "$(realpath KernelSU/kernel)"
+
+          makefile_count="$(
+            grep -Ec '^[[:space:]]*obj-\$\(CONFIG_KSU\)[[:space:]]*\+=[[:space:]]*kernelsu/[[:space:]]*$' \
+              drivers/Makefile || true
+          )"
+
+          kconfig_count="$(
+            grep -Fc 'source "drivers/kernelsu/Kconfig"' drivers/Kconfig || true
+          )"
+
+          test "$makefile_count" -eq 1
+          test "$kconfig_count" -eq 1
+
+          # Integration must not modify any of the existing VEUX hook source files.
+          sha256sum -c "$GITHUB_WORKSPACE/pre-integration/hook-source-files.sha256"
+
+          {
+            echo "KSU_DRIVER_MODE=BUILT_IN_SOURCE_SYMLINK"
+            echo "KSU_SYMLINK=drivers/kernelsu -> ../KernelSU/kernel"
+            echo "DRIVERS_MAKEFILE_KSU_ENTRY_COUNT=$makefile_count"
+            echo "DRIVERS_KCONFIG_KSU_ENTRY_COUNT=$kconfig_count"
+            echo "EXTERNAL_HOOK_SOURCE_FILES_UNCHANGED=YES"
+            echo "SUSFS_INTEGRATED=NO"
+          } | tee "$GITHUB_WORKSPACE/integration.txt"
+
+      - name: Download official Android clang-r416183b
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p "$GITHUB_WORKSPACE/toolchain/$CLANG_REVISION"
+
+          curl \
+            --fail \
+            --location \
+            --retry 3 \
+            "$CLANG_URL" \
+            -o "$RUNNER_TEMP/${CLANG_REVISION}.tar.gz"
+
+          tar \
+            -xzf "$RUNNER_TEMP/${CLANG_REVISION}.tar.gz" \
+            -C "$GITHUB_WORKSPACE/toolchain/$CLANG_REVISION"
+
+          rm -f "$RUNNER_TEMP/${CLANG_REVISION}.tar.gz"
+
+          echo "$GITHUB_WORKSPACE/toolchain/$CLANG_REVISION/bin" >> "$GITHUB_PATH"
+
+          "$GITHUB_WORKSPACE/toolchain/$CLANG_REVISION/bin/clang" --version \
+            | tee "$GITHUB_WORKSPACE/clang-version.txt"
+
+          "$GITHUB_WORKSPACE/toolchain/$CLANG_REVISION/bin/ld.lld" --version \
+            | tee -a "$GITHUB_WORKSPACE/clang-version.txt"
+
+      - name: Configure VEUX for KernelSU v0.9.5
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd "$GITHUB_WORKSPACE/kernel"
+
+          export PATH="$GITHUB_WORKSPACE/toolchain/$CLANG_REVISION/bin:$PATH"
+          export KCFLAGS="-D__ANDROID_COMMON_KERNEL__"
+
+          rm -rf out-w56
+
+          make \
+            O=out-w56 \
+            ARCH=arm64 \
+            LLVM=1 \
+            veux_defconfig \
+            2>&1 | tee "$GITHUB_WORKSPACE/config-initial.log"
+
+          test -s out-w56/.config
+
+          # v0.9.5 non-GKI requirements. Change only the generated build config;
+          # arch/arm64/configs/veux_defconfig remains untouched.
+          scripts/config --file out-w56/.config \
+            -e KSU \
+            -e KPROBES \
+            -e KPROBE_EVENTS
+
+          make \
+            O=out-w56 \
+            ARCH=arm64 \
+            LLVM=1 \
+            olddefconfig \
+            2>&1 | tee "$GITHUB_WORKSPACE/config-olddefconfig.log"
+
+          grep -Fxq 'CONFIG_KSU=y' out-w56/.config
+          grep -Fxq 'CONFIG_KPROBES=y' out-w56/.config
+          grep -Fxq 'CONFIG_HAVE_KPROBES=y' out-w56/.config
+          grep -Fxq 'CONFIG_KPROBE_EVENTS=y' out-w56/.config
+          grep -Fxq 'CONFIG_OVERLAY_FS=y' out-w56/.config
+          grep -Fxq 'CONFIG_KALLSYMS=y' out-w56/.config
+
+          # Keep the original kernel's no-modules policy for this first test.
+          grep -Fxq '# CONFIG_MODULES is not set' out-w56/.config
+
+          # We deliberately do not add SUSFS in W56.
+          if grep -Eq '^CONFIG_KSU_SUSFS=' out-w56/.config; then
+            echo "Unexpected SUSFS config found" >&2
+            exit 1
+          fi
+
+          {
+            echo "W56_CONFIG_CONTRACT"
+            echo
+            grep -E \
+              '^(CONFIG_KSU=|CONFIG_KPROBES=|CONFIG_HAVE_KPROBES=|CONFIG_KPROBE_EVENTS=|CONFIG_OVERLAY_FS=|CONFIG_KALLSYMS=)' \
+              out-w56/.config
+            grep -F '# CONFIG_MODULES is not set' out-w56/.config
+            echo
+            echo "SOURCE_DEFCONFIG_SHA256=$(sha256sum arch/arm64/configs/veux_defconfig | awk '{print $1}')"
+            echo "GENERATED_CONFIG_SHA256=$(sha256sum out-w56/.config | awk '{print $1}')"
+          } | tee "$GITHUB_WORKSPACE/config-contract.txt"
+
+          make \
+            -s \
+            O=out-w56 \
+            ARCH=arm64 \
+            LLVM=1 \
+            kernelrelease \
+            | tee "$GITHUB_WORKSPACE/kernelrelease.txt"
+
+      - name: Full compile Linux 5.4.274 Image
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd "$GITHUB_WORKSPACE/kernel"
+
+          export PATH="$GITHUB_WORKSPACE/toolchain/$CLANG_REVISION/bin:$PATH"
+          export KCFLAGS="-D__ANDROID_COMMON_KERNEL__"
+
+          echo "Starting W56-v1 VEUX 5.4.274 KernelSU v0.9.5 Image build"
+          echo "Threads: $(nproc)"
+          echo "Disk:"
+          df -h "$GITHUB_WORKSPACE"
+
+          make \
+            -j"$(nproc)" \
+            O=out-w56 \
+            ARCH=arm64 \
+            LLVM=1 \
+            Image \
+            2>&1 | tee "$GITHUB_WORKSPACE/build.log"
+
+      - name: Verify compiled KernelSU image
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd "$GITHUB_WORKSPACE/kernel"
+
+          IMAGE="out-w56/arch/arm64/boot/Image"
+          VMLINUX="out-w56/vmlinux"
+          SYSTEM_MAP="out-w56/System.map"
+          CONFIG="out-w56/.config"
+
+          test -s "$IMAGE"
+          test -s "$VMLINUX"
+          test -s "$SYSTEM_MAP"
+          test -s "$CONFIG"
+
+          # KernelSU Makefile prints the computed version while compiling.
+          grep -F -- "-- KernelSU version: $KSU_EXPECTED_VERSION" \
+            "$GITHUB_WORKSPACE/build.log"
+
+          for symbol in \
+            kernelsu_init \
+            ksu_handle_execveat \
+            ksu_handle_execveat_sucompat \
+            ksu_handle_faccessat \
+            ksu_handle_stat \
+            ksu_handle_vfs_read \
+            ksu_handle_devpts
+          do
+            grep -Eq "[[:space:]]${symbol}$" "$SYSTEM_MAP"
+          done
+
+          sha256sum -c "$GITHUB_WORKSPACE/pre-integration/hook-source-files.sha256"
+
+          {
+            echo "W56-v1 VEUX 5.4.274 KernelSU v0.9.5"
+            echo
+            echo "KERNEL_VERSION=$(make -s kernelversion)"
+            echo "KERNEL_RELEASE=$(cat "$GITHUB_WORKSPACE/kernelrelease.txt")"
+            echo "KSU_HEAD=$(git -C KernelSU rev-parse HEAD)"
+            echo "KSU_VERSION=$KSU_EXPECTED_VERSION"
+            echo "KSU_DRIVER_MODE=BUILT_IN_SOURCE_SYMLINK"
+            echo "CONFIG_KSU=y"
+            echo "CONFIG_KPROBES=y"
+            echo "CONFIG_HAVE_KPROBES=y"
+            echo "CONFIG_KPROBE_EVENTS=y"
+            echo "SUSFS_INTEGRATED=NO"
+            echo
+            echo "IMAGE_BYTES=$(stat -c '%s' "$IMAGE")"
+            echo "IMAGE_SHA256=$(sha256sum "$IMAGE" | awk '{print $1}')"
+            echo "VMLINUX_SHA256=$(sha256sum "$VMLINUX" | awk '{print $1}')"
+            echo "SYSTEM_MAP_SHA256=$(sha256sum "$SYSTEM_MAP" | awk '{print $1}')"
+            echo "CONFIG_SHA256=$(sha256sum "$CONFIG" | awk '{print $1}')"
+            echo
+            echo "FULL_KERNEL_IMAGE_BUILD=PASS"
+            echo "KERNELSU_SYMBOL_CHECK=PASS"
+            echo "EXTERNAL_HOOK_SOURCE_FILES_UNCHANGED=YES"
+            echo "BOOT_COMPATIBILITY_PROVEN=NO"
+            echo "BOOT_IMAGE_CREATED=NO"
+            echo "FLASHABLE_ZIP_CREATED=NO"
+            echo "DEVICE_ACCESSED=NO"
+            echo "FLASHING_PERFORMED=NO"
+          } | tee "$GITHUB_WORKSPACE/BUILD-INFO.txt"
+
+      - name: Prepare build artifact
+        if: ${{ success() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd "$GITHUB_WORKSPACE"
+          rm -rf artifact
+          mkdir -p artifact
+
+          cp kernel/out-w56/arch/arm64/boot/Image artifact/Image
+          cp kernel/out-w56/.config artifact/veux-5.4.274-kernelsu-v0.9.5.config
+          cp kernel/out-w56/System.map artifact/System.map
+          cp BUILD-INFO.txt artifact/
+          cp reconstruction.log artifact/
+          cp ksu-identity.txt artifact/
+          cp integration.txt artifact/
+          cp config-contract.txt artifact/
+          cp clang-version.txt artifact/
+          cp kernelrelease.txt artifact/
+          cp config-initial.log artifact/
+          cp config-olddefconfig.log artifact/
+          cp build.log artifact/
+          cp pre-integration/BASE-CONTRACT.txt artifact/
+          cp pre-integration/external-ksu-symbols.txt artifact/
+          cp pre-integration/hook-source-files.txt artifact/
+          cp pre-integration/hook-source-files.sha256 artifact/
+
+          sha256sum \
+            artifact/Image \
+            artifact/veux-5.4.274-kernelsu-v0.9.5.config \
+            artifact/System.map \
+            artifact/BUILD-INFO.txt \
+            > artifact/SHA256SUMS.txt
+
+      - name: Upload successful W56-v1 build
+        if: ${{ success() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: W56-v1-VEUX-5_4_274-KernelSU-v0_9_5
+          path: artifact/
+          retention-days: 14
+          if-no-files-found: error
+
+      - name: Prepare failure diagnostics
+        if: ${{ failure() }}
+        shell: bash
+        run: |
+          set -u
+
+          mkdir -p "$GITHUB_WORKSPACE/failure-artifact"
+
+          for file in \
+            reconstruction.log \
+            ksu-identity.txt \
+            integration.txt \
+            clang-version.txt \
+            config-initial.log \
+            config-olddefconfig.log \
+            config-contract.txt \
+            kernelrelease.txt \
+            build.log \
+            candidate-ksu-symbols.txt \
+            missing-candidate-symbols.txt
+          do
+            if [[ -f "$GITHUB_WORKSPACE/$file" ]]; then
+              cp "$GITHUB_WORKSPACE/$file" "$GITHUB_WORKSPACE/failure-artifact/"
+            fi
+          done
+
+          if [[ -f "$GITHUB_WORKSPACE/kernel/out-w56/.config" ]]; then
+            cp \
+              "$GITHUB_WORKSPACE/kernel/out-w56/.config" \
+              "$GITHUB_WORKSPACE/failure-artifact/failed.config"
+          fi
+
+          if [[ -d "$GITHUB_WORKSPACE/pre-integration" ]]; then
+            cp -a \
+              "$GITHUB_WORKSPACE/pre-integration" \
+              "$GITHUB_WORKSPACE/failure-artifact/"
+          fi
+
+          {
+            echo "W56-v1 failed before completion."
+            echo "No boot image was created."
+            echo "No flashable ZIP was created."
+            echo "No device was accessed."
+            echo "No flashing was performed."
+          } > "$GITHUB_WORKSPACE/failure-artifact/FAILURE-SCOPE.txt"
+
+      - name: Upload W56-v1 failure diagnostics
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: W56-v1-VEUX-5_4_274-KernelSU-v0_9_5-FAILURE
+          path: failure-artifact/
+          retention-days: 14
+          if-no-files-found: warn
