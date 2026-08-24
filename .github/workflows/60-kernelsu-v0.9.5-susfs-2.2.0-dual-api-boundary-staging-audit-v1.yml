@@ -1,0 +1,867 @@
+name: 60 - KernelSU v0.9.5 + SUSFS 2.2.0 Dual API Boundary Staging Audit v1
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: w60-v1-ksu-v095-susfs220-api-boundary-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    name: W60 v1 ${{ matrix.id }} API boundary staging audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - id: linux-5_4_274
+            kernel_version: "5.4.274"
+            kernel_ref: "20240619"
+            merge_common: "yes"
+            embedded_ksu_version: "11872"
+            proven_primary: ".github/workflows/49-gen1-5.4.274-resukisu-upstream-update-full-build-v3.yml"
+            proven_primary_blob: "0cf794fcd3f3347272efedb0aee5e1aa54a9a790"
+            proven_parent: ".github/workflows/46C7-final-cumulative-resukisu-susfs-deterministic-cross-run-reference.yml"
+            proven_parent_blob: "281402ae932d48e4c2e355cf37f3a6253484360a"
+          - id: linux-5_4_302
+            kernel_version: "5.4.302"
+            kernel_ref: "f4b8a13a43a130a9aab83cc985ce4d4421291ae6"
+            merge_common: "no"
+            embedded_ksu_version: "12142"
+            proven_primary: ".github/workflows/43-gen2-5.4.302-resukisu-upstream-update-full-build-v2.yml"
+            proven_primary_blob: "de138adc865e2e5f76e609c30f6d790d4c2b08f9"
+            proven_parent: "NONE"
+            proven_parent_blob: "NONE"
+
+    env:
+      KERNEL_REPOSITORY: dereference23/kernel_xiaomi_sm6375
+      COMMON_REPOSITORY: https://android.googlesource.com/kernel/common
+      COMMON_REF: android11-5.4.274_r00
+
+      KSU_REPOSITORY: tiann/KernelSU
+      KSU_REF: b766b98513b5a7eb33bc1c4a76b5702bf1288f07
+      KSU_EXPECTED_VERSION: "11872"
+
+      SUSFS_REPOSITORY: https://gitlab.com/simonpunk/susfs4ksu.git
+      SUSFS_MODERN_BRANCH: gki-android12-5.10
+      SUSFS_MODERN_REF: be08face
+      SUSFS_MODERN_VERSION: "2.2.0"
+      SUSFS_LEGACY_BRANCH: kernel-5.4
+      SUSFS_LEGACY_REF: 76affd70
+      SUSFS_LEGACY_VERSION: "1.5.5"
+
+      ARTIFACT_DIR: ${{ github.workspace }}/w60-artifact
+
+    steps:
+      - name: Checkout workflow repository for authenticated W59 recipe provenance
+        uses: actions/checkout@v6
+        with:
+          path: workflow-repo
+          fetch-depth: 1
+
+      - name: Initialize W60 artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -rf "$ARTIFACT_DIR"
+          mkdir -p "$ARTIFACT_DIR"
+
+          {
+            echo "W60_VERSION=v1"
+            echo "LANE=${{ matrix.id }}"
+            echo "KERNEL_VERSION=${{ matrix.kernel_version }}"
+            echo "KERNEL_REF=${{ matrix.kernel_ref }}"
+            echo "KSU_REF=$KSU_REF"
+            echo "KSU_EXPECTED_VERSION=$KSU_EXPECTED_VERSION"
+            echo "SUSFS_MODERN=$SUSFS_MODERN_BRANCH@$SUSFS_MODERN_REF"
+            echo "SUSFS_MODERN_VERSION=$SUSFS_MODERN_VERSION"
+            echo "SUSFS_LEGACY=$SUSFS_LEGACY_BRANCH@$SUSFS_LEGACY_REF"
+            echo "SUSFS_LEGACY_VERSION=$SUSFS_LEGACY_VERSION"
+            echo "PURPOSE=DEFINE_EXACT_V095_TO_SUSFS220_ROOT_MANAGER_API_BOUNDARY"
+            echo "W59_PROVEN_RECIPE_REUSE=YES"
+            echo "FULL_KERNEL_BUILD_PERFORMED=NO"
+            echo "KERNEL_TREE_MODIFIED=NO"
+            echo "SUSFS_PATCH_APPLIED=NO"
+            echo "BOOT_IMAGE_CREATED=NO"
+            echo "FLASHABLE_ZIP_CREATED=NO"
+            echo "DEVICE_ACCESSED=NO"
+            echo "FLASHING_PERFORMED=NO"
+          } | tee "$ARTIFACT_DIR/W60-HEADER.txt"
+
+      - name: Install deterministic audit dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          sudo apt-get update
+          sudo apt-get install -y patch python3 python3-pip
+
+          python3 -m pip install \
+            --disable-pip-version-check \
+            --no-input \
+            'PyYAML==6.0.2'
+
+          python3 - <<'PY'
+          import yaml
+          print("PYYAML_VERSION=" + yaml.__version__)
+          if yaml.__version__ != "6.0.2":
+              raise SystemExit("unexpected PyYAML version")
+          PY
+
+      - name: Authenticate exact previously proven W59 source recipes
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          REPO="$GITHUB_WORKSPACE/workflow-repo"
+          PRIMARY="$REPO/${{ matrix.proven_primary }}"
+          PRIMARY_EXPECTED="${{ matrix.proven_primary_blob }}"
+          PARENT_REL="${{ matrix.proven_parent }}"
+          PARENT_EXPECTED="${{ matrix.proven_parent_blob }}"
+
+          test -f "$PRIMARY"
+
+          primary_actual="$(git hash-object "$PRIMARY")"
+          test "$primary_actual" = "$PRIMARY_EXPECTED"
+
+          {
+            echo "PRIMARY_PATH=${{ matrix.proven_primary }}"
+            echo "PRIMARY_EXPECTED_BLOB=$PRIMARY_EXPECTED"
+            echo "PRIMARY_ACTUAL_BLOB=$primary_actual"
+            echo "PRIMARY_AUTHENTICATION=PASS"
+            echo "PRIMARY_SHA256=$(sha256sum "$PRIMARY" | awk '{print $1}')"
+          } | tee "$ARTIFACT_DIR/PROVEN-RECIPE-IDENTITY.txt"
+
+          if [ "$PARENT_REL" != "NONE" ]; then
+            PARENT="$REPO/$PARENT_REL"
+            test -f "$PARENT"
+
+            parent_actual="$(git hash-object "$PARENT")"
+            test "$parent_actual" = "$PARENT_EXPECTED"
+            grep -Fq "$PARENT_EXPECTED" "$PRIMARY"
+
+            {
+              echo "PARENT_PATH=$PARENT_REL"
+              echo "PARENT_EXPECTED_BLOB=$PARENT_EXPECTED"
+              echo "PARENT_ACTUAL_BLOB=$parent_actual"
+              echo "PARENT_AUTHENTICATION=PASS"
+              echo "PRIMARY_REFERENCES_PARENT_BLOB=PASS"
+              echo "PARENT_SHA256=$(sha256sum "$PARENT" | awk '{print $1}')"
+            } | tee -a "$ARTIFACT_DIR/PROVEN-RECIPE-IDENTITY.txt"
+          else
+            echo "PARENT_RECIPE=NOT_REQUIRED" \
+              | tee -a "$ARTIFACT_DIR/PROVEN-RECIPE-IDENTITY.txt"
+          fi
+
+      - name: Checkout exact VEUX kernel lane
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ env.KERNEL_REPOSITORY }}
+          ref: ${{ matrix.kernel_ref }}
+          path: kernel
+          fetch-depth: 0
+          filter: blob:none
+
+      - name: Reconstruct and authenticate exact Linux 5.4 lane
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd "$GITHUB_WORKSPACE/kernel"
+
+          initial_head="$(git rev-parse HEAD)"
+          initial_version="$(make -s kernelversion)"
+
+          if [ "${{ matrix.merge_common }}" = "yes" ]; then
+            test "$initial_version" = "5.4.268"
+
+            git config user.name "VEUX W60 Audit"
+            git config user.email "veux-w60-audit@users.noreply.github.com"
+
+            git remote remove android-common >/dev/null 2>&1 || true
+            git remote add android-common "$COMMON_REPOSITORY"
+
+            git fetch android-common \
+              "refs/tags/${COMMON_REF}:refs/tags/${COMMON_REF}"
+
+            git merge \
+              --no-edit \
+              --no-ff \
+              "$COMMON_REF"
+
+            test "$(make -s kernelversion)" = "5.4.274"
+          else
+            test "$initial_head" = "${{ matrix.kernel_ref }}"
+            test "$initial_version" = "5.4.302"
+          fi
+
+          final_head="$(git rev-parse HEAD)"
+          final_tree="$(git rev-parse HEAD^{tree})"
+          final_version="$(make -s kernelversion)"
+
+          test "$final_version" = "${{ matrix.kernel_version }}"
+          test -f arch/arm64/configs/veux_defconfig
+          test -d drivers/kernelsu
+
+          {
+            echo "INITIAL_HEAD=$initial_head"
+            echo "INITIAL_VERSION=$initial_version"
+            echo "FINAL_HEAD=$final_head"
+            echo "FINAL_TREE=$final_tree"
+            echo "FINAL_VERSION=$final_version"
+            echo "LANE_RECONSTRUCTION=PASS"
+          } | tee "$ARTIFACT_DIR/KERNEL-IDENTITY.txt"
+
+      - name: Prove existing eight-symbol manual-hook contract
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd "$GITHUB_WORKSPACE/kernel"
+
+          embedded_version="$(
+            sed -nE \
+              's/^[[:space:]]*ccflags-y[[:space:]]*\+=[[:space:]]*-DKSU_VERSION=([0-9]+).*/\1/p' \
+              drivers/kernelsu/Makefile \
+              | head -n1
+          )"
+
+          test "$embedded_version" = "${{ matrix.embedded_ksu_version }}"
+
+          grep -RhoE '\bksu_[A-Za-z0-9_]+' \
+            fs kernel security drivers/input include \
+            --exclude-dir=kernelsu \
+            --exclude='*.o' \
+            2>/dev/null \
+            | LC_ALL=C sort -u \
+            > "$ARTIFACT_DIR/baseline-external-ksu-symbols.txt" || true
+
+          grep -RIlE '\bksu_[A-Za-z0-9_]+' \
+            fs kernel security drivers/input include \
+            --exclude-dir=kernelsu \
+            --exclude='*.o' \
+            2>/dev/null \
+            | LC_ALL=C sort -u \
+            > "$ARTIFACT_DIR/baseline-manual-hook-files.txt" || true
+
+          symbol_count="$(
+            wc -l < "$ARTIFACT_DIR/baseline-external-ksu-symbols.txt" \
+              | tr -d ' '
+          )"
+          file_count="$(
+            wc -l < "$ARTIFACT_DIR/baseline-manual-hook-files.txt" \
+              | tr -d ' '
+          )"
+
+          test "$symbol_count" = "8"
+          test "$file_count" = "5"
+
+          while IFS= read -r file; do
+            sha256sum "$file"
+          done < "$ARTIFACT_DIR/baseline-manual-hook-files.txt" \
+            > "$ARTIFACT_DIR/baseline-manual-hook-files.sha256"
+
+          {
+            echo "EMBEDDED_KSU_VERSION=$embedded_version"
+            echo "EXTERNAL_KSU_SYMBOL_COUNT=$symbol_count"
+            echo "MANUAL_HOOK_FILE_COUNT=$file_count"
+            echo "MANUAL_HOOK_CONTRACT=8_OF_8"
+          } | tee "$ARTIFACT_DIR/MANUAL-HOOK-CONTRACT.txt"
+
+      - name: Checkout immutable original KernelSU v0.9.5
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ env.KSU_REPOSITORY }}
+          ref: ${{ env.KSU_REF }}
+          path: KernelSU
+          fetch-depth: 0
+
+      - name: Authenticate KernelSU v0.9.5 and baseline symbol compatibility
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test "$(git -C "$GITHUB_WORKSPACE/KernelSU" rev-parse HEAD)" = "$KSU_REF"
+
+          ksu_git_count="$(
+            git -C "$GITHUB_WORKSPACE/KernelSU" rev-list --count HEAD
+          )"
+          ksu_version="$((10000 + ksu_git_count + 200))"
+
+          test "$ksu_version" = "$KSU_EXPECTED_VERSION"
+
+          grep -RhoE '\bksu_[A-Za-z0-9_]+' \
+            "$GITHUB_WORKSPACE/KernelSU/kernel" \
+            2>/dev/null \
+            | LC_ALL=C sort -u \
+            > "$ARTIFACT_DIR/ksu-v095-all-symbols.txt" || true
+
+          : > "$ARTIFACT_DIR/baseline-symbols-missing-in-v095.txt"
+
+          while IFS= read -r symbol; do
+            [ -n "$symbol" ] || continue
+            if ! grep -Fxq "$symbol" "$ARTIFACT_DIR/ksu-v095-all-symbols.txt"; then
+              echo "$symbol" >> "$ARTIFACT_DIR/baseline-symbols-missing-in-v095.txt"
+            fi
+          done < "$ARTIFACT_DIR/baseline-external-ksu-symbols.txt"
+
+          test ! -s "$ARTIFACT_DIR/baseline-symbols-missing-in-v095.txt"
+
+          {
+            echo "KSU_HEAD=$(git -C "$GITHUB_WORKSPACE/KernelSU" rev-parse HEAD)"
+            echo "KSU_VERSION=$ksu_version"
+            echo "BASELINE_8_OF_8_PRESENT_IN_V095=YES"
+            echo "V095_BASELINE_MANUAL_HOOK_COMPATIBILITY=PASS"
+          } | tee "$ARTIFACT_DIR/KSU-V095-IDENTITY.txt"
+
+      - name: Fetch pinned SUSFS modern and legacy references
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd "$GITHUB_WORKSPACE"
+          rm -rf susfs-modern susfs-legacy
+
+          clone_branch() {
+            local branch="$1"
+            local dest="$2"
+            local ok=0
+
+            for attempt in 1 2 3; do
+              echo "clone $branch attempt $attempt"
+
+              rm -rf "$dest"
+
+              if git -c http.version=HTTP/1.1 clone \
+                --single-branch \
+                --branch "$branch" \
+                --no-checkout \
+                "$SUSFS_REPOSITORY" \
+                "$dest"
+              then
+                ok=1
+                break
+              fi
+
+              sleep $((attempt * 5))
+            done
+
+            test "$ok" = "1"
+          }
+
+          clone_branch "$SUSFS_MODERN_BRANCH" susfs-modern
+          clone_branch "$SUSFS_LEGACY_BRANCH" susfs-legacy
+
+          modern_branch_head="$(
+            git -C susfs-modern rev-parse \
+              "refs/remotes/origin/$SUSFS_MODERN_BRANCH"
+          )"
+
+          legacy_branch_head="$(
+            git -C susfs-legacy rev-parse \
+              "refs/remotes/origin/$SUSFS_LEGACY_BRANCH"
+          )"
+
+          git -C susfs-modern cat-file -e "${SUSFS_MODERN_REF}^{commit}"
+          git -C susfs-modern merge-base --is-ancestor \
+            "$SUSFS_MODERN_REF" \
+            "refs/remotes/origin/$SUSFS_MODERN_BRANCH"
+
+          git -C susfs-legacy cat-file -e "${SUSFS_LEGACY_REF}^{commit}"
+          git -C susfs-legacy merge-base --is-ancestor \
+            "$SUSFS_LEGACY_REF" \
+            "refs/remotes/origin/$SUSFS_LEGACY_BRANCH"
+
+          git -C susfs-modern checkout --detach "$SUSFS_MODERN_REF"
+          git -C susfs-legacy checkout --detach "$SUSFS_LEGACY_REF"
+
+          modern_full="$(git -C susfs-modern rev-parse HEAD)"
+          legacy_full="$(git -C susfs-legacy rev-parse HEAD)"
+
+          grep -Fq "$SUSFS_MODERN_VERSION" \
+            susfs-modern/ksu_module_susfs/module.prop
+
+          grep -Fq "$SUSFS_LEGACY_VERSION" \
+            susfs-legacy/ksu_module_susfs/module.prop
+
+          test -f \
+            susfs-modern/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch
+          test -f \
+            susfs-modern/kernel_patches/50_add_susfs_in_gki-android12-5.10.patch
+          test -f \
+            susfs-modern/kernel_patches/fs/susfs.c
+          test -f \
+            susfs-modern/kernel_patches/include/linux/susfs.h
+          test -f \
+            susfs-modern/kernel_patches/include/linux/susfs_def.h
+
+          grep -Eq \
+            'synchronize_srcu\(&susfs_srcu_open_redirect\)' \
+            susfs-modern/kernel_patches/fs/susfs.c
+
+          {
+            echo "MODERN_BRANCH_HEAD=$modern_branch_head"
+            echo "MODERN_SELECTED_COMMIT=$modern_full"
+            echo "MODERN_VERSION=$SUSFS_MODERN_VERSION"
+            echo "LEGACY_BRANCH_HEAD=$legacy_branch_head"
+            echo "LEGACY_SELECTED_COMMIT=$legacy_full"
+            echo "LEGACY_VERSION=$SUSFS_LEGACY_VERSION"
+            echo "OPEN_REDIRECT_SYNCHRONIZE_SRCU_PRESENT=YES"
+          } | tee "$ARTIFACT_DIR/SUSFS-IDENTITY.txt"
+
+      - name: Reprove modern SUSFS KSU patch structural mismatch on v0.9.5
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          PATCH="$GITHUB_WORKSPACE/susfs-modern/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch"
+          KSU="$GITHUB_WORKSPACE/KernelSU"
+
+          python3 - "$PATCH" "$KSU" "$ARTIFACT_DIR" <<'PY'
+          import os
+          import re
+          import sys
+          from pathlib import Path
+
+          patch = Path(sys.argv[1])
+          ksu = Path(sys.argv[2])
+          artifact = Path(sys.argv[3])
+
+          text = patch.read_text(encoding="utf-8", errors="replace")
+
+          targets = []
+          for match in re.finditer(r"^diff --git a/(.+?) b/(.+?)$", text, re.M):
+              a, b = match.groups()
+              if a != b:
+                  raise SystemExit(f"rename/copy shape not expected: {a} -> {b}")
+              targets.append(a)
+
+          targets = sorted(dict.fromkeys(targets))
+
+          missing = [p for p in targets if not (ksu / p).exists()]
+          present = [p for p in targets if (ksu / p).exists()]
+
+          (artifact / "modern-ksu-patch-targets.txt").write_text(
+              "\n".join(targets) + "\n", encoding="utf-8"
+          )
+          (artifact / "modern-ksu-patch-targets-present-in-v095.txt").write_text(
+              "\n".join(present) + ("\n" if present else ""),
+              encoding="utf-8",
+          )
+          (artifact / "modern-ksu-patch-targets-missing-in-v095.txt").write_text(
+              "\n".join(missing) + ("\n" if missing else ""),
+              encoding="utf-8",
+          )
+
+          if len(targets) != 29:
+              raise SystemExit(f"unexpected modern KSU patch target count: {len(targets)}")
+          if len(missing) != 24:
+              raise SystemExit(f"unexpected v0.9.5 missing target count: {len(missing)}")
+
+          print(f"MODERN_KSU_PATCH_TARGET_COUNT={len(targets)}")
+          print(f"MODERN_KSU_PATCH_PRESENT_TARGET_COUNT={len(present)}")
+          print(f"MODERN_KSU_PATCH_MISSING_TARGET_COUNT={len(missing)}")
+          PY
+
+          set +e
+
+          patch \
+            --dry-run \
+            --batch \
+            --forward \
+            -p1 \
+            -d "$KSU" \
+            < "$PATCH" \
+            > "$ARTIFACT_DIR/modern-ksu-patch-v095-dryrun.log" \
+            2>&1
+
+          dry_rc=$?
+
+          set -e
+
+          echo "$dry_rc" > "$ARTIFACT_DIR/modern-ksu-patch-v095-dryrun.rc"
+
+          test "$dry_rc" -ne 0
+
+          {
+            echo "MODERN_KSU_PATCH_TARGET_COUNT=29"
+            echo "MODERN_KSU_PATCH_MISSING_TARGET_COUNT=24"
+            echo "DIRECT_MODERN_KSU_PATCH_ON_V095=NO"
+            echo "DIRECT_PATCH_DRYRUN_RC=$dry_rc"
+            echo "W58_STRUCTURAL_MISMATCH_REPRODUCED=YES"
+          } | tee "$ARTIFACT_DIR/MODERN-KSU-PATCH-STRUCTURE.txt"
+
+      - name: Derive exact v0.9.5 to SUSFS 2.2 root-manager API boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          import csv
+          import json
+          import os
+          import re
+          from pathlib import Path
+
+          import yaml
+
+          workspace = Path(os.environ["GITHUB_WORKSPACE"])
+          artifact = Path(os.environ["ARTIFACT_DIR"])
+          lane = "${{ matrix.id }}"
+
+          ksu_symbols = set(
+              x.strip()
+              for x in (artifact / "ksu-v095-all-symbols.txt")
+              .read_text(encoding="utf-8")
+              .splitlines()
+              if x.strip()
+          )
+
+          baseline_symbols = set(
+              x.strip()
+              for x in (artifact / "baseline-external-ksu-symbols.txt")
+              .read_text(encoding="utf-8")
+              .splitlines()
+              if x.strip()
+          )
+
+          modern_patch = (
+              workspace
+              / "susfs-modern/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch"
+          ).read_text(encoding="utf-8", errors="replace")
+
+          modern_core = (
+              workspace / "susfs-modern/kernel_patches/fs/susfs.c"
+          ).read_text(encoding="utf-8", errors="replace")
+
+          modern_h = (
+              workspace / "susfs-modern/kernel_patches/include/linux/susfs.h"
+          ).read_text(encoding="utf-8", errors="replace")
+
+          modern_def = (
+              workspace / "susfs-modern/kernel_patches/include/linux/susfs_def.h"
+          ).read_text(encoding="utf-8", errors="replace")
+
+          # Added lines are the interface the modern SUSFS patch wants to
+          # introduce into a current KernelSU tree.
+          added_patch_text = "\n".join(
+              line[1:]
+              for line in modern_patch.splitlines()
+              if line.startswith("+") and not line.startswith("+++")
+          )
+
+          rx_ksu = re.compile(r"\bksu_[A-Za-z0-9_]+\b")
+          rx_susfs = re.compile(r"\bsusfs_[A-Za-z0-9_]+\b")
+          rx_cfg = re.compile(r"\bCONFIG_KSU_SUSFS(?:_[A-Z0-9_]+)?\b")
+
+          modern_patch_ksu = set(rx_ksu.findall(added_patch_text))
+          modern_patch_susfs = set(rx_susfs.findall(added_patch_text))
+          modern_patch_cfg = set(rx_cfg.findall(added_patch_text))
+
+          core_ksu = set(rx_ksu.findall(modern_core + "\n" + modern_h + "\n" + modern_def))
+          core_susfs = set(rx_susfs.findall(modern_core + "\n" + modern_h + "\n" + modern_def))
+
+          primary = workspace / "workflow-repo" / "${{ matrix.proven_primary }}"
+          recipe_paths = [primary]
+
+          parent_rel = "${{ matrix.proven_parent }}"
+          if parent_rel != "NONE":
+              recipe_paths.append(workspace / "workflow-repo" / parent_rel)
+
+          proven_run_texts = []
+          proven_steps = []
+
+          for recipe_path in recipe_paths:
+              doc = yaml.load(
+                  recipe_path.read_text(encoding="utf-8"),
+                  Loader=yaml.BaseLoader,
+              )
+
+              for job_id, job in doc.get("jobs", {}).items():
+                  if not isinstance(job, dict):
+                      continue
+
+                  for idx, step in enumerate(job.get("steps", []), 1):
+                      if not isinstance(step, dict):
+                          continue
+
+                      run = str(step.get("run", ""))
+                      name = str(step.get("name", f"step-{idx}"))
+
+                      if not run:
+                          continue
+
+                      if (
+                          "SUSFS" in run
+                          or "susfs" in run
+                          or "ReSukiSU" in run
+                          or "resukisu" in run
+                          or "CONFIG_KSU" in run
+                          or "ksu_" in run
+                      ):
+                          proven_run_texts.append(run)
+                          proven_steps.append(
+                              (recipe_path.name, str(job_id), idx, name)
+                          )
+
+          proven_text = "\n".join(proven_run_texts)
+          proven_ksu = set(rx_ksu.findall(proven_text))
+          proven_susfs = set(rx_susfs.findall(proven_text))
+          proven_cfg = set(rx_cfg.findall(proven_text))
+
+          modern_patch_ksu_missing = sorted(modern_patch_ksu - ksu_symbols)
+          proven_ksu_missing = sorted(proven_ksu - ksu_symbols)
+          core_ksu_missing = sorted(core_ksu - ksu_symbols)
+
+          def write_set(name, values):
+              (artifact / name).write_text(
+                  "\n".join(sorted(values)) + ("\n" if values else ""),
+                  encoding="utf-8",
+              )
+
+          write_set("modern-susfs-ksu-patch-ksu-symbols.txt", modern_patch_ksu)
+          write_set("modern-susfs-ksu-patch-susfs-symbols.txt", modern_patch_susfs)
+          write_set("modern-susfs-config-symbols.txt", modern_patch_cfg)
+          write_set("modern-susfs-core-ksu-symbols.txt", core_ksu)
+          write_set("modern-susfs-core-susfs-symbols.txt", core_susfs)
+          write_set("proven-recipe-ksu-symbols.txt", proven_ksu)
+          write_set("proven-recipe-susfs-symbols.txt", proven_susfs)
+          write_set("proven-recipe-config-symbols.txt", proven_cfg)
+          write_set("modern-patch-ksu-symbols-missing-in-v095.txt", modern_patch_ksu_missing)
+          write_set("modern-core-ksu-symbols-missing-in-v095.txt", core_ksu_missing)
+          write_set("proven-recipe-ksu-symbols-missing-in-v095.txt", proven_ksu_missing)
+
+          with (artifact / "proven-recipe-selected-steps.tsv").open(
+              "w", encoding="utf-8", newline=""
+          ) as f:
+              w = csv.writer(f, delimiter="\t", lineterminator="\n")
+              w.writerow(["recipe", "job", "step_index", "step_name"])
+              for row in proven_steps:
+                  w.writerow(row)
+
+          # Exact bridge ledger: every KSU-prefixed interface referenced by
+          # either the modern SUSFS KSU patch, modern SUSFS core, or our
+          # authenticated previously successful SUSFS/ReSukiSU recipes.
+          universe = sorted(modern_patch_ksu | core_ksu | proven_ksu)
+
+          with (artifact / "v095-susfs220-api-boundary.tsv").open(
+              "w", encoding="utf-8", newline=""
+          ) as f:
+              w = csv.writer(f, delimiter="\t", lineterminator="\n")
+              w.writerow([
+                  "symbol",
+                  "in_v095",
+                  "baseline_manual_hook",
+                  "modern_susfs_ksu_patch",
+                  "modern_susfs_core",
+                  "proven_recipe",
+                  "bridge_required",
+              ])
+
+              for symbol in universe:
+                  in_v095 = symbol in ksu_symbols
+                  bridge_required = (
+                      not in_v095
+                      and (
+                          symbol in modern_patch_ksu
+                          or symbol in core_ksu
+                          or symbol in proven_ksu
+                      )
+                  )
+
+                  w.writerow([
+                      symbol,
+                      "YES" if in_v095 else "NO",
+                      "YES" if symbol in baseline_symbols else "NO",
+                      "YES" if symbol in modern_patch_ksu else "NO",
+                      "YES" if symbol in core_ksu else "NO",
+                      "YES" if symbol in proven_ksu else "NO",
+                      "YES" if bridge_required else "NO",
+                  ])
+
+          bridge_symbols = sorted(
+              s for s in universe if s not in ksu_symbols
+          )
+          write_set("v095-susfs220-required-bridge-symbols.txt", bridge_symbols)
+
+          missing_targets = [
+              x.strip()
+              for x in (
+                  artifact / "modern-ksu-patch-targets-missing-in-v095.txt"
+              ).read_text(encoding="utf-8").splitlines()
+              if x.strip()
+          ]
+
+          if baseline_symbols - ksu_symbols:
+              raise SystemExit("baseline manual-hook symbols unexpectedly missing in v0.9.5")
+
+          if len(baseline_symbols) != 8:
+              raise SystemExit(f"baseline symbol count drifted: {len(baseline_symbols)}")
+
+          if len(missing_targets) != 24:
+              raise SystemExit(f"modern patch missing-target count drifted: {len(missing_targets)}")
+
+          if not bridge_symbols:
+              raise SystemExit("expected a non-empty v0.9.5/SUSFS 2.2 API bridge boundary")
+
+          summary = {
+              "lane": lane,
+              "baseline_manual_hook_symbol_count": len(baseline_symbols),
+              "baseline_symbols_missing_in_v095": sorted(baseline_symbols - ksu_symbols),
+              "modern_ksu_patch_symbol_count": len(modern_patch_ksu),
+              "modern_ksu_patch_symbols_missing_in_v095": modern_patch_ksu_missing,
+              "modern_core_ksu_symbol_count": len(core_ksu),
+              "modern_core_ksu_symbols_missing_in_v095": core_ksu_missing,
+              "proven_recipe_ksu_symbol_count": len(proven_ksu),
+              "proven_recipe_ksu_symbols_missing_in_v095": proven_ksu_missing,
+              "required_bridge_symbol_count": len(bridge_symbols),
+              "required_bridge_symbols": bridge_symbols,
+              "modern_ksu_patch_target_count": 29,
+              "modern_ksu_patch_missing_target_count": 24,
+              "direct_modern_ksu_patch_on_v095": False,
+              "existing_manual_hooks_reusable": True,
+              "proven_recipe_authenticated": True,
+              "next_stage": "IMPLEMENT_MINIMAL_V095_SUSFS220_BRIDGE_IN_ISOLATED_WORKTREE",
+          }
+
+          (artifact / "w60-api-boundary-summary.json").write_text(
+              json.dumps(summary, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+
+          print(f"BASELINE_MANUAL_HOOK_SYMBOL_COUNT={len(baseline_symbols)}")
+          print(f"MODERN_KSU_PATCH_KSU_SYMBOL_COUNT={len(modern_patch_ksu)}")
+          print(f"MODERN_KSU_PATCH_MISSING_KSU_SYMBOL_COUNT={len(modern_patch_ksu_missing)}")
+          print(f"MODERN_CORE_KSU_SYMBOL_COUNT={len(core_ksu)}")
+          print(f"MODERN_CORE_MISSING_KSU_SYMBOL_COUNT={len(core_ksu_missing)}")
+          print(f"PROVEN_RECIPE_KSU_SYMBOL_COUNT={len(proven_ksu)}")
+          print(f"PROVEN_RECIPE_MISSING_KSU_SYMBOL_COUNT={len(proven_ksu_missing)}")
+          print(f"REQUIRED_BRIDGE_SYMBOL_COUNT={len(bridge_symbols)}")
+          print("API_BOUNDARY_DERIVATION=PASS")
+          PY
+
+      - name: Write W60 staging verdict
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          artifact = Path(os.environ["ARTIFACT_DIR"])
+          data = json.loads(
+              (artifact / "w60-api-boundary-summary.json")
+              .read_text(encoding="utf-8")
+          )
+
+          assert data["baseline_manual_hook_symbol_count"] == 8
+          assert data["baseline_symbols_missing_in_v095"] == []
+          assert data["modern_ksu_patch_target_count"] == 29
+          assert data["modern_ksu_patch_missing_target_count"] == 24
+          assert data["direct_modern_ksu_patch_on_v095"] is False
+          assert data["existing_manual_hooks_reusable"] is True
+          assert data["proven_recipe_authenticated"] is True
+          assert data["required_bridge_symbol_count"] > 0
+          PY
+
+          cd "$GITHUB_WORKSPACE/kernel"
+          sha256sum -c "$ARTIFACT_DIR/baseline-manual-hook-files.sha256"
+          cd "$GITHUB_WORKSPACE"
+
+          {
+            echo "W60_API_BOUNDARY_STAGING_AUDIT=PASS"
+            echo "LANE=${{ matrix.id }}"
+            echo "KERNEL_VERSION=${{ matrix.kernel_version }}"
+            echo "KSU_V095_MANUAL_HOOK_CONTRACT=8_OF_8"
+            echo "EXISTING_MANUAL_HOOKS_REUSABLE=YES"
+            echo "W59_PROVEN_RECIPE_AUTHENTICATED=YES"
+            echo "MODERN_SUSFS_220_OPEN_REDIRECT_SRCU_FIX_PRESENT=YES"
+            echo "DIRECT_MODERN_SUSFS_KSU_PATCH_ON_V095=NO"
+            echo "MODERN_KSU_PATCH_TARGETS=29"
+            echo "MODERN_KSU_PATCH_TARGETS_MISSING_IN_V095=24"
+            echo "PROVEN_RESUKISU_RECIPE_TRANSPLANT_AS_IS=NO"
+            echo "V095_SUSFS220_ROOT_MANAGER_BRIDGE_REQUIRED=YES"
+            echo "NEXT_STAGE=IMPLEMENT_MINIMAL_V095_SUSFS220_BRIDGE_IN_ISOLATED_WORKTREE"
+            echo "FULL_KERNEL_BUILD_PERFORMED=NO"
+            echo "KERNEL_TREE_MODIFIED=NO"
+            echo "SUSFS_PATCH_APPLIED=NO"
+            echo "BOOT_IMAGE_CREATED=NO"
+            echo "FLASHABLE_ZIP_CREATED=NO"
+            echo "DEVICE_ACCESSED=NO"
+            echo "FLASHING_PERFORMED=NO"
+          } | tee "$ARTIFACT_DIR/FINAL-STATUS.txt"
+
+      - name: Finalize diagnostic state before immutable manifest
+        if: always()
+        shell: bash
+        env:
+          PRE_MANIFEST_JOB_STATUS: ${{ job.status }}
+        run: |
+          set +e
+
+          if [ ! -d "$ARTIFACT_DIR" ]; then
+            mkdir -p "$ARTIFACT_DIR"
+          fi
+
+          if [ ! -f "$ARTIFACT_DIR/FINAL-STATUS.txt" ]; then
+            {
+              echo "W60_API_BOUNDARY_STAGING_AUDIT=FAIL_OR_INCOMPLETE"
+              echo "LANE=${{ matrix.id }}"
+              echo "PRE_MANIFEST_JOB_STATUS=$PRE_MANIFEST_JOB_STATUS"
+              echo "FULL_KERNEL_BUILD_PERFORMED=NO"
+              echo "BOOT_IMAGE_CREATED=NO"
+              echo "FLASHABLE_ZIP_CREATED=NO"
+              echo "DEVICE_ACCESSED=NO"
+              echo "FLASHING_PERFORMED=NO"
+            } > "$ARTIFACT_DIR/FAILURE-STATUS.txt"
+          fi
+
+          {
+            echo "PRE_MANIFEST_JOB_STATUS=$PRE_MANIFEST_JOB_STATUS"
+            echo "MANIFEST_WILL_BE_FINAL_ARTIFACT_MUTATION=YES"
+            echo "NO_ARTIFACT_FILE_MAY_BE_CHANGED_AFTER_MANIFEST=YES"
+          } > "$ARTIFACT_DIR/MANIFEST-CONTRACT.txt"
+
+          exit 0
+
+      - name: Create final artifact-relative SHA256 manifest
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p "$ARTIFACT_DIR"
+          cd "$ARTIFACT_DIR"
+
+          : > SHA256SUMS.txt
+
+          while IFS= read -r -d '' file; do
+            rel="${file#./}"
+
+            if [ "$rel" = "SHA256SUMS.txt" ]; then
+              continue
+            fi
+
+            sha256sum "$rel" >> SHA256SUMS.txt
+          done < <(find . -type f -print0 | sort -z)
+
+          test -s SHA256SUMS.txt
+          sha256sum -c SHA256SUMS.txt
+
+      - name: Upload W60 audit artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: W60-v1-KSU-v095-SUSFS220-api-boundary-${{ matrix.id }}
+          path: ${{ env.ARTIFACT_DIR }}
+          if-no-files-found: error
+          retention-days: 30
