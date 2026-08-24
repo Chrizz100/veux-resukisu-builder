@@ -1,0 +1,554 @@
+name: 59 - Proven SUSFS 2.2.0 Adaptation Recipe Provenance Audit v1
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: w59-v1-proven-susfs-adaptation-recipe-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    name: W59 v1 ${{ matrix.lane }} proven recipe extraction
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - lane: linux-5_4_274
+            primary_path: .github/workflows/49-gen1-5.4.274-resukisu-upstream-update-full-build-v3.yml
+            primary_blob: 0cf794fcd3f3347272efedb0aee5e1aa54a9a790
+            parent_path: .github/workflows/46C7-final-cumulative-resukisu-susfs-deterministic-cross-run-reference.yml
+            parent_blob: 281402ae932d48e4c2e355cf37f3a6253484360a
+          - lane: linux-5_4_302
+            primary_path: .github/workflows/43-gen2-5.4.302-resukisu-upstream-update-full-build-v2.yml
+            primary_blob: de138adc865e2e5f76e609c30f6d790d4c2b08f9
+            parent_path: NONE
+            parent_blob: NONE
+
+    env:
+      LANE: ${{ matrix.lane }}
+      PRIMARY_PATH: ${{ matrix.primary_path }}
+      PRIMARY_BLOB: ${{ matrix.primary_blob }}
+      PARENT_PATH: ${{ matrix.parent_path }}
+      PARENT_BLOB: ${{ matrix.parent_blob }}
+      ARTIFACT_DIR: ${{ github.workspace }}/w59-artifact
+
+    steps:
+      - name: Checkout workflow repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+
+      - name: Initialize W59 audit
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -rf "$ARTIFACT_DIR"
+          mkdir -p "$ARTIFACT_DIR"
+
+          {
+            echo "W59_VERSION=v1"
+            echo "LANE=$LANE"
+            echo "PURPOSE=RECOVER_EXACT_PROVEN_SUSFS_2_2_0_ADAPTATION_RECIPE"
+            echo "PRIMARY_PATH=$PRIMARY_PATH"
+            echo "PRIMARY_EXPECTED_BLOB=$PRIMARY_BLOB"
+            echo "PARENT_PATH=$PARENT_PATH"
+            echo "PARENT_EXPECTED_BLOB=$PARENT_BLOB"
+            echo "FULL_KERNEL_BUILD_PERFORMED=NO"
+            echo "KERNEL_SOURCE_MODIFIED=NO"
+            echo "SUSFS_PATCH_APPLIED=NO"
+            echo "BOOT_IMAGE_CREATED=NO"
+            echo "FLASHABLE_ZIP_CREATED=NO"
+            echo "DEVICE_ACCESSED=NO"
+            echo "FLASHING_PERFORMED=NO"
+          } | tee "$ARTIFACT_DIR/W59-HEADER.txt"
+
+      - name: Authenticate exact previously proven workflow recipes
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test -f "$PRIMARY_PATH"
+
+          primary_actual="$(git hash-object "$PRIMARY_PATH")"
+          test "$primary_actual" = "$PRIMARY_BLOB"
+
+          {
+            echo "PRIMARY_PATH=$PRIMARY_PATH"
+            echo "PRIMARY_EXPECTED_BLOB=$PRIMARY_BLOB"
+            echo "PRIMARY_ACTUAL_BLOB=$primary_actual"
+            echo "PRIMARY_BLOB_AUTHENTICATION=PASS"
+            echo "PRIMARY_BYTES=$(stat -c '%s' "$PRIMARY_PATH")"
+            echo "PRIMARY_LINES=$(wc -l < "$PRIMARY_PATH" | tr -d ' ')"
+          } | tee "$ARTIFACT_DIR/PRIMARY-RECIPE-IDENTITY.txt"
+
+          if [ "$PARENT_PATH" != "NONE" ]; then
+            test -f "$PARENT_PATH"
+            parent_actual="$(git hash-object "$PARENT_PATH")"
+            test "$parent_actual" = "$PARENT_BLOB"
+
+            {
+              echo "PARENT_PATH=$PARENT_PATH"
+              echo "PARENT_EXPECTED_BLOB=$PARENT_BLOB"
+              echo "PARENT_ACTUAL_BLOB=$parent_actual"
+              echo "PARENT_BLOB_AUTHENTICATION=PASS"
+              echo "PARENT_BYTES=$(stat -c '%s' "$PARENT_PATH")"
+              echo "PARENT_LINES=$(wc -l < "$PARENT_PATH" | tr -d ' ')"
+            } | tee "$ARTIFACT_DIR/PARENT-RECIPE-IDENTITY.txt"
+
+            grep -Fq "$PARENT_BLOB" "$PRIMARY_PATH"
+            echo "PRIMARY_REFERENCES_EXACT_PARENT_BLOB=PASS" \
+              | tee "$ARTIFACT_DIR/PARENT-LINK-GATE.txt"
+          else
+            echo "PARENT_RECIPE=NOT_REQUIRED_FOR_THIS_LANE" \
+              | tee "$ARTIFACT_DIR/PARENT-RECIPE-IDENTITY.txt"
+          fi
+
+      - name: Install deterministic YAML parser
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 -m pip install \
+            --disable-pip-version-check \
+            --no-input \
+            'PyYAML==6.0.2'
+
+          python3 - <<'PY'
+          import yaml
+          print("PYYAML_VERSION=" + yaml.__version__)
+          if yaml.__version__ != "6.0.2":
+              raise SystemExit("unexpected PyYAML version")
+          PY
+
+      - name: Extract proven SUSFS adaptation recipe slices
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          import csv
+          import hashlib
+          import json
+          import os
+          import re
+          from pathlib import Path
+
+          import yaml
+
+          lane = os.environ["LANE"]
+          primary_path = Path(os.environ["PRIMARY_PATH"])
+          parent_path_raw = os.environ["PARENT_PATH"]
+          artifact = Path(os.environ["ARTIFACT_DIR"])
+          artifact.mkdir(parents=True, exist_ok=True)
+
+          # Union of the actual W58-v2 legacy-5.4 and modern-2.2 kernel
+          # patch targets. W59 does not apply them; it asks where our
+          # previously proven W43/W46C7/W49 recipes already adapted them.
+          targets = [
+              "drivers/input/input.c",
+              "fs/Makefile",
+              "fs/dcache.c",
+              "fs/devpts/inode.c",
+              "fs/exec.c",
+              "fs/namei.c",
+              "fs/namespace.c",
+              "fs/notify/fdinfo.c",
+              "fs/open.c",
+              "fs/overlayfs/inode.c",
+              "fs/overlayfs/readdir.c",
+              "fs/overlayfs/super.c",
+              "fs/proc/base.c",
+              "fs/proc/bootconfig.c",
+              "fs/proc/fd.c",
+              "fs/proc/task_mmu.c",
+              "fs/proc_namespace.c",
+              "fs/read_write.c",
+              "fs/readdir.c",
+              "fs/stat.c",
+              "fs/statfs.c",
+              "include/linux/mount.h",
+              "include/linux/sched.h",
+              "kernel/kallsyms.c",
+              "kernel/reboot.c",
+              "kernel/sys.c",
+              "mm/memory.c",
+              "security/selinux/avc.c",
+              "security/selinux/hooks.c",
+              "security/selinux/selinuxfs.c",
+          ]
+
+          manual_hook_files = {
+              "fs/devpts/inode.c",
+              "fs/exec.c",
+              "fs/open.c",
+              "fs/read_write.c",
+              "fs/stat.c",
+          }
+
+          recipes = [("PRIMARY", primary_path)]
+          if parent_path_raw != "NONE":
+              recipes.append(("PARENT", Path(parent_path_raw)))
+
+          def sha256_bytes(data: bytes) -> str:
+              return hashlib.sha256(data).hexdigest()
+
+          def load_steps(path: Path):
+              raw = path.read_bytes()
+              text = raw.decode("utf-8")
+              doc = yaml.load(text, Loader=yaml.BaseLoader)
+              jobs = doc.get("jobs", {})
+              result = []
+              for job_id, job in jobs.items():
+                  steps = job.get("steps", []) if isinstance(job, dict) else []
+                  for idx, step in enumerate(steps, 1):
+                      if not isinstance(step, dict):
+                          continue
+                      name = step.get("name", f"unnamed-step-{idx}")
+                      run = step.get("run", "")
+                      uses = step.get("uses", "")
+                      result.append({
+                          "job_id": str(job_id),
+                          "index": idx,
+                          "name": str(name),
+                          "run": str(run),
+                          "uses": str(uses),
+                      })
+              return raw, text, result
+
+          loaded = {}
+          for label, path in recipes:
+              raw, text, steps = load_steps(path)
+              loaded[label] = (path, raw, text, steps)
+
+          # Full deterministic step inventory.
+          with (artifact / "recipe-step-index.tsv").open("w", encoding="utf-8", newline="") as f:
+              w = csv.writer(f, delimiter="\t", lineterminator="\n")
+              w.writerow(["recipe", "job", "step_index", "step_name", "has_run", "uses"])
+              for label, (path, raw, text, steps) in loaded.items():
+                  for s in steps:
+                      w.writerow([
+                          label,
+                          s["job_id"],
+                          s["index"],
+                          s["name"].replace("\t", " "),
+                          "YES" if s["run"] else "NO",
+                          s["uses"].replace("\t", " "),
+                      ])
+
+          # Map every W58 kernel target to exact historical recipe steps
+          # that mention it literally.
+          touch_rows = []
+          for target in targets:
+              for label, (path, raw, text, steps) in loaded.items():
+                  hits = [
+                      s for s in steps
+                      if target in s["run"]
+                  ]
+                  if hits:
+                      for s in hits:
+                          touch_rows.append([
+                              target,
+                              "YES" if target in manual_hook_files else "NO",
+                              label,
+                              s["job_id"],
+                              str(s["index"]),
+                              s["name"].replace("\t", " "),
+                          ])
+                  else:
+                      touch_rows.append([
+                          target,
+                          "YES" if target in manual_hook_files else "NO",
+                          label,
+                          "",
+                          "",
+                          "NO_LITERAL_STEP_REFERENCE",
+                      ])
+
+          with (artifact / "w58-target-to-proven-recipe-map.tsv").open(
+              "w", encoding="utf-8", newline=""
+          ) as f:
+              w = csv.writer(f, delimiter="\t", lineterminator="\n")
+              w.writerow([
+                  "target_file",
+                  "existing_manual_ksu_hook_file",
+                  "recipe",
+                  "job",
+                  "step_index",
+                  "step_name",
+              ])
+              w.writerows(touch_rows)
+
+          susfs_terms = (
+              "susfs",
+              "SUSFS",
+              "OPEN_REDIRECT",
+              "open_redirect",
+              "synchronize_srcu",
+              "susfs.c",
+              "susfs.h",
+              "susfs_def.h",
+          )
+          ksu_terms = (
+              "KernelSU",
+              "kernelsu",
+              "ReSukiSU",
+              "resukisu",
+              "CONFIG_KSU",
+              "ksu_",
+          )
+
+          selected_susfs = []
+          selected_ksu = []
+
+          for label, (path, raw, text, steps) in loaded.items():
+              for s in steps:
+                  run = s["run"]
+                  if not run:
+                      continue
+
+                  touched = [t for t in targets if t in run]
+                  has_susfs = any(term in run or term in s["name"] for term in susfs_terms)
+                  has_ksu = any(term in run or term in s["name"] for term in ksu_terms)
+
+                  if has_susfs or touched:
+                      selected_susfs.append((label, path, s, touched))
+                  if has_ksu:
+                      selected_ksu.append((label, path, s))
+
+          def write_slices(filename, entries, include_touched):
+              with (artifact / filename).open("w", encoding="utf-8") as f:
+                  for item in entries:
+                      if include_touched:
+                          label, path, s, touched = item
+                      else:
+                          label, path, s = item
+                          touched = []
+
+                      f.write("=" * 78 + "\n")
+                      f.write(f"RECIPE={label}\n")
+                      f.write(f"PATH={path}\n")
+                      f.write(f"JOB={s['job_id']}\n")
+                      f.write(f"STEP_INDEX={s['index']}\n")
+                      f.write(f"STEP_NAME={s['name']}\n")
+                      if include_touched:
+                          f.write("W58_TARGETS=" + (",".join(touched) if touched else "NONE") + "\n")
+                      f.write("-" * 78 + "\n")
+                      f.write(s["run"])
+                      if not s["run"].endswith("\n"):
+                          f.write("\n")
+
+          write_slices(
+              "proven-susfs-kernel-adaptation-recipe-slices.txt",
+              selected_susfs,
+              True,
+          )
+          write_slices(
+              "proven-ksu-resukisu-boundary-recipe-slices.txt",
+              selected_ksu,
+              False,
+          )
+
+          # Feature evidence from the authenticated historical recipes.
+          all_text = "\n".join(
+              text for _, (_, _, text, _) in loaded.items()
+          )
+
+          evidence_terms = [
+              "OPEN_REDIRECT",
+              "synchronize_srcu",
+              "be08face",
+              "CONFIG_KSU_SUSFS",
+              "susfs.c",
+              "susfs.h",
+              "task_mmu.c",
+              "fs/namei.c",
+          ]
+
+          with (artifact / "historical-semantic-evidence.txt").open(
+              "w", encoding="utf-8"
+          ) as f:
+              for term in evidence_terms:
+                  f.write(
+                      f"{term}={'YES' if term in all_text else 'NO'}\n"
+                  )
+
+          # Per-recipe coverage count (literal file references). A missing
+          # literal reference does not mean the source wasn't adapted; the
+          # recipe may generate or execute another script. This report is
+          # therefore evidence/provenance, not a blind completeness gate.
+          coverage = {}
+          for label, (path, raw, text, steps) in loaded.items():
+              mentioned = sorted({
+                  target
+                  for target in targets
+                  if any(target in s["run"] for s in steps)
+              })
+              coverage[label] = mentioned
+
+          with (artifact / "proven-recipe-coverage-summary.txt").open(
+              "w", encoding="utf-8"
+          ) as f:
+              f.write(f"LANE={lane}\n")
+              f.write(f"TARGET_SCOPE_COUNT={len(targets)}\n")
+              f.write(f"MANUAL_HOOK_TARGET_COUNT={len(manual_hook_files)}\n")
+              f.write(f"SUSFS_RECIPE_SLICE_COUNT={len(selected_susfs)}\n")
+              f.write(f"KSU_BOUNDARY_SLICE_COUNT={len(selected_ksu)}\n")
+              for label, mentioned in coverage.items():
+                  f.write(f"{label}_LITERAL_TARGET_COVERAGE_COUNT={len(mentioned)}\n")
+                  for target in mentioned:
+                      f.write(f"{label}_TARGET={target}\n")
+
+          # Exact file identities independent of Git SHA-1 authentication.
+          with (artifact / "recipe-content-sha256.txt").open(
+              "w", encoding="utf-8"
+          ) as f:
+              for label, (path, raw, text, steps) in loaded.items():
+                  f.write(f"{label}_PATH={path}\n")
+                  f.write(f"{label}_SHA256={sha256_bytes(raw)}\n")
+                  f.write(f"{label}_STEP_COUNT={len(steps)}\n")
+
+          # Machine-readable summary for the next porting stage.
+          summary = {
+              "lane": lane,
+              "target_scope_count": len(targets),
+              "manual_hook_files": sorted(manual_hook_files),
+              "susfs_recipe_slice_count": len(selected_susfs),
+              "ksu_boundary_slice_count": len(selected_ksu),
+              "coverage": coverage,
+              "safety": {
+                  "kernel_build": False,
+                  "kernel_source_modified": False,
+                  "susfs_patch_applied": False,
+                  "boot_image": False,
+                  "flashable_zip": False,
+                  "device_accessed": False,
+                  "flashing": False,
+              },
+          }
+          (artifact / "w59-summary.json").write_text(
+              json.dumps(summary, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+
+          if not selected_susfs:
+              raise SystemExit("no SUSFS/kernel adaptation recipe slices found")
+          if not selected_ksu:
+              raise SystemExit("no KernelSU/ReSukiSU boundary recipe slices found")
+
+          # Both known-good recipe lines must contain meaningful source
+          # adaptation history rather than only metadata.
+          total_coverage = len(set().union(*coverage.values()))
+          if total_coverage < 10:
+              raise SystemExit(
+                  f"insufficient literal W58 target coverage: {total_coverage}"
+              )
+
+          print(f"LANE={lane}")
+          print(f"SUSFS_RECIPE_SLICE_COUNT={len(selected_susfs)}")
+          print(f"KSU_BOUNDARY_SLICE_COUNT={len(selected_ksu)}")
+          print(f"UNION_LITERAL_TARGET_COVERAGE_COUNT={total_coverage}")
+          print("RECIPE_EXTRACTION=PASS")
+          PY
+
+      - name: Verify W59 provenance audit invariants
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          for f in \
+            W59-HEADER.txt \
+            PRIMARY-RECIPE-IDENTITY.txt \
+            PARENT-RECIPE-IDENTITY.txt \
+            recipe-step-index.tsv \
+            w58-target-to-proven-recipe-map.tsv \
+            proven-susfs-kernel-adaptation-recipe-slices.txt \
+            proven-ksu-resukisu-boundary-recipe-slices.txt \
+            historical-semantic-evidence.txt \
+            proven-recipe-coverage-summary.txt \
+            recipe-content-sha256.txt \
+            w59-summary.json
+          do
+            test -s "$ARTIFACT_DIR/$f"
+          done
+
+          grep -Fq 'PRIMARY_BLOB_AUTHENTICATION=PASS' \
+            "$ARTIFACT_DIR/PRIMARY-RECIPE-IDENTITY.txt"
+
+          if [ "$PARENT_PATH" != "NONE" ]; then
+            grep -Fq 'PARENT_BLOB_AUTHENTICATION=PASS' \
+              "$ARTIFACT_DIR/PARENT-RECIPE-IDENTITY.txt"
+            grep -Fq 'PRIMARY_REFERENCES_EXACT_PARENT_BLOB=PASS' \
+              "$ARTIFACT_DIR/PARENT-LINK-GATE.txt"
+          fi
+
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          p = Path(os.environ["ARTIFACT_DIR"]) / "w59-summary.json"
+          data = json.loads(p.read_text(encoding="utf-8"))
+
+          assert data["target_scope_count"] == 30
+          assert len(data["manual_hook_files"]) == 5
+          assert data["susfs_recipe_slice_count"] > 0
+          assert data["ksu_boundary_slice_count"] > 0
+          assert data["safety"] == {
+              "boot_image": False,
+              "device_accessed": False,
+              "flashable_zip": False,
+              "flashing": False,
+              "kernel_build": False,
+              "kernel_source_modified": False,
+              "susfs_patch_applied": False,
+          }
+          PY
+
+          {
+            echo "W59_RECIPE_PROVENANCE_AUDIT=PASS"
+            echo "LANE=$LANE"
+            echo "EXACT_PREVIOUS_RECIPE_AUTHENTICATED=YES"
+            echo "FULL_KERNEL_BUILD_PERFORMED=NO"
+            echo "KERNEL_SOURCE_MODIFIED=NO"
+            echo "SUSFS_PATCH_APPLIED=NO"
+            echo "BOOT_IMAGE_CREATED=NO"
+            echo "FLASHABLE_ZIP_CREATED=NO"
+            echo "DEVICE_ACCESSED=NO"
+            echo "FLASHING_PERFORMED=NO"
+          } | tee "$ARTIFACT_DIR/FINAL-STATUS.txt"
+
+      - name: Create artifact-relative SHA256 manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd "$ARTIFACT_DIR"
+
+          : > SHA256SUMS.txt
+          while IFS= read -r -d '' file; do
+            rel="${file#./}"
+            [ "$rel" = "SHA256SUMS.txt" ] && continue
+            sha256sum "$rel" >> SHA256SUMS.txt
+          done < <(find . -type f -print0 | sort -z)
+
+          test -s SHA256SUMS.txt
+          sha256sum -c SHA256SUMS.txt
+
+          echo "SHA256_MANIFEST_PATHS_MATCH_ARTIFACT_ROOT=YES" \
+            | tee -a FINAL-STATUS.txt
+
+      - name: Upload W59 audit artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: W59-v1-proven-SUSFS-adaptation-${{ matrix.lane }}
+          path: ${{ env.ARTIFACT_DIR }}
+          if-no-files-found: error
+          retention-days: 30
