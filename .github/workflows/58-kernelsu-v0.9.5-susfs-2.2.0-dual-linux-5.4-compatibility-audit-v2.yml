@@ -1,0 +1,957 @@
+name: 58 - KernelSU v0.9.5 + SUSFS 2.2.0 Dual Linux 5.4 Compatibility Audit v2
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: w58-v2-ksu-v095-susfs-220-dual-5-4-audit-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    name: SUSFS audit - Linux ${{ matrix.kernel_version }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - id: linux-5_4_274
+            kernel_version: "5.4.274"
+            kernel_ref: "20240619"
+            merge_common: "yes"
+            expected_embedded_ksu: "11872"
+            source_proven_ksu_compat: "no"
+          - id: linux-5_4_302
+            kernel_version: "5.4.302"
+            kernel_ref: "f4b8a13a43a130a9aab83cc985ce4d4421291ae6"
+            merge_common: "no"
+            expected_embedded_ksu: "12142"
+            source_proven_ksu_compat: "yes"
+
+    env:
+      KERNEL_REPOSITORY: dereference23/kernel_xiaomi_sm6375
+      COMMON_REPOSITORY: https://android.googlesource.com/kernel/common
+      COMMON_REF: android11-5.4.274_r00
+
+      KSU_REPOSITORY: tiann/KernelSU
+      KSU_REF: b766b98513b5a7eb33bc1c4a76b5702bf1288f07
+      KSU_EXPECTED_VERSION: "11872"
+      KSU_302_SOURCE_FIX_COMMIT: 3993167ca932b05b4bab1ce2168bd5c4777db640
+
+      SUSFS_REPOSITORY: https://gitlab.com/simonpunk/susfs4ksu.git
+      SUSFS_MODERN_BRANCH: gki-android12-5.10
+      SUSFS_MODERN_REF: be08face
+      SUSFS_MODERN_VERSION: "2.2.0"
+      SUSFS_LEGACY_BRANCH: kernel-5.4
+      SUSFS_LEGACY_REF: 76affd70
+      SUSFS_LEGACY_VERSION: "1.5.5"
+
+    steps:
+      - name: Checkout VEUX kernel source
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ env.KERNEL_REPOSITORY }}
+          ref: ${{ matrix.kernel_ref }}
+          path: kernel
+          fetch-depth: 0
+          filter: blob:none
+
+      - name: Install audit dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          sudo apt-get update
+          sudo apt-get install -y \
+            patch \
+            python3
+
+      - name: Reconstruct exact kernel lane
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd "$GITHUB_WORKSPACE/kernel"
+
+          initial_head="$(git rev-parse HEAD)"
+          initial_version="$(make -s kernelversion)"
+
+          {
+            echo "W58_VERSION=v2"
+            echo "LANE=${{ matrix.id }}"
+            echo "REQUESTED_KERNEL_VERSION=${{ matrix.kernel_version }}"
+            echo "INITIAL_HEAD=$initial_head"
+            echo "INITIAL_VERSION=$initial_version"
+            echo "MERGE_ANDROID_COMMON=${{ matrix.merge_common }}"
+          } | tee "$GITHUB_WORKSPACE/kernel-identity.txt"
+
+          if [[ "${{ matrix.merge_common }}" == "yes" ]]; then
+            test "$initial_version" = "5.4.268"
+
+            git config user.name "VEUX W58 Audit"
+            git config user.email "veux-w58-audit@users.noreply.github.com"
+
+            git remote remove android-common >/dev/null 2>&1 || true
+            git remote add android-common "$COMMON_REPOSITORY"
+
+            git fetch android-common \
+              "refs/tags/${COMMON_REF}:refs/tags/${COMMON_REF}"
+
+            git merge \
+              --no-edit \
+              --no-ff \
+              "$COMMON_REF"
+
+            test "$(make -s kernelversion)" = "5.4.274"
+          else
+            test "$initial_head" = "${{ matrix.kernel_ref }}"
+            test "$initial_version" = "5.4.302"
+          fi
+
+          final_head="$(git rev-parse HEAD)"
+          final_tree="$(git rev-parse HEAD^{tree})"
+          final_version="$(make -s kernelversion)"
+
+          test "$final_version" = "${{ matrix.kernel_version }}"
+          test -f arch/arm64/configs/veux_defconfig
+          test -f arch/arm64/boot/dts/vendor/xiaomi/veux.dts
+          test -d drivers/kernelsu
+
+          {
+            echo "FINAL_HEAD=$final_head"
+            echo "FINAL_TREE=$final_tree"
+            echo "FINAL_VERSION=$final_version"
+          } | tee -a "$GITHUB_WORKSPACE/kernel-identity.txt"
+
+      - name: Snapshot validated KernelSU integration surface
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd "$GITHUB_WORKSPACE/kernel"
+          mkdir -p "$GITHUB_WORKSPACE/baseline"
+
+          embedded_version="$(
+            sed -nE \
+              's/^[[:space:]]*ccflags-y[[:space:]]*\+=[[:space:]]*-DKSU_VERSION=([0-9]+).*/\1/p' \
+              drivers/kernelsu/Makefile \
+              | head -n1
+          )"
+          test "$embedded_version" = "${{ matrix.expected_embedded_ksu }}"
+
+          grep -RhoE '\bksu_[A-Za-z0-9_]+' \
+            fs kernel security drivers/input include \
+            --exclude-dir=kernelsu \
+            --exclude='*.o' \
+            2>/dev/null \
+            | LC_ALL=C sort -u \
+            > "$GITHUB_WORKSPACE/baseline/external-ksu-symbols.txt" || true
+
+          external_count="$(
+            wc -l < "$GITHUB_WORKSPACE/baseline/external-ksu-symbols.txt" \
+              | tr -d ' '
+          )"
+          test "$external_count" = "8"
+
+          grep -RIlE '\bksu_[A-Za-z0-9_]+' \
+            fs kernel security drivers/input include \
+            --exclude-dir=kernelsu \
+            --exclude='*.o' \
+            2>/dev/null \
+            | LC_ALL=C sort -u \
+            > "$GITHUB_WORKSPACE/baseline/manual-hook-files.txt" || true
+
+          test -s "$GITHUB_WORKSPACE/baseline/manual-hook-files.txt"
+
+          while IFS= read -r file; do
+            sha256sum "$file"
+          done < "$GITHUB_WORKSPACE/baseline/manual-hook-files.txt" \
+            > "$GITHUB_WORKSPACE/baseline/manual-hook-files.sha256"
+
+          {
+            echo "EMBEDDED_KSU_VERSION=$embedded_version"
+            echo "EXTERNAL_KSU_SYMBOL_COUNT=$external_count"
+            echo "MANUAL_HOOK_FILE_COUNT=$(wc -l < "$GITHUB_WORKSPACE/baseline/manual-hook-files.txt" | tr -d ' ')"
+            echo
+            echo "EXTERNAL_KSU_SYMBOLS:"
+            cat "$GITHUB_WORKSPACE/baseline/external-ksu-symbols.txt"
+            echo
+            echo "MANUAL_HOOK_FILES:"
+            cat "$GITHUB_WORKSPACE/baseline/manual-hook-files.txt"
+          } | tee "$GITHUB_WORKSPACE/baseline/BASELINE.txt"
+
+      - name: Checkout immutable original KernelSU v0.9.5
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ env.KSU_REPOSITORY }}
+          ref: ${{ env.KSU_REF }}
+          path: kernel/KernelSU
+          fetch-depth: 0
+
+      - name: Recreate exact validated KernelSU baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd "$GITHUB_WORKSPACE/kernel"
+
+          test "$(git -C KernelSU rev-parse HEAD)" = "$KSU_REF"
+
+          ksu_git_count="$(git -C KernelSU rev-list --count HEAD)"
+          ksu_version="$((10000 + ksu_git_count + 200))"
+          test "$ksu_version" = "$KSU_EXPECTED_VERSION"
+
+          # Every existing VEUX manual-hook symbol must exist in original KSU.
+          grep -RhoE '\bksu_[A-Za-z0-9_]+' \
+            KernelSU/kernel \
+            2>/dev/null \
+            | LC_ALL=C sort -u \
+            > "$GITHUB_WORKSPACE/baseline/ksu-v095-symbols.txt" || true
+
+          : > "$GITHUB_WORKSPACE/baseline/missing-v095-symbols.txt"
+          while IFS= read -r symbol; do
+            [[ -n "$symbol" ]] || continue
+            if ! grep -Fxq "$symbol" "$GITHUB_WORKSPACE/baseline/ksu-v095-symbols.txt"; then
+              echo "$symbol" >> "$GITHUB_WORKSPACE/baseline/missing-v095-symbols.txt"
+            fi
+          done < "$GITHUB_WORKSPACE/baseline/external-ksu-symbols.txt"
+
+          test ! -s "$GITHUB_WORKSPACE/baseline/missing-v095-symbols.txt"
+
+          if [[ "${{ matrix.source_proven_ksu_compat }}" == "yes" ]]; then
+            # Reproduce the exact one-line compatibility strategy already
+            # present in the pinned 5.4.302 kernel history.
+            git cat-file -e "${KSU_302_SOURCE_FIX_COMMIT}^{commit}"
+            git merge-base --is-ancestor \
+              "$KSU_302_SOURCE_FIX_COMMIT" \
+              "${{ matrix.kernel_ref }}"
+
+            source_file="drivers/kernelsu/kernel_compat.c"
+            target_file="KernelSU/kernel/kernel_compat.c"
+            old='#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 8, 0)'
+            new='#if 1 || LINUX_VERSION_CODE >= KERNEL_VERSION(5, 8, 0)'
+
+            test "$(grep -Fxc "$new" "$source_file" || true)" = "1"
+            test "$(grep -Fxc "$old" "$target_file" || true)" = "1"
+
+            python3 - "$target_file" <<'PY'
+          import pathlib
+          import sys
+
+          path = pathlib.Path(sys.argv[1])
+          data = path.read_text(encoding="utf-8")
+          old = "#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 8, 0)"
+          new = "#if 1 || LINUX_VERSION_CODE >= KERNEL_VERSION(5, 8, 0)"
+
+          if data.count(old) != 1 or data.count(new) != 0:
+              raise SystemExit("Unexpected KernelSU v0.9.5 compatibility baseline")
+          path.write_text(data.replace(old, new, 1), encoding="utf-8")
+          PY
+
+            test "$(grep -Fxc "$new" "$target_file" || true)" = "1"
+          fi
+
+          rm -rf drivers/kernelsu
+          ln -s ../KernelSU/kernel drivers/kernelsu
+
+          test -L drivers/kernelsu
+          test "$(readlink drivers/kernelsu)" = "../KernelSU/kernel"
+
+          sha256sum -c "$GITHUB_WORKSPACE/baseline/manual-hook-files.sha256"
+
+          {
+            echo "KSU_HEAD=$(git -C KernelSU rev-parse HEAD)"
+            echo "KSU_VERSION=$ksu_version"
+            echo "KSU_DRIVER_MODE=BUILT_IN_SOURCE_SYMLINK"
+            echo "MANUAL_HOOK_CONTRACT=8_OF_8"
+            echo "SOURCE_PROVEN_302_COMPAT=${{ matrix.source_proven_ksu_compat }}"
+            echo "MANUAL_HOOK_SOURCE_FILES_UNCHANGED=YES"
+          } | tee "$GITHUB_WORKSPACE/ksu-baseline.txt"
+
+      - name: Fetch pinned SUSFS modern and legacy references
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd "$GITHUB_WORKSPACE"
+
+          rm -rf susfs-modern susfs-legacy
+          : > "$GITHUB_WORKSPACE/susfs-fetch.log"
+
+          # Preserve the complete fetch diagnosis even if this step fails.
+          exec > >(tee -a "$GITHUB_WORKSPACE/susfs-fetch.log") 2>&1
+
+          echo "W58-v2 SUSFS fetch start"
+          echo "REPOSITORY=$SUSFS_REPOSITORY"
+          echo "MODERN=$SUSFS_MODERN_BRANCH@$SUSFS_MODERN_REF"
+          echo "LEGACY=$SUSFS_LEGACY_BRANCH@$SUSFS_LEGACY_REF"
+
+          clone_branch() {
+            local branch="$1"
+            local dest="$2"
+            local ok=0
+
+            for attempt in 1 2 3; do
+              echo "Clone $branch attempt $attempt"
+              rm -rf "$dest"
+
+              # Deliberately no partial clone and no local --shared clone:
+              # W58-v1 stopped in this stage before it could emit SUSFS
+              # identity data. Two independent full branch clones avoid
+              # promisor/alternate-object ambiguity.
+              if git clone \
+                --single-branch \
+                --branch "$branch" \
+                --no-checkout \
+                "$SUSFS_REPOSITORY" \
+                "$dest"; then
+                ok=1
+                break
+              fi
+
+              sleep $((attempt * 5))
+            done
+
+            test "$ok" = "1"
+          }
+
+          clone_branch "$SUSFS_MODERN_BRANCH" susfs-modern
+          clone_branch "$SUSFS_LEGACY_BRANCH" susfs-legacy
+
+          modern_branch_head="$(git -C susfs-modern rev-parse "refs/remotes/origin/$SUSFS_MODERN_BRANCH")"
+          legacy_branch_head="$(git -C susfs-legacy rev-parse "refs/remotes/origin/$SUSFS_LEGACY_BRANCH")"
+
+          echo "MODERN_BRANCH_HEAD=$modern_branch_head"
+          echo "LEGACY_BRANCH_HEAD=$legacy_branch_head"
+
+          # Both pinned objects must belong to the intended branch history.
+          git -C susfs-modern cat-file -e "${SUSFS_MODERN_REF}^{commit}"
+          git -C susfs-modern merge-base --is-ancestor \
+            "$SUSFS_MODERN_REF" \
+            "refs/remotes/origin/$SUSFS_MODERN_BRANCH"
+
+          git -C susfs-legacy cat-file -e "${SUSFS_LEGACY_REF}^{commit}"
+          git -C susfs-legacy merge-base --is-ancestor \
+            "$SUSFS_LEGACY_REF" \
+            "refs/remotes/origin/$SUSFS_LEGACY_BRANCH"
+
+          git -C susfs-modern checkout --detach "$SUSFS_MODERN_REF"
+          git -C susfs-legacy checkout --detach "$SUSFS_LEGACY_REF"
+
+          modern_full="$(git -C susfs-modern rev-parse HEAD)"
+          modern_short="$(git -C susfs-modern rev-parse --short=8 HEAD)"
+          legacy_full="$(git -C susfs-legacy rev-parse HEAD)"
+          legacy_short="$(git -C susfs-legacy rev-parse --short=8 HEAD)"
+
+          test "$modern_short" = "$SUSFS_MODERN_REF"
+          test "$legacy_short" = "$SUSFS_LEGACY_REF"
+
+          modern_prop="susfs-modern/ksu_module_susfs/module.prop"
+          legacy_prop="susfs-legacy/ksu_module_susfs/module.prop"
+
+          test -f "$modern_prop"
+          test -f "$legacy_prop"
+          grep -Fq "$SUSFS_MODERN_VERSION" "$modern_prop"
+          grep -Fq "$SUSFS_LEGACY_VERSION" "$legacy_prop"
+
+          modern_ksu_patch="susfs-modern/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch"
+          modern_kernel_patch="susfs-modern/kernel_patches/50_add_susfs_in_gki-android12-5.10.patch"
+          modern_susfs_c="susfs-modern/kernel_patches/fs/susfs.c"
+          modern_susfs_h="susfs-modern/kernel_patches/include/linux/susfs.h"
+
+          test -f "$modern_ksu_patch"
+          test -f "$modern_kernel_patch"
+          test -f "$modern_susfs_c"
+          test -f "$modern_susfs_h"
+
+          find susfs-legacy/kernel_patches \
+            -maxdepth 1 \
+            -type f \
+            -name '*5.4*.patch' \
+            -print \
+            | LC_ALL=C sort \
+            > "$GITHUB_WORKSPACE/legacy-5.4-patches.txt"
+
+          test -s "$GITHUB_WORKSPACE/legacy-5.4-patches.txt"
+
+          {
+            echo "SUSFS_MODERN_BRANCH=$SUSFS_MODERN_BRANCH"
+            echo "SUSFS_MODERN_REQUESTED_REF=$SUSFS_MODERN_REF"
+            echo "SUSFS_MODERN_BRANCH_HEAD=$modern_branch_head"
+            echo "SUSFS_MODERN_FULL_SHA=$modern_full"
+            echo "SUSFS_MODERN_VERSION=$SUSFS_MODERN_VERSION"
+            echo "SUSFS_MODERN_KSU_PATCH=$modern_ksu_patch"
+            echo "SUSFS_MODERN_KERNEL_PATCH=$modern_kernel_patch"
+            echo
+            echo "SUSFS_LEGACY_BRANCH=$SUSFS_LEGACY_BRANCH"
+            echo "SUSFS_LEGACY_REQUESTED_REF=$SUSFS_LEGACY_REF"
+            echo "SUSFS_LEGACY_BRANCH_HEAD=$legacy_branch_head"
+            echo "SUSFS_LEGACY_FULL_SHA=$legacy_full"
+            echo "SUSFS_LEGACY_VERSION=$SUSFS_LEGACY_VERSION"
+            echo
+            echo "LEGACY_5_4_PATCH_CANDIDATES:"
+            cat "$GITHUB_WORKSPACE/legacy-5.4-patches.txt"
+          } | tee "$GITHUB_WORKSPACE/susfs-identity.txt"
+
+          find susfs-modern/kernel_patches \
+            -maxdepth 4 \
+            -type f \
+            -print \
+            | LC_ALL=C sort \
+            > "$GITHUB_WORKSPACE/modern-patch-inventory.txt"
+
+          echo "W58-v2 SUSFS fetch complete"
+
+      - name: Verify SUSFS 2.2.0 OPEN_REDIRECT SRCU fix
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd "$GITHUB_WORKSPACE"
+
+          modern_patch_root="susfs-modern/kernel_patches"
+
+          open_redirect_lines="$(
+            grep -RIn \
+              'OPEN_REDIRECT\|open_redirect' \
+              "$modern_patch_root" \
+              2>/dev/null \
+              | wc -l \
+              | tr -d ' '
+          )"
+
+          synchronize_srcu_lines="$(
+            grep -RIn \
+              'synchronize_srcu' \
+              "$modern_patch_root" \
+              2>/dev/null \
+              | wc -l \
+              | tr -d ' '
+          )"
+
+          synchronize_rcu_open_redirect_context="$(
+            grep -RIn \
+              'synchronize_rcu' \
+              "$modern_patch_root" \
+              2>/dev/null \
+              | grep -Ei 'susfs|redirect|open' \
+              | wc -l \
+              | tr -d ' '
+          )"
+
+          test "$open_redirect_lines" -gt 0
+          test "$synchronize_srcu_lines" -gt 0
+
+          {
+            echo "OPEN_REDIRECT_REFERENCE_LINES=$open_redirect_lines"
+            echo "SYNCHRONIZE_SRCU_REFERENCE_LINES=$synchronize_srcu_lines"
+            echo "SYNCHRONIZE_RCU_SUSFS_REDIRECT_CONTEXT_LINES=$synchronize_rcu_open_redirect_context"
+            echo "MODERN_REF_CONTAINS_SRCU_FIX_EVIDENCE=YES"
+          } | tee "$GITHUB_WORKSPACE/open-redirect-srcu-audit.txt"
+
+          grep -RIn \
+            'synchronize_srcu\|OPEN_REDIRECT\|open_redirect' \
+            "$modern_patch_root" \
+            2>/dev/null \
+            > "$GITHUB_WORKSPACE/open-redirect-srcu-evidence.txt" || true
+
+      - name: Inventory modern and legacy patch targets
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd "$GITHUB_WORKSPACE"
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          root = Path(".")
+          kernel = root / "kernel"
+          ksu = kernel / "KernelSU"
+
+          modern_kernel_patch = root / "susfs-modern/kernel_patches/50_add_susfs_in_gki-android12-5.10.patch"
+          modern_ksu_patch = root / "susfs-modern/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch"
+
+          manual_hook_files = set(
+              (root / "baseline/manual-hook-files.txt").read_text().splitlines()
+          )
+
+          def patch_targets(path):
+              targets = []
+              for line in path.read_text(errors="replace").splitlines():
+                  if line.startswith("+++ b/"):
+                      p = line[6:].strip()
+                      if p != "/dev/null" and p not in targets:
+                          targets.append(p)
+              return targets
+
+          def write_inventory(patch_path, target_root, output, manual=False):
+              rows = []
+              for target in patch_targets(patch_path):
+                  exists = (target_root / target).exists()
+                  manual_overlap = "NO"
+                  if manual and target in manual_hook_files:
+                      manual_overlap = "YES"
+                  rows.append((target, "YES" if exists else "NO", manual_overlap))
+
+              with output.open("w") as f:
+                  f.write("target_file\texists_in_target\tmanual_hook_overlap\n")
+                  for row in rows:
+                      f.write("\t".join(row) + "\n")
+
+          write_inventory(
+              modern_kernel_patch,
+              kernel,
+              root / "modern-kernel-patch-targets.tsv",
+              manual=True,
+          )
+          write_inventory(
+              modern_ksu_patch,
+              ksu,
+              root / "modern-ksu-patch-targets.tsv",
+              manual=False,
+          )
+
+          legacy_patches = [
+              Path(line.strip())
+              for line in (root / "legacy-5.4-patches.txt").read_text().splitlines()
+              if line.strip()
+          ]
+          with (root / "legacy-kernel-patch-targets.tsv").open("w") as f:
+              f.write("patch\ttarget_file\texists_in_target\tmanual_hook_overlap\n")
+              for patch in legacy_patches:
+                  for target in patch_targets(patch):
+                      exists = (kernel / target).exists()
+                      overlap = "YES" if target in manual_hook_files else "NO"
+                      f.write(
+                          f"{patch}\t{target}\t"
+                          f"{'YES' if exists else 'NO'}\t{overlap}\n"
+                      )
+          PY
+
+          modern_kernel_targets="$(
+            tail -n +2 modern-kernel-patch-targets.tsv \
+              | wc -l \
+              | tr -d ' '
+          )"
+          modern_kernel_missing="$(
+            awk -F '\t' 'NR>1 && $2=="NO" {n++} END {print n+0}' \
+              modern-kernel-patch-targets.tsv
+          )"
+          modern_kernel_manual_overlap="$(
+            awk -F '\t' 'NR>1 && $3=="YES" {n++} END {print n+0}' \
+              modern-kernel-patch-targets.tsv
+          )"
+
+          modern_ksu_targets="$(
+            tail -n +2 modern-ksu-patch-targets.tsv \
+              | wc -l \
+              | tr -d ' '
+          )"
+          modern_ksu_missing="$(
+            awk -F '\t' 'NR>1 && $2=="NO" {n++} END {print n+0}' \
+              modern-ksu-patch-targets.tsv
+          )"
+
+          {
+            echo "MODERN_KERNEL_PATCH_TARGET_COUNT=$modern_kernel_targets"
+            echo "MODERN_KERNEL_PATCH_MISSING_TARGETS=$modern_kernel_missing"
+            echo "MODERN_KERNEL_PATCH_MANUAL_HOOK_FILE_OVERLAPS=$modern_kernel_manual_overlap"
+            echo "MODERN_KSU_PATCH_TARGET_COUNT=$modern_ksu_targets"
+            echo "MODERN_KSU_PATCH_MISSING_TARGETS=$modern_ksu_missing"
+          } | tee "$GITHUB_WORKSPACE/patch-target-summary.txt"
+
+      - name: Dry-run SUSFS patch applicability
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd "$GITHUB_WORKSPACE"
+
+          modern_ksu_patch="$GITHUB_WORKSPACE/susfs-modern/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch"
+          modern_kernel_patch="$GITHUB_WORKSPACE/susfs-modern/kernel_patches/50_add_susfs_in_gki-android12-5.10.patch"
+
+          run_check() {
+            local label="$1"
+            local directory="$2"
+            local patch_file="$3"
+            local log_file="$4"
+
+            set +e
+            git -C "$directory" apply \
+              --check \
+              --verbose \
+              "$patch_file" \
+              > "$log_file" 2>&1
+            local rc=$?
+            set -e
+
+            echo "$rc"
+          }
+
+          modern_ksu_rc="$(
+            run_check \
+              modern_ksu \
+              "$GITHUB_WORKSPACE/kernel/KernelSU" \
+              "$modern_ksu_patch" \
+              "$GITHUB_WORKSPACE/modern-ksu-git-apply-check.log"
+          )"
+
+          modern_kernel_rc="$(
+            run_check \
+              modern_kernel \
+              "$GITHUB_WORKSPACE/kernel" \
+              "$modern_kernel_patch" \
+              "$GITHUB_WORKSPACE/modern-kernel-git-apply-check.log"
+          )"
+
+          : > "$GITHUB_WORKSPACE/legacy-kernel-git-apply-check.log"
+          legacy_total=0
+          legacy_pass=0
+
+          while IFS= read -r patch_file; do
+            [[ -n "$patch_file" ]] || continue
+            legacy_total=$((legacy_total + 1))
+
+            set +e
+            git -C "$GITHUB_WORKSPACE/kernel" apply \
+              --check \
+              --verbose \
+              "$GITHUB_WORKSPACE/$patch_file" \
+              >> "$GITHUB_WORKSPACE/legacy-kernel-git-apply-check.log" 2>&1
+            rc=$?
+            set -e
+
+            {
+              echo
+              echo "PATCH=$patch_file"
+              echo "RC=$rc"
+              echo
+            } >> "$GITHUB_WORKSPACE/legacy-kernel-git-apply-check.log"
+
+            if [[ "$rc" = "0" ]]; then
+              legacy_pass=$((legacy_pass + 1))
+            fi
+          done < "$GITHUB_WORKSPACE/legacy-5.4-patches.txt"
+
+          {
+            echo "MODERN_2_2_KSU_PATCH_GIT_APPLY_CHECK_RC=$modern_ksu_rc"
+            echo "MODERN_2_2_KSU_PATCH_RAW_APPLIES=$([[ "$modern_ksu_rc" = "0" ]] && echo YES || echo NO)"
+            echo "MODERN_2_2_GKI_5_10_KERNEL_PATCH_GIT_APPLY_CHECK_RC=$modern_kernel_rc"
+            echo "MODERN_2_2_GKI_5_10_KERNEL_PATCH_RAW_APPLIES=$([[ "$modern_kernel_rc" = "0" ]] && echo YES || echo NO)"
+            echo "LEGACY_5_4_PATCH_CANDIDATE_COUNT=$legacy_total"
+            echo "LEGACY_5_4_PATCH_RAW_APPLY_PASS_COUNT=$legacy_pass"
+          } | tee "$GITHUB_WORKSPACE/raw-patch-applicability.txt"
+
+          # Raw patch failures are evidence, not workflow failures.
+          # Nothing is applied in W58.
+
+      - name: Audit manual-hook collision and SUSFS Kconfig surface
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd "$GITHUB_WORKSPACE"
+
+          ksu_patch="susfs-modern/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch"
+          kernel_patch="susfs-modern/kernel_patches/50_add_susfs_in_gki-android12-5.10.patch"
+
+          kprobes_refs="$(
+            grep -In \
+              'CONFIG_KPROBES\|KPROBES' \
+              "$ksu_patch" \
+              2>/dev/null \
+              | wc -l \
+              | tr -d ' '
+          )"
+
+          inline_hook_refs="$(
+            grep -InEi \
+              'inline[ _-]*hook|manual[ _-]*hook|sucompat|execve|faccessat|stat' \
+              "$ksu_patch" \
+              2>/dev/null \
+              | wc -l \
+              | tr -d ' '
+          )"
+
+          susfs_config_refs="$(
+            grep -In \
+              'CONFIG_KSU_SUSFS\|config KSU_SUSFS' \
+              "$ksu_patch" \
+              2>/dev/null \
+              | wc -l \
+              | tr -d ' '
+          )"
+
+          sus_su_refs="$(
+            grep -In \
+              'KSU_SUSFS_SUS_SU\|SUS_SU' \
+              "$ksu_patch" \
+              2>/dev/null \
+              | wc -l \
+              | tr -d ' '
+          )"
+
+          manual_hook_patch_overlap="$(
+            awk -F '\t' \
+              'NR>1 && $3=="YES" {n++} END {print n+0}' \
+              modern-kernel-patch-targets.tsv
+          )"
+
+          {
+            echo "CURRENT_BASELINE_USES_MANUAL_HOOKS=YES"
+            echo "CURRENT_BASELINE_MANUAL_HOOK_SYMBOLS=8"
+            echo "MODERN_KSU_PATCH_KPROBES_REFERENCE_LINES=$kprobes_refs"
+            echo "MODERN_KSU_PATCH_INLINE_OR_SUCOMPAT_REFERENCE_LINES=$inline_hook_refs"
+            echo "MODERN_KSU_PATCH_SUSFS_CONFIG_REFERENCE_LINES=$susfs_config_refs"
+            echo "MODERN_KSU_PATCH_SUS_SU_REFERENCE_LINES=$sus_su_refs"
+            echo "MODERN_KERNEL_PATCH_MANUAL_HOOK_FILE_OVERLAPS=$manual_hook_patch_overlap"
+            echo "WHOLESALE_MODERN_KSU_PATCH_REQUIRES_MANUAL_HOOK_REVIEW=YES"
+          } | tee "$GITHUB_WORKSPACE/manual-hook-collision-audit.txt"
+
+          grep -InEi \
+            'CONFIG_KPROBES|KPROBES|inline[ _-]*hook|manual[ _-]*hook|sucompat|execve|faccessat|stat|KSU_SUSFS' \
+            "$ksu_patch" \
+            > "$GITHUB_WORKSPACE/modern-ksu-hook-evidence.txt" || true
+
+      - name: Audit kernel API prerequisites
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd "$GITHUB_WORKSPACE/kernel"
+
+          capability() {
+            local name="$1"
+            shift
+            if grep -RqsE "$*" \
+              fs kernel mm include security \
+              --exclude='*.o' \
+              2>/dev/null; then
+              echo "${name}=YES"
+            else
+              echo "${name}=NO"
+            fi
+          }
+
+          {
+            echo "KERNEL_VERSION=$(make -s kernelversion)"
+            capability PATH_UMOUNT_PRESENT '\bpath_umount[[:space:]]*\('
+            capability SYNCHRONIZE_SRCU_PRESENT '\bsynchronize_srcu[[:space:]]*\('
+            capability SRCU_READ_LOCK_PRESENT '\bsrcu_read_lock[[:space:]]*\('
+            capability ITERATE_DIR_PRESENT '\biterate_dir[[:space:]]*\('
+            capability VFS_READ_PRESENT '\bvfs_read[[:space:]]*\('
+            capability DO_FACCESSAT_PRESENT '\bdo_faccessat[[:space:]]*\('
+            capability DO_STATX_PRESENT '\bdo_statx[[:space:]]*\('
+            capability STRNCPY_FROM_USER_NOFAULT_PRESENT '\bstrncpy_from_user_nofault[[:space:]]*\('
+            capability STRNCPY_FROM_UNSAFE_USER_PRESENT '\bstrncpy_from_unsafe_user[[:space:]]*\('
+            capability PROC_PID_MAPS_PRESENT 'proc_pid_maps|show_map_vma|show_vma_header_prefix'
+            capability SHOW_MOUNTINFO_PRESENT 'show_mountinfo'
+            capability SHOW_VFSMNT_PRESENT 'show_vfsmnt'
+          } | tee "$GITHUB_WORKSPACE/kernel-api-capabilities.txt"
+
+      - name: Generate W58 compatibility report
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd "$GITHUB_WORKSPACE"
+
+          get_value() {
+            local file="$1"
+            local key="$2"
+            sed -n "s/^${key}=//p" "$file" | tail -n1
+          }
+
+          modern_ksu_applies="$(
+            get_value raw-patch-applicability.txt MODERN_2_2_KSU_PATCH_RAW_APPLIES
+          )"
+          modern_kernel_applies="$(
+            get_value raw-patch-applicability.txt MODERN_2_2_GKI_5_10_KERNEL_PATCH_RAW_APPLIES
+          )"
+          legacy_pass="$(
+            get_value raw-patch-applicability.txt LEGACY_5_4_PATCH_RAW_APPLY_PASS_COUNT
+          )"
+          legacy_total="$(
+            get_value raw-patch-applicability.txt LEGACY_5_4_PATCH_CANDIDATE_COUNT
+          )"
+          manual_overlap="$(
+            get_value patch-target-summary.txt MODERN_KERNEL_PATCH_MANUAL_HOOK_FILE_OVERLAPS
+          )"
+
+          if [[ "$modern_ksu_applies" == "YES" && "$modern_kernel_applies" == "YES" ]]; then
+            raw_status="RAW_MODERN_PATCHES_APPLY_BUT_MANUAL_HOOK_REVIEW_STILL_REQUIRED"
+          else
+            raw_status="ADAPTATION_REQUIRED"
+          fi
+
+          if [[ "$manual_overlap" -gt 0 ]]; then
+            manual_risk="DIRECT_FILE_OVERLAP"
+          else
+            manual_risk="SEMANTIC_REVIEW_REQUIRED"
+          fi
+
+          {
+            echo "# W58-v2 - KernelSU v0.9.5 + SUSFS 2.2.0 compatibility audit"
+            echo
+            echo "## Target"
+            echo
+            echo "- Lane: \`${{ matrix.id }}\`"
+            echo "- Kernel: \`${{ matrix.kernel_version }}\`"
+            echo "- KernelSU: original v0.9.5 / 11872"
+            echo "- KernelSU commit: \`$KSU_REF\`"
+            echo "- SUSFS modern source: \`$SUSFS_MODERN_BRANCH@$SUSFS_MODERN_REF\`"
+            echo "- SUSFS modern version: \`$SUSFS_MODERN_VERSION\`"
+            echo "- SUSFS official legacy 5.4 reference: \`$SUSFS_LEGACY_BRANCH@$SUSFS_LEGACY_REF\` / $SUSFS_LEGACY_VERSION"
+            echo
+            echo "## Key result"
+            echo
+            echo "- Modern 2.2.0 KernelSU patch raw applies: **$modern_ksu_applies**"
+            echo "- Modern 2.2.0 GKI-5.10 kernel patch raw applies: **$modern_kernel_applies**"
+            echo "- Legacy 5.4 raw patch candidates passing: **$legacy_pass / $legacy_total**"
+            echo "- Existing VEUX manual hook model: **8 external KSU symbols**"
+            echo "- Manual-hook collision classification: **$manual_risk**"
+            echo "- Overall raw integration status: **$raw_status**"
+            echo
+            echo "## Important interpretation"
+            echo
+            echo "- SUSFS 2.2.0 is being audited as a backport source, not treated as a native 5.4 drop-in."
+            echo "- The official SUSFS 5.4 branch is used only as a structural legacy reference."
+            echo "- A failed raw git-apply check is compatibility evidence and does not mean SUSFS itself is unusable."
+            echo "- The current validated VEUX KernelSU baseline uses existing manual hooks; wholesale SUSFS hook changes must not be applied without reconciling that contract."
+            echo "- OPEN_REDIRECT/SRCU evidence from the pinned modern SUSFS reference is preserved in the artifact."
+            echo
+            echo "## Safety / scope"
+            echo
+            echo "- FULL_KERNEL_BUILD_PERFORMED=NO"
+            echo "- SUSFS_PATCHES_APPLIED_TO_BUILD_TREE=NO"
+            echo "- BOOT_IMAGE_CREATED=NO"
+            echo "- FLASHABLE_ZIP_CREATED=NO"
+            echo "- DEVICE_ACCESSED=NO"
+            echo "- FLASHING_PERFORMED=NO"
+          } | tee "$GITHUB_WORKSPACE/SUMMARY.md"
+
+          {
+            echo -e "field\tvalue"
+            echo -e "lane\t${{ matrix.id }}"
+            echo -e "kernel_version\t${{ matrix.kernel_version }}"
+            echo -e "ksu_version\t11872"
+            echo -e "modern_susfs_version\t$SUSFS_MODERN_VERSION"
+            echo -e "modern_ksu_patch_raw_applies\t$modern_ksu_applies"
+            echo -e "modern_kernel_patch_raw_applies\t$modern_kernel_applies"
+            echo -e "legacy_5_4_patch_pass_count\t$legacy_pass"
+            echo -e "legacy_5_4_patch_total\t$legacy_total"
+            echo -e "manual_hook_collision\t$manual_risk"
+            echo -e "overall_status\t$raw_status"
+          } > "$GITHUB_WORKSPACE/SUMMARY.tsv"
+
+          cat SUMMARY.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Verify W58 read-only audit contract
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd "$GITHUB_WORKSPACE/kernel"
+
+          # The kernel manual hook files must remain byte-identical.
+          sha256sum -c "$GITHUB_WORKSPACE/baseline/manual-hook-files.sha256"
+
+          # No SUSFS files may have been copied into the kernel source.
+          test ! -e fs/susfs.c
+          test ! -e include/linux/susfs.h
+
+          # KernelSU is allowed only the already validated local 5.4.302
+          # one-line nofault branch selection; W58 itself applies no SUSFS patch.
+          if [[ "${{ matrix.source_proven_ksu_compat }}" == "yes" ]]; then
+            mapfile -t changed < <(git -C KernelSU diff --name-only)
+            test "${#changed[@]}" = "1"
+            test "${changed[0]}" = "kernel/kernel_compat.c"
+          else
+            test -z "$(git -C KernelSU status --short)"
+          fi
+
+          echo "FULL_KERNEL_BUILD_PERFORMED=NO"
+          echo "SUSFS_PATCHES_APPLIED_TO_BUILD_TREE=NO"
+          echo "BOOT_IMAGE_CREATED=NO"
+          echo "FLASHABLE_ZIP_CREATED=NO"
+          echo "DEVICE_ACCESSED=NO"
+          echo "FLASHING_PERFORMED=NO"
+          echo "W58_V2_READ_ONLY_COMPATIBILITY_AUDIT=PASS"
+
+      - name: Prepare W58 audit artifact
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -u
+
+          cd "$GITHUB_WORKSPACE"
+
+          rm -rf artifact
+          mkdir -p artifact
+
+          for file in \
+            SUMMARY.md \
+            SUMMARY.tsv \
+            kernel-identity.txt \
+            ksu-baseline.txt \
+            susfs-fetch.log \
+            susfs-identity.txt \
+            modern-patch-inventory.txt \
+            legacy-5.4-patches.txt \
+            open-redirect-srcu-audit.txt \
+            open-redirect-srcu-evidence.txt \
+            modern-kernel-patch-targets.tsv \
+            modern-ksu-patch-targets.tsv \
+            legacy-kernel-patch-targets.tsv \
+            patch-target-summary.txt \
+            raw-patch-applicability.txt \
+            modern-ksu-git-apply-check.log \
+            modern-kernel-git-apply-check.log \
+            legacy-kernel-git-apply-check.log \
+            manual-hook-collision-audit.txt \
+            modern-ksu-hook-evidence.txt \
+            kernel-api-capabilities.txt
+          do
+            if [[ -f "$file" ]]; then
+              cp "$file" artifact/
+            fi
+          done
+
+          if [[ -d baseline ]]; then
+            cp -a baseline artifact/
+          fi
+
+          {
+            echo "W58-v2 artifact manifest"
+            echo "LANE=${{ matrix.id }}"
+            echo "KERNEL_VERSION=${{ matrix.kernel_version }}"
+            echo "KSU_REF=$KSU_REF"
+            echo "SUSFS_MODERN_REF=$SUSFS_MODERN_REF"
+            echo "SUSFS_LEGACY_REF=$SUSFS_LEGACY_REF"
+            echo
+            find artifact -type f -printf '%P\n' | LC_ALL=C sort
+          } > artifact/ARTIFACT-MANIFEST.txt
+
+          find artifact \
+            -type f \
+            ! -name SHA256SUMS.txt \
+            -print0 \
+            | LC_ALL=C sort -z \
+            | xargs -0 sha256sum \
+            > artifact/SHA256SUMS.txt
+
+      - name: Upload W58 audit artifact
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: W58-v2-KSU-v0_9_5-SUSFS-2_2_0-${{ matrix.id }}
+          path: artifact/
+          retention-days: 14
+          if-no-files-found: warn
