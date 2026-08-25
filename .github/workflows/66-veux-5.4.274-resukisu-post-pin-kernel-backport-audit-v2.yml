@@ -1,0 +1,299 @@
+name: 66 - VEUX 5.4.274 ReSukiSU Post-Pin Kernel Backport Audit v2
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: w66-v2-resukisu-post-pin-audit-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    env:
+      BASE_REF: faccf4c5edc7be37776216e7d43dd3dca0239331
+      AUDIT_HEAD_OLD: 06390a6acbb7e966b3e1cda00fc1b93e89f11086
+      TARGET_REF: 03b60f260cce36f23efbd26c9c334edfdc9ce7eb
+
+      SUCOMPAT_REFACTOR: 75b99e3e2f312377fc9e5d3720324c0caaf1e610
+      EXECVEAT_SUPPORT: 9671b9d11e459467d41884c98e1366b13aaae2cc
+      OLD_HOOK_COMPAT: cc44ff62d9dc8b84dbd7c3e4d2703f6a6fb844c3
+      SUSFS_SYNC: 03b60f260cce36f23efbd26c9c334edfdc9ce7eb
+      MODULE_FILTER: b2ac2fc8
+
+      RECIPE: .github/workflows/46C7-final-cumulative-resukisu-susfs-deterministic-cross-run-reference.yml
+      ARTIFACT_DIR: audit-w66
+
+    steps:
+      - name: Checkout builder repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Install audit dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y git python3
+          rm -rf "$ARTIFACT_DIR"
+          mkdir -p "$ARTIFACT_DIR"
+
+      - name: Authenticate current VEUX reference
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s "$RECIPE"
+          grep -Fq 'COMMON_REF: "android11-5.4.274_r00"' "$RECIPE"
+          grep -Fq 'RESUKISU_COMMIT: "faccf4c5edc7be37776216e7d43dd3dca0239331"' "$RECIPE"
+          grep -Fq 'OPEN_REDIRECT SRCU/UAF fixed semantics must already be present' "$RECIPE"
+          grep -Fq '/proc/*/maps output-pointer/SRCU handling must already be present' "$RECIPE"
+
+          {
+            echo "VEUX_KERNEL=5.4.274"
+            echo "REFERENCE_RECIPE=46C7"
+            echo "REFERENCE_RESUKISU_PIN=$BASE_REF"
+            echo "REFERENCE_OLD_AUDIT_HEAD=$AUDIT_HEAD_OLD"
+            echo "REFERENCE_AUTH=PASS"
+          } | tee "$ARTIFACT_DIR/00-reference.txt"
+
+      - name: Checkout ReSukiSU target
+        uses: actions/checkout@v6
+        with:
+          repository: ReSukiSU/ReSukiSU
+          ref: ${{ env.TARGET_REF }}
+          path: ReSukiSU-target
+          fetch-depth: 0
+
+      - name: Authenticate upstream commit chain
+        shell: bash
+        run: |
+          set -euo pipefail
+          git -C ReSukiSU-target fetch --no-tags origin \
+            "$BASE_REF" "$AUDIT_HEAD_OLD" "$SUCOMPAT_REFACTOR" \
+            "$EXECVEAT_SUPPORT" "$OLD_HOOK_COMPAT" "$SUSFS_SYNC"
+
+          test "$(git -C ReSukiSU-target rev-parse HEAD)" = "$TARGET_REF"
+          for c in \
+            "$SUCOMPAT_REFACTOR" \
+            "$EXECVEAT_SUPPORT" \
+            "$OLD_HOOK_COMPAT" \
+            "$SUSFS_SYNC"
+          do
+            git -C ReSukiSU-target merge-base --is-ancestor "$BASE_REF" "$c"
+            git -C ReSukiSU-target merge-base --is-ancestor "$c" "$TARGET_REF"
+          done
+
+          {
+            echo "BASE_REF=$BASE_REF"
+            echo "OLD_AUDIT_HEAD=$AUDIT_HEAD_OLD"
+            echo "TARGET_REF=$TARGET_REF"
+            echo "TOTAL_POST_PIN_COMMITS=$(git -C ReSukiSU-target rev-list --count "$BASE_REF..$TARGET_REF")"
+            echo "POST_OLD_AUDIT_COMMITS=$(git -C ReSukiSU-target rev-list --count "$AUDIT_HEAD_OLD..$TARGET_REF")"
+            echo "UPSTREAM_CHAIN_AUTH=PASS"
+          } | tee "$ARTIFACT_DIR/01-upstream-identity.txt"
+
+      - name: Record post-pin kernel delta
+        shell: bash
+        run: |
+          set -euo pipefail
+          git -C ReSukiSU-target log \
+            --reverse \
+            --date=iso-strict \
+            --format='%H %ad %s' \
+            "$BASE_REF..$TARGET_REF" \
+            > "$ARTIFACT_DIR/02-post-pin-commits.txt"
+
+          git -C ReSukiSU-target diff \
+            --stat "$BASE_REF..$TARGET_REF" -- kernel/ \
+            > "$ARTIFACT_DIR/03-kernel-stat.txt"
+
+          git -C ReSukiSU-target diff \
+            --name-status "$BASE_REF..$TARGET_REF" -- kernel/ \
+            > "$ARTIFACT_DIR/04-kernel-files.txt"
+
+          git -C ReSukiSU-target log \
+            --reverse \
+            --format='%H %s' \
+            "$BASE_REF..$TARGET_REF" -- kernel/ \
+            > "$ARTIFACT_DIR/05-kernel-commits.txt"
+
+          test -s "$ARTIFACT_DIR/04-kernel-files.txt"
+          test -s "$ARTIFACT_DIR/05-kernel-commits.txt"
+
+      - name: Extract four VEUX candidate patches
+        shell: bash
+        run: |
+          set -euo pipefail
+          for c in \
+            "$SUCOMPAT_REFACTOR" \
+            "$EXECVEAT_SUPPORT" \
+            "$OLD_HOOK_COMPAT" \
+            "$SUSFS_SYNC"
+          do
+            git -C ReSukiSU-target show \
+              --format=fuller \
+              --stat \
+              --patch \
+              "$c" -- kernel/ \
+              > "$ARTIFACT_DIR/patch-$c.txt"
+            test -s "$ARTIFACT_DIR/patch-$c.txt"
+          done
+
+      - name: Verify Linux 5.4 compatibility evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Materialize git output before grep. With `set -o pipefail`,
+          # `git show | grep -q` can make git receive SIGPIPE after grep finds
+          # an early match, yielding exit code 141 even though the evidence exists.
+          git -C ReSukiSU-target show \
+            "$SUCOMPAT_REFACTOR:kernel/compat/kernel_compat.h" \
+            > "$ARTIFACT_DIR/.sucompat-kernel-compat.h"
+
+          git -C ReSukiSU-target show "$EXECVEAT_SUPPORT" -- kernel/ \
+            > "$ARTIFACT_DIR/.execveat-support.patch"
+          git -C ReSukiSU-target show "$OLD_HOOK_COMPAT" -- kernel/ \
+            > "$ARTIFACT_DIR/.old-hook-compat.patch"
+          git -C ReSukiSU-target show "$SUSFS_SYNC" -- kernel/ \
+            > "$ARTIFACT_DIR/.susfs-sync.patch"
+
+          grep -Fq 'LINUX_VERSION_CODE >= KERNEL_VERSION(5, 11, 0)' \
+            "$ARTIFACT_DIR/.sucompat-kernel-compat.h"
+          grep -Fq '__close_fd(current->files, fd)' \
+            "$ARTIFACT_DIR/.sucompat-kernel-compat.h"
+
+          grep -Fq 'ksu_handle_execveat' \
+            "$ARTIFACT_DIR/.execveat-support.patch"
+          grep -Fq 'do_execveat_common' \
+            "$ARTIFACT_DIR/.execveat-support.patch"
+
+          grep -Fq 'AT_FDCWD' \
+            "$ARTIFACT_DIR/.old-hook-compat.patch"
+
+          grep -Fq 'struct filename **filename' \
+            "$ARTIFACT_DIR/.susfs-sync.patch"
+          grep -Fq 'susfs_is_current_proc_no_su' \
+            "$ARTIFACT_DIR/.susfs-sync.patch"
+          grep -Fq 'susfs_set_current_proc_no_su' \
+            "$ARTIFACT_DIR/.susfs-sync.patch"
+          grep -Fq 'susfs_clear_current_proc_no_su' \
+            "$ARTIFACT_DIR/.susfs-sync.patch"
+          grep -Fq 'LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0)' \
+            "$ARTIFACT_DIR/.susfs-sync.patch"
+          grep -Fq 'disable_seccomp()' \
+            "$ARTIFACT_DIR/.susfs-sync.patch"
+
+          rm -f \
+            "$ARTIFACT_DIR/.sucompat-kernel-compat.h" \
+            "$ARTIFACT_DIR/.execveat-support.patch" \
+            "$ARTIFACT_DIR/.old-hook-compat.patch" \
+            "$ARTIFACT_DIR/.susfs-sync.patch"
+
+          {
+            echo "SUCOMPAT_5_4_FD_CLOSE_COMPAT=PASS"
+            echo "EXECVEAT_MANUAL_HOOK_NOTICE=PASS"
+            echo "OLD_HOOK_POINTER_COMPAT=PASS"
+            echo "SUSFS_NEW_FILENAME_API=PASS"
+            echo "SUSFS_NO_SU_API=PASS"
+            echo "SUSFS_PRE_5_10_SECCOMP_PATH=PASS"
+          } | tee "$ARTIFACT_DIR/06-linux-5.4-evidence.txt"
+
+      - name: Classify candidate and excluded changes
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if git -C ReSukiSU-target cat-file -e "$MODULE_FILTER^{commit}" 2>/dev/null; then
+            git -C ReSukiSU-target show --format='%H %s' --no-patch "$MODULE_FILTER" \
+              > "$ARTIFACT_DIR/07-module-filter.txt"
+          else
+            git -C ReSukiSU-target log --all --format='%H %s' \
+              | grep -m1 '^b2ac2fc8' \
+              > "$ARTIFACT_DIR/07-module-filter.txt" || true
+          fi
+
+          cat > "$ARTIFACT_DIR/08-classification.txt" <<EOF
+          VEUX 5.4.274 BACKPORT CLASSIFICATION
+          ====================================
+
+          CANDIDATE - audit/backport as one dependency chain:
+          $SUCOMPAT_REFACTOR  sucompat refactor; explicit <5.11 fd-close compatibility
+          $EXECVEAT_SUPPORT   execveat support; explicit manual-hook downstream notice
+          $OLD_HOOK_COMPAT    old-hook fd/flags pointer compatibility fix
+          $SUSFS_SYNC         sync to latest SUSFS API; struct filename**, no_su API, zygote_next, <5.10 seccomp path
+
+          EXCLUDE FROM VEUX UPDATE:
+          $MODULE_FILTER      vendor-specific module load filtering; not needed for Xiaomi VEUX
+
+          POLICY:
+          - Do not replace 46C7 or W65 baseline.
+          - Do not blindly move to ReSukiSU HEAD.
+          - Do not apply module_load_filter.
+          - Do not flash anything.
+          - Next stage must prove the SUSFS 2.2 5.4 caller API expected by $SUSFS_SYNC before compile.
+          EOF
+
+      - name: Audit exact target SUSFS-facing symbols
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "=== sucompat prototypes at TARGET_REF ==="
+            grep -nE \
+              'ksu_handle_(faccessat|stat)|susfs_(is|set|clear)_current_proc_no_su' \
+              ReSukiSU-target/kernel/feature/sucompat.h || true
+
+            echo
+            echo "=== zygote_next references ==="
+            grep -Rni 'zygote_next' \
+              ReSukiSU-target/kernel/feature \
+              ReSukiSU-target/kernel/selinux || true
+
+            echo
+            echo "=== pre-5.10 compatibility references ==="
+            grep -RniE \
+              'KERNEL_VERSION\(5, 10, 0\)|disable_seccomp' \
+              ReSukiSU-target/kernel/feature \
+              ReSukiSU-target/kernel/hook || true
+          } > "$ARTIFACT_DIR/09-target-symbols.txt"
+
+      - name: Final W66 verdict
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > "$ARTIFACT_DIR/10-verdict.txt" <<EOF
+          W66_V2=PASS
+          TARGET_KERNEL=VEUX_LINUX_5.4.274
+          CURRENT_REFERENCE=46C7
+          CURRENT_RESUKISU_PIN=$BASE_REF
+          CANDIDATE_TARGET=$TARGET_REF
+          UPDATE_MODE=SELECTIVE_DEPENDENCY_CHAIN_BACKPORT
+          REQUIRED_CHAIN=$SUCOMPAT_REFACTOR,$EXECVEAT_SUPPORT,$OLD_HOOK_COMPAT,$SUSFS_SYNC
+          MODULE_FILTER_INCLUDED=NO
+          CURRENT_REFERENCE_MODIFIED=NO
+          BOOT_IMAGE_CREATED=NO
+          FLASHABLE_ZIP_CREATED=NO
+          DEVICE_ACCESSED=NO
+          FLASHING_PERFORMED=NO
+          NEXT_STAGE=SUSFS_2.2_5.4_CALLER_API_COMPATIBILITY_AND_COMPILE
+          EOF
+
+          sha256sum "$ARTIFACT_DIR"/* \
+            | sort -k2 \
+            > "$ARTIFACT_DIR/SHA256SUMS.txt"
+
+          cat "$ARTIFACT_DIR/10-verdict.txt"
+
+      - name: Upload W66 audit artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: W66-v2-VEUX-5.4.274-ReSukiSU-post-pin-audit
+          path: audit-w66/
+          if-no-files-found: error
