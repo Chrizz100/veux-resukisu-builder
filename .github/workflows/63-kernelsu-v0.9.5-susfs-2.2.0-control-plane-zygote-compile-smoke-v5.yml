@@ -1,0 +1,1690 @@
+name: 63 - KernelSU v0.9.5 + SUSFS 2.2.0 Control Plane Zygote Compile Smoke v5
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: w63-v5-v095-susfs220-control-plane-zygote-smoke-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  smoke:
+    name: W63 v5 ${{ matrix.id }} control-plane + zygote smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - id: linux-5_4_274
+            kernel_version: "5.4.274"
+            kernel_ref: "20240619"
+            merge_common: "yes"
+            expected_embedded_ksu: "11872"
+            source_proven_nofault_fix: "no"
+          - id: linux-5_4_302
+            kernel_version: "5.4.302"
+            kernel_ref: "f4b8a13a43a130a9aab83cc985ce4d4421291ae6"
+            merge_common: "no"
+            expected_embedded_ksu: "12142"
+            source_proven_nofault_fix: "yes"
+
+    env:
+      KERNEL_REPOSITORY: dereference23/kernel_xiaomi_sm6375
+      COMMON_REPOSITORY: https://android.googlesource.com/kernel/common
+      COMMON_REF: android11-5.4.274_r00
+
+      KSU_REPOSITORY: tiann/KernelSU
+      KSU_REF: b766b98513b5a7eb33bc1c4a76b5702bf1288f07
+      KSU_EXPECTED_VERSION: "11872"
+      KSU_302_SOURCE_FIX_COMMIT: 3993167ca932b05b4bab1ce2168bd5c4777db640
+
+      SUSFS_REPOSITORY: ShirkNeko/susfs4ksu
+      SUSFS_REF: be08face56c347e7ba9c4fb420c2463598a14f5d
+      SUSFS_VERSION_EXPECTED: "2.2.0"
+
+      CLANG_REVISION: r416183b
+      CLANG_URL: https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android12L-gsi/clang-r416183b.tar.gz
+
+      STAGE_DIR: ${{ github.workspace }}/w63-stage
+      ARTIFACT_DIR: ${{ github.workspace }}/w63-artifact
+
+    steps:
+      - name: Initialize W63 artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -rf "$STAGE_DIR" "$ARTIFACT_DIR"
+          mkdir -p "$STAGE_DIR" "$ARTIFACT_DIR"
+
+          {
+            echo "W63_VERSION=v5"
+            echo "LANE=${{ matrix.id }}"
+            echo "KERNEL_VERSION=${{ matrix.kernel_version }}"
+            echo "KSU_REF=$KSU_REF"
+            echo "SUSFS_REF=$SUSFS_REF"
+            echo "PURPOSE=CONTROL_PLANE_ZYGOTE_BEHAVIOR_AND_OBJECT_COMPILE_SMOKE"
+            echo "W62_DIRECT_ABI_REPRODUCED_CLEANLY=YES"
+            echo "W63_V1_KSU_TARGET_BUG=CORRECTED"
+            echo "W63_V1_FSNOTIFY_5_4_ABI_MISMATCH=CORRECTED"
+            echo "W63_V2_FSNOTIFY_MATCHER_WHITESPACE_BUG=CORRECTED"
+            echo "W63_V3_MISSING_OS_IMPORT_BUG=CORRECTED"
+            echo "W63_V4_ISOLATED_KSU_SELINUX_HEADER_PREREQ=CORRECTED"
+            echo "CONTROL_PLANE_PROTOCOL=MODERN_SUSFS_REBOOT_MAGIC"
+            echo "LEGACY_PRCTL_CONTROL_PLANE_TRANSPLANTED=NO"
+            echo "SETUID_IMPLEMENTATION=V095_EXISTING_TASK_FIX_SETUID_LSM_PLUS_SUSFS_BEHAVIOR"
+            echo "FULL_KERNEL_IMAGE_BUILD=NO"
+            echo "VMLINUX_FINAL_LINK=NO"
+            echo "BOOT_IMAGE_CREATED=NO"
+            echo "FLASHABLE_ZIP_CREATED=NO"
+            echo "DEVICE_ACCESSED=NO"
+            echo "FLASHING_PERFORMED=NO"
+          } | tee "$ARTIFACT_DIR/W63-HEADER.txt"
+
+      - name: Install build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          sudo apt-get update
+          sudo apt-get install -y \
+            bc \
+            bison \
+            flex \
+            libssl-dev \
+            libelf-dev \
+            cpio \
+            rsync \
+            python3 \
+            xz-utils \
+            zstd \
+            binutils-aarch64-linux-gnu
+
+      - name: Download official Android clang-r416183b
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p "$GITHUB_WORKSPACE/toolchain/$CLANG_REVISION"
+
+          curl \
+            --fail \
+            --location \
+            --retry 3 \
+            "$CLANG_URL" \
+            -o "$RUNNER_TEMP/${CLANG_REVISION}.tar.gz"
+
+          tar \
+            -xzf "$RUNNER_TEMP/${CLANG_REVISION}.tar.gz" \
+            -C "$GITHUB_WORKSPACE/toolchain/$CLANG_REVISION"
+
+          rm -f "$RUNNER_TEMP/${CLANG_REVISION}.tar.gz"
+
+          "$GITHUB_WORKSPACE/toolchain/$CLANG_REVISION/bin/clang" --version \
+            | tee "$ARTIFACT_DIR/clang-version.txt"
+
+          "$GITHUB_WORKSPACE/toolchain/$CLANG_REVISION/bin/ld.lld" --version \
+            | tee -a "$ARTIFACT_DIR/clang-version.txt"
+
+      - name: Checkout exact VEUX kernel lane
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ env.KERNEL_REPOSITORY }}
+          ref: ${{ matrix.kernel_ref }}
+          path: kernel-base
+          fetch-depth: 0
+          filter: blob:none
+
+      - name: Reconstruct exact Linux 5.4 lane
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd "$GITHUB_WORKSPACE/kernel-base"
+
+          initial_head="$(git rev-parse HEAD)"
+          initial_version="$(make -s kernelversion)"
+
+          if [ "${{ matrix.merge_common }}" = "yes" ]; then
+            test "$initial_version" = "5.4.268"
+
+            git config user.name "VEUX W63"
+            git config user.email "veux-w63@users.noreply.github.com"
+
+            git remote remove android-common >/dev/null 2>&1 || true
+            git remote add android-common "$COMMON_REPOSITORY"
+
+            git fetch android-common \
+              "refs/tags/${COMMON_REF}:refs/tags/${COMMON_REF}"
+
+            git merge \
+              --no-edit \
+              --no-ff \
+              "$COMMON_REF"
+
+            test "$(make -s kernelversion)" = "5.4.274"
+          else
+            test "$initial_head" = "${{ matrix.kernel_ref }}"
+            test "$initial_version" = "5.4.302"
+          fi
+
+          embedded_version="$(
+            sed -nE \
+              's/^[[:space:]]*ccflags-y[[:space:]]*\+=[[:space:]]*-DKSU_VERSION=([0-9]+).*/\1/p' \
+              drivers/kernelsu/Makefile \
+              | head -n1
+          )"
+
+          test "$embedded_version" = "${{ matrix.expected_embedded_ksu }}"
+
+          {
+            echo "INITIAL_HEAD=$initial_head"
+            echo "INITIAL_VERSION=$initial_version"
+            echo "FINAL_HEAD=$(git rev-parse HEAD)"
+            echo "FINAL_TREE=$(git rev-parse HEAD^{tree})"
+            echo "FINAL_VERSION=$(make -s kernelversion)"
+            echo "EMBEDDED_KSU_VERSION=$embedded_version"
+            echo "KERNEL_LANE_AUTHENTICATION=PASS"
+          } | tee "$ARTIFACT_DIR/KERNEL-IDENTITY.txt"
+
+      - name: Snapshot original five-file VEUX KSU manual-hook contract
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd "$GITHUB_WORKSPACE/kernel-base"
+
+          grep -RhoE '\bksu_[A-Za-z0-9_]+' \
+            fs kernel security drivers/input include \
+            --exclude-dir=kernelsu \
+            --exclude='*.o' \
+            2>/dev/null \
+            | LC_ALL=C sort -u \
+            > "$ARTIFACT_DIR/baseline-external-ksu-symbols.txt" || true
+
+          grep -RIlE '\bksu_[A-Za-z0-9_]+' \
+            fs kernel security drivers/input include \
+            --exclude-dir=kernelsu \
+            --exclude='*.o' \
+            2>/dev/null \
+            | LC_ALL=C sort -u \
+            > "$ARTIFACT_DIR/baseline-manual-hook-files.txt" || true
+
+          test "$(
+            wc -l < "$ARTIFACT_DIR/baseline-external-ksu-symbols.txt" \
+              | tr -d ' '
+          )" = "8"
+
+          test "$(
+            wc -l < "$ARTIFACT_DIR/baseline-manual-hook-files.txt" \
+              | tr -d ' '
+          )" = "5"
+
+          while IFS= read -r file; do
+            sha256sum "$file"
+          done < "$ARTIFACT_DIR/baseline-manual-hook-files.txt" \
+            > "$ARTIFACT_DIR/baseline-manual-hook-files.sha256"
+
+          {
+            echo "EXTERNAL_KSU_SYMBOLS=8"
+            echo "BASELINE_MANUAL_HOOK_FILES=5"
+            echo "BASELINE_MANUAL_HOOK_CONTRACT=PASS"
+          } | tee "$ARTIFACT_DIR/MANUAL-HOOK-CONTRACT.txt"
+
+      - name: Checkout immutable original KernelSU v0.9.5
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ env.KSU_REPOSITORY }}
+          ref: ${{ env.KSU_REF }}
+          path: KernelSU-v095
+          fetch-depth: 0
+
+      - name: Checkout exact SUSFS 2.2 reference
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ env.SUSFS_REPOSITORY }}
+          ref: ${{ env.SUSFS_REF }}
+          path: susfs-modern
+          fetch-depth: 1
+
+      - name: Authenticate source and modern reboot protocol
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test "$(git -C KernelSU-v095 rev-parse HEAD)" = "$KSU_REF"
+          test "$(git -C susfs-modern rev-parse HEAD)" = "$SUSFS_REF"
+
+          ksu_count="$(git -C KernelSU-v095 rev-list --count HEAD)"
+          ksu_version="$((10000 + ksu_count + 200))"
+          test "$ksu_version" = "$KSU_EXPECTED_VERSION"
+
+          grep -Fq "$SUSFS_VERSION_EXPECTED" \
+            susfs-modern/ksu_module_susfs/module.prop
+
+          KSU_PATCH="susfs-modern/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch"
+          KERNEL_PATCH="susfs-modern/kernel_patches/50_add_susfs_in_gki-android12-5.10.patch"
+          SUSFS_DEF="susfs-modern/kernel_patches/include/linux/susfs_def.h"
+
+          test -f "$KSU_PATCH"
+          test -f "$KERNEL_PATCH"
+          test -f "$SUSFS_DEF"
+
+          grep -Fq '#define SUSFS_MAGIC 0xFAFAFAFA' "$SUSFS_DEF"
+
+          grep -Fq \
+            'int ksu_handle_sys_reboot(int magic1, int magic2, unsigned int cmd, void __user **arg)' \
+            "$KSU_PATCH"
+
+          grep -Fq \
+            'if (magic1 != KSU_INSTALL_MAGIC1)' \
+            "$KSU_PATCH"
+
+          grep -Fq \
+            'if (magic2 == SUSFS_MAGIC && current_uid().val == 0)' \
+            "$KSU_PATCH"
+
+          grep -Fq \
+            'ret = ksu_handle_sys_reboot(magic1, magic2, cmd, &arg);' \
+            "$KERNEL_PATCH"
+
+          grep -Fq \
+            'if (ret) {' \
+            "$KERNEL_PATCH"
+
+          # Original v0.9.5 uses the same first magic value as modern
+          # KSU_INSTALL_MAGIC1: 0xDEADBEEF.
+          grep -Fq \
+            '#define KERNEL_SU_OPTION 0xDEADBEEF' \
+            KernelSU-v095/kernel/ksu.h
+
+          {
+            echo "KSU_HEAD=$KSU_REF"
+            echo "KSU_VERSION=$ksu_version"
+            echo "SUSFS_HEAD=$SUSFS_REF"
+            echo "SUSFS_VERSION=$SUSFS_VERSION_EXPECTED"
+            echo "KSU_INSTALL_MAGIC1_EQ_V095_KERNEL_SU_OPTION=0xDEADBEEF"
+            echo "SUSFS_MAGIC=0xFAFAFAFA"
+            echo "MODERN_SUSFS_CONTROL_PLANE=REBOOT_SYSCALL_MAGIC_DISPATCH"
+            echo "MODERN_REBOOT_RETURN_CONTRACT=HANDLED_ZERO_NORMAL_FLOW_NEGATIVE"
+            echo "PROTOCOL_SOURCE_PROOF=PASS"
+          } | tee "$ARTIFACT_DIR/CONTROL-PLANE-PROTOCOL.txt"
+
+          MODERN_TOOL="susfs-modern/ksu_module_susfs/tools/ksu_susfs_arm64"
+
+          test -f "$MODERN_TOOL"
+
+          {
+            file "$MODERN_TOOL"
+            echo
+            echo "SHA256=$(sha256sum "$MODERN_TOOL" | awk '{print $1}')"
+            echo
+            echo "SYSCALL_DYNAMIC_SYMBOL_HINTS:"
+            aarch64-linux-gnu-readelf -Ws "$MODERN_TOOL" 2>/dev/null \
+              | grep -E 'syscall(@|$)' || true
+          } > "$ARTIFACT_DIR/modern-ksu_susfs-binary-info.txt"
+
+      - name: Create isolated staged KSU and kernel worktree
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cp -a KernelSU-v095 "$STAGE_DIR/KernelSU-v095-port"
+
+          cd "$GITHUB_WORKSPACE/kernel-base"
+          git worktree add \
+            --detach \
+            "$STAGE_DIR/kernel-smoke" \
+            HEAD
+
+          {
+            echo "KSU_STAGE=$STAGE_DIR/KernelSU-v095-port"
+            echo "KERNEL_SMOKE_STAGE=$STAGE_DIR/kernel-smoke"
+            echo "BASE_KERNEL_WORKTREE_MODIFIED=NO"
+            echo "DEVICE_OR_BOOT_PARTITION_ACCESSED=NO"
+          } | tee "$ARTIFACT_DIR/STAGE-IDENTITY.txt"
+
+      - name: Apply source-proven 5.4.302 nofault compatibility to staged KSU
+        if: ${{ matrix.source_proven_nofault_fix == 'yes' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd "$GITHUB_WORKSPACE/kernel-base"
+
+          git cat-file -e "${KSU_302_SOURCE_FIX_COMMIT}^{commit}"
+          git merge-base --is-ancestor \
+            "$KSU_302_SOURCE_FIX_COMMIT" \
+            "${{ matrix.kernel_ref }}"
+
+          source_file="drivers/kernelsu/kernel_compat.c"
+          target_file="$STAGE_DIR/KernelSU-v095-port/kernel/kernel_compat.c"
+
+          old='#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 8, 0)'
+          new='#if 1 || LINUX_VERSION_CODE >= KERNEL_VERSION(5, 8, 0)'
+
+          test "$(grep -Fxc "$new" "$source_file" || true)" = "1"
+          test "$(grep -Fxc "$old" "$target_file" || true)" = "1"
+
+          python3 - "$target_file" <<'PY'
+          from pathlib import Path
+          import sys
+
+          p = Path(sys.argv[1])
+          data = p.read_text(encoding="utf-8")
+
+          old = "#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 8, 0)"
+          new = "#if 1 || LINUX_VERSION_CODE >= KERNEL_VERSION(5, 8, 0)"
+
+          if data.count(old) != 1 or data.count(new) != 0:
+              raise SystemExit("unexpected KSU v0.9.5 nofault baseline")
+
+          p.write_text(
+              data.replace(old, new, 1),
+              encoding="utf-8",
+          )
+          PY
+
+          echo "SOURCE_PROVEN_302_NOFAULT_COMPAT=PASS" \
+            | tee "$ARTIFACT_DIR/NOFAULT-COMPAT.txt"
+
+      - name: Reproduce and harden W62 direct ABI bridge
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          root = Path(os.environ["STAGE_DIR"]) / "KernelSU-v095-port"
+          ksu_c = root / "kernel/ksu.c"
+          ksu_h = root / "kernel/ksu.h"
+          ksud_c = root / "kernel/ksud.c"
+          selinux_c = root / "kernel/selinux/selinux.c"
+          selinux_h = root / "kernel/selinux/selinux.h"
+
+          def read(p):
+              return p.read_text(encoding="utf-8")
+
+          def write(p, s):
+              p.write_text(s, encoding="utf-8")
+
+          data = read(ksu_c)
+
+          inc = '#include <linux/workqueue.h>\n'
+          if data.count(inc) != 1:
+              raise SystemExit("ksu.c include anchor drifted")
+          data = data.replace(
+              inc,
+              inc + '#include <linux/cred.h>\n',
+              1,
+          )
+
+          global_anchor = 'static struct workqueue_struct *ksu_workqueue;\n'
+          if data.count(global_anchor) != 1:
+              raise SystemExit("ksu.c global anchor drifted")
+          data = data.replace(
+              global_anchor,
+              global_anchor
+              + '\n#ifdef CONFIG_KSU_SUSFS\n'
+              + 'struct cred *ksu_cred;\n'
+              + '#endif\n',
+              1,
+          )
+
+          init_anchor = '\tksu_core_init();\n'
+          if data.count(init_anchor) != 1:
+              raise SystemExit("ksu.c init anchor drifted")
+          data = data.replace(
+              init_anchor,
+              '#ifdef CONFIG_KSU_SUSFS\n'
+              '\tksu_cred = prepare_creds();\n'
+              '\tif (!ksu_cred) {\n'
+              '\t\tpr_err("prepare SUSFS credential failed!\\n");\n'
+              '\t\treturn -ENOMEM;\n'
+              '\t}\n'
+              '#endif\n\n'
+              '\tksu_core_init();\n',
+              1,
+          )
+
+          workq_anchor = (
+              '\tksu_workqueue = alloc_ordered_workqueue('
+              '"kernelsu_work_queue", 0);\n'
+          )
+          if data.count(workq_anchor) != 1:
+              raise SystemExit("ksu.c workqueue anchor drifted")
+          data = data.replace(
+              workq_anchor,
+              workq_anchor
+              + '\n#ifdef CONFIG_KSU_SUSFS\n'
+              + '\tsusfs_init();\n'
+              + '#endif\n',
+              1,
+          )
+
+          include_anchor = '#include "throne_tracker.h"\n'
+          if data.count(include_anchor) != 1:
+              raise SystemExit("ksu.c SUSFS init declaration anchor drifted")
+          data = data.replace(
+              include_anchor,
+              include_anchor
+              + '\n#ifdef CONFIG_KSU_SUSFS\n'
+              + 'extern void susfs_init(void);\n'
+              + '#endif\n',
+              1,
+          )
+
+          exit_anchor = '\tksu_core_exit();\n'
+          if data.count(exit_anchor) != 1:
+              raise SystemExit("ksu.c exit anchor drifted")
+          data = data.replace(
+              exit_anchor,
+              '\tksu_core_exit();\n\n'
+              '#ifdef CONFIG_KSU_SUSFS\n'
+              '\tif (ksu_cred) {\n'
+              '\t\tput_cred(ksu_cred);\n'
+              '\t\tksu_cred = NULL;\n'
+              '\t}\n'
+              '#endif\n',
+              1,
+          )
+
+          write(ksu_c, data)
+
+          data = read(ksu_h)
+          hdr_anchor = '#include <linux/workqueue.h>\n'
+          if data.count(hdr_anchor) != 1:
+              raise SystemExit("ksu.h include anchor drifted")
+          data = data.replace(
+              hdr_anchor,
+              hdr_anchor
+              + '\n#ifdef CONFIG_KSU_SUSFS\n'
+              + 'struct cred;\n'
+              + 'extern struct cred *ksu_cred;\n'
+              + '#endif\n',
+              1,
+          )
+          write(ksu_h, data)
+
+          data = read(selinux_h)
+          inc_anchor = '#include "linux/version.h"\n'
+          if data.count(inc_anchor) != 1:
+              raise SystemExit("selinux.h include anchor drifted")
+          data = data.replace(
+              inc_anchor,
+              inc_anchor
+              + '\n#ifdef CONFIG_KSU_SUSFS\n'
+              + 'struct cred;\n'
+              + '#endif\n',
+              1,
+          )
+
+          decl = 'void setup_selinux(const char *);\n'
+          if data.count(decl) != 1:
+              raise SystemExit("selinux.h setup_selinux anchor drifted")
+          data = data.replace(
+              decl,
+              decl
+              + '#ifdef CONFIG_KSU_SUSFS\n'
+              + 'int ksu_setup_selinux_cred(const char *, struct cred *);\n'
+              + 'void ksu_setup_susfs_cred(void);\n'
+              + 'bool susfs_is_current_ksu_domain(void);\n'
+              + '#endif\n',
+              1,
+          )
+          write(selinux_h, data)
+
+          data = read(selinux_c)
+          inc = '#include "linux/version.h"\n'
+          if data.count(inc) != 1:
+              raise SystemExit("selinux.c include anchor drifted")
+          data = data.replace(
+              inc,
+              inc + '#include "../ksu.h"\n',
+              1,
+          )
+
+          setenforce_anchor = '\nvoid setenforce(bool enforce)\n'
+          if data.count(setenforce_anchor) != 1:
+              raise SystemExit("selinux.c helper insertion anchor drifted")
+
+          helper = r'''
+          #ifdef CONFIG_KSU_SUSFS
+          int ksu_setup_selinux_cred(const char *domain, struct cred *cred)
+          {
+          	struct task_security_struct *tsec;
+          	u32 sid;
+          	int error;
+
+          	if (!cred)
+          		return -EINVAL;
+
+          	tsec = selinux_cred(cred);
+          	if (!tsec)
+          		return -EINVAL;
+
+          	error = security_secctx_to_secid(domain, strlen(domain), &sid);
+          	if (error)
+          		return error;
+
+          	tsec->sid = sid;
+          	tsec->create_sid = 0;
+          	tsec->keycreate_sid = 0;
+          	tsec->sockcreate_sid = 0;
+          	return 0;
+          }
+
+          void ksu_setup_susfs_cred(void)
+          {
+          	int error;
+
+          	if (!ksu_cred) {
+          		pr_err("SUSFS credential is NULL\n");
+          		return;
+          	}
+
+          	error = ksu_setup_selinux_cred(KERNEL_SU_DOMAIN, ksu_cred);
+          	if (error)
+          		pr_err("setup SUSFS credential failed: %d\n", error);
+          }
+
+          bool susfs_is_current_ksu_domain(void)
+          {
+          	return is_ksu_domain();
+          }
+          #endif
+
+          '''
+
+          data = data.replace(
+              setenforce_anchor,
+              '\n' + helper + 'void setenforce(bool enforce)\n',
+              1,
+          )
+          write(selinux_c, data)
+
+          data = read(ksud_c)
+          output = []
+          inserted = 0
+
+          for line in data.splitlines(keepends=True):
+              output.append(line)
+
+              if line.strip() == 'apply_kernelsu_rules();':
+                  indent = line[:len(line) - len(line.lstrip())]
+                  output.append(
+                      '#ifdef CONFIG_KSU_SUSFS\n'
+                      + indent
+                      + 'ksu_setup_susfs_cred();\n'
+                      + '#endif\n'
+                  )
+                  inserted += 1
+
+          if inserted != 3:
+              raise SystemExit(
+                  f"expected three second-stage policy calls, got {inserted}"
+              )
+
+          write(ksud_c, ''.join(output))
+
+          print("W62_DIRECT_ABI_REPRODUCED=PASS")
+          print("W62_LITERAL_BACKSLASH_N_LOG_BUG=FIXED")
+          print("SELINUX_CRED_ACCESS=SELINUX_CRED_HELPER")
+          print("V095_SETUP_SELINUX_EXISTING_ABI_PRESERVED=YES")
+          print("V095_SU_DOMAIN_PRESERVED=YES")
+          print("SECOND_STAGE_CRED_LABEL_CALLS=3")
+          PY
+
+      - name: Add modern 2.2 Kconfig and reboot dispatcher to staged v0.9.5
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          root = Path(os.environ["STAGE_DIR"]) / "KernelSU-v095-port"
+          kconfig = root / "kernel/Kconfig"
+          makefile = root / "kernel/Makefile"
+          bridge = root / "kernel/susfs_bridge.c"
+
+          data = kconfig.read_text(encoding="utf-8")
+
+          final = '\nendmenu\n'
+          if data.count(final) != 1:
+              raise SystemExit("v0.9.5 Kconfig final endmenu anchor drifted")
+
+          block = r'''
+          menu "KernelSU - SUSFS"
+
+          config KSU_SUSFS
+          	bool "KernelSU addon - SUSFS"
+          	depends on KSU
+          	depends on THREAD_INFO_IN_TASK
+          	default y
+
+          config KSU_SUSFS_SUS_PATH
+          	bool "Enable SUS_PATH"
+          	depends on KSU_SUSFS
+          	default y
+
+          config KSU_SUSFS_SUS_MOUNT
+          	bool "Enable SUS_MOUNT"
+          	depends on KSU_SUSFS
+          	default y
+
+          config KSU_SUSFS_SUS_KSTAT
+          	bool "Enable SUS_KSTAT"
+          	depends on KSU_SUSFS
+          	default y
+
+          config KSU_SUSFS_SPOOF_UNAME
+          	bool "Enable uname spoofing"
+          	depends on KSU_SUSFS
+          	default y
+
+          config KSU_SUSFS_ENABLE_LOG
+          	bool "Enable SUSFS kernel logging"
+          	depends on KSU_SUSFS
+          	default y
+
+          config KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS
+          	bool "Enable KSU/SUSFS symbol hiding"
+          	depends on KSU_SUSFS
+          	default y
+
+          config KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG
+          	bool "Enable cmdline/bootconfig spoofing"
+          	depends on KSU_SUSFS
+          	default y
+
+          config KSU_SUSFS_OPEN_REDIRECT
+          	bool "Enable OPEN_REDIRECT"
+          	depends on KSU_SUSFS
+          	default y
+
+          config KSU_SUSFS_SUS_MAP
+          	bool "Enable SUS_MAP"
+          	depends on KSU_SUSFS
+          	default y
+
+          endmenu
+          '''
+
+          data = data.replace(final, '\n' + block + '\nendmenu\n', 1)
+          kconfig.write_text(data, encoding="utf-8")
+
+          data = makefile.read_text(encoding="utf-8")
+          anchor = 'kernelsu-objs += core_hook.o\n'
+
+          if data.count(anchor) != 1:
+              raise SystemExit("v0.9.5 Makefile core_hook anchor drifted")
+
+          data = data.replace(
+              anchor,
+              anchor + 'kernelsu-objs += susfs_bridge.o\n',
+              1,
+          )
+          makefile.write_text(data, encoding="utf-8")
+
+          bridge.write_text(r'''#include <linux/cred.h>
+          #include <linux/errno.h>
+          #include <linux/types.h>
+          #include <linux/uaccess.h>
+
+          #include "ksu.h"
+
+          #ifdef CONFIG_KSU_SUSFS
+          #include <linux/susfs.h>
+          #include <linux/susfs_def.h>
+
+          int ksu_handle_sys_reboot(int magic1, int magic2, unsigned int cmd,
+          			  void __user **arg)
+          {
+          	if (magic1 != KERNEL_SU_OPTION)
+          		return -EINVAL;
+
+          	if (magic2 != SUSFS_MAGIC || current_uid().val != 0)
+          		return -EINVAL;
+
+          	switch (cmd) {
+          #ifdef CONFIG_KSU_SUSFS_SUS_PATH
+          	case CMD_SUSFS_ADD_SUS_PATH:
+          		susfs_add_sus_path(arg);
+          		return 0;
+          	case CMD_SUSFS_ADD_SUS_PATH_LOOP:
+          		susfs_add_sus_path_loop(arg);
+          		return 0;
+          #endif
+
+          #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
+          	case CMD_SUSFS_HIDE_SUS_MNTS_FOR_NON_SU_PROCS:
+          		susfs_set_hide_sus_mnts_for_non_su_procs(arg);
+          		return 0;
+          #endif
+
+          #ifdef CONFIG_KSU_SUSFS_SUS_KSTAT
+          	case CMD_SUSFS_ADD_SUS_KSTAT:
+          	case CMD_SUSFS_ADD_SUS_KSTAT_STATICALLY:
+          		susfs_add_sus_kstat(arg);
+          		return 0;
+          	case CMD_SUSFS_UPDATE_SUS_KSTAT:
+          		susfs_update_sus_kstat(arg);
+          		return 0;
+          #endif
+
+          #ifdef CONFIG_KSU_SUSFS_SPOOF_UNAME
+          	case CMD_SUSFS_SET_UNAME:
+          		susfs_set_uname(arg);
+          		return 0;
+          #endif
+
+          #ifdef CONFIG_KSU_SUSFS_ENABLE_LOG
+          	case CMD_SUSFS_ENABLE_LOG:
+          		susfs_enable_log(arg);
+          		return 0;
+          #endif
+
+          #ifdef CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG
+          	case CMD_SUSFS_SET_CMDLINE_OR_BOOTCONFIG:
+          		susfs_set_cmdline_or_bootconfig(arg);
+          		return 0;
+          #endif
+
+          #ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
+          	case CMD_SUSFS_ADD_OPEN_REDIRECT:
+          		susfs_add_open_redirect(arg);
+          		return 0;
+          #endif
+
+          #ifdef CONFIG_KSU_SUSFS_SUS_MAP
+          	case CMD_SUSFS_ADD_SUS_MAP:
+          		susfs_add_sus_map(arg);
+          		return 0;
+          #endif
+
+          	case CMD_SUSFS_ENABLE_AVC_LOG_SPOOFING:
+          		susfs_set_avc_log_spoofing(arg);
+          		return 0;
+          	case CMD_SUSFS_SHOW_ENABLED_FEATURES:
+          		susfs_get_enabled_features(arg);
+          		return 0;
+          	case CMD_SUSFS_SHOW_VARIANT:
+          		susfs_show_variant(arg);
+          		return 0;
+          	case CMD_SUSFS_SHOW_VERSION:
+          		susfs_show_version(arg);
+          		return 0;
+          	default:
+          		return -EINVAL;
+          	}
+          }
+          #endif
+          ''', encoding="utf-8")
+
+          print("MODERN_220_KCONFIG_SURFACE=PORTED")
+          print("MODERN_220_REBOOT_DISPATCHER=PORTED")
+          print("LEGACY_PRCTL_DISPATCHER=NOT_TRANSPLANTED")
+          PY
+
+      - name: Port SUSFS behavior onto v0.9.5 existing task_fix_setuid path
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          p = (
+              Path(os.environ["STAGE_DIR"])
+              / "KernelSU-v095-port/kernel/core_hook.c"
+          )
+          data = p.read_text(encoding="utf-8")
+
+          include_anchor = '#include <linux/mount.h>\n'
+
+          if data.count(include_anchor) != 1:
+              raise SystemExit("core_hook include anchor drifted")
+
+          data = data.replace(
+              include_anchor,
+              include_anchor
+              + '\n#ifdef CONFIG_KSU_SUSFS\n'
+              + '#include <linux/susfs.h>\n'
+              + '#include <linux/susfs_def.h>\n'
+              + '#include <linux/workqueue.h>\n'
+              + '#endif\n',
+              1,
+          )
+
+          marker = 'static bool ksu_module_mounted = false;\n'
+
+          if data.count(marker) != 1:
+              raise SystemExit("core_hook global anchor drifted")
+
+          helpers = r'''
+          #ifdef CONFIG_KSU_SUSFS
+          extern struct work_struct susfs_extra_works;
+
+          static inline bool ksu_susfs_is_isolated_process(uid_t uid)
+          {
+          	uid_t appid = uid % 100000;
+
+          	return appid >= 99000 && appid <= 99999;
+          }
+
+          static inline void ksu_schedule_susfs_extra_works(void)
+          {
+          	if (!work_pending(&susfs_extra_works))
+          		schedule_work(&susfs_extra_works);
+          }
+          #endif
+
+          '''
+
+          data = data.replace(marker, marker + '\n' + helpers, 1)
+
+          start = data.find(
+              'int ksu_handle_setuid(struct cred *new, const struct cred *old)\n{'
+          )
+          if start < 0:
+              raise SystemExit("ksu_handle_setuid start not found")
+
+          brace = data.find('{', start)
+          depth = 0
+          end = None
+
+          for i in range(brace, len(data)):
+              if data[i] == '{':
+                  depth += 1
+              elif data[i] == '}':
+                  depth -= 1
+                  if depth == 0:
+                      end = i + 1
+                      break
+
+          if end is None:
+              raise SystemExit("ksu_handle_setuid end not found")
+
+          replacement = r'''int ksu_handle_setuid(struct cred *new, const struct cred *old)
+          {
+          	bool is_zygote_child;
+          	kuid_t new_uid;
+          	kuid_t old_uid;
+          #ifdef CONFIG_KSU_SUSFS
+          	bool isolated;
+          #endif
+
+          	if (!ksu_module_mounted)
+          		return 0;
+
+          	if (!new || !old)
+          		return 0;
+
+          	new_uid = new->uid;
+          	old_uid = old->uid;
+
+          	if (old_uid.val != 0)
+          		return 0;
+
+          #ifdef CONFIG_KSU_SUSFS
+          	isolated = ksu_susfs_is_isolated_process(new_uid.val);
+
+          	if (!isolated && (!is_appuid(new_uid) ||
+          			  is_unsupported_uid(new_uid.val)))
+          		return 0;
+
+          	if (!isolated) {
+          		if (ksu_is_allow_uid(new_uid.val))
+          			return 0;
+
+          		if (!ksu_uid_should_umount(new_uid.val))
+          			return 0;
+          	}
+          #else
+          	if (!is_appuid(new_uid) || is_unsupported_uid(new_uid.val))
+          		return 0;
+
+          	if (ksu_is_allow_uid(new_uid.val))
+          		return 0;
+
+          	if (!ksu_uid_should_umount(new_uid.val))
+          		return 0;
+          #endif
+
+          	/*
+          	 * Preserve the original v0.9.5 safety gate: only credentials spawned
+          	 * from zygote may enter the per-app unmount path.
+          	 */
+          	is_zygote_child = is_zygote(old->security);
+          	if (!is_zygote_child) {
+          		pr_info("handle umount ignore non zygote child: %d\n",
+          			current->pid);
+          		return 0;
+          	}
+
+          	try_umount("/system", true, 0);
+          	try_umount("/vendor", true, 0);
+          	try_umount("/product", true, 0);
+          	try_umount("/data/adb/modules", false, MNT_DETACH);
+          	try_umount("/debug_ramdisk", false, MNT_DETACH);
+          	try_umount("/sbin", false, MNT_DETACH);
+
+          #ifdef CONFIG_KSU_SUSFS
+          	/*
+          	 * Modern SUSFS 2.2 does this from its setresuid hook. For v0.9.5
+          	 * we deliberately attach the same post-unmount semantics to the
+          	 * already working task_fix_setuid LSM path instead of introducing
+          	 * a second, competing setresuid hook.
+          	 */
+          	ksu_schedule_susfs_extra_works();
+          	susfs_set_current_proc_umounted();
+          #endif
+
+          	return 0;
+          }'''
+
+          data = data[:start] + replacement + data[end:]
+
+          boot_old = '''		case EVENT_BOOT_COMPLETED: {
+          			static bool boot_complete_lock = false;
+          			if (!boot_complete_lock) {
+          				boot_complete_lock = true;
+          				pr_info("boot_complete triggered\\n");
+          			}
+          			break;
+          		}
+          '''
+
+          boot_new = '''		case EVENT_BOOT_COMPLETED: {
+          			static bool boot_complete_lock = false;
+          			if (!boot_complete_lock) {
+          				boot_complete_lock = true;
+          				pr_info("boot_complete triggered\\n");
+          #ifdef CONFIG_KSU_SUSFS
+          				susfs_start_sdcard_monitor_fn();
+          #endif
+          			}
+          			break;
+          		}
+          '''
+
+          if data.count(boot_old) != 1:
+              raise SystemExit("EVENT_BOOT_COMPLETED anchor drifted")
+
+          data = data.replace(boot_old, boot_new, 1)
+
+          p.write_text(data, encoding="utf-8")
+
+          print("V095_TASK_FIX_SETUID_PATH=PRESERVED")
+          print("ISOLATED_UID_RANGE=99000-99999")
+          print("SUSFS_EXTRA_WORK_AFTER_V095_UNMOUNT=PORTED")
+          print("PROC_UMOUNTED_MARK_AFTER_V095_UNMOUNT=PORTED")
+          print("SECOND_COMPETING_SETRESUID_HOOK=NO")
+          print("SUSFS_SDCARD_MONITOR_AT_BOOT_COMPLETED=PORTED")
+          PY
+
+      - name: Stage exact SUSFS 2.2 core and v0.9.5 domain adaptation
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SANDBOX="$STAGE_DIR/kernel-smoke"
+          KSU_STAGE="$STAGE_DIR/KernelSU-v095-port"
+
+          mkdir -p "$SANDBOX/KernelSU"
+          cp -a "$KSU_STAGE/." "$SANDBOX/KernelSU/"
+
+          rm -rf "$SANDBOX/drivers/kernelsu"
+          ln -s ../KernelSU/kernel "$SANDBOX/drivers/kernelsu"
+
+          cp \
+            susfs-modern/kernel_patches/include/linux/susfs.h \
+            "$SANDBOX/include/linux/susfs.h"
+
+          cp \
+            susfs-modern/kernel_patches/include/linux/susfs_def.h \
+            "$SANDBOX/include/linux/susfs_def.h"
+
+          cp \
+            susfs-modern/kernel_patches/fs/susfs.c \
+            "$SANDBOX/fs/susfs.c"
+
+          python3 - "$SANDBOX/fs/susfs.c" <<'PY'
+          from pathlib import Path
+          import os
+          import sys
+
+          p = Path(sys.argv[1])
+          data = p.read_text(encoding="utf-8")
+
+          old_decl = (
+              'extern void setup_selinux(const char *domain, '
+              'struct cred *cred);'
+          )
+          new_decl = (
+              'extern int ksu_setup_selinux_cred(const char *domain, '
+              'struct cred *cred);'
+          )
+
+          if data.count(old_decl) != 1:
+              raise SystemExit("modern SUSFS setup_selinux extern drifted")
+
+          data = data.replace(old_decl, new_decl, 1)
+
+          old_call = 'setup_selinux("u:r:ksu:s0", cred);'
+
+          if data.count(old_call) != 1:
+              raise SystemExit("modern SUSFS hard-coded domain call drifted")
+
+          new_call = '''if (ksu_setup_selinux_cred("u:r:su:s0", cred)) {
+          		SUSFS_LOGE("failed to apply v0.9.5 KernelSU SELinux domain to sdcard monitor cred!\\n");
+          		abort_creds(cred);
+          		return -EINVAL;
+          	}'''
+
+          data = data.replace(old_call, new_call, 1)
+
+          if 'synchronize_srcu(&susfs_srcu_open_redirect)' not in data:
+              raise SystemExit("OPEN_REDIRECT SRCU fix missing")
+
+          fsnotify_header = (
+              Path(os.environ["STAGE_DIR"])
+              / "kernel-smoke/include/linux/fsnotify_backend.h"
+          ).read_text(encoding="utf-8")
+
+          if 'int (*handle_event)(struct fsnotify_group *group,' not in fsnotify_header:
+              raise SystemExit("Linux 5.4 fsnotify handle_event ABI not found")
+          if 'handle_inode_event' in fsnotify_header:
+              raise SystemExit("unexpected newer handle_inode_event ABI in pinned 5.4 tree")
+
+          # W63-v2 used an exact whitespace/tab layout and therefore
+          # stopped before compilation. Match the source structurally.
+          import re
+
+          callback_pattern = re.compile(
+              r"static\s+int\s+susfs_handle_sdcard_inode_event\s*\("
+              r"\s*struct\s+fsnotify_mark\s*\*\s*mark\s*,\s*u32\s+mask\s*,"
+              r"\s*struct\s+inode\s*\*\s*inode\s*,\s*struct\s+inode\s*\*\s*dir\s*,"
+              r"\s*const\s+struct\s+qstr\s*\*\s*file_name\s*,\s*u32\s+cookie\s*\)"
+              r"\s*\{",
+              re.S,
+          )
+
+          callback_matches = list(callback_pattern.finditer(data))
+          if len(callback_matches) != 1:
+              raise SystemExit(
+                  "modern SUSFS fsnotify callback structural match count: "
+                  + str(len(callback_matches))
+              )
+
+          new_signature = (
+              "static int susfs_handle_sdcard_event_5_4(struct fsnotify_group *group,\n"
+              "\t\t\t\t\t\t\t\t\t\t struct inode *inode, u32 mask,\n"
+              "\t\t\t\t\t\t\t\t\t\t const void *event_data, int data_type,\n"
+              "\t\t\t\t\t\t\t\t\t\t const struct qstr *file_name, u32 cookie,\n"
+              "\t\t\t\t\t\t\t\t\t\t struct fsnotify_iter_info *iter_info)\n"
+              "{\n"
+              "\t(void)group;\n"
+              "\t(void)inode;\n"
+              "\t(void)event_data;\n"
+              "\t(void)data_type;\n"
+              "\t(void)cookie;\n"
+              "\t(void)iter_info;"
+          )
+
+          data = callback_pattern.sub(
+              lambda _m: new_signature,
+              data,
+              count=1,
+          )
+
+          ops_pattern = re.compile(
+              r"static\s+const\s+struct\s+fsnotify_ops\s+fsnotify_ops\s*=\s*\{\s*"
+              r"\.handle_inode_event\s*=\s*susfs_handle_sdcard_inode_event\s*,\s*"
+              r"\};",
+              re.S,
+          )
+
+          ops_matches = list(ops_pattern.finditer(data))
+          if len(ops_matches) != 1:
+              raise SystemExit(
+                  "modern SUSFS fsnotify ops structural match count: "
+                  + str(len(ops_matches))
+              )
+
+          new_ops = (
+              "static const struct fsnotify_ops fsnotify_ops = {\n"
+              "\t.handle_event = susfs_handle_sdcard_event_5_4,\n"
+              "};"
+          )
+
+          data = ops_pattern.sub(
+              lambda _m: new_ops,
+              data,
+              count=1,
+          )
+
+          if "susfs_handle_sdcard_inode_event" in data:
+              raise SystemExit("old modern callback name remains")
+          if ".handle_inode_event" in data:
+              raise SystemExit("old modern fsnotify member remains")
+          if data.count("susfs_handle_sdcard_event_5_4") != 2:
+              raise SystemExit(
+                  "unexpected adapted callback reference count: "
+                  + str(data.count("susfs_handle_sdcard_event_5_4"))
+              )
+          if data.count(".handle_event = susfs_handle_sdcard_event_5_4") != 1:
+              raise SystemExit("Linux 5.4 handle_event initializer missing")
+
+          p.write_text(data, encoding="utf-8")
+
+          diagnostic = (
+              Path(os.environ["ARTIFACT_DIR"])
+              / "FSNOTIFY-5_4-ADAPTER.txt"
+          )
+          diagnostic.write_text(
+              "\n".join([
+                  "W63_V2_LITERAL_WHITESPACE_MATCHER=REJECTED",
+                  "W63_V3_STRUCTURAL_REGEX_MATCHER=PASS",
+                  "W63_V4_OS_IMPORT_PRESENT=YES",
+                  "SOURCE_CALLBACK_MATCHES=1",
+                  "SOURCE_OPS_MATCHES=1",
+                  "TARGET_ABI=fsnotify_ops.handle_event",
+                  "CALLBACK=susfs_handle_sdcard_event_5_4",
+                  "EVENT_BODY_SEMANTICS_CHANGED=NO",
+              ]) + "\n",
+              encoding="utf-8",
+          )
+          PY
+
+          if ! grep -Fq \
+            'obj-$(CONFIG_KSU_SUSFS) += susfs.o' \
+            "$SANDBOX/fs/Makefile"
+          then
+            printf '\n%s\n' \
+              'obj-$(CONFIG_KSU_SUSFS) += susfs.o' \
+              >> "$SANDBOX/fs/Makefile"
+          fi
+
+          {
+            echo "SUSFS_CORE_SOURCE=$SUSFS_REF"
+            echo "SUSFS_CORE_VERSION=$SUSFS_VERSION_EXPECTED"
+            echo "V095_DOMAIN_ADAPTATION=u:r:su:s0"
+            echo "OPEN_REDIRECT_SRCU_FIX_PRESERVED=YES"
+            echo "FSNOTIFY_5_4_HANDLE_EVENT_ADAPTER=YES"
+            echo "SUSFS_CORE_STAGED_IN_COMPILE_SANDBOX=YES"
+          } | tee "$ARTIFACT_DIR/SUSFS-CORE-STAGE.txt"
+
+      - name: Port exact modern reboot return contract into compile sandbox
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          p = Path(os.environ["STAGE_DIR"]) / "kernel-smoke/kernel/reboot.c"
+          data = p.read_text(encoding="utf-8")
+
+          syscall_anchor = (
+              'SYSCALL_DEFINE4(reboot, int, magic1, int, magic2, '
+              'unsigned int, cmd,\n'
+              '\t\tvoid __user *, arg)\n'
+          )
+
+          if data.count(syscall_anchor) != 1:
+              raise SystemExit("kernel/reboot.c syscall anchor drifted")
+
+          decl = (
+              '#ifdef CONFIG_KSU_SUSFS\n'
+              'extern int ksu_handle_sys_reboot(int magic1, int magic2, '
+              'unsigned int cmd, void __user **arg);\n'
+              '#endif\n\n'
+          )
+
+          data = data.replace(
+              syscall_anchor,
+              decl + syscall_anchor,
+              1,
+          )
+
+          body_anchor = '\tchar buffer[256];\n\tint ret = 0;\n'
+
+          if data.count(body_anchor) != 1:
+              raise SystemExit("kernel/reboot.c body anchor drifted")
+
+          hook = (
+              body_anchor
+              + '\n#ifdef CONFIG_KSU_SUSFS\n'
+              + '\tret = ksu_handle_sys_reboot(magic1, magic2, cmd, &arg);\n'
+              + '\tif (ret)\n'
+              + '\t\tgoto ksu_susfs_orig_flow;\n'
+              + '\treturn ret;\n'
+              + 'ksu_susfs_orig_flow:\n'
+              + '#endif\n'
+          )
+
+          data = data.replace(body_anchor, hook, 1)
+          p.write_text(data, encoding="utf-8")
+
+          print("KERNEL_REBOOT_MODERN_RETURN_CONTRACT=PORTED")
+          print("HANDLED_SUSFS_REBOOT_CALL_RETURNS_ZERO_BEFORE_REAL_REBOOT=YES")
+          PY
+
+      - name: Configure compile sandbox for KSU v0.9.5 plus SUSFS 2.2
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SANDBOX="$STAGE_DIR/kernel-smoke"
+          cd "$SANDBOX"
+
+          export PATH="$GITHUB_WORKSPACE/toolchain/$CLANG_REVISION/bin:$PATH"
+          export KCFLAGS="-D__ANDROID_COMMON_KERNEL__"
+
+          rm -rf out-w63
+
+          make \
+            O=out-w63 \
+            ARCH=arm64 \
+            LLVM=1 \
+            veux_defconfig \
+            2>&1 | tee "$ARTIFACT_DIR/config-initial.log"
+
+          scripts/config --file out-w63/.config \
+            -e THREAD_INFO_IN_TASK \
+            -e KSU \
+            -e KSU_SUSFS \
+            -e KSU_SUSFS_SUS_PATH \
+            -e KSU_SUSFS_SUS_MOUNT \
+            -e KSU_SUSFS_SUS_KSTAT \
+            -e KSU_SUSFS_SPOOF_UNAME \
+            -e KSU_SUSFS_ENABLE_LOG \
+            -e KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \
+            -e KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \
+            -e KSU_SUSFS_OPEN_REDIRECT \
+            -e KSU_SUSFS_SUS_MAP \
+            -d MODULES \
+            -d KPROBES \
+            -d KPROBE_EVENTS
+
+          make \
+            O=out-w63 \
+            ARCH=arm64 \
+            LLVM=1 \
+            olddefconfig \
+            2>&1 | tee "$ARTIFACT_DIR/config-olddefconfig.log"
+
+          for cfg in \
+            CONFIG_THREAD_INFO_IN_TASK=y \
+            CONFIG_KSU=y \
+            CONFIG_KSU_SUSFS=y \
+            CONFIG_KSU_SUSFS_SUS_PATH=y \
+            CONFIG_KSU_SUSFS_SUS_MOUNT=y \
+            CONFIG_KSU_SUSFS_SUS_KSTAT=y \
+            CONFIG_KSU_SUSFS_SPOOF_UNAME=y \
+            CONFIG_KSU_SUSFS_ENABLE_LOG=y \
+            CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y \
+            CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y \
+            CONFIG_KSU_SUSFS_OPEN_REDIRECT=y \
+            CONFIG_KSU_SUSFS_SUS_MAP=y
+          do
+            grep -Fxq "$cfg" out-w63/.config
+          done
+
+          grep -Fxq '# CONFIG_MODULES is not set' out-w63/.config
+
+          if grep -q '^CONFIG_KPROBES=' out-w63/.config; then
+            echo "CONFIG_KPROBES unexpectedly enabled" >&2
+            exit 1
+          fi
+
+          if grep -q '^CONFIG_KPROBE_EVENTS=' out-w63/.config; then
+            echo "CONFIG_KPROBE_EVENTS unexpectedly enabled" >&2
+            exit 1
+          fi
+
+          cp out-w63/.config "$ARTIFACT_DIR/w63-smoke.config"
+
+          {
+            echo "CONFIG_KSU=y"
+            echo "CONFIG_KSU_SUSFS=y"
+            echo "CONFIG_THREAD_INFO_IN_TASK=y"
+            echo "CONFIG_MODULES=n"
+            echo "CONFIG_KPROBES=n_or_unavailable"
+            echo "CONFIG_KPROBE_EVENTS=n_or_unavailable"
+            echo "CONFIG_CONTRACT=PASS"
+          } | tee "$ARTIFACT_DIR/CONFIG-CONTRACT.txt"
+
+      - name: Compile KSU bridge SUSFS core and reboot hook objects
+        id: compile
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SANDBOX="$STAGE_DIR/kernel-smoke"
+          cd "$SANDBOX"
+
+          export PATH="$GITHUB_WORKSPACE/toolchain/$CLANG_REVISION/bin:$PATH"
+          export KCFLAGS="-D__ANDROID_COMMON_KERNEL__"
+
+          : > "$ARTIFACT_DIR/compile-smoke.log"
+
+          set +e
+
+          # The isolated drivers/kernelsu/ target includes SELinux internal
+          # headers directly through KernelSU's kernel_compat.h. A normal full
+          # kernel build generates security/selinux/flask.h first via the
+          # SELinux Makefile dependency, but a standalone KSU directory target
+          # has no dependency edge to that generated header. Generate the exact
+          # kernel-owned prerequisite explicitly; do not copy or synthesize it.
+          make \
+            -j2 \
+            O=out-w63 \
+            ARCH=arm64 \
+            LLVM=1 \
+            security/selinux/flask.h \
+            2>&1 | tee -a "$ARTIFACT_DIR/compile-smoke.log"
+          selinux_headers_rc=${PIPESTATUS[0]}
+
+          test -s out-w63/security/selinux/flask.h
+          flask_present_rc=$?
+
+          test -s out-w63/security/selinux/av_permissions.h
+          av_permissions_present_rc=$?
+
+          make \
+            -j2 \
+            O=out-w63 \
+            ARCH=arm64 \
+            LLVM=1 \
+            drivers/kernelsu/ \
+            2>&1 | tee -a "$ARTIFACT_DIR/compile-smoke.log"
+          ksu_rc=${PIPESTATUS[0]}
+
+          make \
+            -j2 \
+            O=out-w63 \
+            ARCH=arm64 \
+            LLVM=1 \
+            fs/susfs.o \
+            2>&1 | tee -a "$ARTIFACT_DIR/compile-smoke.log"
+          susfs_rc=${PIPESTATUS[0]}
+
+          make \
+            -j2 \
+            O=out-w63 \
+            ARCH=arm64 \
+            LLVM=1 \
+            kernel/reboot.o \
+            2>&1 | tee -a "$ARTIFACT_DIR/compile-smoke.log"
+          reboot_rc=${PIPESTATUS[0]}
+
+          set -e
+
+          {
+            echo "SELINUX_GENERATED_HEADERS_RC=$selinux_headers_rc"
+            echo "SELINUX_FLASK_HEADER_PRESENT_RC=$flask_present_rc"
+            echo "SELINUX_AV_PERMISSIONS_HEADER_PRESENT_RC=$av_permissions_present_rc"
+            echo "KSU_DIRECTORY_BUILD_RC=$ksu_rc"
+            echo "SUSFS_CORE_OBJECT_RC=$susfs_rc"
+            echo "REBOOT_HOOK_OBJECT_RC=$reboot_rc"
+          } | tee "$ARTIFACT_DIR/compile-smoke-exit.txt"
+
+          if [ "$selinux_headers_rc" -ne 0 ] || \
+             [ "$flask_present_rc" -ne 0 ] || \
+             [ "$av_permissions_present_rc" -ne 0 ] || \
+             [ "$ksu_rc" -ne 0 ] || \
+             [ "$susfs_rc" -ne 0 ] || \
+             [ "$reboot_rc" -ne 0 ]
+          then
+            exit 1
+          fi
+
+      - name: Record compile outcome
+        if: always()
+        shell: bash
+        run: |
+          set -u
+
+          {
+            echo "STEP_OUTCOME=${{ steps.compile.outcome }}"
+            echo "STEP_CONCLUSION=${{ steps.compile.conclusion }}"
+            echo "RUN_ID=${GITHUB_RUN_ID:-unknown}"
+            echo "RUN_ATTEMPT=${GITHUB_RUN_ATTEMPT:-unknown}"
+          } | tee "$ARTIFACT_DIR/compile-step-outcome.txt"
+
+      - name: Verify W63 compile-smoke and source contracts
+        if: ${{ steps.compile.outcome == 'success' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SANDBOX="$STAGE_DIR/kernel-smoke"
+          KSU_STAGE="$SANDBOX/KernelSU/kernel"
+
+          grep -Fxq 'SELINUX_GENERATED_HEADERS_RC=0' \
+            "$ARTIFACT_DIR/compile-smoke-exit.txt"
+          grep -Fxq 'SELINUX_FLASK_HEADER_PRESENT_RC=0' \
+            "$ARTIFACT_DIR/compile-smoke-exit.txt"
+          grep -Fxq 'SELINUX_AV_PERMISSIONS_HEADER_PRESENT_RC=0' \
+            "$ARTIFACT_DIR/compile-smoke-exit.txt"
+
+          grep -Fxq 'KSU_DIRECTORY_BUILD_RC=0' \
+            "$ARTIFACT_DIR/compile-smoke-exit.txt"
+          grep -Fxq 'SUSFS_CORE_OBJECT_RC=0' \
+            "$ARTIFACT_DIR/compile-smoke-exit.txt"
+          grep -Fxq 'REBOOT_HOOK_OBJECT_RC=0' \
+            "$ARTIFACT_DIR/compile-smoke-exit.txt"
+
+          test -s "$SANDBOX/out-w63/drivers/kernelsu/kernelsu.o"
+          test -s "$SANDBOX/out-w63/fs/susfs.o"
+          test -s "$SANDBOX/out-w63/kernel/reboot.o"
+
+          grep -Fq \
+            'int ksu_handle_sys_reboot(int magic1, int magic2, unsigned int cmd,' \
+            "$KSU_STAGE/susfs_bridge.c"
+
+          grep -Fq \
+            'CMD_SUSFS_SHOW_VERSION' \
+            "$KSU_STAGE/susfs_bridge.c"
+
+          grep -Fq \
+            'ksu_schedule_susfs_extra_works();' \
+            "$KSU_STAGE/core_hook.c"
+
+          grep -Fq \
+            'susfs_set_current_proc_umounted();' \
+            "$KSU_STAGE/core_hook.c"
+
+          grep -Fq \
+            'susfs_start_sdcard_monitor_fn();' \
+            "$KSU_STAGE/core_hook.c"
+
+          grep -Fq \
+            'ksu_setup_selinux_cred("u:r:su:s0", cred)' \
+            "$SANDBOX/fs/susfs.c"
+
+          grep -Fq \
+            'synchronize_srcu(&susfs_srcu_open_redirect)' \
+            "$SANDBOX/fs/susfs.c"
+
+          grep -Fq \
+            '.handle_event = susfs_handle_sdcard_event_5_4' \
+            "$SANDBOX/fs/susfs.c"
+
+          ! grep -Fq \
+            '.handle_inode_event = susfs_handle_sdcard_inode_event' \
+            "$SANDBOX/fs/susfs.c"
+
+          grep -Fq \
+            'ret = ksu_handle_sys_reboot(magic1, magic2, cmd, &arg);' \
+            "$SANDBOX/kernel/reboot.c"
+
+          cd "$GITHUB_WORKSPACE/kernel-base"
+          sha256sum -c "$ARTIFACT_DIR/baseline-manual-hook-files.sha256"
+
+          {
+            echo "W63_CONTROL_PLANE_ZYGOTE_COMPILE_SMOKE=PASS"
+            echo "LANE=${{ matrix.id }}"
+            echo "KSU_VERSION=11872"
+            echo "SUSFS_VERSION=2.2.0"
+            echo "W62_DIRECT_ABI_REPRODUCED_CLEANLY=YES"
+            echo "V095_DOMAIN=u:r:su:s0"
+            echo "MODERN_SUSFS_REBOOT_CONTROL_PLANE=PORTED"
+            echo "LEGACY_PRCTL_SUSFS_DISPATCHER=NOT_TRANSPLANTED"
+            echo "V095_EXISTING_TASK_FIX_SETUID_PATH=REUSED"
+            echo "SECOND_COMPETING_SETRESUID_HOOK=NO"
+            echo "ISOLATED_UID_FORCE_UMOUNT_RANGE=99000-99999"
+            echo "SUSFS_EXTRA_WORK_AFTER_UNMOUNT=YES"
+            echo "PROC_UMOUNTED_MARK_AFTER_UNMOUNT=YES"
+            echo "SDCARD_MONITOR_BOOT_COMPLETED_CALL=YES"
+            echo "OPEN_REDIRECT_SRCU_FIX_PRESERVED=YES"
+            echo "FSNOTIFY_5_4_HANDLE_EVENT_ADAPTER=PASS"
+            echo "W63_V1_KSU_TARGET_BUG_CORRECTED=YES"
+            echo "W63_V2_FSNOTIFY_MATCHER_WHITESPACE_BUG_CORRECTED=YES"
+            echo "W63_V3_MISSING_OS_IMPORT_BUG_CORRECTED=YES"
+            echo "W63_V4_SELINUX_GENERATED_HEADER_PREREQ_CORRECTED=YES"
+            echo "KSU_DIRECTORY_BUILD=PASS"
+            echo "KSU_COMPOSITE_OBJECT_PRESENT=PASS"
+            echo "SUSFS_CORE_OBJECT_COMPILE=PASS"
+            echo "KERNEL_REBOOT_HOOK_OBJECT_COMPILE=PASS"
+            echo "FULL_KERNEL_IMAGE_BUILD=NO"
+            echo "VMLINUX_FINAL_LINK=NO"
+            echo "BASE_FIVE_MANUAL_HOOK_FILES_CHANGED=NO"
+            echo "NEXT_STAGE=INTEGRATE_PROVEN_5_4_SUSFS_KERNEL_HOOK_SET_AND_FULL_LINK"
+            echo "BOOT_IMAGE_CREATED=NO"
+            echo "FLASHABLE_ZIP_CREATED=NO"
+            echo "DEVICE_ACCESSED=NO"
+            echo "FLASHING_PERFORMED=NO"
+          } | tee "$ARTIFACT_DIR/FINAL-STATUS.txt"
+
+      - name: Export exact staged source patches
+        if: always()
+        shell: bash
+        run: |
+          set +e
+
+          SANDBOX="$STAGE_DIR/kernel-smoke"
+
+          if [ -d "$SANDBOX/KernelSU/.git" ]; then
+            git -C "$SANDBOX/KernelSU" diff --binary \
+              > "$ARTIFACT_DIR/W63-KernelSU-v095-SUSFS220-bridge.patch"
+          fi
+
+          if [ -d "$SANDBOX/.git" ]; then
+            git -C "$SANDBOX" diff --binary -- \
+              kernel/reboot.c \
+              fs/Makefile \
+              fs/susfs.c \
+              include/linux/susfs.h \
+              include/linux/susfs_def.h \
+              > "$ARTIFACT_DIR/W63-kernel-smoke-overlay.patch"
+          fi
+
+          mkdir -p "$ARTIFACT_DIR/source-snapshot"
+
+          if [ -d "$SANDBOX/KernelSU/kernel" ]; then
+            cp -a \
+              "$SANDBOX/KernelSU/kernel" \
+              "$ARTIFACT_DIR/source-snapshot/KernelSU-kernel"
+          fi
+
+          for rel in \
+            fs/susfs.c \
+            include/linux/susfs.h \
+            include/linux/susfs_def.h \
+            kernel/reboot.c
+          do
+            if [ -f "$SANDBOX/$rel" ]; then
+              mkdir -p \
+                "$ARTIFACT_DIR/source-snapshot/$(dirname "$rel")"
+              cp "$SANDBOX/$rel" \
+                "$ARTIFACT_DIR/source-snapshot/$rel"
+            fi
+          done
+
+          exit 0
+
+      - name: Finalize failure diagnostics before immutable manifest
+        if: always()
+        shell: bash
+        env:
+          PRE_MANIFEST_JOB_STATUS: ${{ job.status }}
+        run: |
+          set +e
+
+          mkdir -p "$ARTIFACT_DIR"
+
+          if [ ! -f "$ARTIFACT_DIR/FINAL-STATUS.txt" ]; then
+            {
+              echo "W63_CONTROL_PLANE_ZYGOTE_COMPILE_SMOKE=FAIL_OR_INCOMPLETE"
+              echo "LANE=${{ matrix.id }}"
+              echo "PRE_MANIFEST_JOB_STATUS=$PRE_MANIFEST_JOB_STATUS"
+              echo "COMPILE_STEP_OUTCOME=${{ steps.compile.outcome }}"
+              echo "FULL_KERNEL_IMAGE_BUILD=NO"
+              echo "VMLINUX_FINAL_LINK=NO"
+              echo "BOOT_IMAGE_CREATED=NO"
+              echo "FLASHABLE_ZIP_CREATED=NO"
+              echo "DEVICE_ACCESSED=NO"
+              echo "FLASHING_PERFORMED=NO"
+            } > "$ARTIFACT_DIR/FAILURE-STATUS.txt"
+          fi
+
+          {
+            echo "PRE_MANIFEST_JOB_STATUS=$PRE_MANIFEST_JOB_STATUS"
+            echo "UPLOAD_HIDDEN_FILES=YES"
+            echo "SHA256SUMS_WILL_BE_FINAL_ARTIFACT_MUTATION=YES"
+            echo "NO_ARTIFACT_FILE_MAY_CHANGE_AFTER_MANIFEST=YES"
+          } > "$ARTIFACT_DIR/MANIFEST-CONTRACT.txt"
+
+          exit 0
+
+      - name: Create final artifact-relative SHA256 manifest
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p "$ARTIFACT_DIR"
+          cd "$ARTIFACT_DIR"
+
+          : > SHA256SUMS.txt
+
+          while IFS= read -r -d '' file; do
+            rel="${file#./}"
+            [ "$rel" = "SHA256SUMS.txt" ] && continue
+            sha256sum "$rel" >> SHA256SUMS.txt
+          done < <(find . -type f -print0 | sort -z)
+
+          test -s SHA256SUMS.txt
+          sha256sum -c SHA256SUMS.txt
+
+      - name: Upload W63 compile-smoke artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: W63-v5-v095-SUSFS220-control-plane-zygote-smoke-${{ matrix.id }}
+          path: ${{ env.ARTIFACT_DIR }}
+          if-no-files-found: error
+          include-hidden-files: true
+          retention-days: 30
+
+      - name: Mark compile-smoke failure after artifact preparation
+        if: ${{ steps.compile.outcome != 'success' }}
+        shell: bash
+        run: |
+          echo "W63-v5 compile-smoke did not complete successfully."
+          exit 1
