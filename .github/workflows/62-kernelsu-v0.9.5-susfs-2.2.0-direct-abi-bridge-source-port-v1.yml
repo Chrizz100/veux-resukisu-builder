@@ -1,0 +1,791 @@
+name: 62 - KernelSU v0.9.5 + SUSFS 2.2.0 Direct ABI Bridge Source Port v1
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: w62-v1-v095-susfs220-direct-abi-source-port-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  port:
+    name: W62 v1 ${{ matrix.id }} isolated direct-ABI source port
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - id: linux-5_4_274
+            kernel_version: "5.4.274"
+            kernel_ref: "20240619"
+            merge_common: "yes"
+            expected_embedded_ksu: "11872"
+            source_proven_nofault_fix: "no"
+          - id: linux-5_4_302
+            kernel_version: "5.4.302"
+            kernel_ref: "f4b8a13a43a130a9aab83cc985ce4d4421291ae6"
+            merge_common: "no"
+            expected_embedded_ksu: "12142"
+            source_proven_nofault_fix: "yes"
+
+    env:
+      KERNEL_REPOSITORY: dereference23/kernel_xiaomi_sm6375
+      COMMON_REPOSITORY: https://android.googlesource.com/kernel/common
+      COMMON_REF: android11-5.4.274_r00
+
+      KSU_REPOSITORY: tiann/KernelSU
+      KSU_REF: b766b98513b5a7eb33bc1c4a76b5702bf1288f07
+      KSU_EXPECTED_VERSION: "11872"
+      KSU_302_SOURCE_FIX_COMMIT: 3993167ca932b05b4bab1ce2168bd5c4777db640
+
+      SUSFS_MIRROR_REPOSITORY: ShirkNeko/susfs4ksu
+      SUSFS_MODERN_REF: be08face56c347e7ba9c4fb420c2463598a14f5d
+      SUSFS_MODERN_VERSION: "2.2.0"
+
+      ARTIFACT_DIR: ${{ github.workspace }}/w62-artifact
+      STAGE_DIR: ${{ github.workspace }}/w62-stage
+
+    steps:
+      - name: Initialize W62 artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -rf "$ARTIFACT_DIR" "$STAGE_DIR"
+          mkdir -p "$ARTIFACT_DIR" "$STAGE_DIR"
+
+          {
+            echo "W62_VERSION=v1"
+            echo "LANE=${{ matrix.id }}"
+            echo "KERNEL_VERSION=${{ matrix.kernel_version }}"
+            echo "KSU_REF=$KSU_REF"
+            echo "SUSFS_MODERN_REF=$SUSFS_MODERN_REF"
+            echo "PURPOSE=FIRST_REAL_ISOLATED_V095_SUSFS220_SOURCE_PORT"
+            echo "PORT_SCOPE=DIRECT_CORE_ABI_CREDENTIAL_SELINUX_ONLY"
+            echo "CONTROL_PLANE_PORTED=NO"
+            echo "SETRESUID_BEHAVIOR_PORTED=NO"
+            echo "KERNEL_SUSFS_HOOK_PATCHES_PORTED=NO"
+            echo "FULL_KERNEL_BUILD_PERFORMED=NO"
+            echo "BOOT_IMAGE_CREATED=NO"
+            echo "FLASHABLE_ZIP_CREATED=NO"
+            echo "DEVICE_ACCESSED=NO"
+            echo "FLASHING_PERFORMED=NO"
+          } | tee "$ARTIFACT_DIR/W62-HEADER.txt"
+
+      - name: Checkout exact VEUX kernel lane
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ env.KERNEL_REPOSITORY }}
+          ref: ${{ matrix.kernel_ref }}
+          path: kernel
+          fetch-depth: 0
+          filter: blob:none
+
+      - name: Reconstruct exact Linux 5.4 lane
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd "$GITHUB_WORKSPACE/kernel"
+
+          initial_head="$(git rev-parse HEAD)"
+          initial_version="$(make -s kernelversion)"
+
+          if [ "${{ matrix.merge_common }}" = "yes" ]; then
+            test "$initial_version" = "5.4.268"
+
+            git config user.name "VEUX W62 Source Port"
+            git config user.email "veux-w62@users.noreply.github.com"
+
+            git remote remove android-common >/dev/null 2>&1 || true
+            git remote add android-common "$COMMON_REPOSITORY"
+
+            git fetch android-common \
+              "refs/tags/${COMMON_REF}:refs/tags/${COMMON_REF}"
+
+            git merge \
+              --no-edit \
+              --no-ff \
+              "$COMMON_REF"
+
+            test "$(make -s kernelversion)" = "5.4.274"
+          else
+            test "$initial_head" = "${{ matrix.kernel_ref }}"
+            test "$initial_version" = "5.4.302"
+          fi
+
+          embedded_version="$(
+            sed -nE \
+              's/^[[:space:]]*ccflags-y[[:space:]]*\+=[[:space:]]*-DKSU_VERSION=([0-9]+).*/\1/p' \
+              drivers/kernelsu/Makefile \
+              | head -n1
+          )"
+
+          test "$embedded_version" = "${{ matrix.expected_embedded_ksu }}"
+
+          {
+            echo "INITIAL_HEAD=$initial_head"
+            echo "INITIAL_VERSION=$initial_version"
+            echo "FINAL_HEAD=$(git rev-parse HEAD)"
+            echo "FINAL_TREE=$(git rev-parse HEAD^{tree})"
+            echo "FINAL_VERSION=$(make -s kernelversion)"
+            echo "EMBEDDED_KSU_VERSION=$embedded_version"
+            echo "KERNEL_LANE_AUTHENTICATION=PASS"
+          } | tee "$ARTIFACT_DIR/KERNEL-IDENTITY.txt"
+
+      - name: Snapshot existing eight-symbol VEUX manual-hook contract
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd "$GITHUB_WORKSPACE/kernel"
+
+          grep -RhoE '\bksu_[A-Za-z0-9_]+' \
+            fs kernel security drivers/input include \
+            --exclude-dir=kernelsu \
+            --exclude='*.o' \
+            2>/dev/null \
+            | LC_ALL=C sort -u \
+            > "$ARTIFACT_DIR/baseline-external-ksu-symbols.txt" || true
+
+          grep -RIlE '\bksu_[A-Za-z0-9_]+' \
+            fs kernel security drivers/input include \
+            --exclude-dir=kernelsu \
+            --exclude='*.o' \
+            2>/dev/null \
+            | LC_ALL=C sort -u \
+            > "$ARTIFACT_DIR/baseline-manual-hook-files.txt" || true
+
+          test "$(wc -l < "$ARTIFACT_DIR/baseline-external-ksu-symbols.txt" | tr -d ' ')" = "8"
+          test "$(wc -l < "$ARTIFACT_DIR/baseline-manual-hook-files.txt" | tr -d ' ')" = "5"
+
+          while IFS= read -r file; do
+            sha256sum "$file"
+          done < "$ARTIFACT_DIR/baseline-manual-hook-files.txt" \
+            > "$ARTIFACT_DIR/baseline-manual-hook-files.sha256"
+
+          echo "MANUAL_HOOK_CONTRACT=8_OF_8" \
+            | tee "$ARTIFACT_DIR/MANUAL-HOOK-CONTRACT.txt"
+
+      - name: Checkout immutable original KernelSU v0.9.5
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ env.KSU_REPOSITORY }}
+          ref: ${{ env.KSU_REF }}
+          path: KernelSU-v095
+          fetch-depth: 0
+
+      - name: Checkout exact SUSFS 2.2 source
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ env.SUSFS_MIRROR_REPOSITORY }}
+          ref: ${{ env.SUSFS_MODERN_REF }}
+          path: susfs-modern
+          fetch-depth: 1
+
+      - name: Authenticate immutable KSU and SUSFS identities
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test "$(git -C KernelSU-v095 rev-parse HEAD)" = "$KSU_REF"
+          test "$(git -C susfs-modern rev-parse HEAD)" = "$SUSFS_MODERN_REF"
+
+          ksu_count="$(git -C KernelSU-v095 rev-list --count HEAD)"
+          ksu_version="$((10000 + ksu_count + 200))"
+          test "$ksu_version" = "$KSU_EXPECTED_VERSION"
+
+          grep -Fq "$SUSFS_MODERN_VERSION" \
+            susfs-modern/ksu_module_susfs/module.prop
+
+          test -f susfs-modern/kernel_patches/fs/susfs.c
+          test -f susfs-modern/kernel_patches/include/linux/susfs.h
+          test -f susfs-modern/kernel_patches/include/linux/susfs_def.h
+
+          grep -Fq \
+            'synchronize_srcu(&susfs_srcu_open_redirect)' \
+            susfs-modern/kernel_patches/fs/susfs.c
+
+          {
+            echo "KSU_HEAD=$(git -C KernelSU-v095 rev-parse HEAD)"
+            echo "KSU_VERSION=$ksu_version"
+            echo "SUSFS_HEAD=$(git -C susfs-modern rev-parse HEAD)"
+            echo "SUSFS_VERSION=$SUSFS_MODERN_VERSION"
+            echo "OPEN_REDIRECT_SRCU_FIX_PRESENT=YES"
+            echo "SOURCE_IDENTITY=PASS"
+          } | tee "$ARTIFACT_DIR/SOURCE-IDENTITY.txt"
+
+      - name: Create isolated source staging copies
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p "$STAGE_DIR"
+
+          cp -a KernelSU-v095 "$STAGE_DIR/KernelSU-v095-port"
+          mkdir -p "$STAGE_DIR/modern-susfs-core/include/linux"
+          mkdir -p "$STAGE_DIR/modern-susfs-core/fs"
+
+          cp \
+            susfs-modern/kernel_patches/fs/susfs.c \
+            "$STAGE_DIR/modern-susfs-core/fs/susfs.c"
+
+          cp \
+            susfs-modern/kernel_patches/include/linux/susfs.h \
+            "$STAGE_DIR/modern-susfs-core/include/linux/susfs.h"
+
+          cp \
+            susfs-modern/kernel_patches/include/linux/susfs_def.h \
+            "$STAGE_DIR/modern-susfs-core/include/linux/susfs_def.h"
+
+          {
+            echo "STAGE_KERNELSU=$STAGE_DIR/KernelSU-v095-port"
+            echo "STAGE_SUSFS=$STAGE_DIR/modern-susfs-core"
+            echo "REAL_KERNEL_TREE_MODIFIED=NO"
+            echo "UPSTREAM_KSU_CHECKOUT_MODIFIED=NO"
+            echo "UPSTREAM_SUSFS_CHECKOUT_MODIFIED=NO"
+          } | tee "$ARTIFACT_DIR/STAGE-IDENTITY.txt"
+
+      - name: Apply source-proven 5.4.302 nofault compatibility to staged KSU
+        if: ${{ matrix.source_proven_nofault_fix == 'yes' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd "$GITHUB_WORKSPACE/kernel"
+
+          git cat-file -e "${KSU_302_SOURCE_FIX_COMMIT}^{commit}"
+          git merge-base --is-ancestor \
+            "$KSU_302_SOURCE_FIX_COMMIT" \
+            "${{ matrix.kernel_ref }}"
+
+          source_file="drivers/kernelsu/kernel_compat.c"
+          target_file="$STAGE_DIR/KernelSU-v095-port/kernel/kernel_compat.c"
+          old='#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 8, 0)'
+          new='#if 1 || LINUX_VERSION_CODE >= KERNEL_VERSION(5, 8, 0)'
+
+          test "$(grep -Fxc "$new" "$source_file" || true)" = "1"
+          test "$(grep -Fxc "$old" "$target_file" || true)" = "1"
+
+          python3 - "$target_file" <<'PY'
+          import pathlib
+          import sys
+
+          p = pathlib.Path(sys.argv[1])
+          data = p.read_text(encoding="utf-8")
+          old = "#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 8, 0)"
+          new = "#if 1 || LINUX_VERSION_CODE >= KERNEL_VERSION(5, 8, 0)"
+
+          if data.count(old) != 1 or data.count(new) != 0:
+              raise SystemExit("unexpected v0.9.5 nofault baseline")
+
+          p.write_text(
+              data.replace(old, new, 1),
+              encoding="utf-8",
+          )
+          PY
+
+          echo "SOURCE_PROVEN_302_NOFAULT_COMPAT=APPLIED_TO_STAGE_ONLY" \
+            | tee "$ARTIFACT_DIR/NOFAULT-COMPAT.txt"
+
+      - name: Port v0.9.5 credential and SELinux direct-ABI bridge
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          root = Path(os.environ["STAGE_DIR"]) / "KernelSU-v095-port"
+          ksu_c = root / "kernel/ksu.c"
+          ksu_h = root / "kernel/ksu.h"
+          selinux_c = root / "kernel/selinux/selinux.c"
+          selinux_h = root / "kernel/selinux/selinux.h"
+          ksud_c = root / "kernel/ksud.c"
+
+          def read(p):
+              return p.read_text(encoding="utf-8")
+
+          def write(p, s):
+              p.write_text(s, encoding="utf-8")
+
+          # 1) Persistent SUSFS credential state, following modern KSU
+          # lifetime semantics while preserving the v0.9.5 architecture.
+          data = read(ksu_c)
+          include_anchor = '#include <linux/workqueue.h>\n'
+          if data.count(include_anchor) != 1:
+              raise SystemExit("ksu.c include anchor drifted")
+          data = data.replace(
+              include_anchor,
+              include_anchor + '#include <linux/cred.h>\n',
+              1,
+          )
+
+          global_anchor = 'static struct workqueue_struct *ksu_workqueue;\n'
+          if data.count(global_anchor) != 1:
+              raise SystemExit("ksu.c global anchor drifted")
+          data = data.replace(
+              global_anchor,
+              global_anchor + '\nstruct cred *ksu_cred;\n',
+              1,
+          )
+
+          init_anchor = '\tksu_core_init();\n'
+          if data.count(init_anchor) != 1:
+              raise SystemExit("ksu.c init anchor drifted")
+          init_block = (
+              '\tksu_cred = prepare_creds();\n'
+              '\tif (!ksu_cred) {\n'
+              '\t\tpr_err("prepare SUSFS credential failed!\\\\n");\n'
+              '\t\treturn -ENOMEM;\n'
+              '\t}\n\n'
+              '\tksu_core_init();\n'
+          )
+          data = data.replace(init_anchor, init_block, 1)
+
+          exit_anchor = '\tksu_core_exit();\n'
+          if data.count(exit_anchor) != 1:
+              raise SystemExit("ksu.c exit anchor drifted")
+          exit_block = (
+              '\tksu_core_exit();\n\n'
+              '\tif (ksu_cred) {\n'
+              '\t\tput_cred(ksu_cred);\n'
+              '\t\tksu_cred = NULL;\n'
+              '\t}\n'
+          )
+          data = data.replace(exit_anchor, exit_block, 1)
+          write(ksu_c, data)
+
+          # 2) Publish the persistent credential pointer.
+          data = read(ksu_h)
+          type_anchor = '#include <linux/workqueue.h>\n'
+          if data.count(type_anchor) != 1:
+              raise SystemExit("ksu.h include anchor drifted")
+          data = data.replace(
+              type_anchor,
+              type_anchor + '\nstruct cred;\nextern struct cred *ksu_cred;\n',
+              1,
+          )
+          write(ksu_h, data)
+
+          # 3) Add a separate arbitrary-cred SELinux helper and wrapper.
+          # Existing setup_selinux(const char *) remains byte-preserved.
+          data = read(selinux_h)
+          decl_anchor = 'void setup_selinux(const char *);\n'
+          if data.count(decl_anchor) != 1:
+              raise SystemExit("selinux.h setup_selinux anchor drifted")
+          data = data.replace(
+              decl_anchor,
+              decl_anchor
+              + 'int ksu_setup_selinux_cred(const char *, struct cred *);\n'
+              + 'void ksu_setup_susfs_cred(void);\n'
+              + 'bool susfs_is_current_ksu_domain(void);\n',
+              1,
+          )
+          forward_anchor = '#include "linux/version.h"\n'
+          if data.count(forward_anchor) != 1:
+              raise SystemExit("selinux.h forward-decl anchor drifted")
+          data = data.replace(
+              forward_anchor,
+              forward_anchor + '\nstruct cred;\n',
+              1,
+          )
+          write(selinux_h, data)
+
+          data = read(selinux_c)
+          include_anchor = '#include "linux/version.h"\n'
+          if data.count(include_anchor) != 1:
+              raise SystemExit("selinux.c include anchor drifted")
+          data = data.replace(
+              include_anchor,
+              include_anchor + '#include "../ksu.h"\n',
+              1,
+          )
+
+          insert_anchor = '\nvoid setenforce(bool enforce)\n'
+          if data.count(insert_anchor) != 1:
+              raise SystemExit("selinux.c insertion anchor drifted")
+
+          helper = r'''
+          int ksu_setup_selinux_cred(const char *domain, struct cred *cred)
+          {
+          	struct task_security_struct *tsec;
+          	u32 sid;
+          	int error;
+          
+          	if (!cred)
+          		return -EINVAL;
+          
+          	tsec = cred->security;
+          	if (!tsec)
+          		return -EINVAL;
+          
+          	error = security_secctx_to_secid(domain, strlen(domain), &sid);
+          	if (error)
+          		return error;
+          
+          	tsec->sid = sid;
+          	tsec->create_sid = 0;
+          	tsec->keycreate_sid = 0;
+          	tsec->sockcreate_sid = 0;
+          	return 0;
+          }
+          
+          void ksu_setup_susfs_cred(void)
+          {
+          	int error;
+          
+          	if (!ksu_cred) {
+          		pr_err("SUSFS credential is NULL\n");
+          		return;
+          	}
+          
+          	error = ksu_setup_selinux_cred(KERNEL_SU_DOMAIN, ksu_cred);
+          	if (error)
+          		pr_err("setup SUSFS credential failed: %d\n", error);
+          }
+          
+          bool susfs_is_current_ksu_domain(void)
+          {
+          	return is_ksu_domain();
+          }
+          
+          '''
+          data = data.replace(insert_anchor, '\n' + helper + 'void setenforce(bool enforce)\n', 1)
+          write(selinux_c, data)
+
+          # 4) Label the persistent credential immediately after each
+          # v0.9.5 second-stage policy application.
+          data = read(ksud_c)
+          lines = data.splitlines(keepends=True)
+          replaced = 0
+          output = []
+
+          for line in lines:
+              output.append(line)
+              if line.strip() == 'apply_kernelsu_rules();':
+                  indent = line[:len(line) - len(line.lstrip())]
+                  output.append(indent + 'ksu_setup_susfs_cred();\n')
+                  replaced += 1
+
+          if replaced != 3:
+              raise SystemExit(
+                  f"expected exactly 3 apply_kernelsu_rules calls, found {replaced}"
+              )
+
+          write(ksud_c, ''.join(output))
+
+          print("KSU_CRED_GLOBAL=PORTED")
+          print("KSU_CRED_LIFETIME=PORTED")
+          print("ARBITRARY_CRED_SELINUX_HELPER=PORTED")
+          print("V095_SU_DOMAIN_PRESERVED=YES")
+          print("SUSFS_CURRENT_KSU_DOMAIN_WRAPPER=PORTED")
+          print("SECOND_STAGE_CRED_LABEL_CALLS=3")
+          PY
+
+      - name: Adapt exact SUSFS 2.2 core to v0.9.5 SELinux boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          p = (
+              Path(os.environ["STAGE_DIR"])
+              / "modern-susfs-core/fs/susfs.c"
+          )
+          data = p.read_text(encoding="utf-8")
+
+          old_extern = (
+              'extern void setup_selinux(const char *domain, '
+              'struct cred *cred);'
+          )
+          new_extern = (
+              'extern int ksu_setup_selinux_cred(const char *domain, '
+              'struct cred *cred);'
+          )
+
+          if data.count(old_extern) != 1:
+              raise SystemExit(
+                  f"unexpected modern setup_selinux extern count: {data.count(old_extern)}"
+              )
+          if data.count(new_extern) != 0:
+              raise SystemExit("staged SUSFS core already contains v0.9.5 helper")
+
+          data = data.replace(old_extern, new_extern, 1)
+
+          old_call = 'setup_selinux("u:r:ksu:s0", cred);'
+          if data.count(old_call) != 1:
+              raise SystemExit(
+                  f"unexpected hard-coded modern domain call count: {data.count(old_call)}"
+              )
+
+          new_call = '''if (ksu_setup_selinux_cred("u:r:su:s0", cred)) {
+          SUSFS_LOGE("failed to apply v0.9.5 KernelSU SELinux domain to sdcard monitor cred!\\n");
+          abort_creds(cred);
+          return -EINVAL;
+          }'''
+
+          data = data.replace(old_call, new_call, 1)
+          p.write_text(data, encoding="utf-8")
+
+          if 'setup_selinux("u:r:ksu:s0", cred);' in data:
+              raise SystemExit("modern hard-coded ksu domain call remains")
+          if 'ksu_setup_selinux_cred("u:r:su:s0", cred)' not in data:
+              raise SystemExit("v0.9.5 domain bridge call missing")
+          if data.count('extern struct cred *ksu_cred;') != 1:
+              raise SystemExit("ksu_cred direct ABI drifted")
+          if data.count('extern bool susfs_is_current_ksu_domain(void);') != 1:
+              raise SystemExit("susfs current-domain direct ABI drifted")
+          if 'synchronize_srcu(&susfs_srcu_open_redirect)' not in data:
+              raise SystemExit("OPEN_REDIRECT SRCU fix lost")
+
+          print("MODERN_SUSFS_CORE_DOMAIN_ADAPTATION=PASS")
+          print("V095_DOMAIN=u:r:su:s0")
+          print("MODERN_HARDCODED_DOMAIN_REMOVED=YES")
+          print("OPEN_REDIRECT_SRCU_FIX_PRESERVED=YES")
+          PY
+
+      - name: Add staged SUSFS init call to v0.9.5 lifecycle
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          p = (
+              Path(os.environ["STAGE_DIR"])
+              / "KernelSU-v095-port/kernel/ksu.c"
+          )
+          data = p.read_text(encoding="utf-8")
+
+          include_anchor = '#include "throne_tracker.h"\n'
+          if data.count(include_anchor) != 1:
+              raise SystemExit("ksu.c throne_tracker include anchor drifted")
+          data = data.replace(
+              include_anchor,
+              include_anchor
+              + '\n#ifdef CONFIG_KSU_SUSFS\n'
+              + 'extern void susfs_init(void);\n'
+              + '#endif\n',
+              1,
+          )
+
+          init_anchor = '\tksu_workqueue = alloc_ordered_workqueue("kernelsu_work_queue", 0);\n'
+          if data.count(init_anchor) != 1:
+              raise SystemExit("ksu.c workqueue init anchor drifted")
+          data = data.replace(
+              init_anchor,
+              init_anchor
+              + '\n#ifdef CONFIG_KSU_SUSFS\n'
+              + '\tsusfs_init();\n'
+              + '#endif\n',
+              1,
+          )
+
+          p.write_text(data, encoding="utf-8")
+          print("SUSFS_INIT_LIFECYCLE_CALL=PORTED")
+          PY
+
+      - name: Validate isolated direct-ABI source port
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          KSU_STAGE="$STAGE_DIR/KernelSU-v095-port"
+          SUSFS_C="$STAGE_DIR/modern-susfs-core/fs/susfs.c"
+
+          test -f "$KSU_STAGE/kernel/ksu.c"
+          test -f "$KSU_STAGE/kernel/ksu.h"
+          test -f "$KSU_STAGE/kernel/ksud.c"
+          test -f "$KSU_STAGE/kernel/selinux/selinux.c"
+          test -f "$KSU_STAGE/kernel/selinux/selinux.h"
+          test -f "$SUSFS_C"
+
+          grep -Fq 'struct cred *ksu_cred;' \
+            "$KSU_STAGE/kernel/ksu.c"
+
+          grep -Fq 'extern struct cred *ksu_cred;' \
+            "$KSU_STAGE/kernel/ksu.h"
+
+          grep -Fq \
+            'int ksu_setup_selinux_cred(const char *, struct cred *);' \
+            "$KSU_STAGE/kernel/selinux/selinux.h"
+
+          grep -Fq \
+            'bool susfs_is_current_ksu_domain(void);' \
+            "$KSU_STAGE/kernel/selinux/selinux.h"
+
+          test "$(
+            grep -Fc 'ksu_setup_susfs_cred();' \
+              "$KSU_STAGE/kernel/ksud.c"
+          )" = "3"
+
+          grep -Fq 'susfs_init();' \
+            "$KSU_STAGE/kernel/ksu.c"
+
+          grep -Fq \
+            'ksu_setup_selinux_cred("u:r:su:s0", cred)' \
+            "$SUSFS_C"
+
+          ! grep -Fq \
+            'setup_selinux("u:r:ksu:s0", cred);' \
+            "$SUSFS_C"
+
+          grep -Fq \
+            'synchronize_srcu(&susfs_srcu_open_redirect)' \
+            "$SUSFS_C"
+
+          git -C "$KSU_STAGE" diff --check
+
+          cd "$GITHUB_WORKSPACE/kernel"
+          sha256sum -c "$ARTIFACT_DIR/baseline-manual-hook-files.sha256"
+
+          {
+            echo "W62_DIRECT_ABI_SOURCE_PORT=PASS"
+            echo "LANE=${{ matrix.id }}"
+            echo "KSU_VERSION=11872"
+            echo "EXISTING_MANUAL_HOOK_CONTRACT=8_OF_8"
+            echo "KSU_CRED_GLOBAL=PORTED"
+            echo "KSU_CRED_LIFETIME=PORTED"
+            echo "ARBITRARY_CRED_SELINUX_HELPER=PORTED"
+            echo "SUSFS_CURRENT_KSU_DOMAIN_WRAPPER=PORTED"
+            echo "V095_DOMAIN_PRESERVED=u:r:su:s0"
+            echo "SUSFS_INIT_LIFECYCLE_CALL=PORTED"
+            echo "SECOND_STAGE_CRED_LABEL_CALLS=3"
+            echo "MODERN_SUSFS_220_CORE_STAGED=YES"
+            echo "MODERN_SUSFS_HARDCODED_KSU_DOMAIN_REMOVED=YES"
+            echo "OPEN_REDIRECT_SRCU_FIX_PRESERVED=YES"
+            echo "CONTROL_PLANE_PORTED=NO"
+            echo "SETRESUID_BEHAVIOR_PORTED=NO"
+            echo "KERNEL_SUSFS_HOOK_PATCHES_PORTED=NO"
+            echo "SOURCE_PORT_COMPILE_VALIDATED=NO"
+            echo "NEXT_STAGE=PORT_CONTROL_PLANE_AND_SETUID_BEHAVIOR_THEN_COMPILE_ONLY"
+            echo "FULL_KERNEL_BUILD_PERFORMED=NO"
+            echo "REAL_KERNEL_MANUAL_HOOK_FILES_CHANGED=NO"
+            echo "BOOT_IMAGE_CREATED=NO"
+            echo "FLASHABLE_ZIP_CREATED=NO"
+            echo "DEVICE_ACCESSED=NO"
+            echo "FLASHING_PERFORMED=NO"
+          } | tee "$ARTIFACT_DIR/FINAL-STATUS.txt"
+
+      - name: Export exact staged source diffs
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          KSU_STAGE="$STAGE_DIR/KernelSU-v095-port"
+
+          git -C "$KSU_STAGE" diff --binary \
+            > "$ARTIFACT_DIR/KernelSU-v0.9.5-SUSFS220-direct-ABI-bridge.patch"
+
+          test -s \
+            "$ARTIFACT_DIR/KernelSU-v0.9.5-SUSFS220-direct-ABI-bridge.patch"
+
+          diff -u \
+            "$GITHUB_WORKSPACE/susfs-modern/kernel_patches/fs/susfs.c" \
+            "$STAGE_DIR/modern-susfs-core/fs/susfs.c" \
+            > "$ARTIFACT_DIR/SUSFS-2.2-v095-domain-boundary.patch" \
+            || true
+
+          test -s \
+            "$ARTIFACT_DIR/SUSFS-2.2-v095-domain-boundary.patch"
+
+          mkdir -p "$ARTIFACT_DIR/staged-source"
+          cp -a \
+            "$STAGE_DIR/KernelSU-v095-port/kernel" \
+            "$ARTIFACT_DIR/staged-source/KernelSU-kernel"
+
+          mkdir -p "$ARTIFACT_DIR/staged-source/modern-susfs-core/fs"
+          mkdir -p "$ARTIFACT_DIR/staged-source/modern-susfs-core/include/linux"
+
+          cp \
+            "$STAGE_DIR/modern-susfs-core/fs/susfs.c" \
+            "$ARTIFACT_DIR/staged-source/modern-susfs-core/fs/susfs.c"
+
+          cp \
+            "$STAGE_DIR/modern-susfs-core/include/linux/susfs.h" \
+            "$ARTIFACT_DIR/staged-source/modern-susfs-core/include/linux/susfs.h"
+
+          cp \
+            "$STAGE_DIR/modern-susfs-core/include/linux/susfs_def.h" \
+            "$ARTIFACT_DIR/staged-source/modern-susfs-core/include/linux/susfs_def.h"
+
+          {
+            echo "PATCH_1=KernelSU-v0.9.5-SUSFS220-direct-ABI-bridge.patch"
+            echo "PATCH_2=SUSFS-2.2-v095-domain-boundary.patch"
+            echo "PORT_SCOPE=DIRECT_CORE_ABI_CREDENTIAL_SELINUX_ONLY"
+            echo "CONTROL_PLANE_NOT_INCLUDED=YES"
+            echo "SETRESUID_BEHAVIOR_NOT_INCLUDED=YES"
+            echo "KERNEL_SUSFS_HOOK_PATCHES_NOT_INCLUDED=YES"
+          } | tee "$ARTIFACT_DIR/PORT-SCOPE.txt"
+
+      - name: Finalize diagnostics before immutable manifest
+        if: always()
+        shell: bash
+        env:
+          PRE_MANIFEST_JOB_STATUS: ${{ job.status }}
+        run: |
+          set +e
+
+          mkdir -p "$ARTIFACT_DIR"
+
+          if [ ! -f "$ARTIFACT_DIR/FINAL-STATUS.txt" ]; then
+            {
+              echo "W62_DIRECT_ABI_SOURCE_PORT=FAIL_OR_INCOMPLETE"
+              echo "LANE=${{ matrix.id }}"
+              echo "PRE_MANIFEST_JOB_STATUS=$PRE_MANIFEST_JOB_STATUS"
+              echo "FULL_KERNEL_BUILD_PERFORMED=NO"
+              echo "BOOT_IMAGE_CREATED=NO"
+              echo "FLASHABLE_ZIP_CREATED=NO"
+              echo "DEVICE_ACCESSED=NO"
+              echo "FLASHING_PERFORMED=NO"
+            } > "$ARTIFACT_DIR/FAILURE-STATUS.txt"
+          fi
+
+          {
+            echo "PRE_MANIFEST_JOB_STATUS=$PRE_MANIFEST_JOB_STATUS"
+            echo "SHA256SUMS_WILL_BE_FINAL_ARTIFACT_MUTATION=YES"
+            echo "NO_ARTIFACT_FILE_MAY_CHANGE_AFTER_MANIFEST=YES"
+          } > "$ARTIFACT_DIR/MANIFEST-CONTRACT.txt"
+
+          exit 0
+
+      - name: Create final artifact-relative SHA256 manifest
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p "$ARTIFACT_DIR"
+          cd "$ARTIFACT_DIR"
+
+          : > SHA256SUMS.txt
+
+          while IFS= read -r -d '' file; do
+            rel="${file#./}"
+            [ "$rel" = "SHA256SUMS.txt" ] && continue
+            sha256sum "$rel" >> SHA256SUMS.txt
+          done < <(find . -type f -print0 | sort -z)
+
+          test -s SHA256SUMS.txt
+          sha256sum -c SHA256SUMS.txt
+
+      - name: Upload W62 isolated source-port artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: W62-v1-v095-SUSFS220-direct-ABI-source-port-${{ matrix.id }}
+          path: ${{ env.ARTIFACT_DIR }}
+          if-no-files-found: error
+          retention-days: 30
