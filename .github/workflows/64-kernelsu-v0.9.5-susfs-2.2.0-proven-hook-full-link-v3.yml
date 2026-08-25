@@ -1,0 +1,1924 @@
+name: 64 - KernelSU v0.9.5 + SUSFS 2.2.0 Proven Hook Full Link v3
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: w64-v3-v095-susfs220-proven-hook-full-link-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  full-link:
+    name: W64 v3 ${{ matrix.id }} proven-hook full link
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - id: linux-5_4_274
+            kernel_version: "5.4.274"
+            source_recipe: "46C7"
+            recipe_path: ".github/workflows/46C7-final-cumulative-resukisu-susfs-deterministic-cross-run-reference.yml"
+            recipe_job: "full-build"
+            recipe_stop_step: "27"
+            source_proven_nofault_fix: "no"
+          - id: linux-5_4_302
+            kernel_version: "5.4.302"
+            source_recipe: "W43-v2"
+            recipe_path: ".github/workflows/43-gen2-5.4.302-resukisu-upstream-update-full-build-v2.yml"
+            recipe_job: "build"
+            recipe_stop_step: "72"
+            source_proven_nofault_fix: "yes"
+
+    env:
+      KSU_REPOSITORY: tiann/KernelSU
+      KSU_REF: b766b98513b5a7eb33bc1c4a76b5702bf1288f07
+      KSU_EXPECTED_VERSION: "11872"
+      KSU_302_SOURCE_FIX_COMMIT: 3993167ca932b05b4bab1ce2168bd5c4777db640
+
+      SUSFS_EXPECTED_VERSION: "2.2.0"
+      CLANG_REVISION: r416183b
+      CLANG_URL: https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android12L-gsi/clang-r416183b.tar.gz
+
+      BUILDER_DIR: ${{ github.workspace }}/builder-repo
+      DRIVER_DIR: ${{ github.workspace }}/w64-driver
+      ARTIFACT_DIR: ${{ github.workspace }}/w64-artifact
+      OUT_DIR: out-w64
+
+      KBUILD_BUILD_USER: w64
+      KBUILD_BUILD_HOST: veux-w64
+      KBUILD_BUILD_TIMESTAMP: "Tue Aug 25 00:00:00 UTC 2026"
+      KBUILD_BUILD_VERSION: "1"
+      SOURCE_DATE_EPOCH: "1787616000"
+      TZ: UTC
+      LANG: C.UTF-8
+      LC_ALL: C.UTF-8
+
+    steps:
+      - name: Initialize W64 full-link artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -rf "$DRIVER_DIR" "$ARTIFACT_DIR"
+          mkdir -p "$DRIVER_DIR" "$ARTIFACT_DIR"
+
+          {
+            echo "W64_VERSION=v3"
+            echo "LANE=${{ matrix.id }}"
+            echo "KERNEL_VERSION=${{ matrix.kernel_version }}"
+            echo "SOURCE_RECIPE=${{ matrix.source_recipe }}"
+            echo "SOURCE_RECIPE_PATH=${{ matrix.recipe_path }}"
+            echo "SOURCE_RECIPE_STOP_STEP=${{ matrix.recipe_stop_step }}"
+            echo "KSU_REF=$KSU_REF"
+            echo "KSU_VERSION=$KSU_EXPECTED_VERSION"
+            echo "SUSFS_VERSION=$SUSFS_EXPECTED_VERSION"
+            echo "PURPOSE=FIRST_FULL_VMLINUX_IMAGE_LINK_ORIGINAL_KSU_V095_PLUS_SUSFS220"
+            echo "PROVEN_5_4_SUSFS_HOOK_RECIPE_REUSED=YES"
+            echo "W64_V1_LITERAL_EXPRESSION_OPENER_BUG=CORRECTED"
+            echo "W64_V2_WORKTREE_GITDIR_TYPE_BUG=CORRECTED"
+            echo "W64_V2_PROVEN_FSNOTIFY_COMPAT_RECOGNITION_BUG=CORRECTED"
+            echo "FINAL_ROOT_MANAGER=ORIGINAL_KERNELSU_V0_9_5"
+            echo "RESUKISU_FINAL_DRIVER_TREE=NO"
+            echo "BOOT_IMAGE_CREATED=NO"
+            echo "FLASHABLE_ZIP_CREATED=NO"
+            echo "DEVICE_ACCESSED=NO"
+            echo "FLASHING_PERFORMED=NO"
+          } | tee "$ARTIFACT_DIR/W64-HEADER.txt"
+
+      - name: Install W64 dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          sudo apt-get update
+          sudo apt-get install -y \
+            bc \
+            bison \
+            build-essential \
+            ca-certificates \
+            cpio \
+            curl \
+            flex \
+            git \
+            jq \
+            libelf-dev \
+            libncurses-dev \
+            libssl-dev \
+            patch \
+            python3 \
+            python3-pip \
+            rsync \
+            xz-utils \
+            zstd
+
+          python3 -m pip install \
+            --disable-pip-version-check \
+            --no-input \
+            'PyYAML==6.0.2'
+
+          python3 - <<'PY'
+          import yaml
+          assert yaml.__version__ == "6.0.2"
+          print("PYYAML_VERSION=6.0.2")
+          PY
+
+      - name: Checkout builder repository with proven recipes
+        uses: actions/checkout@v6
+        with:
+          path: builder-repo
+          fetch-depth: 0
+
+      - name: Checkout immutable original KernelSU v0.9.5
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ env.KSU_REPOSITORY }}
+          ref: ${{ env.KSU_REF }}
+          path: KernelSU-v095-clean
+          fetch-depth: 0
+
+      - name: Authenticate W64 recipe and KSU identities
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          RECIPE="$BUILDER_DIR/${{ matrix.recipe_path }}"
+          test -s "$RECIPE"
+
+          case "${{ matrix.source_recipe }}" in
+            46C7)
+              grep -Fxq \
+                'name: 46C7 - VEUX Final Cumulative ReSukiSU SUSFS Deterministic Cross-Run Reference' \
+                "$RECIPE"
+              ;;
+            W43-v2)
+              grep -Fxq \
+                'name: 43 - GEN2 5.4.302 ReSukiSU Upstream Update Full Build v2' \
+                "$RECIPE"
+              ;;
+            *)
+              echo "unknown recipe lane" >&2
+              exit 1
+              ;;
+          esac
+
+          test "$(git -C KernelSU-v095-clean rev-parse HEAD)" = "$KSU_REF"
+
+          count="$(git -C KernelSU-v095-clean rev-list --count HEAD)"
+          version="$((10000 + count + 200))"
+          test "$version" = "$KSU_EXPECTED_VERSION"
+
+          {
+            echo "RECIPE_SHA256=$(sha256sum "$RECIPE" | awk '{print $1}')"
+            echo "KSU_HEAD=$(git -C KernelSU-v095-clean rev-parse HEAD)"
+            echo "KSU_VERSION=$version"
+            echo "SOURCE_IDENTITY=PASS"
+          } | tee "$ARTIFACT_DIR/SOURCE-IDENTITY.txt"
+
+      - name: Write generic proven-recipe staging driver
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cat > "$DRIVER_DIR/run_recipe_until.py" <<'PY'
+          import os
+          import re
+          import shlex
+          import subprocess
+          from pathlib import Path
+
+          import yaml
+
+
+          workspace = Path(os.environ["GITHUB_WORKSPACE"]).resolve()
+          builder = Path(os.environ["BUILDER_DIR"]).resolve()
+          artifact = Path(os.environ["ARTIFACT_DIR"]).resolve()
+
+          recipe_rel = os.environ["W64_RECIPE_PATH"]
+          recipe_job = os.environ["W64_RECIPE_JOB"]
+          stop_step = int(os.environ["W64_RECIPE_STOP_STEP"])
+          lane = os.environ["W64_LANE"]
+
+          recipe_path = builder / recipe_rel
+          recipe_text = recipe_path.read_text(encoding="utf-8")
+          recipe = yaml.load(recipe_text, Loader=yaml.BaseLoader)
+          job = recipe["jobs"][recipe_job]
+
+          dynamic_env_file = Path(os.environ["DRIVER_DIR"]) / "recipe-github-env.txt"
+          dynamic_path_file = Path(os.environ["DRIVER_DIR"]) / "recipe-github-path.txt"
+          dynamic_env_file.write_text("", encoding="utf-8")
+          dynamic_path_file.write_text("", encoding="utf-8")
+
+          env = dict(os.environ)
+          env["GITHUB_ENV"] = str(dynamic_env_file)
+          env["GITHUB_PATH"] = str(dynamic_path_file)
+
+          expression_open = "$" + "{{"
+
+          def marker(name):
+              return "$" + "{{ " + name + " }}"
+
+          def resolve(value):
+              value = str(value)
+
+              replacements = {
+                  marker("github.workspace"): str(workspace),
+                  marker("runner.temp"): env["RUNNER_TEMP"],
+                  marker("github.repository"): env.get("GITHUB_REPOSITORY", ""),
+                  marker("github.sha"): env.get("GITHUB_SHA", ""),
+                  marker("github.ref"): env.get("GITHUB_REF", ""),
+                  marker("github.token"): env.get("GITHUB_TOKEN", ""),
+              }
+
+              for src, dst in replacements.items():
+                  value = value.replace(src, dst)
+
+              def repl_env(match):
+                  key = match.group(1)
+                  return env.get(key, "")
+
+              value = re.sub(
+                  r"\$\{\{\s*env\.([A-Za-z_][A-Za-z0-9_]*)\s*\}\}",
+                  repl_env,
+                  value,
+              )
+              return value
+
+          for key, value in job.get("env", {}).items():
+              env[str(key)] = resolve(value)
+
+          seen_env_lines = 0
+          seen_path_lines = 0
+
+          def absorb_github_files():
+              global seen_env_lines, seen_path_lines
+
+              lines = dynamic_env_file.read_text(
+                  encoding="utf-8"
+              ).splitlines()
+
+              i = seen_env_lines
+              while i < len(lines):
+                  line = lines[i]
+                  if "<<" in line:
+                      key, delim = line.split("<<", 1)
+                      key = key.strip()
+                      delim = delim.strip()
+                      i += 1
+                      values = []
+                      while i < len(lines) and lines[i] != delim:
+                          values.append(lines[i])
+                          i += 1
+                      if i >= len(lines):
+                          raise SystemExit(
+                              f"unterminated GITHUB_ENV multiline for {key}"
+                          )
+                      env[key] = "\n".join(values)
+                  elif "=" in line:
+                      key, value = line.split("=", 1)
+                      env[key] = value
+                  elif line.strip():
+                      raise SystemExit(
+                          f"unsupported GITHUB_ENV line: {line!r}"
+                      )
+                  i += 1
+
+              seen_env_lines = len(lines)
+
+              path_lines = dynamic_path_file.read_text(
+                  encoding="utf-8"
+              ).splitlines()
+              new_paths = [
+                  p for p in path_lines[seen_path_lines:] if p.strip()
+              ]
+              if new_paths:
+                  env["PATH"] = ":".join(
+                      list(reversed(new_paths))
+                      + [env.get("PATH", "")]
+                  )
+              seen_path_lines = len(path_lines)
+
+          def run(args, cwd=None):
+              print(
+                  "+",
+                  " ".join(shlex.quote(str(x)) for x in args),
+                  flush=True,
+              )
+              cp = subprocess.run(
+                  [str(x) for x in args],
+                  cwd=str(cwd) if cwd else None,
+                  env=env,
+              )
+              if cp.returncode:
+                  raise subprocess.CalledProcessError(
+                      cp.returncode,
+                      args,
+                  )
+
+          def checkout_action(step):
+              cfg = step.get("with", {})
+              repo = resolve(
+                  cfg.get(
+                      "repository",
+                      env.get("GITHUB_REPOSITORY", ""),
+                  )
+              )
+              ref = resolve(cfg.get("ref", "main"))
+              rel = resolve(cfg.get("path", "."))
+
+              if any(expression_open in x for x in (repo, ref, rel)):
+                  raise SystemExit(
+                      f"unresolved checkout expression: {repo=} {ref=} {rel=}"
+                  )
+
+              dest = workspace if rel in ("", ".") else workspace / rel
+              if dest == workspace:
+                  raise SystemExit(
+                      "recipe attempted checkout into W64 workspace root"
+                  )
+
+              if dest.exists():
+                  run(["rm", "-rf", str(dest)])
+
+              run(
+                  [
+                      "git",
+                      "clone",
+                      "--no-tags",
+                      f"https://github.com/{repo}.git",
+                      str(dest),
+                  ]
+              )
+              run(
+                  [
+                      "git",
+                      "fetch",
+                      "--no-tags",
+                      "origin",
+                      ref,
+                  ],
+                  cwd=dest,
+              )
+              run(
+                  ["git", "checkout", "--detach", "FETCH_HEAD"],
+                  cwd=dest,
+              )
+
+              if cfg.get("fetch-depth") == "0":
+                  shallow = dest / ".git" / "shallow"
+                  if shallow.exists():
+                      run(["git", "fetch", "--unshallow"], cwd=dest)
+
+          status_lines = [
+              f"LANE={lane}",
+              f"RECIPE={recipe_rel}",
+              f"JOB={recipe_job}",
+              f"STOP_STEP={stop_step}",
+          ]
+
+          for index, step in enumerate(job["steps"], 1):
+              if index > stop_step:
+                  break
+
+              name = step.get("name", f"step-{index}")
+              uses = step.get("uses")
+
+              print(
+                  f"\n===== W64 RECIPE STEP {index}: {name} =====",
+                  flush=True,
+              )
+
+              if uses:
+                  if uses.startswith("actions/checkout@"):
+                      checkout_action(step)
+                      status_lines.append(
+                          f"STEP_{index}=CHECKOUT_PASS:{name}"
+                      )
+                      continue
+                  raise SystemExit(
+                      f"unsupported action before stop step: {uses}"
+                  )
+
+              if "run" not in step:
+                  raise SystemExit(
+                      f"unsupported recipe step shape at {index}: {name}"
+                  )
+
+              script = resolve(step["run"])
+              if expression_open in script:
+                  raise SystemExit(
+                      f"unresolved GitHub expression in step {index}: {name}"
+                  )
+
+              step_env = dict(env)
+              for key, value in step.get("env", {}).items():
+                  step_env[str(key)] = resolve(value)
+
+              workdir = step.get("working-directory")
+              cwd = workspace
+              if workdir:
+                  resolved = resolve(workdir)
+                  cwd = (
+                      Path(resolved)
+                      if Path(resolved).is_absolute()
+                      else workspace / resolved
+                  )
+
+              script_path = (
+                  Path(os.environ["DRIVER_DIR"])
+                  / f"recipe-step-{index:03d}.sh"
+              )
+              script_path.write_text(script, encoding="utf-8")
+
+              cp = subprocess.run(
+                  ["bash", str(script_path)],
+                  cwd=str(cwd),
+                  env=step_env,
+              )
+              if cp.returncode:
+                  raise SystemExit(
+                      f"recipe step failed: {index} {name} rc={cp.returncode}"
+                  )
+
+              absorb_github_files()
+              status_lines.append(
+                  f"STEP_{index}=RUN_PASS:{name}"
+              )
+
+          if lane == "linux-5_4_274":
+              stage = workspace / "kernel"
+          elif lane == "linux-5_4_302":
+              stage_path_file = workspace / "kernel-simulation.path"
+              if not stage_path_file.is_file():
+                  raise SystemExit(
+                      "kernel-simulation.path missing after W43 staging"
+                  )
+              stage = Path(
+                  stage_path_file.read_text(encoding="utf-8").strip()
+              )
+          else:
+              raise SystemExit(f"unknown lane: {lane}")
+
+          if not (stage / "Makefile").is_file():
+              raise SystemExit(f"staged kernel root invalid: {stage}")
+
+          status_lines += [
+              f"STAGE_PATH={stage}",
+              "RECIPE_STAGING=PASS",
+          ]
+
+          (Path(os.environ["DRIVER_DIR"]) / "kernel-stage.path").write_text(
+              str(stage) + "\n",
+              encoding="utf-8",
+          )
+          (artifact / "PROVEN-RECIPE-STAGING.txt").write_text(
+              "\n".join(status_lines) + "\n",
+              encoding="utf-8",
+          )
+
+          print("\n".join(status_lines))
+          PY
+
+          python3 -m py_compile "$DRIVER_DIR/run_recipe_until.py"
+
+          {
+            echo "RECIPE_DRIVER_PY_COMPILE=PASS"
+            echo "RECIPE_DRIVER_MODE=EXECUTE_PROVEN_SOURCE_RECIPE_UNTIL_PREBUILD_BOUNDARY"
+          } | tee "$ARTIFACT_DIR/RECIPE-DRIVER-IDENTITY.txt"
+
+      - name: Stage proven per-lane SUSFS kernel source state
+        shell: bash
+        env:
+          W64_LANE: ${{ matrix.id }}
+          W64_RECIPE_PATH: ${{ matrix.recipe_path }}
+          W64_RECIPE_JOB: ${{ matrix.recipe_job }}
+          W64_RECIPE_STOP_STEP: ${{ matrix.recipe_stop_step }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          python3 "$DRIVER_DIR/run_recipe_until.py"
+
+          STAGE="$(cat "$DRIVER_DIR/kernel-stage.path")"
+
+          test "$(
+            git -C "$STAGE" rev-parse --is-inside-work-tree
+          )" = "true"
+
+          git -C "$STAGE" rev-parse --git-dir             | tee "$ARTIFACT_DIR/staged-kernel-git-dir.txt"
+
+          test "$(make -s -C "$STAGE" kernelversion)" = "${{ matrix.kernel_version }}"
+          test -f "$STAGE/fs/susfs.c"
+          test -f "$STAGE/include/linux/susfs.h"
+          test -f "$STAGE/include/linux/susfs_def.h"
+
+          {
+            echo "STAGE=$STAGE"
+            echo "KERNEL_VERSION=$(make -s -C "$STAGE" kernelversion)"
+            echo "SUSFS_C_SHA256=$(sha256sum "$STAGE/fs/susfs.c" | awk '{print $1}')"
+            echo "PROVEN_HOOK_STAGE=PASS"
+          } | tee "$ARTIFACT_DIR/PROVEN-HOOK-STAGE.txt"
+
+      - name: Snapshot proven stage before root-manager swap
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          STAGE="$(cat "$DRIVER_DIR/kernel-stage.path")"
+
+          git -C "$STAGE" status --short \
+            > "$ARTIFACT_DIR/proven-stage-git-status.txt"
+
+          git -C "$STAGE" diff --binary \
+            > "$ARTIFACT_DIR/proven-stage-before-v095.diff"
+
+          {
+            echo "PROVEN_STAGE_HEAD=$(git -C "$STAGE" rev-parse HEAD)"
+            echo "PROVEN_STAGE_TREE=$(git -C "$STAGE" write-tree)"
+            echo "PROVEN_STAGE_DIRTY_FILE_COUNT=$(git -C "$STAGE" status --short | wc -l | tr -d ' ')"
+            echo "SNAPSHOT_BEFORE_V095_SWAP=PASS"
+          } | tee "$ARTIFACT_DIR/PROVEN-STAGE-IDENTITY.txt"
+
+      - name: Replace final ReSukiSU tree with original KernelSU v0.9.5
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          STAGE="$(cat "$DRIVER_DIR/kernel-stage.path")"
+
+          rm -rf "$STAGE/KernelSU"
+          cp -a "$GITHUB_WORKSPACE/KernelSU-v095-clean" "$STAGE/KernelSU"
+
+          rm -rf "$STAGE/drivers/kernelsu"
+          ln -s ../KernelSU/kernel "$STAGE/drivers/kernelsu"
+
+          test "$(git -C "$STAGE/KernelSU" rev-parse HEAD)" = "$KSU_REF"
+
+          count="$(git -C "$STAGE/KernelSU" rev-list --count HEAD)"
+          version="$((10000 + count + 200))"
+          test "$version" = "$KSU_EXPECTED_VERSION"
+
+          test "$(readlink "$STAGE/drivers/kernelsu")" = "../KernelSU/kernel"
+
+          test "$(grep -Fc 'source "drivers/kernelsu/Kconfig"' "$STAGE/drivers/Kconfig")" -eq 1
+          test "$(grep -Ec 'obj-\$\(CONFIG_KSU\).*kernelsu/' "$STAGE/drivers/Makefile")" -eq 1
+
+          {
+            echo "FINAL_KSU_HEAD=$(git -C "$STAGE/KernelSU" rev-parse HEAD)"
+            echo "FINAL_KSU_VERSION=$version"
+            echo "DRIVERS_KERNELSU_SYMLINK=PASS"
+            echo "FINAL_RESUKISU_TREE=REMOVED"
+            echo "ROOT_MANAGER_SWAP=PASS"
+          } | tee "$ARTIFACT_DIR/ROOT-MANAGER-SWAP.txt"
+
+      - name: Apply source-proven 5.4.302 nofault compatibility
+        if: ${{ matrix.source_proven_nofault_fix == 'yes' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          STAGE="$(cat "$DRIVER_DIR/kernel-stage.path")"
+          target="$STAGE/KernelSU/kernel/kernel_compat.c"
+
+          git -C "$STAGE" cat-file -e "${KSU_302_SOURCE_FIX_COMMIT}^{commit}"
+          git -C "$STAGE" merge-base --is-ancestor \
+            "$KSU_302_SOURCE_FIX_COMMIT" \
+            f4b8a13a43a130a9aab83cc985ce4d4421291ae6
+
+          old='#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 8, 0)'
+          new='#if 1 || LINUX_VERSION_CODE >= KERNEL_VERSION(5, 8, 0)'
+
+          test "$(grep -Fxc "$old" "$target" || true)" = "1"
+
+          python3 - "$target" <<'PY'
+          from pathlib import Path
+          import sys
+
+          p = Path(sys.argv[1])
+          data = p.read_text(encoding="utf-8")
+          old = "#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 8, 0)"
+          new = "#if 1 || LINUX_VERSION_CODE >= KERNEL_VERSION(5, 8, 0)"
+          if data.count(old) != 1:
+              raise SystemExit("unexpected nofault baseline")
+          p.write_text(data.replace(old, new, 1), encoding="utf-8")
+          PY
+
+          grep -Fqx "$new" "$target"
+
+          echo "SOURCE_PROVEN_302_NOFAULT_COMPAT=PASS" \
+            | tee "$ARTIFACT_DIR/NOFAULT-COMPAT.txt"
+
+      - name: Apply W63-v7 direct ABI and lifecycle bridge to v0.9.5
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          STAGE="$(cat "$DRIVER_DIR/kernel-stage.path")"
+
+          STAGE="$STAGE" python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          stage = Path(os.environ["STAGE"])
+          root = stage / "KernelSU"
+          ksu_c = root / "kernel/ksu.c"
+          ksu_h = root / "kernel/ksu.h"
+          ksud_c = root / "kernel/ksud.c"
+          selinux_c = root / "kernel/selinux/selinux.c"
+          selinux_h = root / "kernel/selinux/selinux.h"
+          kconfig = root / "kernel/Kconfig"
+          makefile = root / "kernel/Makefile"
+
+          def read(p):
+              return p.read_text(encoding="utf-8")
+
+          def write(p, data):
+              p.write_text(data, encoding="utf-8")
+
+          data = read(ksu_c)
+
+          inc = '#include <linux/workqueue.h>\n'
+          if data.count(inc) != 1:
+              raise SystemExit("ksu.c workqueue include anchor drifted")
+          data = data.replace(
+              inc,
+              inc + '#include <linux/cred.h>\n',
+              1,
+          )
+
+          global_anchor = 'static struct workqueue_struct *ksu_workqueue;\n'
+          if data.count(global_anchor) != 1:
+              raise SystemExit("ksu.c workqueue global anchor drifted")
+          data = data.replace(
+              global_anchor,
+              global_anchor
+              + '\n#ifdef CONFIG_KSU_SUSFS\n'
+              + 'struct cred *ksu_cred;\n'
+              + '#endif\n',
+              1,
+          )
+
+          init_anchor = '\tksu_core_init();\n'
+          if data.count(init_anchor) != 1:
+              raise SystemExit("ksu.c core init anchor drifted")
+          data = data.replace(
+              init_anchor,
+              '#ifdef CONFIG_KSU_SUSFS\n'
+              '\tksu_cred = prepare_creds();\n'
+              '\tif (!ksu_cred) {\n'
+              '\t\tpr_err("prepare SUSFS credential failed!\\n");\n'
+              '\t\treturn -ENOMEM;\n'
+              '\t}\n'
+              '#endif\n\n'
+              '\tksu_core_init();\n',
+              1,
+          )
+
+          include_anchor = '#include "throne_tracker.h"\n'
+          if data.count(include_anchor) != 1:
+              raise SystemExit("ksu.c throne include anchor drifted")
+          data = data.replace(
+              include_anchor,
+              include_anchor
+              + '\n#ifdef CONFIG_KSU_SUSFS\n'
+              + 'extern void susfs_init(void);\n'
+              + '#endif\n',
+              1,
+          )
+
+          workq_anchor = (
+              '\tksu_workqueue = alloc_ordered_workqueue('
+              '"kernelsu_work_queue", 0);\n'
+          )
+          if data.count(workq_anchor) != 1:
+              raise SystemExit("ksu.c workqueue init anchor drifted")
+          data = data.replace(
+              workq_anchor,
+              workq_anchor
+              + '\n#ifdef CONFIG_KSU_SUSFS\n'
+              + '\tsusfs_init();\n'
+              + '#endif\n',
+              1,
+          )
+
+          exit_anchor = '\tksu_core_exit();\n'
+          if data.count(exit_anchor) != 1:
+              raise SystemExit("ksu.c exit anchor drifted")
+          data = data.replace(
+              exit_anchor,
+              '\tksu_core_exit();\n\n'
+              '#ifdef CONFIG_KSU_SUSFS\n'
+              '\tif (ksu_cred) {\n'
+              '\t\tput_cred(ksu_cred);\n'
+              '\t\tksu_cred = NULL;\n'
+              '\t}\n'
+              '#endif\n',
+              1,
+          )
+          write(ksu_c, data)
+
+          data = read(ksu_h)
+          anchor = '#include <linux/workqueue.h>\n'
+          if data.count(anchor) != 1:
+              raise SystemExit("ksu.h workqueue anchor drifted")
+          data = data.replace(
+              anchor,
+              anchor
+              + '\n#ifdef CONFIG_KSU_SUSFS\n'
+              + 'struct cred;\n'
+              + 'extern struct cred *ksu_cred;\n'
+              + '#endif\n',
+              1,
+          )
+          write(ksu_h, data)
+
+          data = read(selinux_h)
+          anchor = '#include "linux/version.h"\n'
+          if data.count(anchor) != 1:
+              raise SystemExit("selinux.h version include anchor drifted")
+          data = data.replace(
+              anchor,
+              anchor
+              + '\n#ifdef CONFIG_KSU_SUSFS\n'
+              + 'struct cred;\n'
+              + '#endif\n',
+              1,
+          )
+
+          decl = 'void setup_selinux(const char *);\n'
+          if data.count(decl) != 1:
+              raise SystemExit("selinux.h setup_selinux anchor drifted")
+          data = data.replace(
+              decl,
+              decl
+              + '#ifdef CONFIG_KSU_SUSFS\n'
+              + 'int ksu_setup_selinux_cred(const char *, struct cred *);\n'
+              + 'void ksu_setup_susfs_cred(void);\n'
+              + 'bool susfs_is_current_ksu_domain(void);\n'
+              + '#endif\n',
+              1,
+          )
+          write(selinux_h, data)
+
+          data = read(selinux_c)
+          anchor = '#include "linux/version.h"\n'
+          if data.count(anchor) != 1:
+              raise SystemExit("selinux.c version include anchor drifted")
+          data = data.replace(
+              anchor,
+              anchor + '#include "../ksu.h"\n',
+              1,
+          )
+
+          insertion = '\nvoid setenforce(bool enforce)\n'
+          if data.count(insertion) != 1:
+              raise SystemExit("selinux.c setenforce anchor drifted")
+
+          helper = r'''
+          #ifdef CONFIG_KSU_SUSFS
+          int ksu_setup_selinux_cred(const char *domain, struct cred *cred)
+          {
+          	struct task_security_struct *tsec;
+          	u32 sid;
+          	int error;
+
+          	if (!cred)
+          		return -EINVAL;
+
+          	tsec = selinux_cred(cred);
+          	if (!tsec)
+          		return -EINVAL;
+
+          	error = security_secctx_to_secid(domain, strlen(domain), &sid);
+          	if (error)
+          		return error;
+
+          	tsec->sid = sid;
+          	tsec->create_sid = 0;
+          	tsec->keycreate_sid = 0;
+          	tsec->sockcreate_sid = 0;
+          	return 0;
+          }
+
+          void ksu_setup_susfs_cred(void)
+          {
+          	int error;
+
+          	if (!ksu_cred) {
+          		pr_err("SUSFS credential is NULL\n");
+          		return;
+          	}
+
+          	error = ksu_setup_selinux_cred(KERNEL_SU_DOMAIN, ksu_cred);
+          	if (error)
+          		pr_err("setup SUSFS credential failed: %d\n", error);
+          }
+
+          bool susfs_is_current_ksu_domain(void)
+          {
+          	return is_ksu_domain();
+          }
+          #endif
+
+          '''
+          data = data.replace(
+              insertion,
+              '\n' + helper + 'void setenforce(bool enforce)\n',
+              1,
+          )
+          write(selinux_c, data)
+
+          data = read(ksud_c)
+          output = []
+          count = 0
+          for line in data.splitlines(keepends=True):
+              output.append(line)
+              if line.strip() == 'apply_kernelsu_rules();':
+                  indent = line[:len(line) - len(line.lstrip())]
+                  output.append(
+                      '#ifdef CONFIG_KSU_SUSFS\n'
+                      + indent
+                      + 'ksu_setup_susfs_cred();\n'
+                      + '#endif\n'
+                  )
+                  count += 1
+          if count != 3:
+              raise SystemExit(
+                  f"expected three v0.9.5 policy apply sites, got {count}"
+              )
+          write(ksud_c, ''.join(output))
+
+          data = read(kconfig)
+          final = '\nendmenu\n'
+          if data.count(final) != 1:
+              raise SystemExit("KSU v0.9.5 Kconfig endmenu anchor drifted")
+
+          block = r'''
+          menu "KernelSU - SUSFS"
+
+          config KSU_SUSFS
+          	bool "KernelSU addon - SUSFS"
+          	depends on KSU
+          	depends on THREAD_INFO_IN_TASK
+          	default y
+
+          config KSU_SUSFS_SUS_PATH
+          	bool "Enable SUS_PATH"
+          	depends on KSU_SUSFS
+          	default y
+
+          config KSU_SUSFS_SUS_MOUNT
+          	bool "Enable SUS_MOUNT"
+          	depends on KSU_SUSFS
+          	default y
+
+          config KSU_SUSFS_SUS_KSTAT
+          	bool "Enable SUS_KSTAT"
+          	depends on KSU_SUSFS
+          	default y
+
+          config KSU_SUSFS_SPOOF_UNAME
+          	bool "Enable uname spoofing"
+          	depends on KSU_SUSFS
+          	default y
+
+          config KSU_SUSFS_ENABLE_LOG
+          	bool "Enable SUSFS kernel logging"
+          	depends on KSU_SUSFS
+          	default y
+
+          config KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS
+          	bool "Enable KSU/SUSFS symbol hiding"
+          	depends on KSU_SUSFS
+          	default y
+
+          config KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG
+          	bool "Enable cmdline/bootconfig spoofing"
+          	depends on KSU_SUSFS
+          	default y
+
+          config KSU_SUSFS_OPEN_REDIRECT
+          	bool "Enable OPEN_REDIRECT"
+          	depends on KSU_SUSFS
+          	default y
+
+          config KSU_SUSFS_SUS_MAP
+          	bool "Enable SUS_MAP"
+          	depends on KSU_SUSFS
+          	default y
+
+          endmenu
+          '''
+          data = data.replace(final, '\n' + block + '\nendmenu\n', 1)
+          write(kconfig, data)
+
+          data = read(makefile)
+          anchor = 'kernelsu-objs += core_hook.o\n'
+          if data.count(anchor) != 1:
+              raise SystemExit("KSU v0.9.5 Makefile core_hook anchor drifted")
+          data = data.replace(
+              anchor,
+              anchor + 'kernelsu-objs += susfs_bridge.o\n',
+              1,
+          )
+          write(makefile, data)
+
+          bridge = root / "kernel/susfs_bridge.c"
+          bridge.write_text(r'''#include <linux/cred.h>
+          #include <linux/errno.h>
+          #include <linux/types.h>
+          #include <linux/uaccess.h>
+
+          #include "ksu.h"
+
+          #ifdef CONFIG_KSU_SUSFS
+          #include <linux/susfs.h>
+          #include <linux/susfs_def.h>
+
+          int ksu_handle_sys_reboot(int magic1, int magic2, unsigned int cmd,
+          			  void __user **arg)
+          {
+          	if (magic1 != KERNEL_SU_OPTION)
+          		return -EINVAL;
+
+          	if (magic2 != SUSFS_MAGIC || current_uid().val != 0)
+          		return -EINVAL;
+
+          	switch (cmd) {
+          #ifdef CONFIG_KSU_SUSFS_SUS_PATH
+          	case CMD_SUSFS_ADD_SUS_PATH:
+          		susfs_add_sus_path(arg);
+          		return 0;
+          	case CMD_SUSFS_ADD_SUS_PATH_LOOP:
+          		susfs_add_sus_path_loop(arg);
+          		return 0;
+          #endif
+          #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
+          	case CMD_SUSFS_HIDE_SUS_MNTS_FOR_NON_SU_PROCS:
+          		susfs_set_hide_sus_mnts_for_non_su_procs(arg);
+          		return 0;
+          #endif
+          #ifdef CONFIG_KSU_SUSFS_SUS_KSTAT
+          	case CMD_SUSFS_ADD_SUS_KSTAT:
+          	case CMD_SUSFS_ADD_SUS_KSTAT_STATICALLY:
+          		susfs_add_sus_kstat(arg);
+          		return 0;
+          	case CMD_SUSFS_UPDATE_SUS_KSTAT:
+          		susfs_update_sus_kstat(arg);
+          		return 0;
+          #endif
+          #ifdef CONFIG_KSU_SUSFS_SPOOF_UNAME
+          	case CMD_SUSFS_SET_UNAME:
+          		susfs_set_uname(arg);
+          		return 0;
+          #endif
+          #ifdef CONFIG_KSU_SUSFS_ENABLE_LOG
+          	case CMD_SUSFS_ENABLE_LOG:
+          		susfs_enable_log(arg);
+          		return 0;
+          #endif
+          #ifdef CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG
+          	case CMD_SUSFS_SET_CMDLINE_OR_BOOTCONFIG:
+          		susfs_set_cmdline_or_bootconfig(arg);
+          		return 0;
+          #endif
+          #ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
+          	case CMD_SUSFS_ADD_OPEN_REDIRECT:
+          		susfs_add_open_redirect(arg);
+          		return 0;
+          #endif
+          #ifdef CONFIG_KSU_SUSFS_SUS_MAP
+          	case CMD_SUSFS_ADD_SUS_MAP:
+          		susfs_add_sus_map(arg);
+          		return 0;
+          #endif
+          	case CMD_SUSFS_ENABLE_AVC_LOG_SPOOFING:
+          		susfs_set_avc_log_spoofing(arg);
+          		return 0;
+          	case CMD_SUSFS_SHOW_ENABLED_FEATURES:
+          		susfs_get_enabled_features(arg);
+          		return 0;
+          	case CMD_SUSFS_SHOW_VARIANT:
+          		susfs_show_variant(arg);
+          		return 0;
+          	case CMD_SUSFS_SHOW_VERSION:
+          		susfs_show_version(arg);
+          		return 0;
+          	default:
+          		return -EINVAL;
+          	}
+          }
+          #endif
+          ''', encoding="utf-8")
+
+          print("W63_DIRECT_ABI_BRIDGE=PASS")
+          print("W63_KCONFIG_SURFACE=PASS")
+          print("W63_REBOOT_DISPATCH_PROVIDER=PASS")
+          PY
+
+      - name: Normalize proven SUSFS core boundary and remove duplicate setresuid path
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          STAGE="$(cat "$DRIVER_DIR/kernel-stage.path")"
+
+          STAGE="$STAGE" ARTIFACT_DIR="$ARTIFACT_DIR" python3 - <<'PY'
+          import os
+          import re
+          from pathlib import Path
+
+          stage = Path(os.environ["STAGE"])
+          artifact = Path(os.environ["ARTIFACT_DIR"])
+
+          susfs = stage / "fs/susfs.c"
+          data = susfs.read_text(encoding="utf-8", errors="replace")
+
+          old_decl = (
+              'extern void setup_selinux(const char *domain, '
+              'struct cred *cred);'
+          )
+          new_decl = (
+              'extern int ksu_setup_selinux_cred(const char *domain, '
+              'struct cred *cred);'
+          )
+
+          if old_decl in data:
+              if data.count(old_decl) != 1:
+                  raise SystemExit("multiple modern setup_selinux externs")
+              data = data.replace(old_decl, new_decl, 1)
+          elif new_decl not in data:
+              raise SystemExit(
+                  "neither modern nor W63 SELinux boundary declaration found"
+              )
+
+          old_call = 'setup_selinux("u:r:ksu:s0", cred);'
+          new_call_marker = 'ksu_setup_selinux_cred("u:r:su:s0", cred)'
+
+          if old_call in data:
+              if data.count(old_call) != 1:
+                  raise SystemExit("multiple modern hard-coded KSU domain calls")
+              replacement = '''if (ksu_setup_selinux_cred("u:r:su:s0", cred)) {
+          		SUSFS_LOGE("failed to apply v0.9.5 KernelSU SELinux domain to sdcard monitor cred!\\n");
+          		abort_creds(cred);
+          		return -EINVAL;
+          	}'''
+              data = data.replace(old_call, replacement, 1)
+          elif new_call_marker not in data:
+              raise SystemExit(
+                  "SUSFS sdcard-monitor SELinux call shape not recognized"
+              )
+
+          # The proven 5.4 recipes already carry a version-gated
+          # fsnotify compatibility layer. Its source legitimately contains
+          # both .handle_inode_event and .handle_event, with only the 5.4
+          # handle_event side selected by the preprocessor.
+          susfs_def = (
+              stage / "include/linux/susfs_def.h"
+          ).read_text(encoding="utf-8", errors="replace")
+
+          proven_macro = (
+              "SUSFS_DECL_FSNOTIFY_OPS" in susfs_def
+              and "SUSFS_DECL_FSNOTIFY_OPS(susfs_handle_sdcard_inode_event)"
+                  in data
+              and "#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 9, 0)"
+                  in data
+              and ".handle_inode_event = susfs_handle_sdcard_inode_event"
+                  in data
+              and ".handle_event = susfs_handle_sdcard_inode_event"
+                  in data
+          )
+
+          if proven_macro:
+              if (
+                  "#elif LINUX_VERSION_CODE >= KERNEL_VERSION(5, 2, 0)"
+                  not in susfs_def
+              ):
+                  raise SystemExit(
+                      "proven SUSFS fsnotify macro lacks Linux 5.4 branch"
+                  )
+              fsnotify_mode = "PROVEN_VERSION_GATED_5_4_COMPAT"
+
+          elif ".handle_inode_event" in data:
+              # Fallback only for a raw, unadapted modern SUSFS source.
+              callback_pattern = re.compile(
+                  r"static\s+int\s+susfs_handle_sdcard_inode_event\s*\("
+                  r"\s*struct\s+fsnotify_mark\s*\*\s*mark\s*,\s*u32\s+mask\s*,"
+                  r"\s*struct\s+inode\s*\*\s*inode\s*,\s*struct\s+inode\s*\*\s*dir\s*,"
+                  r"\s*const\s+struct\s+qstr\s*\*\s*file_name\s*,\s*u32\s+cookie\s*\)"
+                  r"\s*\{",
+                  re.S,
+              )
+              if len(list(callback_pattern.finditer(data))) != 1:
+                  raise SystemExit(
+                      "raw modern fsnotify callback structural match failed"
+                  )
+
+              signature = (
+                  "static int susfs_handle_sdcard_event_5_4(struct fsnotify_group *group,\n"
+                  "\t\t\t\t\t\t\t\t\t\t struct inode *inode, u32 mask,\n"
+                  "\t\t\t\t\t\t\t\t\t\t const void *event_data, int data_type,\n"
+                  "\t\t\t\t\t\t\t\t\t\t const struct qstr *file_name, u32 cookie,\n"
+                  "\t\t\t\t\t\t\t\t\t\t struct fsnotify_iter_info *iter_info)\n"
+                  "{\n"
+                  "\t(void)group;\n"
+                  "\t(void)inode;\n"
+                  "\t(void)event_data;\n"
+                  "\t(void)data_type;\n"
+                  "\t(void)cookie;\n"
+                  "\t(void)iter_info;"
+              )
+              data = callback_pattern.sub(
+                  lambda _m: signature,
+                  data,
+                  count=1,
+              )
+
+              ops = re.compile(
+                  r"static\s+const\s+struct\s+fsnotify_ops\s+fsnotify_ops\s*=\s*\{\s*"
+                  r"\.handle_inode_event\s*=\s*susfs_handle_sdcard_inode_event\s*,\s*"
+                  r"\};",
+                  re.S,
+              )
+              if len(list(ops.finditer(data))) != 1:
+                  raise SystemExit(
+                      "raw modern fsnotify ops structural match failed"
+                  )
+
+              data = ops.sub(
+                  lambda _m: (
+                      "static const struct fsnotify_ops fsnotify_ops = {\n"
+                      "\t.handle_event = susfs_handle_sdcard_event_5_4,\n"
+                      "};"
+                  ),
+                  data,
+                  count=1,
+              )
+
+              if ".handle_inode_event" in data:
+                  raise SystemExit(
+                      "unconditional newer fsnotify ABI remains after fallback"
+                  )
+
+              fsnotify_mode = "W63_STRUCTURAL_5_4_ADAPTER"
+
+          else:
+              if ".handle_event" not in data:
+                  raise SystemExit(
+                      "no recognizable Linux 5.4 fsnotify path"
+                  )
+              fsnotify_mode = "ALREADY_HANDLE_EVENT_ONLY"
+
+          (artifact / "FSNOTIFY-NORMALIZATION.txt").write_text(
+              "\n".join([
+                  f"FSNOTIFY_MODE={fsnotify_mode}",
+                  f"PROVEN_VERSION_GATED_COMPAT={'YES' if proven_macro else 'NO'}",
+                  "TARGET_KERNEL_FAMILY=Linux_5_4",
+              ]) + "\n",
+              encoding="utf-8",
+          )
+
+          if "synchronize_srcu(&susfs_srcu_open_redirect)" not in data:
+              raise SystemExit("OPEN_REDIRECT synchronize_srcu fix missing")
+
+          susfs.write_text(data, encoding="utf-8")
+
+          sysc = stage / "kernel/sys.c"
+          text = sysc.read_text(encoding="utf-8", errors="replace")
+
+          before = text.count("ksu_handle_setresuid")
+          text = re.sub(
+              r"\n#ifdef CONFIG_KSU_SUSFS\n"
+              r"\s*(?:\(void\)\s*)?ksu_handle_setresuid"
+              r"\s*\(\s*ruid\s*,\s*euid\s*,\s*suid\s*\)\s*;\s*\n"
+              r"#endif\n",
+              "\n",
+              text,
+              count=1,
+          )
+          text = re.sub(
+              r"^extern\s+[^;]*\bksu_handle_setresuid\s*\([^;]*;\s*\n",
+              "",
+              text,
+              flags=re.M,
+          )
+          sysc.write_text(text, encoding="utf-8")
+
+          after = text.count("ksu_handle_setresuid")
+
+          (artifact / "BOUNDARY-NORMALIZATION.txt").write_text(
+              "\n".join([
+                  "V095_SELINUX_DOMAIN=u:r:su:s0",
+                  "MODERN_SUSFS_HARDCODED_KSU_DOMAIN_REMOVED=YES",
+                  "OPEN_REDIRECT_SRCU_FIX_PRESENT=YES",
+                  f"KSU_HANDLE_SETRESUID_REFS_BEFORE={before}",
+                  f"KSU_HANDLE_SETRESUID_REFS_AFTER={after}",
+                  "SECOND_COMPETING_SETRESUID_HOOK=NO",
+                  f"FSNOTIFY_MODE={fsnotify_mode}",
+              ]) + "\n",
+              encoding="utf-8",
+          )
+
+          if after != 0:
+              raise SystemExit(
+                  "ReSukiSU-specific setresuid hook reference remains"
+              )
+
+          print("SUSFS_BOUNDARY_NORMALIZATION=PASS")
+          print("DUPLICATE_SETRESUID_PATH_REMOVAL=PASS")
+          PY
+
+      - name: Port W63-v7 zygote behavior onto v0.9.5 task_fix_setuid
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          STAGE="$(cat "$DRIVER_DIR/kernel-stage.path")"
+
+          STAGE="$STAGE" python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          p = Path(os.environ["STAGE"]) / "KernelSU/kernel/core_hook.c"
+          data = p.read_text(encoding="utf-8")
+
+          include_anchor = '#include <linux/mount.h>\n'
+          if data.count(include_anchor) != 1:
+              raise SystemExit("core_hook mount include anchor drifted")
+          data = data.replace(
+              include_anchor,
+              include_anchor
+              + '\n#ifdef CONFIG_KSU_SUSFS\n'
+              + '#include <linux/susfs.h>\n'
+              + '#include <linux/susfs_def.h>\n'
+              + '#include <linux/workqueue.h>\n'
+              + '#endif\n',
+              1,
+          )
+
+          marker = 'static bool ksu_module_mounted = false;\n'
+          if data.count(marker) != 1:
+              raise SystemExit("core_hook module mounted anchor drifted")
+
+          helpers = r'''
+          #ifdef CONFIG_KSU_SUSFS
+          extern struct work_struct susfs_extra_works;
+
+          static inline bool ksu_susfs_is_isolated_process(uid_t uid)
+          {
+          	uid_t appid = uid % 100000;
+
+          	return appid >= 99000 && appid <= 99999;
+          }
+
+          static inline void ksu_schedule_susfs_extra_works(void)
+          {
+          	if (!work_pending(&susfs_extra_works))
+          		schedule_work(&susfs_extra_works);
+          }
+          #endif
+
+          '''
+          data = data.replace(marker, marker + '\n' + helpers, 1)
+
+          start = data.find(
+              'int ksu_handle_setuid(struct cred *new, const struct cred *old)\n{'
+          )
+          if start < 0:
+              raise SystemExit("v0.9.5 ksu_handle_setuid start not found")
+
+          brace = data.find('{', start)
+          depth = 0
+          end = None
+          for i in range(brace, len(data)):
+              if data[i] == '{':
+                  depth += 1
+              elif data[i] == '}':
+                  depth -= 1
+                  if depth == 0:
+                      end = i + 1
+                      break
+          if end is None:
+              raise SystemExit("v0.9.5 ksu_handle_setuid end not found")
+
+          replacement = r'''int ksu_handle_setuid(struct cred *new, const struct cred *old)
+          {
+          	bool is_zygote_child;
+          	kuid_t new_uid;
+          	kuid_t old_uid;
+          #ifdef CONFIG_KSU_SUSFS
+          	bool isolated;
+          #endif
+
+          	if (!ksu_module_mounted)
+          		return 0;
+
+          	if (!new || !old)
+          		return 0;
+
+          	new_uid = new->uid;
+          	old_uid = old->uid;
+
+          	if (old_uid.val != 0)
+          		return 0;
+
+          #ifdef CONFIG_KSU_SUSFS
+          	isolated = ksu_susfs_is_isolated_process(new_uid.val);
+
+          	if (!isolated && (!is_appuid(new_uid) ||
+          			  is_unsupported_uid(new_uid.val)))
+          		return 0;
+
+          	if (!isolated) {
+          		if (ksu_is_allow_uid(new_uid.val))
+          			return 0;
+
+          		if (!ksu_uid_should_umount(new_uid.val))
+          			return 0;
+          	}
+          #else
+          	if (!is_appuid(new_uid) || is_unsupported_uid(new_uid.val))
+          		return 0;
+
+          	if (ksu_is_allow_uid(new_uid.val))
+          		return 0;
+
+          	if (!ksu_uid_should_umount(new_uid.val))
+          		return 0;
+          #endif
+
+          	is_zygote_child = is_zygote(old->security);
+          	if (!is_zygote_child) {
+          		pr_info("handle umount ignore non zygote child: %d\n",
+          			current->pid);
+          		return 0;
+          	}
+
+          	try_umount("/system", true, 0);
+          	try_umount("/vendor", true, 0);
+          	try_umount("/product", true, 0);
+          	try_umount("/data/adb/modules", false, MNT_DETACH);
+          	try_umount("/debug_ramdisk", false, MNT_DETACH);
+          	try_umount("/sbin", false, MNT_DETACH);
+
+          #ifdef CONFIG_KSU_SUSFS
+          	ksu_schedule_susfs_extra_works();
+          	susfs_set_current_proc_umounted();
+          #endif
+
+          	return 0;
+          }'''
+          data = data[:start] + replacement + data[end:]
+
+          boot_old = '''		case EVENT_BOOT_COMPLETED: {
+          			static bool boot_complete_lock = false;
+          			if (!boot_complete_lock) {
+          				boot_complete_lock = true;
+          				pr_info("boot_complete triggered\\n");
+          			}
+          			break;
+          		}
+          '''
+          boot_new = '''		case EVENT_BOOT_COMPLETED: {
+          			static bool boot_complete_lock = false;
+          			if (!boot_complete_lock) {
+          				boot_complete_lock = true;
+          				pr_info("boot_complete triggered\\n");
+          #ifdef CONFIG_KSU_SUSFS
+          				susfs_start_sdcard_monitor_fn();
+          #endif
+          			}
+          			break;
+          		}
+          '''
+
+          if data.count(boot_old) != 1:
+              raise SystemExit("v0.9.5 boot completed anchor drifted")
+          data = data.replace(boot_old, boot_new, 1)
+
+          p.write_text(data, encoding="utf-8")
+
+          print("V095_TASK_FIX_SETUID_SUSFS_BEHAVIOR=PASS")
+          print("SECOND_COMPETING_SETRESUID_HOOK=NO")
+          print("SDCARD_MONITOR_BOOT_COMPLETED=PASS")
+          PY
+
+      - name: Normalize reboot consumer hook for W63 dispatcher
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          STAGE="$(cat "$DRIVER_DIR/kernel-stage.path")"
+
+          STAGE="$STAGE" python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          p = Path(os.environ["STAGE"]) / "kernel/reboot.c"
+          data = p.read_text(encoding="utf-8")
+
+          call = 'ret = ksu_handle_sys_reboot(magic1, magic2, cmd, &arg);'
+
+          if call not in data:
+              syscall_anchor = (
+                  'SYSCALL_DEFINE4(reboot, int, magic1, int, magic2, '
+                  'unsigned int, cmd,\n'
+                  '\t\tvoid __user *, arg)\n'
+              )
+              if data.count(syscall_anchor) != 1:
+                  raise SystemExit("reboot syscall anchor drifted")
+
+              decl = (
+                  '#ifdef CONFIG_KSU_SUSFS\n'
+                  'extern int ksu_handle_sys_reboot(int magic1, int magic2, '
+                  'unsigned int cmd, void __user **arg);\n'
+                  '#endif\n\n'
+              )
+              data = data.replace(
+                  syscall_anchor,
+                  decl + syscall_anchor,
+                  1,
+              )
+
+              body_anchor = '\tchar buffer[256];\n\tint ret = 0;\n'
+              if data.count(body_anchor) != 1:
+                  raise SystemExit("reboot body anchor drifted")
+
+              hook = (
+                  body_anchor
+                  + '\n#ifdef CONFIG_KSU_SUSFS\n'
+                  + '\tret = ksu_handle_sys_reboot(magic1, magic2, cmd, &arg);\n'
+                  + '\tif (ret)\n'
+                  + '\t\tgoto ksu_susfs_orig_flow;\n'
+                  + '\treturn ret;\n'
+                  + 'ksu_susfs_orig_flow:\n'
+                  + '#endif\n'
+              )
+              data = data.replace(body_anchor, hook, 1)
+
+          if data.count(call) != 1:
+              raise SystemExit(
+                  f"unexpected reboot SUSFS dispatcher call count: {data.count(call)}"
+              )
+
+          p.write_text(data, encoding="utf-8")
+          print("REBOOT_CONSUMER_HOOK=PASS")
+          PY
+
+      - name: Audit remaining external KSU compatibility references before full build
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          STAGE="$(cat "$DRIVER_DIR/kernel-stage.path")"
+
+          python3 - "$STAGE" "$ARTIFACT_DIR" <<'PY'
+          import re
+          import sys
+          from pathlib import Path
+
+          stage = Path(sys.argv[1])
+          artifact = Path(sys.argv[2])
+
+          roots = [
+              stage / "fs",
+              stage / "kernel",
+              stage / "security",
+              stage / "drivers/input",
+              stage / "include",
+              stage / "mm",
+          ]
+
+          refs = {}
+          for root in roots:
+              if not root.exists():
+                  continue
+              for p in root.rglob("*"):
+                  if not p.is_file() or p.suffix not in {".c", ".h"}:
+                      continue
+                  text = p.read_text(
+                      encoding="utf-8",
+                      errors="replace",
+                  )
+                  for sym in re.findall(r"\bksu_[A-Za-z0-9_]+", text):
+                      refs.setdefault(sym, set()).add(
+                          str(p.relative_to(stage))
+                      )
+
+          ksu_root = stage / "KernelSU/kernel"
+          provider_text = "\n".join(
+              p.read_text(encoding="utf-8", errors="replace")
+              for p in ksu_root.rglob("*")
+              if p.is_file() and p.suffix in {".c", ".h"}
+          )
+
+          lines = []
+          unresolved_candidates = []
+
+          for sym in sorted(refs):
+              provided = bool(
+                  re.search(rf"\b{re.escape(sym)}\b", provider_text)
+              )
+              lines += [
+                  f"SYMBOL={sym}",
+                  f"PROVIDER_TEXT_PRESENT={'YES' if provided else 'NO'}",
+                  "FILES=" + ",".join(sorted(refs[sym])),
+                  "",
+              ]
+              if not provided:
+                  unresolved_candidates.append(sym)
+
+          (artifact / "PRELINK-KSU-REFERENCE-INVENTORY.txt").write_text(
+              "\n".join(lines),
+              encoding="utf-8",
+          )
+          (artifact / "PRELINK-KSU-PROVIDER-GAP-CANDIDATES.txt").write_text(
+              "\n".join(unresolved_candidates) + (
+                  "\n" if unresolved_candidates else ""
+              ),
+              encoding="utf-8",
+          )
+
+          print(
+              "PRELINK_PROVIDER_GAP_CANDIDATES="
+              + str(len(unresolved_candidates))
+          )
+          for sym in unresolved_candidates:
+              print("PRELINK_GAP=" + sym)
+          PY
+
+          echo "PRELINK_REFERENCE_INVENTORY=PASS" \
+            | tee "$ARTIFACT_DIR/PRELINK-INVENTORY-STATUS.txt"
+
+      - name: Download official Android clang-r416183b for W64
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -rf "$GITHUB_WORKSPACE/toolchain/$CLANG_REVISION"
+          mkdir -p "$GITHUB_WORKSPACE/toolchain/$CLANG_REVISION"
+
+          curl \
+            --fail \
+            --location \
+            --retry 5 \
+            --retry-delay 3 \
+            "$CLANG_URL" \
+            -o "$RUNNER_TEMP/${CLANG_REVISION}.tar.gz"
+
+          tar \
+            -xzf "$RUNNER_TEMP/${CLANG_REVISION}.tar.gz" \
+            -C "$GITHUB_WORKSPACE/toolchain/$CLANG_REVISION"
+
+          "$GITHUB_WORKSPACE/toolchain/$CLANG_REVISION/bin/clang" --version \
+            | tee "$ARTIFACT_DIR/clang-version.txt"
+
+          "$GITHUB_WORKSPACE/toolchain/$CLANG_REVISION/bin/ld.lld" --version \
+            | tee -a "$ARTIFACT_DIR/clang-version.txt"
+
+      - name: Resolve W64 config for original KSU v0.9.5 plus SUSFS 2.2
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          STAGE="$(cat "$DRIVER_DIR/kernel-stage.path")"
+          cd "$STAGE"
+
+          export PATH="$GITHUB_WORKSPACE/toolchain/$CLANG_REVISION/bin:$PATH"
+          export KCFLAGS="-D__ANDROID_COMMON_KERNEL__"
+
+          rm -rf "$OUT_DIR"
+
+          make \
+            O="$OUT_DIR" \
+            ARCH=arm64 \
+            LLVM=1 \
+            veux_defconfig \
+            2>&1 | tee "$ARTIFACT_DIR/config-initial.log"
+
+          scripts/config --file "$OUT_DIR/.config" \
+            -e THREAD_INFO_IN_TASK \
+            -e KSU \
+            -e KSU_SUSFS \
+            -e KSU_SUSFS_SUS_PATH \
+            -e KSU_SUSFS_SUS_MOUNT \
+            -e KSU_SUSFS_SUS_KSTAT \
+            -e KSU_SUSFS_SPOOF_UNAME \
+            -e KSU_SUSFS_ENABLE_LOG \
+            -e KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \
+            -e KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \
+            -e KSU_SUSFS_OPEN_REDIRECT \
+            -e KSU_SUSFS_SUS_MAP \
+            -d MODULES \
+            -d KPROBES \
+            -d KPROBE_EVENTS
+
+          make \
+            O="$OUT_DIR" \
+            ARCH=arm64 \
+            LLVM=1 \
+            olddefconfig \
+            2>&1 | tee "$ARTIFACT_DIR/config-olddefconfig.log"
+
+          for cfg in \
+            CONFIG_THREAD_INFO_IN_TASK=y \
+            CONFIG_KSU=y \
+            CONFIG_KSU_SUSFS=y \
+            CONFIG_KSU_SUSFS_SUS_PATH=y \
+            CONFIG_KSU_SUSFS_SUS_MOUNT=y \
+            CONFIG_KSU_SUSFS_SUS_KSTAT=y \
+            CONFIG_KSU_SUSFS_SPOOF_UNAME=y \
+            CONFIG_KSU_SUSFS_ENABLE_LOG=y \
+            CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y \
+            CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y \
+            CONFIG_KSU_SUSFS_OPEN_REDIRECT=y \
+            CONFIG_KSU_SUSFS_SUS_MAP=y
+          do
+            grep -Fxq "$cfg" "$OUT_DIR/.config"
+          done
+
+          grep -Fxq '# CONFIG_MODULES is not set' "$OUT_DIR/.config"
+
+          cp "$OUT_DIR/.config" "$ARTIFACT_DIR/w64-final.config"
+
+          {
+            echo "CONFIG_KSU=y"
+            echo "CONFIG_KSU_SUSFS=y"
+            echo "CONFIG_MODULES=n"
+            echo "CONFIG_KPROBES=n_or_unavailable"
+            echo "CONFIG_KPROBE_EVENTS=n_or_unavailable"
+            echo "CONFIG_LTO_CLANG=$(grep -Fx 'CONFIG_LTO_CLANG=y' "$OUT_DIR/.config" >/dev/null && echo y || echo n)"
+            echo "CONFIG_CONTRACT=PASS"
+          } | tee "$ARTIFACT_DIR/CONFIG-CONTRACT.txt"
+
+      - name: Provision Full-LTO runner memory guard
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          {
+            echo "=== before ==="
+            free -h
+            swapon --show || true
+          } | tee "$ARTIFACT_DIR/memory-before.txt"
+
+          if ! swapon --show=NAME --noheadings \
+            | grep -Fxq /mnt/w64-extra-swap
+          then
+            sudo fallocate -l 16G /mnt/w64-extra-swap
+            sudo chmod 600 /mnt/w64-extra-swap
+            sudo mkswap /mnt/w64-extra-swap
+            sudo swapon /mnt/w64-extra-swap
+          fi
+
+          sudo sysctl -w vm.swappiness=100 \
+            | tee "$ARTIFACT_DIR/swappiness.txt"
+
+          {
+            echo "=== after ==="
+            free -h
+            swapon --show
+          } | tee "$ARTIFACT_DIR/memory-after.txt"
+
+      - name: Full vmlinux and Image link with KSU v0.9.5 plus SUSFS 2.2
+        id: full_build
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -o pipefail
+
+          STAGE="$(cat "$DRIVER_DIR/kernel-stage.path")"
+          cd "$STAGE"
+
+          export PATH="$GITHUB_WORKSPACE/toolchain/$CLANG_REVISION/bin:$PATH"
+          export KCFLAGS="-D__ANDROID_COMMON_KERNEL__"
+
+          start="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+
+          set +e
+          make \
+            -j1 \
+            O="$OUT_DIR" \
+            ARCH=arm64 \
+            LLVM=1 \
+            Image \
+            2>&1 | tee "$ARTIFACT_DIR/full-build.log"
+          rc=${PIPESTATUS[0]}
+          set -e
+
+          end="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+
+          {
+            echo "MAKE_EXIT_CODE=$rc"
+            echo "BUILD_START=$start"
+            echo "BUILD_END=$end"
+          } | tee "$ARTIFACT_DIR/full-build-exit.txt"
+
+          exit "$rc"
+
+      - name: Record W64 full-build outcome and diagnostics
+        if: always()
+        shell: bash
+        run: |
+          set +e
+
+          STAGE="$(cat "$DRIVER_DIR/kernel-stage.path")"
+
+          {
+            echo "STEP_OUTCOME=${{ steps.full_build.outcome }}"
+            echo "STEP_CONCLUSION=${{ steps.full_build.conclusion }}"
+            echo "LANE=${{ matrix.id }}"
+          } | tee "$ARTIFACT_DIR/full-build-step-outcome.txt"
+
+          if [ -f "$ARTIFACT_DIR/full-build.log" ]; then
+            grep -E \
+              'undefined symbol:|ld\.lld: error:|(^|[^[:alpha:]])error:|Error [0-9]+' \
+              "$ARTIFACT_DIR/full-build.log" \
+              | tail -n 250 \
+              > "$ARTIFACT_DIR/full-build-error-summary.txt" \
+              || true
+
+            grep -oE \
+              'undefined symbol: [A-Za-z0-9_]+' \
+              "$ARTIFACT_DIR/full-build.log" \
+              | sed 's/^undefined symbol: //' \
+              | LC_ALL=C sort -u \
+              > "$ARTIFACT_DIR/undefined-symbols.txt" \
+              || true
+
+            tail -n 400 "$ARTIFACT_DIR/full-build.log" \
+              > "$ARTIFACT_DIR/full-build-tail.txt"
+          fi
+
+          if [ -f "$STAGE/$OUT_DIR/arch/arm64/boot/Image" ]; then
+            sha256sum \
+              "$STAGE/$OUT_DIR/arch/arm64/boot/Image" \
+              > "$ARTIFACT_DIR/Image.sha256"
+          fi
+
+          if [ -f "$STAGE/$OUT_DIR/vmlinux" ]; then
+            sha256sum "$STAGE/$OUT_DIR/vmlinux" \
+              > "$ARTIFACT_DIR/vmlinux.sha256"
+          fi
+
+          if [ -f "$STAGE/$OUT_DIR/System.map" ]; then
+            sha256sum "$STAGE/$OUT_DIR/System.map" \
+              > "$ARTIFACT_DIR/System.map.sha256"
+          fi
+
+          exit 0
+
+      - name: Verify successful W64 full link
+        if: ${{ steps.full_build.outcome == 'success' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          STAGE="$(cat "$DRIVER_DIR/kernel-stage.path")"
+
+          IMAGE="$STAGE/$OUT_DIR/arch/arm64/boot/Image"
+          VMLINUX="$STAGE/$OUT_DIR/vmlinux"
+          SYSTEM_MAP="$STAGE/$OUT_DIR/System.map"
+          CONFIG="$STAGE/$OUT_DIR/.config"
+
+          test -s "$IMAGE"
+          test -s "$VMLINUX"
+          test -s "$SYSTEM_MAP"
+          test -s "$CONFIG"
+
+          grep -Fxq 'MAKE_EXIT_CODE=0' \
+            "$ARTIFACT_DIR/full-build-exit.txt"
+
+          grep -Fq -- '-- KernelSU version: 11872' \
+            "$ARTIFACT_DIR/full-build.log"
+
+          grep -Fxq 'CONFIG_KSU=y' "$CONFIG"
+          grep -Fxq 'CONFIG_KSU_SUSFS=y' "$CONFIG"
+
+          ! grep -Fq 'undefined symbol:' \
+            "$ARTIFACT_DIR/full-build.log"
+
+          grep -Fq \
+            'synchronize_srcu(&susfs_srcu_open_redirect)' \
+            "$STAGE/fs/susfs.c"
+
+          grep -Fq \
+            'ksu_setup_selinux_cred("u:r:su:s0", cred)' \
+            "$STAGE/fs/susfs.c"
+
+          ! grep -q \
+            'ksu_handle_setresuid' \
+            "$STAGE/kernel/sys.c"
+
+          {
+            echo "W64_FULL_LINK=PASS"
+            echo "LANE=${{ matrix.id }}"
+            echo "KERNEL_VERSION=${{ matrix.kernel_version }}"
+            echo "KSU_VERSION=11872"
+            echo "SUSFS_VERSION=2.2.0"
+            echo "PROVEN_SUSFS_HOOK_RECIPE=${{ matrix.source_recipe }}"
+            echo "FINAL_ROOT_MANAGER=ORIGINAL_KERNELSU_V0_9_5"
+            echo "VMLINUX_FINAL_LINK=PASS"
+            echo "IMAGE_BUILD=PASS"
+            echo "IMAGE_BYTES=$(stat -c '%s' "$IMAGE")"
+            echo "IMAGE_SHA256=$(sha256sum "$IMAGE" | awk '{print $1}')"
+            echo "VMLINUX_SHA256=$(sha256sum "$VMLINUX" | awk '{print $1}')"
+            echo "SYSTEM_MAP_SHA256=$(sha256sum "$SYSTEM_MAP" | awk '{print $1}')"
+            echo "CONFIG_SHA256=$(sha256sum "$CONFIG" | awk '{print $1}')"
+            echo "OPEN_REDIRECT_SRCU_FIX_PRESERVED=YES"
+            echo "V095_DOMAIN=u:r:su:s0"
+            echo "SECOND_COMPETING_SETRESUID_HOOK=NO"
+            echo "W64_V2_WORKTREE_GITDIR_TYPE_BUG_CORRECTED=YES"
+            echo "W64_V2_PROVEN_FSNOTIFY_COMPAT_RECOGNITION_BUG_CORRECTED=YES"
+            echo "BOOT_IMAGE_CREATED=NO"
+            echo "FLASHABLE_ZIP_CREATED=NO"
+            echo "DEVICE_ACCESSED=NO"
+            echo "FLASHING_PERFORMED=NO"
+          } | tee "$ARTIFACT_DIR/FINAL-STATUS.txt"
+
+          cp "$IMAGE" "$ARTIFACT_DIR/Image"
+          cp "$SYSTEM_MAP" "$ARTIFACT_DIR/System.map"
+
+      - name: Export W64 source delta and failure-safe status
+        if: always()
+        shell: bash
+        run: |
+          set +e
+
+          STAGE="$(cat "$DRIVER_DIR/kernel-stage.path")"
+
+          git -C "$STAGE" diff --binary \
+            > "$ARTIFACT_DIR/W64-final-source-diff.patch" \
+            2>/dev/null || true
+
+          if [ -d "$STAGE/KernelSU/.git" ]; then
+            git -C "$STAGE/KernelSU" diff --binary \
+              > "$ARTIFACT_DIR/W64-KernelSU-v095-bridge.patch" \
+              2>/dev/null || true
+          fi
+
+          if [ ! -f "$ARTIFACT_DIR/FINAL-STATUS.txt" ]; then
+            {
+              echo "W64_FULL_LINK=FAIL_OR_INCOMPLETE"
+              echo "LANE=${{ matrix.id }}"
+              echo "KERNEL_VERSION=${{ matrix.kernel_version }}"
+              echo "FULL_BUILD_STEP_OUTCOME=${{ steps.full_build.outcome }}"
+              echo "PROVEN_SUSFS_HOOK_RECIPE=${{ matrix.source_recipe }}"
+              echo "FINAL_ROOT_MANAGER=ORIGINAL_KERNELSU_V0_9_5"
+              echo "BOOT_IMAGE_CREATED=NO"
+              echo "FLASHABLE_ZIP_CREATED=NO"
+              echo "DEVICE_ACCESSED=NO"
+              echo "FLASHING_PERFORMED=NO"
+            } > "$ARTIFACT_DIR/FAILURE-STATUS.txt"
+          fi
+
+          {
+            echo "PRE_MANIFEST_JOB_STATUS=${{ job.status }}"
+            echo "FULL_BUILD_STEP_OUTCOME=${{ steps.full_build.outcome }}"
+            echo "UPLOAD_HIDDEN_FILES=YES"
+            echo "SHA256SUMS_WILL_BE_FINAL_ARTIFACT_MUTATION=YES"
+            echo "NO_ARTIFACT_FILE_MAY_CHANGE_AFTER_MANIFEST=YES"
+          } > "$ARTIFACT_DIR/MANIFEST-CONTRACT.txt"
+
+          exit 0
+
+      - name: Create final W64 artifact SHA256 manifest
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd "$ARTIFACT_DIR"
+          : > SHA256SUMS.txt
+
+          while IFS= read -r -d '' file; do
+            rel="${file#./}"
+            [ "$rel" = "SHA256SUMS.txt" ] && continue
+            sha256sum "$rel" >> SHA256SUMS.txt
+          done < <(find . -type f -print0 | sort -z)
+
+          test -s SHA256SUMS.txt
+          sha256sum -c SHA256SUMS.txt
+
+      - name: Upload W64 full-link artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: W64-v3-v095-SUSFS220-proven-hook-full-link-${{ matrix.id }}
+          path: ${{ env.ARTIFACT_DIR }}
+          if-no-files-found: error
+          include-hidden-files: true
+          retention-days: 30
+          compression-level: 0
+
+      - name: Fail after preserving W64 diagnostics
+        if: ${{ steps.full_build.outcome != 'success' }}
+        shell: bash
+        run: |
+          echo "W64-v3 full vmlinux/Image link did not complete successfully."
+          exit 1
