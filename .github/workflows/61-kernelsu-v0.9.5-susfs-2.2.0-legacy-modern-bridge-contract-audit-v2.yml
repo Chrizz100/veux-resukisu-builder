@@ -1,0 +1,1547 @@
+name: 61 - KernelSU v0.9.5 + SUSFS 2.2.0 Legacy Modern Bridge Contract Audit v2
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: w61-v2-v095-susfs220-legacy-modern-contract-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    name: W61 v2 ${{ matrix.id }} bridge contract audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - id: linux-5_4_274
+            kernel_version: "5.4.274"
+            kernel_ref: "20240619"
+            merge_common: "yes"
+            expected_embedded_ksu: "11872"
+          - id: linux-5_4_302
+            kernel_version: "5.4.302"
+            kernel_ref: "f4b8a13a43a130a9aab83cc985ce4d4421291ae6"
+            merge_common: "no"
+            expected_embedded_ksu: "12142"
+
+    env:
+      KERNEL_REPOSITORY: dereference23/kernel_xiaomi_sm6375
+      COMMON_REPOSITORY: https://android.googlesource.com/kernel/common
+      COMMON_REF: android11-5.4.274_r00
+
+      KSU_REPOSITORY: tiann/KernelSU
+      KSU_V095_REF: b766b98513b5a7eb33bc1c4a76b5702bf1288f07
+      KSU_V095_VERSION: "11872"
+
+      # Reference only. This tree is NEVER transplanted into v0.9.5.
+      KSU_MODERN_REFERENCE_REF: abc3fdcf5b6ec9e0add131e600d55853a0fffbf2
+
+      # GitHub transport mirror of the exact simonpunk Git commit history.
+      SUSFS_MIRROR_REPOSITORY: ShirkNeko/susfs4ksu
+      SUSFS_MODERN_REF: be08face56c347e7ba9c4fb420c2463598a14f5d
+      SUSFS_MODERN_VERSION: "2.2.0"
+      SUSFS_LEGACY_REF: 76affd70abf61d77feb0a132f61365d6848505df
+      SUSFS_LEGACY_VERSION: "1.5.5"
+
+      ARTIFACT_DIR: ${{ github.workspace }}/w61-artifact
+
+    steps:
+      - name: Initialize W61 audit artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -rf "$ARTIFACT_DIR"
+          mkdir -p "$ARTIFACT_DIR"
+
+          {
+            echo "W61_VERSION=v2"
+            echo "LANE=${{ matrix.id }}"
+            echo "KERNEL_VERSION=${{ matrix.kernel_version }}"
+            echo "PURPOSE=TRUE_LEGACY_V095_TO_MODERN_SUSFS220_BRIDGE_CONTRACT"
+            echo "W60_RAW_BRIDGE_COUNT_IS_NOT_TREATED_AS_AN_ABI=YES"
+            echo "FULL_KERNEL_BUILD_PERFORMED=NO"
+            echo "KERNEL_TREE_MODIFIED=NO"
+            echo "KSU_TREE_MODIFIED=NO"
+            echo "SUSFS_PATCH_APPLIED=NO"
+            echo "BOOT_IMAGE_CREATED=NO"
+            echo "FLASHABLE_ZIP_CREATED=NO"
+            echo "DEVICE_ACCESSED=NO"
+            echo "FLASHING_PERFORMED=NO"
+          } | tee "$ARTIFACT_DIR/W61-HEADER.txt"
+
+      - name: Install audit dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          sudo apt-get update
+          sudo apt-get install -y \
+            binutils-aarch64-linux-gnu \
+            file \
+            patch \
+            python3
+
+      - name: Checkout exact VEUX kernel lane
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ env.KERNEL_REPOSITORY }}
+          ref: ${{ matrix.kernel_ref }}
+          path: kernel
+          fetch-depth: 0
+          filter: blob:none
+
+      - name: Reconstruct exact Linux 5.4 lane
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd "$GITHUB_WORKSPACE/kernel"
+
+          initial_head="$(git rev-parse HEAD)"
+          initial_version="$(make -s kernelversion)"
+
+          if [ "${{ matrix.merge_common }}" = "yes" ]; then
+            test "$initial_version" = "5.4.268"
+
+            git config user.name "VEUX W61 Audit"
+            git config user.email "veux-w61-audit@users.noreply.github.com"
+
+            git remote remove android-common >/dev/null 2>&1 || true
+            git remote add android-common "$COMMON_REPOSITORY"
+
+            git fetch android-common \
+              "refs/tags/${COMMON_REF}:refs/tags/${COMMON_REF}"
+
+            git merge \
+              --no-edit \
+              --no-ff \
+              "$COMMON_REF"
+
+            test "$(make -s kernelversion)" = "5.4.274"
+          else
+            test "$initial_head" = "${{ matrix.kernel_ref }}"
+            test "$initial_version" = "5.4.302"
+          fi
+
+          final_version="$(make -s kernelversion)"
+          final_head="$(git rev-parse HEAD)"
+          final_tree="$(git rev-parse HEAD^{tree})"
+
+          test "$final_version" = "${{ matrix.kernel_version }}"
+          test -f security/selinux/include/objsec.h
+          test -f security/selinux/include/security.h
+          test -d drivers/kernelsu
+
+          embedded_version="$(
+            sed -nE \
+              's/^[[:space:]]*ccflags-y[[:space:]]*\+=[[:space:]]*-DKSU_VERSION=([0-9]+).*/\1/p' \
+              drivers/kernelsu/Makefile \
+              | head -n1
+          )"
+
+          test "$embedded_version" = "${{ matrix.expected_embedded_ksu }}"
+
+          {
+            echo "INITIAL_HEAD=$initial_head"
+            echo "INITIAL_VERSION=$initial_version"
+            echo "FINAL_HEAD=$final_head"
+            echo "FINAL_TREE=$final_tree"
+            echo "FINAL_VERSION=$final_version"
+            echo "EMBEDDED_KSU_VERSION=$embedded_version"
+            echo "KERNEL_LANE_AUTHENTICATION=PASS"
+          } | tee "$ARTIFACT_DIR/KERNEL-IDENTITY.txt"
+
+      - name: Snapshot existing VEUX manual hook contract
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd "$GITHUB_WORKSPACE/kernel"
+
+          grep -RhoE '\bksu_[A-Za-z0-9_]+' \
+            fs kernel security drivers/input include \
+            --exclude-dir=kernelsu \
+            --exclude='*.o' \
+            2>/dev/null \
+            | LC_ALL=C sort -u \
+            > "$ARTIFACT_DIR/baseline-external-ksu-symbols.txt" || true
+
+          grep -RIlE '\bksu_[A-Za-z0-9_]+' \
+            fs kernel security drivers/input include \
+            --exclude-dir=kernelsu \
+            --exclude='*.o' \
+            2>/dev/null \
+            | LC_ALL=C sort -u \
+            > "$ARTIFACT_DIR/baseline-manual-hook-files.txt" || true
+
+          symbol_count="$(
+            wc -l < "$ARTIFACT_DIR/baseline-external-ksu-symbols.txt" \
+              | tr -d ' '
+          )"
+
+          file_count="$(
+            wc -l < "$ARTIFACT_DIR/baseline-manual-hook-files.txt" \
+              | tr -d ' '
+          )"
+
+          test "$symbol_count" = "8"
+          test "$file_count" = "5"
+
+          while IFS= read -r file; do
+            sha256sum "$file"
+          done < "$ARTIFACT_DIR/baseline-manual-hook-files.txt" \
+            > "$ARTIFACT_DIR/baseline-manual-hook-files.sha256"
+
+          {
+            echo "EXTERNAL_KSU_SYMBOL_COUNT=$symbol_count"
+            echo "MANUAL_HOOK_FILE_COUNT=$file_count"
+            echo "MANUAL_HOOK_CONTRACT=8_OF_8"
+          } | tee "$ARTIFACT_DIR/MANUAL-HOOK-CONTRACT.txt"
+
+      - name: Checkout immutable original KernelSU v0.9.5
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ env.KSU_REPOSITORY }}
+          ref: ${{ env.KSU_V095_REF }}
+          path: KernelSU-v095
+          fetch-depth: 0
+
+      - name: Checkout pinned modern KernelSU semantic reference
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ env.KSU_REPOSITORY }}
+          ref: ${{ env.KSU_MODERN_REFERENCE_REF }}
+          path: KernelSU-modern-reference
+          fetch-depth: 1
+
+      - name: Checkout exact modern SUSFS 2.2 reference
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ env.SUSFS_MIRROR_REPOSITORY }}
+          ref: ${{ env.SUSFS_MODERN_REF }}
+          path: susfs-modern
+          fetch-depth: 1
+
+      - name: Checkout exact legacy SUSFS 5.4 reference
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ env.SUSFS_MIRROR_REPOSITORY }}
+          ref: ${{ env.SUSFS_LEGACY_REF }}
+          path: susfs-legacy
+          fetch-depth: 1
+
+      - name: Authenticate KSU and SUSFS immutable identities
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test "$(git -C KernelSU-v095 rev-parse HEAD)" = "$KSU_V095_REF"
+          test "$(git -C KernelSU-modern-reference rev-parse HEAD)" = \
+            "$KSU_MODERN_REFERENCE_REF"
+          test "$(git -C susfs-modern rev-parse HEAD)" = "$SUSFS_MODERN_REF"
+          test "$(git -C susfs-legacy rev-parse HEAD)" = "$SUSFS_LEGACY_REF"
+
+          v095_count="$(git -C KernelSU-v095 rev-list --count HEAD)"
+          v095_version="$((10000 + v095_count + 200))"
+          test "$v095_version" = "$KSU_V095_VERSION"
+
+          grep -Fq "$SUSFS_MODERN_VERSION" \
+            susfs-modern/ksu_module_susfs/module.prop
+
+          grep -Fq "$SUSFS_LEGACY_VERSION" \
+            susfs-legacy/ksu_module_susfs/module.prop
+
+          modern_message="$(git -C susfs-modern log -1 --format=%s)"
+          test "$modern_message" = \
+            "kernel: OPEN_REDIRECT: Fix potential UAF bug"
+
+          test -f \
+            susfs-modern/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch
+          test -f \
+            susfs-legacy/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch
+          test -f \
+            susfs-modern/kernel_patches/fs/susfs.c
+          test -f \
+            susfs-legacy/kernel_patches/fs/susfs.c
+          test -f \
+            susfs-modern/kernel_patches/include/linux/susfs.h
+
+          grep -Fq \
+            'synchronize_srcu(&susfs_srcu_open_redirect)' \
+            susfs-modern/kernel_patches/fs/susfs.c
+
+          {
+            echo "KSU_V095_HEAD=$KSU_V095_REF"
+            echo "KSU_V095_VERSION=$v095_version"
+            echo "KSU_MODERN_REFERENCE_HEAD=$KSU_MODERN_REFERENCE_REF"
+            echo "SUSFS_MODERN_HEAD=$SUSFS_MODERN_REF"
+            echo "SUSFS_MODERN_VERSION=$SUSFS_MODERN_VERSION"
+            echo "SUSFS_MODERN_COMMIT_MESSAGE=$modern_message"
+            echo "SUSFS_LEGACY_HEAD=$SUSFS_LEGACY_REF"
+            echo "SUSFS_LEGACY_VERSION=$SUSFS_LEGACY_VERSION"
+            echo "OPEN_REDIRECT_SRCU_FIX=PASS"
+            echo "SOURCE_IDENTITY=PASS"
+          } | tee "$ARTIFACT_DIR/SOURCE-IDENTITY.txt"
+
+      - name: Derive true active SUSFS 2.2 core root-manager ABI
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          import json
+          import os
+          import re
+          from pathlib import Path
+
+          root = Path(os.environ["GITHUB_WORKSPACE"])
+          artifact = Path(os.environ["ARTIFACT_DIR"])
+
+          source_path = root / "susfs-modern/kernel_patches/fs/susfs.c"
+          source = source_path.read_text(encoding="utf-8")
+
+          def strip_c_comments(text: str) -> str:
+              out = []
+              i = 0
+              state = "normal"
+
+              while i < len(text):
+                  c = text[i]
+                  n = text[i + 1] if i + 1 < len(text) else ""
+
+                  if state == "normal":
+                      if c == "/" and n == "/":
+                          out.extend("  ")
+                          i += 2
+                          state = "line_comment"
+                          continue
+                      if c == "/" and n == "*":
+                          out.extend("  ")
+                          i += 2
+                          state = "block_comment"
+                          continue
+                      if c == '"':
+                          out.append(c)
+                          i += 1
+                          state = "string"
+                          continue
+                      if c == "'":
+                          out.append(c)
+                          i += 1
+                          state = "char"
+                          continue
+                      out.append(c)
+                      i += 1
+                      continue
+
+                  if state == "line_comment":
+                      if c == "\n":
+                          out.append("\n")
+                          state = "normal"
+                      else:
+                          out.append(" ")
+                      i += 1
+                      continue
+
+                  if state == "block_comment":
+                      if c == "*" and n == "/":
+                          out.extend("  ")
+                          i += 2
+                          state = "normal"
+                      else:
+                          out.append("\n" if c == "\n" else " ")
+                          i += 1
+                      continue
+
+                  if state in {"string", "char"}:
+                      out.append(c)
+                      if c == "\\" and i + 1 < len(text):
+                          out.append(text[i + 1])
+                          i += 2
+                          continue
+                      if state == "string" and c == '"':
+                          state = "normal"
+                      elif state == "char" and c == "'":
+                          state = "normal"
+                      i += 1
+                      continue
+
+              return "".join(out)
+
+          active = strip_c_comments(source)
+
+          extern_lines = []
+          for stmt in re.findall(r"\bextern\b[^;]+;", active, flags=re.S):
+              compact = " ".join(stmt.split())
+              if (
+                  "ksu_" in compact
+                  or "susfs_is_current_ksu_domain" in compact
+                  or "setup_selinux" in compact
+              ):
+                  extern_lines.append(compact)
+
+          expected = {
+              "extern bool susfs_is_current_ksu_domain(void);",
+              "extern void setup_selinux(const char *domain, struct cred *cred);",
+              "extern struct cred *ksu_cred;",
+          }
+
+          if set(extern_lines) != expected:
+              raise SystemExit(
+                  "Unexpected active SUSFS 2.2 root-manager extern set:\n"
+                  + "\n".join(sorted(extern_lines))
+              )
+
+          # Remove extern declarations before counting active usages.
+          body = re.sub(r"\bextern\b[^;]+;", " ", active, flags=re.S)
+
+          def ident_count(name: str) -> int:
+              return len(re.findall(rf"\b{re.escape(name)}\b", body))
+
+          counts = {
+              "ksu_cred": ident_count("ksu_cred"),
+              "susfs_is_current_ksu_domain": ident_count(
+                  "susfs_is_current_ksu_domain"
+              ),
+              "setup_selinux": ident_count("setup_selinux"),
+              "ksu_handle_setresuid": ident_count("ksu_handle_setresuid"),
+              "ksu_susfs": ident_count("ksu_susfs"),
+          }
+
+          if counts["ksu_cred"] < 2:
+              raise SystemExit("ksu_cred is not an active modern SUSFS dependency")
+          if counts["susfs_is_current_ksu_domain"] < 1:
+              raise SystemExit(
+                  "susfs_is_current_ksu_domain active usage not found"
+              )
+          if counts["setup_selinux"] < 1:
+              raise SystemExit("setup_selinux active usage not found")
+
+          # W60 false positives: these occur in comments/text, not the active
+          # body of fs/susfs.c.
+          if counts["ksu_handle_setresuid"] != 0:
+              raise SystemExit(
+                  "ksu_handle_setresuid unexpectedly active inside susfs.c"
+              )
+          if counts["ksu_susfs"] != 0:
+              raise SystemExit("ksu_susfs unexpectedly active inside susfs.c")
+
+          if not re.search(
+              r'setup_selinux\s*\(\s*"u:r:ksu:s0"\s*,\s*cred\s*\)',
+              body,
+          ):
+              raise SystemExit(
+                  "Expected modern SUSFS hard-coded ksu SELinux context call not found"
+              )
+
+          result = {
+              "active_direct_root_manager_extern_count": 3,
+              "active_direct_root_manager_externs": sorted(expected),
+              "active_usage_counts": counts,
+              "w60_false_positive_corrections": {
+                  "ksu_handle_setresuid_in_susfs_c": "COMMENT_ONLY",
+                  "ksu_susfs_in_susfs_c": "NOT_ACTIVE_CODE",
+              },
+              "modern_susfs_hardcoded_selinux_context": "u:r:ksu:s0",
+          }
+
+          (artifact / "true-modern-susfs-core-abi.json").write_text(
+              json.dumps(result, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+
+          (artifact / "true-modern-susfs-core-externs.txt").write_text(
+              "\n".join(sorted(expected)) + "\n",
+              encoding="utf-8",
+          )
+
+          (artifact / "w60-false-positive-corrections.txt").write_text(
+              "\n".join([
+                  "W60_REQUIRED_BRIDGE_COUNT_37_OR_39_IS_NOT_A_TRUE_ABI=YES",
+                  "ksu_handle_setresuid_in_modern_susfs_c=COMMENT_ONLY",
+                  "ksu_susfs_in_modern_susfs_c=NOT_ACTIVE_CODE",
+                  "ksu_root_from_W43_recipe=WORKFLOW_VARIABLE_NOT_KERNEL_ABI",
+                  "ksu_text_from_W43_recipe=WORKFLOW_VARIABLE_NOT_KERNEL_ABI",
+                  "TRUE_DIRECT_MODERN_SUSFS_CORE_ROOT_MANAGER_EXTERN_COUNT=3",
+              ]) + "\n",
+              encoding="utf-8",
+          )
+
+          print("TRUE_DIRECT_MODERN_SUSFS_CORE_ROOT_MANAGER_EXTERN_COUNT=3")
+          print("W60_FALSE_POSITIVE_CORRECTION=PASS")
+          PY
+
+      - name: Compare legacy 5.4 and modern 2.2 KernelSU integration patches
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          LEGACY_PATCH="$GITHUB_WORKSPACE/susfs-legacy/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch"
+          MODERN_PATCH="$GITHUB_WORKSPACE/susfs-modern/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch"
+          KSU="$GITHUB_WORKSPACE/KernelSU-v095"
+
+          set +e
+          git -C "$KSU" apply \
+            --check \
+            --verbose \
+            "$LEGACY_PATCH" \
+            > "$ARTIFACT_DIR/legacy-kernel-5_4-ksu-v095-apply-check.log" \
+            2>&1
+          legacy_rc=$?
+
+          git -C "$KSU" apply \
+            --check \
+            --verbose \
+            "$MODERN_PATCH" \
+            > "$ARTIFACT_DIR/modern-2_2-ksu-v095-apply-check.log" \
+            2>&1
+          modern_rc=$?
+          set -e
+
+          {
+            echo "LEGACY_5_4_KSU_PATCH_V095_APPLY_CHECK_RC=$legacy_rc"
+            echo "LEGACY_5_4_KSU_PATCH_RAW_APPLIES=$(
+              [ "$legacy_rc" = "0" ] && echo YES || echo NO
+            )"
+            echo "MODERN_2_2_KSU_PATCH_V095_APPLY_CHECK_RC=$modern_rc"
+            echo "MODERN_2_2_KSU_PATCH_RAW_APPLIES=$(
+              [ "$modern_rc" = "0" ] && echo YES || echo NO
+            )"
+          } | tee "$ARTIFACT_DIR/KSU-PATCH-APPLICABILITY.txt"
+
+          python3 - "$LEGACY_PATCH" "$MODERN_PATCH" "$KSU" "$ARTIFACT_DIR" <<'PY'
+          import json
+          import re
+          import sys
+          from pathlib import Path
+
+          legacy = Path(sys.argv[1])
+          modern = Path(sys.argv[2])
+          ksu = Path(sys.argv[3])
+          artifact = Path(sys.argv[4])
+
+          def segments(path):
+              text = path.read_text(encoding="utf-8", errors="replace")
+              matches = list(
+                  re.finditer(
+                      r"^diff --git a/(.+?) b/(.+?)$",
+                      text,
+                      flags=re.M,
+                  )
+              )
+
+              out = {}
+              for i, m in enumerate(matches):
+                  a, b = m.groups()
+                  if a != b:
+                      raise SystemExit(f"unexpected rename: {a} -> {b}")
+                  end = (
+                      matches[i + 1].start()
+                      if i + 1 < len(matches)
+                      else len(text)
+                  )
+                  out[a] = text[m.start():end]
+              return out
+
+          legacy_seg = segments(legacy)
+          modern_seg = segments(modern)
+
+          legacy_targets = sorted(legacy_seg)
+          modern_targets = sorted(modern_seg)
+
+          legacy_missing = [
+              p for p in legacy_targets if not (ksu / p).exists()
+          ]
+          modern_missing = [
+              p for p in modern_targets if not (ksu / p).exists()
+          ]
+
+          # Locate the two control-plane implementations by actual command
+          # dispatch hunks, not by guessed file names.
+          legacy_cmd_files = sorted(
+              p for p, seg in legacy_seg.items()
+              if "CMD_SUSFS_" in seg
+          )
+          modern_cmd_files = sorted(
+              p for p, seg in modern_seg.items()
+              if "CMD_SUSFS_" in seg
+          )
+
+          modern_behavior = {
+              "susfs_init": sorted(
+                  p for p, seg in modern_seg.items()
+                  if "susfs_init()" in seg
+              ),
+              "setresuid_extra_work": sorted(
+                  p for p, seg in modern_seg.items()
+                  if (
+                      "susfs_extra_works" in seg
+                      and "ksu_handle_setresuid" in seg
+                  )
+              ),
+              "sid_cache": sorted(
+                  p for p, seg in modern_seg.items()
+                  if (
+                      "susfs_set_batch_sid" in seg
+                      or "susfs_zygote_sid" in seg
+                  )
+              ),
+              "root_manager_command_dispatch": modern_cmd_files,
+          }
+
+          legacy_behavior = {
+              "root_manager_command_dispatch": legacy_cmd_files,
+              "sid_helpers": sorted(
+                  p for p, seg in legacy_seg.items()
+                  if "susfs_is_current_ksu_domain" in seg
+              ),
+          }
+
+          if "kernel/core_hook.c" not in legacy_cmd_files:
+              raise SystemExit(
+                  "Legacy v0.9.5 SUSFS command dispatch did not resolve to core_hook.c"
+              )
+
+          if "kernel/supercall/dispatch.c" not in modern_cmd_files:
+              raise SystemExit(
+                  "Modern SUSFS command dispatch did not resolve to supercall/dispatch.c"
+              )
+
+          if len(modern_targets) != 29:
+              raise SystemExit(
+                  f"modern patch target count drifted: {len(modern_targets)}"
+              )
+
+          if len(modern_missing) != 24:
+              raise SystemExit(
+                  f"modern v0.9.5 missing target count drifted: {len(modern_missing)}"
+              )
+
+          result = {
+              "legacy_target_count": len(legacy_targets),
+              "legacy_targets_missing_in_v095": legacy_missing,
+              "modern_target_count": len(modern_targets),
+              "modern_targets_missing_in_v095": modern_missing,
+              "legacy_control_plane_files": legacy_cmd_files,
+              "modern_control_plane_files": modern_cmd_files,
+              "legacy_behavior": legacy_behavior,
+              "modern_behavior": modern_behavior,
+          }
+
+          (artifact / "legacy-modern-ksu-patch-structure.json").write_text(
+              json.dumps(result, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+
+          for name, values in (
+              ("legacy-ksu-patch-targets.txt", legacy_targets),
+              ("legacy-ksu-patch-targets-missing-in-v095.txt", legacy_missing),
+              ("modern-ksu-patch-targets.txt", modern_targets),
+              ("modern-ksu-patch-targets-missing-in-v095.txt", modern_missing),
+              ("legacy-susfs-command-dispatch-files.txt", legacy_cmd_files),
+              ("modern-susfs-command-dispatch-files.txt", modern_cmd_files),
+          ):
+              (artifact / name).write_text(
+                  "\n".join(values) + ("\n" if values else ""),
+                  encoding="utf-8",
+              )
+
+          print(f"LEGACY_KSU_PATCH_TARGET_COUNT={len(legacy_targets)}")
+          print(f"LEGACY_KSU_PATCH_MISSING_IN_V095={len(legacy_missing)}")
+          print(f"MODERN_KSU_PATCH_TARGET_COUNT={len(modern_targets)}")
+          print(f"MODERN_KSU_PATCH_MISSING_IN_V095={len(modern_missing)}")
+          print("CONTROL_PLANE_COMPARISON=PASS")
+          PY
+
+      - name: Audit legacy v0.9.5 and modern 2.2 control planes
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          LEGACY_PATCH="$GITHUB_WORKSPACE/susfs-legacy/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch"
+          MODERN_PATCH="$GITHUB_WORKSPACE/susfs-modern/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch"
+
+          python3 - "$LEGACY_PATCH" "$MODERN_PATCH" "$ARTIFACT_DIR" <<'PY'
+          import json
+          import re
+          import sys
+          from pathlib import Path
+
+          legacy = Path(sys.argv[1]).read_text(
+              encoding="utf-8", errors="replace"
+          )
+          modern = Path(sys.argv[2]).read_text(
+              encoding="utf-8", errors="replace"
+          )
+          artifact = Path(sys.argv[3])
+
+          legacy_facts = {
+              "adds_cmd_susfs_dispatch": "CMD_SUSFS_" in legacy,
+              "uses_core_hook_prctl_path": (
+                  "diff --git a/kernel/core_hook.c" in legacy
+                  and "CMD_SUSFS_" in legacy
+              ),
+              "adds_susfs_current_ksu_domain_helper": (
+                  "susfs_is_current_ksu_domain" in legacy
+              ),
+              "adds_susfs_sid_cache": (
+                  "susfs_ksu_sid" in legacy
+                  and "susfs_zygote_sid" in legacy
+              ),
+              "references_ksu_cred": bool(
+                  re.search(r"\bksu_cred\b", legacy)
+              ),
+          }
+
+          modern_facts = {
+              "adds_cmd_susfs_dispatch": "CMD_SUSFS_" in modern,
+              "uses_supercall_dispatch_path": (
+                  "diff --git a/kernel/supercall/dispatch.c" in modern
+                  and "CMD_SUSFS_" in modern
+              ),
+              "adds_setresuid_extra_work": (
+                  "ksu_handle_extra_susfs_work" in modern
+                  and "susfs_extra_works" in modern
+              ),
+              "adds_batch_sid_cache": "susfs_set_batch_sid" in modern,
+              "references_ksu_cred": bool(
+                  re.search(r"\bksu_cred\b", modern)
+              ),
+          }
+
+          if not all([
+              legacy_facts["adds_cmd_susfs_dispatch"],
+              legacy_facts["uses_core_hook_prctl_path"],
+              legacy_facts["adds_susfs_current_ksu_domain_helper"],
+              modern_facts["adds_cmd_susfs_dispatch"],
+              modern_facts["uses_supercall_dispatch_path"],
+              modern_facts["adds_setresuid_extra_work"],
+              modern_facts["adds_batch_sid_cache"],
+          ]):
+              raise SystemExit("expected legacy/modern control-plane facts drifted")
+
+          result = {
+              "legacy_1_5_5_v095_control_plane": legacy_facts,
+              "modern_2_2_control_plane": modern_facts,
+              "conclusion": {
+                  "legacy_prctl_path_is_relevant_v095_reference": True,
+                  "modern_supercall_patch_can_be_transplanted_wholesale": False,
+                  "modern_behavioral_susfs_hooks_need_semantic_port": True,
+              },
+          }
+
+          (artifact / "control-plane-comparison.json").write_text(
+              json.dumps(result, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+
+          print("LEGACY_CONTROL_PLANE=V095_CORE_HOOK_PRCTL")
+          print("MODERN_CONTROL_PLANE=SUPERCALL_DISPATCH")
+          print("CONTROL_PLANE_AUDIT=PASS")
+          PY
+
+      - name: Inspect modern and legacy ksu_susfs userspace binaries
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          MODERN_BIN="$GITHUB_WORKSPACE/susfs-modern/ksu_module_susfs/tools/ksu_susfs_arm64"
+          LEGACY_BIN="$GITHUB_WORKSPACE/susfs-legacy/ksu_module_susfs/tools/ksu_susfs_arm64"
+
+          test -f "$MODERN_BIN"
+
+          {
+            echo "=== MODERN ==="
+            echo "PATH=$MODERN_BIN"
+            echo "SHA256=$(sha256sum "$MODERN_BIN" | awk '{print $1}')"
+            file "$MODERN_BIN"
+            echo
+            echo "DYNAMIC_SYMBOL_HINTS:"
+            aarch64-linux-gnu-readelf -Ws "$MODERN_BIN" 2>/dev/null \
+              | grep -Ei 'prctl|syscall|ioctl' || true
+            echo
+            echo "STRING_PROTOCOL_HINTS:"
+            strings -a "$MODERN_BIN" \
+              | grep -Ei \
+                'prctl|supercall|SUSFS|FAFAFAFA|add_sus|show_version|hide_sus' \
+              | head -n 200 || true
+          } > "$ARTIFACT_DIR/modern-ksu_susfs-binary-protocol-hints.txt"
+
+          if [ -f "$LEGACY_BIN" ]; then
+            {
+              echo "=== LEGACY ==="
+              echo "PATH=$LEGACY_BIN"
+              echo "SHA256=$(sha256sum "$LEGACY_BIN" | awk '{print $1}')"
+              file "$LEGACY_BIN"
+              echo
+              echo "DYNAMIC_SYMBOL_HINTS:"
+              aarch64-linux-gnu-readelf -Ws "$LEGACY_BIN" 2>/dev/null \
+                | grep -Ei 'prctl|syscall|ioctl' || true
+              echo
+              echo "STRING_PROTOCOL_HINTS:"
+              strings -a "$LEGACY_BIN" \
+                | grep -Ei \
+                  'prctl|supercall|SUSFS|FAFAFAFA|add_sus|show_version|hide_sus' \
+                | head -n 200 || true
+            } > "$ARTIFACT_DIR/legacy-ksu_susfs-binary-protocol-hints.txt"
+
+            modern_sha="$(sha256sum "$MODERN_BIN" | awk '{print $1}')"
+            legacy_sha="$(sha256sum "$LEGACY_BIN" | awk '{print $1}')"
+
+            {
+              echo "MODERN_BINARY_SHA256=$modern_sha"
+              echo "LEGACY_BINARY_SHA256=$legacy_sha"
+              echo "BINARY_BYTE_IDENTICAL=$(
+                [ "$modern_sha" = "$legacy_sha" ] && echo YES || echo NO
+              )"
+            } | tee "$ARTIFACT_DIR/ksu_susfs-binary-comparison.txt"
+          else
+            echo "LEGACY_BINARY_PRESENT=NO" \
+              | tee "$ARTIFACT_DIR/ksu_susfs-binary-comparison.txt"
+          fi
+
+          # Binary strings are evidence only. They are not treated as proof of
+          # syscall ABI compatibility.
+          echo "BINARY_PROTOCOL_CLASSIFICATION=INFORMATIONAL_NOT_PROOF" \
+            >> "$ARTIFACT_DIR/ksu_susfs-binary-comparison.txt"
+
+      - name: Audit exact v0.9.5 credential and SELinux semantics
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          import json
+          import os
+          import re
+          from pathlib import Path
+
+          root = Path(os.environ["GITHUB_WORKSPACE"])
+          artifact = Path(os.environ["ARTIFACT_DIR"])
+
+          v095 = root / "KernelSU-v095/kernel"
+          modern_ref = root / "KernelSU-modern-reference/kernel"
+
+          v095_selinux_c = (
+              v095 / "selinux/selinux.c"
+          ).read_text(encoding="utf-8")
+          v095_selinux_h = (
+              v095 / "selinux/selinux.h"
+          ).read_text(encoding="utf-8")
+          v095_ksu_c = (
+              v095 / "ksu.c"
+          ).read_text(encoding="utf-8")
+          v095_ksud_c = (
+              v095 / "ksud.c"
+          ).read_text(encoding="utf-8")
+
+          modern_init_c = (
+              modern_ref / "core/init.c"
+          ).read_text(encoding="utf-8")
+          modern_selinux_c = (
+              modern_ref / "selinux/selinux.c"
+          ).read_text(encoding="utf-8")
+
+          facts = {
+              "v095": {
+                  "domain": None,
+                  "setup_selinux_one_arg": False,
+                  "is_ksu_domain_exists": False,
+                  "ksu_cred_global_exists": False,
+                  "post_fs_data_hook_exists": False,
+                  "second_stage_applies_kernelsu_rules": False,
+              },
+              "modern_reference": {
+                  "ksu_cred_global_exists": False,
+                  "prepare_creds_for_ksu_cred": False,
+                  "setup_selinux_two_arg": False,
+                  "setup_ksu_cred_exists": False,
+              },
+          }
+
+          m = re.search(
+              r'#define\s+KERNEL_SU_DOMAIN\s+"([^"]+)"',
+              v095_selinux_c,
+          )
+          if not m:
+              raise SystemExit("v0.9.5 KERNEL_SU_DOMAIN not found")
+          facts["v095"]["domain"] = m.group(1)
+
+          facts["v095"]["setup_selinux_one_arg"] = bool(
+              re.search(
+                  r'void\s+setup_selinux\s*\(\s*const\s+char\s*\*\s*\)',
+                  v095_selinux_h,
+              )
+          )
+          facts["v095"]["is_ksu_domain_exists"] = bool(
+              re.search(r'\bbool\s+is_ksu_domain\s*\(', v095_selinux_c)
+          )
+
+          all_v095 = "\n".join(
+              p.read_text(encoding="utf-8", errors="replace")
+              for p in v095.rglob("*")
+              if p.is_file() and p.suffix in {".c", ".h"}
+          )
+
+          facts["v095"]["ksu_cred_global_exists"] = bool(
+              re.search(r'\bstruct\s+cred\s*\*\s*ksu_cred\b', all_v095)
+          )
+          facts["v095"]["post_fs_data_hook_exists"] = bool(
+              re.search(r'\bvoid\s+on_post_fs_data\s*\(', v095_ksud_c)
+          )
+          facts["v095"]["second_stage_applies_kernelsu_rules"] = (
+              "apply_kernelsu_rules();" in v095_ksud_c
+          )
+
+          facts["modern_reference"]["ksu_cred_global_exists"] = bool(
+              re.search(
+                  r'\bstruct\s+cred\s*\*\s*ksu_cred\s*;',
+                  modern_init_c,
+              )
+          )
+          facts["modern_reference"]["prepare_creds_for_ksu_cred"] = (
+              "ksu_cred = prepare_creds();" in modern_init_c
+          )
+          facts["modern_reference"]["setup_selinux_two_arg"] = bool(
+              re.search(
+                  r'void\s+setup_selinux\s*\(\s*const\s+char\s*\*\s*domain\s*,'
+                  r'\s*struct\s+cred\s*\*\s*cred\s*\)',
+                  modern_selinux_c,
+              )
+          )
+          facts["modern_reference"]["setup_ksu_cred_exists"] = (
+              "setup_ksu_cred" in modern_selinux_c
+          )
+
+          if facts["v095"]["domain"] != "u:r:su:s0":
+              raise SystemExit(
+                  f"unexpected v0.9.5 KSU domain: {facts['v095']['domain']}"
+              )
+
+          required_true = [
+              facts["v095"]["setup_selinux_one_arg"],
+              facts["v095"]["is_ksu_domain_exists"],
+              facts["v095"]["post_fs_data_hook_exists"],
+              facts["v095"]["second_stage_applies_kernelsu_rules"],
+              facts["modern_reference"]["ksu_cred_global_exists"],
+              facts["modern_reference"]["prepare_creds_for_ksu_cred"],
+              facts["modern_reference"]["setup_selinux_two_arg"],
+              facts["modern_reference"]["setup_ksu_cred_exists"],
+          ]
+          if not all(required_true):
+              raise SystemExit("KSU credential/SELinux semantic facts drifted")
+
+          if facts["v095"]["ksu_cred_global_exists"]:
+              raise SystemExit("v0.9.5 unexpectedly already has ksu_cred")
+
+          result = {
+              **facts,
+              "modern_susfs_domain": "u:r:ksu:s0",
+              "domain_semantic_mismatch": True,
+              "setup_selinux_signature_mismatch": True,
+              "persistent_ksu_cred_missing_in_v095": True,
+              "modern_reference_is_semantics_only_not_transplant_source": True,
+          }
+
+          (artifact / "v095-modern-credential-selinux-semantics.json").write_text(
+              json.dumps(result, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+
+          print("V095_KSU_DOMAIN=u:r:su:s0")
+          print("MODERN_SUSFS_EXPECTED_DOMAIN=u:r:ksu:s0")
+          print("DOMAIN_SEMANTIC_MISMATCH=YES")
+          print("SETUP_SELINUX_SIGNATURE_MISMATCH=YES")
+          print("V095_KSU_CRED_GLOBAL_PRESENT=NO")
+          print("CREDENTIAL_SELINUX_AUDIT=PASS")
+          PY
+
+      - name: Audit modern SUSFS behavioral integration contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          MODERN_PATCH="$GITHUB_WORKSPACE/susfs-modern/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch"
+
+          python3 - "$MODERN_PATCH" "$ARTIFACT_DIR" <<'PY'
+          import json
+          import re
+          import sys
+          from pathlib import Path
+
+          patch = Path(sys.argv[1]).read_text(
+              encoding="utf-8", errors="replace"
+          )
+          artifact = Path(sys.argv[2])
+
+          def segments(text):
+              matches = list(
+                  re.finditer(
+                      r"^diff --git a/(.+?) b/(.+?)$",
+                      text,
+                      flags=re.M,
+                  )
+              )
+              out = {}
+              for i, m in enumerate(matches):
+                  a, b = m.groups()
+                  if a != b:
+                      raise SystemExit("unexpected rename")
+                  end = (
+                      matches[i + 1].start()
+                      if i + 1 < len(matches)
+                      else len(text)
+                  )
+                  out[a] = text[m.start():end]
+              return out
+
+          seg = segments(patch)
+
+          contracts = {
+              "susfs_init": {
+                  "files": sorted(
+                      p for p, s in seg.items()
+                      if "susfs_init();" in s
+                  ),
+                  "required": True,
+              },
+              "zygote_setresuid_mark_and_extra_work": {
+                  "files": sorted(
+                      p for p, s in seg.items()
+                      if (
+                          "ksu_handle_setresuid" in s
+                          and "susfs_extra_works" in s
+                          and "susfs_set_current_proc_umounted" in s
+                      )
+                  ),
+                  "required": True,
+              },
+              "sid_cache_after_policy": {
+                  "files": sorted(
+                      p for p, s in seg.items()
+                      if "susfs_set_batch_sid();" in s
+                  ),
+                  "required": True,
+              },
+              "susfs_domain_helpers": {
+                  "files": sorted(
+                      p for p, s in seg.items()
+                      if (
+                          "susfs_is_current_ksu_domain" in s
+                          and "susfs_zygote_sid" in s
+                      )
+                  ),
+                  "required": True,
+              },
+              "userspace_command_dispatch": {
+                  "files": sorted(
+                      p for p, s in seg.items()
+                      if "CMD_SUSFS_" in s
+                  ),
+                  "required": True,
+              },
+          }
+
+          for name, data in contracts.items():
+              if data["required"] and not data["files"]:
+                  raise SystemExit(
+                      f"modern SUSFS behavioral contract not located: {name}"
+                  )
+
+          # Important correction to W60:
+          # ksu_handle_setresuid is not a direct susfs.c extern, but it is a
+          # genuine behavioral integration hook in the modern KSU patch.
+          result = {
+              "contracts": contracts,
+              "w60_correction": {
+                  "ksu_handle_setresuid": (
+                      "NOT_DIRECT_SUSFS_C_ABI_BUT_REAL_BEHAVIORAL_INTEGRATION"
+                  ),
+                  "ksu_susfs": "COMMENT_OR_TOOL_NAME_NOT_KERNEL_ABI",
+              },
+          }
+
+          (artifact / "modern-susfs220-behavioral-contracts.json").write_text(
+              json.dumps(result, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+
+          print(
+              "KSU_HANDLE_SETRESUID_CLASS="
+              "BEHAVIORAL_INTEGRATION_NOT_DIRECT_CORE_ABI"
+          )
+          print("MODERN_BEHAVIORAL_CONTRACT_AUDIT=PASS")
+          PY
+
+      - name: Audit kernel SELinux prerequisites for a minimal v0.9.5 bridge
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          import json
+          import os
+          import re
+          from pathlib import Path
+
+          kernel = Path(os.environ["GITHUB_WORKSPACE"]) / "kernel"
+          artifact = Path(os.environ["ARTIFACT_DIR"])
+
+          objsec_path = kernel / "security/selinux/include/objsec.h"
+          linux_security_path = kernel / "include/linux/security.h"
+          selinux_security_path = kernel / "security/selinux/include/security.h"
+
+          required_files = [
+              objsec_path,
+              linux_security_path,
+              selinux_security_path,
+          ]
+
+          missing_files = [
+              str(p.relative_to(kernel))
+              for p in required_files
+              if not p.is_file()
+          ]
+          if missing_files:
+              raise SystemExit(
+                  "Missing required SELinux/security headers: "
+                  + ", ".join(missing_files)
+              )
+
+          objsec = objsec_path.read_text(
+              encoding="utf-8",
+              errors="replace",
+          )
+          linux_security = linux_security_path.read_text(
+              encoding="utf-8",
+              errors="replace",
+          )
+
+          task_security_count = len(
+              re.findall(r"\bstruct\s+task_security_struct\b", objsec)
+          )
+          selinux_cred_count = len(
+              re.findall(r"\bselinux_cred\s*\(", objsec)
+          )
+          current_sid_count = len(
+              re.findall(r"\bcurrent_sid\s*\(", objsec)
+          )
+
+          secctx_decl = re.search(
+              r"\bint\s+security_secctx_to_secid\s*\("
+              r"\s*const\s+char\s*\*\s*secdata\s*,"
+              r"\s*u32\s+seclen\s*,"
+              r"\s*u32\s*\*\s*secid\s*\)\s*;",
+              linux_security,
+              flags=re.S,
+          )
+
+          secid_to_secctx_decl = re.search(
+              r"\bint\s+security_secid_to_secctx\s*\(",
+              linux_security,
+          )
+
+          if task_security_count < 1:
+              raise SystemExit(
+                  "struct task_security_struct not found in objsec.h"
+              )
+          if selinux_cred_count < 1:
+              raise SystemExit(
+                  "selinux_cred() not found in objsec.h"
+              )
+          if current_sid_count < 1:
+              raise SystemExit(
+                  "current_sid() not found in objsec.h"
+              )
+          if not secctx_decl:
+              raise SystemExit(
+                  "security_secctx_to_secid declaration not found "
+                  "in include/linux/security.h"
+              )
+          if not secid_to_secctx_decl:
+              raise SystemExit(
+                  "security_secid_to_secctx declaration not found "
+                  "in include/linux/security.h"
+              )
+
+          result = {
+              "task_security_struct_present": True,
+              "task_security_struct_reference_count": task_security_count,
+              "selinux_cred_present": True,
+              "selinux_cred_reference_count": selinux_cred_count,
+              "current_sid_present": True,
+              "current_sid_reference_count": current_sid_count,
+              "security_secctx_to_secid_present": True,
+              "security_secctx_to_secid_declared_in": (
+                  "include/linux/security.h"
+              ),
+              "security_secid_to_secctx_present": True,
+              "arbitrary_cred_helper_structural_prerequisites": "PASS",
+              "w61_v1_failure_correction": (
+                  "V1_SEARCHED_ONLY_SECURITY_SELINUX_BUT_API_IS_DECLARED_"
+                  "IN_INCLUDE_LINUX_SECURITY_H"
+              ),
+          }
+
+          (artifact / "KERNEL-SELINUX-PREREQUISITES.json").write_text(
+              json.dumps(result, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+
+          with (
+              artifact / "KERNEL-SELINUX-PREREQUISITES.txt"
+          ).open("w", encoding="utf-8") as f:
+              f.write("TASK_SECURITY_STRUCT_PRESENT=YES\n")
+              f.write(
+                  "TASK_SECURITY_STRUCT_REFERENCE_COUNT="
+                  f"{task_security_count}\n"
+              )
+              f.write("SELINUX_CRED_PRESENT=YES\n")
+              f.write(
+                  "SELINUX_CRED_REFERENCE_COUNT="
+                  f"{selinux_cred_count}\n"
+              )
+              f.write("CURRENT_SID_PRESENT=YES\n")
+              f.write(
+                  "CURRENT_SID_REFERENCE_COUNT="
+                  f"{current_sid_count}\n"
+              )
+              f.write("SECURITY_SECCTX_TO_SECID_PRESENT=YES\n")
+              f.write(
+                  "SECURITY_SECCTX_TO_SECID_DECLARED_IN="
+                  "include/linux/security.h\n"
+              )
+              f.write("SECURITY_SECID_TO_SECCTX_PRESENT=YES\n")
+              f.write(
+                  "ARBITRARY_CRED_HELPER_STRUCTURAL_PREREQUISITES=PASS\n"
+              )
+              f.write(
+                  "W61_V1_PREREQUISITE_SCAN_BUG=CORRECTED\n"
+              )
+
+          print("TASK_SECURITY_STRUCT_PRESENT=YES")
+          print("SELINUX_CRED_PRESENT=YES")
+          print("CURRENT_SID_PRESENT=YES")
+          print("SECURITY_SECCTX_TO_SECID_PRESENT=YES")
+          print(
+              "SECURITY_SECCTX_TO_SECID_DECLARED_IN="
+              "include/linux/security.h"
+          )
+          print(
+              "ARBITRARY_CRED_HELPER_STRUCTURAL_PREREQUISITES=PASS"
+          )
+          print("W61_V1_PREREQUISITE_SCAN_BUG=CORRECTED")
+          PY
+
+      - name: Generate W61 minimal bridge design ledger
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          artifact = Path(os.environ["ARTIFACT_DIR"])
+
+          abi = json.loads(
+              (artifact / "true-modern-susfs-core-abi.json")
+              .read_text(encoding="utf-8")
+          )
+
+          semantics = json.loads(
+              (artifact / "v095-modern-credential-selinux-semantics.json")
+              .read_text(encoding="utf-8")
+          )
+
+          behavior = json.loads(
+              (artifact / "modern-susfs220-behavioral-contracts.json")
+              .read_text(encoding="utf-8")
+          )
+
+          patch_structure = json.loads(
+              (artifact / "legacy-modern-ksu-patch-structure.json")
+              .read_text(encoding="utf-8")
+          )
+
+          if abi["active_direct_root_manager_extern_count"] != 3:
+              raise SystemExit("direct ABI count drifted")
+
+          ledger = [
+              {
+                  "layer": "existing_manual_hooks",
+                  "decision": "REUSE",
+                  "reason": (
+                      "Both VEUX lanes already compile with original KSU v0.9.5 "
+                      "and the existing 8-symbol / 5-file manual-hook contract."
+                  ),
+              },
+              {
+                  "layer": "legacy_v095_susfs_control_plane",
+                  "decision": "PRIMARY_STRUCTURAL_REFERENCE",
+                  "reason": (
+                      "Official legacy kernel-5.4 SUSFS patch integrates "
+                      "CMD_SUSFS handling into v0.9.5 core_hook/prctl architecture."
+                  ),
+              },
+              {
+                  "layer": "modern_supercall_architecture",
+                  "decision": "DO_NOT_TRANSPLANT_WHOLESALE",
+                  "reason": (
+                      "Modern 2.2 KSU patch targets 29 paths and 24 do not exist "
+                      "in original KSU v0.9.5."
+                  ),
+              },
+              {
+                  "layer": "modern_susfs_core",
+                  "decision": "PORT_2_2_SEMANTICS",
+                  "reason": (
+                      "Use exact 2.2 core including OPEN_REDIRECT SRCU fix; "
+                      "adapt only its root-manager boundary."
+                  ),
+              },
+              {
+                  "layer": "ksu_cred",
+                  "decision": "NEW_MINIMAL_V095_COMPATIBILITY_STATE_REQUIRED",
+                  "reason": (
+                      "Active SUSFS 2.2 core dereferences/overrides ksu_cred; "
+                      "v0.9.5 does not define it."
+                  ),
+              },
+              {
+                  "layer": "setup_selinux_for_arbitrary_cred",
+                  "decision": "NEW_HELPER_NAME_REQUIRED",
+                  "reason": (
+                      "v0.9.5 setup_selinux has one argument and modifies current "
+                      "task credentials; modern SUSFS needs an arbitrary cred pointer. "
+                      "Do not change/overload the existing v0.9.5 API."
+                  ),
+              },
+              {
+                  "layer": "selinux_domain",
+                  "decision": "PRESERVE_V095_SU_DOMAIN_SEMANTICS",
+                  "reason": (
+                      "v0.9.5 policy/domain is u:r:su:s0 while modern SUSFS source "
+                      "hardcodes u:r:ksu:s0. Do not invent a new domain without policy proof."
+                  ),
+              },
+              {
+                  "layer": "susfs_is_current_ksu_domain",
+                  "decision": "USE_V095_DOMAIN_SID_SEMANTICS",
+                  "reason": (
+                      "Legacy 5.4 SUSFS patch already demonstrates SID-based "
+                      "current-KSU-domain helpers against the v0.9.5 domain model."
+                  ),
+              },
+              {
+                  "layer": "setresuid_zygote_marking",
+                  "decision": "SEMANTIC_PORT_REQUIRED",
+                  "reason": (
+                      "Not a direct susfs.c extern, but modern 2.2 KSU integration "
+                      "uses it to mark spawned app processes and queue extra SUSFS work."
+                  ),
+              },
+              {
+                  "layer": "userspace_ksu_susfs_protocol",
+                  "decision": "MUST_BE_PROVEN_BEFORE_RUNTIME_BUILD",
+                  "reason": (
+                      "Legacy integration uses v0.9.5 prctl path; modern integration "
+                      "uses supercall dispatch. Binary strings are informational only."
+                  ),
+              },
+          ]
+
+          result = {
+              "lane": "${{ matrix.id }}",
+              "direct_modern_susfs_core_root_manager_extern_count": 3,
+              "direct_modern_susfs_core_root_manager_externs": (
+                  abi["active_direct_root_manager_externs"]
+              ),
+              "v095_domain": semantics["v095"]["domain"],
+              "modern_susfs_domain": semantics["modern_susfs_domain"],
+              "legacy_control_plane_files": (
+                  patch_structure["legacy_control_plane_files"]
+              ),
+              "modern_control_plane_files": (
+                  patch_structure["modern_control_plane_files"]
+              ),
+              "ledger": ledger,
+              "next_stage": (
+                  "ISOLATED_SOURCE_PORT_LEGACY_V095_CONTROL_PLANE_PLUS_"
+                  "MODERN_220_CORE_AND_BEHAVIORAL_DELTA_NO_FULL_BUILD"
+              ),
+          }
+
+          (artifact / "W61-MINIMAL-BRIDGE-DESIGN.json").write_text(
+              json.dumps(result, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+
+          with (artifact / "W61-MINIMAL-BRIDGE-DESIGN.txt").open(
+              "w", encoding="utf-8"
+          ) as f:
+              f.write(
+                  "DIRECT_MODERN_SUSFS_CORE_ROOT_MANAGER_EXTERN_COUNT=3\n"
+              )
+              f.write("V095_DOMAIN=u:r:su:s0\n")
+              f.write("MODERN_SUSFS_DOMAIN=u:r:ksu:s0\n")
+              f.write("W60_37_39_SYMBOL_COUNT_IS_NOT_TRUE_ABI=YES\n")
+              f.write(
+                  "KSU_HANDLE_SETRESUID="
+                  "BEHAVIORAL_INTEGRATION_NOT_DIRECT_CORE_ABI\n"
+              )
+              f.write(
+                  "LEGACY_V095_KSU_PATCH="
+                  "PRIMARY_CONTROL_PLANE_REFERENCE\n"
+              )
+              f.write(
+                  "MODERN_KSU_PATCH_WHOLESALE_TRANSPLANT=NO\n"
+              )
+              f.write(
+                  "MODERN_SUSFS_220_CORE_SEMANTICS=PORT\n"
+              )
+              f.write(
+                  "OPEN_REDIRECT_SRCU_FIX=PRESERVE\n"
+              )
+              f.write(
+                  "NEXT_STAGE="
+                  "ISOLATED_SOURCE_PORT_NO_FULL_BUILD\n"
+              )
+
+          print("MINIMAL_BRIDGE_DESIGN_LEDGER=PASS")
+          PY
+
+      - name: Verify W61 audit invariants
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          for file in \
+            W61-HEADER.txt \
+            KERNEL-IDENTITY.txt \
+            MANUAL-HOOK-CONTRACT.txt \
+            SOURCE-IDENTITY.txt \
+            true-modern-susfs-core-abi.json \
+            w60-false-positive-corrections.txt \
+            KSU-PATCH-APPLICABILITY.txt \
+            legacy-modern-ksu-patch-structure.json \
+            control-plane-comparison.json \
+            v095-modern-credential-selinux-semantics.json \
+            modern-susfs220-behavioral-contracts.json \
+            KERNEL-SELINUX-PREREQUISITES.txt \
+            KERNEL-SELINUX-PREREQUISITES.json \
+            W61-MINIMAL-BRIDGE-DESIGN.json \
+            W61-MINIMAL-BRIDGE-DESIGN.txt
+          do
+            test -s "$ARTIFACT_DIR/$file"
+          done
+
+          grep -Fq \
+            'TRUE_DIRECT_MODERN_SUSFS_CORE_ROOT_MANAGER_EXTERN_COUNT=3' \
+            "$ARTIFACT_DIR/w60-false-positive-corrections.txt"
+
+          grep -Fq \
+            'W60_37_39_SYMBOL_COUNT_IS_NOT_TRUE_ABI=YES' \
+            "$ARTIFACT_DIR/W61-MINIMAL-BRIDGE-DESIGN.txt"
+
+          grep -Fq \
+            'OPEN_REDIRECT_SRCU_FIX=PRESERVE' \
+            "$ARTIFACT_DIR/W61-MINIMAL-BRIDGE-DESIGN.txt"
+
+          cd "$GITHUB_WORKSPACE/kernel"
+          sha256sum -c "$ARTIFACT_DIR/baseline-manual-hook-files.sha256"
+
+          {
+            echo "W61_LEGACY_MODERN_BRIDGE_CONTRACT_AUDIT=PASS"
+            echo "LANE=${{ matrix.id }}"
+            echo "KSU_V095_MANUAL_HOOK_CONTRACT=8_OF_8"
+            echo "TRUE_DIRECT_MODERN_SUSFS_CORE_EXTERN_COUNT=3"
+            echo "W60_RAW_BRIDGE_SYMBOL_COUNT_REJECTED_AS_TRUE_ABI=YES"
+            echo "LEGACY_V095_SUSFS_PATCH_IS_PRIMARY_STRUCTURAL_REFERENCE=YES"
+            echo "MODERN_KSU_PATCH_WHOLESALE_TRANSPLANT=NO"
+            echo "MODERN_SUSFS_220_CORE_SEMANTICS_TO_PORT=YES"
+            echo "OPEN_REDIRECT_SRCU_FIX_TO_PRESERVE=YES"
+            echo "SETRESUID_ZYGOTE_BEHAVIOR_REQUIRES_PORT=YES"
+            echo "V095_KSU_CRED_COMPATIBILITY_STATE_REQUIRED=YES"
+            echo "V095_ARBITRARY_CRED_SELINUX_HELPER_REQUIRED=YES"
+            echo "V095_SU_DOMAIN_MUST_NOT_BE_SILENTLY_CHANGED=YES"
+            echo "USERSPACE_PROTOCOL_REQUIRES_EXPLICIT_PROOF=YES"
+            echo "NEXT_STAGE=ISOLATED_SOURCE_PORT_NO_FULL_BUILD"
+            echo "FULL_KERNEL_BUILD_PERFORMED=NO"
+            echo "KERNEL_TREE_MODIFIED=NO"
+            echo "KSU_TREE_MODIFIED=NO"
+            echo "SUSFS_PATCH_APPLIED=NO"
+            echo "BOOT_IMAGE_CREATED=NO"
+            echo "FLASHABLE_ZIP_CREATED=NO"
+            echo "DEVICE_ACCESSED=NO"
+            echo "FLASHING_PERFORMED=NO"
+          } | tee "$ARTIFACT_DIR/FINAL-STATUS.txt"
+
+      - name: Finalize failure diagnostics before manifest
+        if: always()
+        shell: bash
+        env:
+          PRE_MANIFEST_JOB_STATUS: ${{ job.status }}
+        run: |
+          set +e
+
+          mkdir -p "$ARTIFACT_DIR"
+
+          if [ ! -f "$ARTIFACT_DIR/FINAL-STATUS.txt" ]; then
+            {
+              echo "W61_LEGACY_MODERN_BRIDGE_CONTRACT_AUDIT=FAIL_OR_INCOMPLETE"
+              echo "LANE=${{ matrix.id }}"
+              echo "PRE_MANIFEST_JOB_STATUS=$PRE_MANIFEST_JOB_STATUS"
+              echo "FULL_KERNEL_BUILD_PERFORMED=NO"
+              echo "BOOT_IMAGE_CREATED=NO"
+              echo "FLASHABLE_ZIP_CREATED=NO"
+              echo "DEVICE_ACCESSED=NO"
+              echo "FLASHING_PERFORMED=NO"
+            } > "$ARTIFACT_DIR/FAILURE-STATUS.txt"
+          fi
+
+          {
+            echo "PRE_MANIFEST_JOB_STATUS=$PRE_MANIFEST_JOB_STATUS"
+            echo "SHA256SUMS_WILL_BE_FINAL_ARTIFACT_MUTATION=YES"
+            echo "NO_ARTIFACT_FILE_MAY_CHANGE_AFTER_MANIFEST=YES"
+          } > "$ARTIFACT_DIR/MANIFEST-CONTRACT.txt"
+
+          exit 0
+
+      - name: Create final artifact-relative SHA256 manifest
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p "$ARTIFACT_DIR"
+          cd "$ARTIFACT_DIR"
+
+          : > SHA256SUMS.txt
+
+          while IFS= read -r -d '' file; do
+            rel="${file#./}"
+            [ "$rel" = "SHA256SUMS.txt" ] && continue
+            sha256sum "$rel" >> SHA256SUMS.txt
+          done < <(find . -type f -print0 | sort -z)
+
+          test -s SHA256SUMS.txt
+          sha256sum -c SHA256SUMS.txt
+
+      - name: Upload W61 audit artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: W61-v2-v095-SUSFS220-bridge-contract-${{ matrix.id }}
+          path: ${{ env.ARTIFACT_DIR }}
+          if-no-files-found: error
+          retention-days: 30
