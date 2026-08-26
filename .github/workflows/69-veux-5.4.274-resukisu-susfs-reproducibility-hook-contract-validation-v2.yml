@@ -1,0 +1,1023 @@
+name: 69 - VEUX 5.4.274 ReSukiSU SUSFS Reproducibility and Hook Contract Validation v2
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: w69-v2-veux-5-4-274-resukisu-susfs-repro-hook-contract-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  integrate-compile:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+
+    env:
+      ARCH: arm64
+
+      RECIPE_PATH: .github/workflows/46C7-final-cumulative-resukisu-susfs-deterministic-cross-run-reference.yml
+      W65_PATH: .github/workflows/65-kernelsu-v0.9.5-susfs-2.2.0-cross-run-reproducibility-v1.yml
+      RECIPE_JOB: full-build
+      RECIPE_STOP_STEP: "27"
+
+      BASE_REF: faccf4c5edc7be37776216e7d43dd3dca0239331
+      TARGET_REF: 03b60f260cce36f23efbd26c9c334edfdc9ce7eb
+      SUCOMPAT_REFACTOR: 75b99e3e2f312377fc9e5d3720324c0caaf1e610
+      EXECVEAT_SUPPORT: 9671b9d11e459467d41884c98e1366b13aaae2cc
+      OLD_HOOK_COMPAT: cc44ff62d9dc8b84dbd7c3e4d2703f6a6fb844c3
+      SUSFS_SYNC: 03b60f260cce36f23efbd26c9c334edfdc9ce7eb
+
+      BUILDER_DIR: ${{ github.workspace }}/builder-repo
+      DRIVER_DIR: ${{ github.workspace }}/w69-driver
+      ARTIFACT_DIR: ${{ github.workspace }}/w69-artifact
+      PATCH_DIR: ${{ github.workspace }}/w69-patches
+      OUT_DIR_NAME: out-w69
+
+      KBUILD_BUILD_USER: w68
+      KBUILD_BUILD_HOST: veux-w68
+      KBUILD_BUILD_TIMESTAMP: "Tue Aug 25 00:00:00 UTC 2026"
+      KBUILD_BUILD_VERSION: "1"
+      SOURCE_DATE_EPOCH: "1787616000"
+      TZ: UTC
+      LANG: C.UTF-8
+      LC_ALL: C.UTF-8
+
+    steps:
+      - name: Initialize W69
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$DRIVER_DIR" "$ARTIFACT_DIR" "$PATCH_DIR"
+          mkdir -p "$DRIVER_DIR" "$ARTIFACT_DIR" "$PATCH_DIR"
+
+          cat > "$ARTIFACT_DIR/00-plan.txt" <<EOF
+          W69_V2
+          TARGET=VEUX_LINUX_5.4.274
+          BASELINE=46C7
+          CURRENT_RESUKISU_PIN=$BASE_REF
+          CANDIDATE_TARGET=$TARGET_REF
+          MODE=SELECTIVE_KERNEL_COMMIT_CHAIN
+          REQUIRED_CHAIN=$SUCOMPAT_REFACTOR,$EXECVEAT_SUPPORT,$OLD_HOOK_COMPAT,$SUSFS_SYNC
+          MODULE_LOAD_FILTER=EXCLUDED
+          BOOT_IMAGE_CREATED=NO
+          FLASHABLE_ZIP_CREATED=NO
+          DEVICE_ACCESSED=NO
+          FLASHING_PERFORMED=NO
+          EOF
+
+      - name: Install W69 dependencies
+        shell: bash
+        timeout-minutes: 15
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            bc bison build-essential ca-certificates cpio curl flex git jq \
+            libelf-dev libncurses-dev libssl-dev patch python3 python3-pip \
+            rsync xz-utils zstd
+
+          python3 -m pip install \
+            --disable-pip-version-check \
+            --no-input \
+            'PyYAML==6.0.2'
+
+      - name: Checkout builder repository
+        uses: actions/checkout@v6
+        with:
+          path: builder-repo
+          fetch-depth: 0
+
+      - name: Checkout ReSukiSU target
+        uses: actions/checkout@v6
+        with:
+          repository: ReSukiSU/ReSukiSU
+          ref: ${{ env.TARGET_REF }}
+          path: ReSukiSU-target
+          fetch-depth: 0
+
+      - name: Authenticate W69 inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          RECIPE="$BUILDER_DIR/$RECIPE_PATH"
+          W65="$BUILDER_DIR/$W65_PATH"
+
+          test -s "$RECIPE"
+          test -s "$W65"
+
+          grep -Fxq \
+            'name: 46C7 - VEUX Final Cumulative ReSukiSU SUSFS Deterministic Cross-Run Reference' \
+            "$RECIPE"
+          grep -Fq \
+            'RESUKISU_COMMIT: "faccf4c5edc7be37776216e7d43dd3dca0239331"' \
+            "$RECIPE"
+          grep -Fq \
+            'OPEN_REDIRECT SRCU/UAF fixed semantics must already be present' \
+            "$RECIPE"
+          grep -Fq \
+            '/proc/*/maps output-pointer/SRCU handling must already be present' \
+            "$RECIPE"
+
+          grep -Fxq \
+            'name: 65 - KernelSU v0.9.5 + SUSFS 2.2.0 Cross-Run Reproducibility v1' \
+            "$W65"
+          grep -Fq 'recipe_stop_step: "27"' "$W65"
+
+          test "$(git -C ReSukiSU-target rev-parse HEAD)" = "$TARGET_REF"
+
+          git -C ReSukiSU-target fetch --no-tags origin \
+            "$BASE_REF" \
+            "$SUCOMPAT_REFACTOR" \
+            "$EXECVEAT_SUPPORT" \
+            "$OLD_HOOK_COMPAT" \
+            "$SUSFS_SYNC"
+
+          for c in \
+            "$SUCOMPAT_REFACTOR" \
+            "$EXECVEAT_SUPPORT" \
+            "$OLD_HOOK_COMPAT" \
+            "$SUSFS_SYNC"
+          do
+            git -C ReSukiSU-target merge-base --is-ancestor "$BASE_REF" "$c"
+            git -C ReSukiSU-target merge-base --is-ancestor "$c" "$TARGET_REF"
+          done
+
+          {
+            echo "RECIPE_SHA256=$(sha256sum "$RECIPE" | awk '{print $1}')"
+            echo "W65_SHA256=$(sha256sum "$W65" | awk '{print $1}')"
+            echo "RESUKISU_TARGET=$(git -C ReSukiSU-target rev-parse HEAD)"
+            echo "INPUT_AUTH=PASS"
+          } | tee "$ARTIFACT_DIR/01-input-auth.txt"
+
+      - name: Reuse proven W65 staging driver
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          export W65_FILE="$BUILDER_DIR/$W65_PATH"
+
+          python3 - <<'PY'
+          import os
+          import subprocess
+          from pathlib import Path
+          import yaml
+
+          w65 = Path(os.environ["W65_FILE"])
+          doc = yaml.load(w65.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
+
+          steps = doc["jobs"]["full-link"]["steps"]
+          selected = [
+              step for step in steps
+              if step.get("name") == "Write generic proven-recipe staging driver"
+          ]
+          if len(selected) != 1:
+              raise SystemExit(
+                  f"expected exactly one proven staging-driver step, got {len(selected)}"
+              )
+
+          script = selected[0].get("run")
+          if not script:
+              raise SystemExit("proven staging-driver step has no run block")
+
+          subprocess.run(
+              ["bash", "-euo", "pipefail", "-c", script],
+              check=True,
+              env=os.environ.copy(),
+          )
+          PY
+
+          test -s "$DRIVER_DIR/run_recipe_until.py"
+          python3 -m py_compile "$DRIVER_DIR/run_recipe_until.py"
+
+          {
+            echo "PROVEN_STAGING_DRIVER_REUSED=YES"
+            echo "DRIVER_SHA256=$(sha256sum "$DRIVER_DIR/run_recipe_until.py" | awk '{print $1}')"
+          } | tee "$ARTIFACT_DIR/02-staging-driver.txt"
+
+      - name: Stage exact 46C7 source through step 27
+        shell: bash
+        timeout-minutes: 75
+        env:
+          W64_RECIPE_PATH: .github/workflows/46C7-final-cumulative-resukisu-susfs-deterministic-cross-run-reference.yml
+          W64_RECIPE_JOB: full-build
+          W64_RECIPE_STOP_STEP: "27"
+          W64_LANE: linux-5_4_274
+          W64_SOURCE_PROVEN_NOFAULT_FIX: "no"
+        run: |
+          set -euo pipefail
+
+          python3 "$DRIVER_DIR/run_recipe_until.py" \
+            2>&1 | tee "$ARTIFACT_DIR/03-46c7-staging.log"
+
+          echo "46C7_STAGING=PASS" \
+            | tee "$ARTIFACT_DIR/03-46c7-staging-state.txt"
+
+      - name: Locate staged VEUX kernel and ReSukiSU tree
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mapfile -t candidates < <(
+            find "$GITHUB_WORKSPACE" \
+              -type f \
+              -path '*/KernelSU/kernel/Kbuild' \
+              ! -path "$BUILDER_DIR/*" \
+              ! -path "$GITHUB_WORKSPACE/ReSukiSU-target/*" \
+              ! -path "$DRIVER_DIR/*" \
+              -print
+          )
+
+          if [ "${#candidates[@]}" -ne 1 ]; then
+            printf '%s\n' "${candidates[@]:-}" \
+              | tee "$ARTIFACT_DIR/04-kernel-tree-candidates.txt"
+            echo "ERROR: expected exactly one staged KernelSU/kernel/Kbuild, got ${#candidates[@]}" >&2
+            exit 1
+          fi
+
+          KSU_ROOT="$(dirname "$(dirname "${candidates[0]}")")"
+          KERNEL_ROOT="$(dirname "$KSU_ROOT")"
+
+          test -s "$KERNEL_ROOT/Makefile"
+          grep -Eq '^VERSION[[:space:]]*=[[:space:]]*5$' "$KERNEL_ROOT/Makefile"
+          grep -Eq '^PATCHLEVEL[[:space:]]*=[[:space:]]*4$' "$KERNEL_ROOT/Makefile"
+          grep -Eq '^SUBLEVEL[[:space:]]*=[[:space:]]*274$' "$KERNEL_ROOT/Makefile"
+
+          {
+            echo "KSU_ROOT=$KSU_ROOT"
+            echo "KERNEL_ROOT=$KERNEL_ROOT"
+          } >> "$GITHUB_ENV"
+
+          {
+            echo "KERNEL_ROOT=$KERNEL_ROOT"
+            echo "KSU_ROOT=$KSU_ROOT"
+            echo "KERNEL_VERSION=5.4.274"
+            echo "STAGED_TREE_LOCATE=PASS"
+          } | tee "$ARTIFACT_DIR/04-kernel-tree.txt"
+
+      - name: Snapshot pre-update ReSukiSU and SUSFS API
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          {
+            echo "=== pre-update ReSukiSU kernel files ==="
+            find "$KSU_ROOT/kernel" -type f -print | sort
+
+            echo
+            echo "=== pre-update SUSFS no_su symbols ==="
+            grep -RniE \
+              'susfs_(is|set|clear)_current_proc_no_su' \
+              "$KERNEL_ROOT/include" \
+              "$KERNEL_ROOT/fs" \
+              "$KSU_ROOT" || true
+
+            echo
+            echo "=== pre-update KSU stat/faccessat callers ==="
+            grep -RniE \
+              'ksu_handle_(stat|faccessat)[[:space:]]*\(' \
+              "$KERNEL_ROOT/fs" \
+              "$KERNEL_ROOT/include" \
+              "$KERNEL_ROOT/security" || true
+
+            echo
+            echo "=== pre-update execveat/manual-hook evidence ==="
+            grep -RniE \
+              'ksu_handle_execveat|do_execveat_common' \
+              "$KERNEL_ROOT/fs" \
+              "$KSU_ROOT/kernel" || true
+          } > "$ARTIFACT_DIR/05-pre-update-api.txt"
+
+          find "$KSU_ROOT/kernel" -type f -print0 \
+            | sort -z \
+            | xargs -0 sha256sum \
+            > "$ARTIFACT_DIR/05-pre-update-kernel-sha256.txt"
+
+      - name: Extract selected ReSukiSU kernel patches
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          for c in \
+            "$SUCOMPAT_REFACTOR" \
+            "$EXECVEAT_SUPPORT" \
+            "$OLD_HOOK_COMPAT" \
+            "$SUSFS_SYNC"
+          do
+            git -C ReSukiSU-target show \
+              --format= \
+              --binary \
+              "$c" -- kernel/ \
+              > "$PATCH_DIR/$c.patch"
+
+            test -s "$PATCH_DIR/$c.patch"
+
+            {
+              echo "COMMIT=$c"
+              echo "PATCH_SHA256=$(sha256sum "$PATCH_DIR/$c.patch" | awk '{print $1}')"
+              echo "PATCH_BYTES=$(wc -c < "$PATCH_DIR/$c.patch")"
+            } >> "$ARTIFACT_DIR/06-selected-patches.txt"
+          done
+
+          if grep -Rqs 'module_load_filter' "$PATCH_DIR"; then
+            echo "ERROR: excluded module_load_filter leaked into selected patch chain" >&2
+            exit 1
+          fi
+
+      - name: Apply selected ReSukiSU kernel chain
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          : > "$ARTIFACT_DIR/07-apply-state.txt"
+
+          for c in \
+            "$SUCOMPAT_REFACTOR" \
+            "$EXECVEAT_SUPPORT" \
+            "$OLD_HOOK_COMPAT" \
+            "$SUSFS_SYNC"
+          do
+            patch="$PATCH_DIR/$c.patch"
+
+            echo "CHECK $c" | tee -a "$ARTIFACT_DIR/07-apply-state.txt"
+            if ! git -C "$KSU_ROOT" apply \
+                --check \
+                --verbose \
+                "$patch" \
+                >> "$ARTIFACT_DIR/07-apply-state.txt" 2>&1
+            then
+              echo "APPLY_CHECK_FAILED=$c" \
+                | tee -a "$ARTIFACT_DIR/07-apply-state.txt"
+              exit 1
+            fi
+
+            git -C "$KSU_ROOT" apply \
+              --verbose \
+              "$patch" \
+              >> "$ARTIFACT_DIR/07-apply-state.txt" 2>&1
+
+            echo "APPLIED $c" | tee -a "$ARTIFACT_DIR/07-apply-state.txt"
+          done
+
+          for needle in \
+            'susfs_is_current_proc_no_su' \
+            'struct filename **filename' \
+            'ksu_handle_execveat' \
+            'AT_FDCWD'
+          do
+            grep -RqsF "$needle" "$KSU_ROOT/kernel"
+          done
+
+          if find "$KSU_ROOT/kernel" -type f -name '*module_load_filter*' | grep -q .; then
+            echo "ERROR: vendor module-load filter unexpectedly present" >&2
+            exit 1
+          fi
+
+          echo "SELECTED_RESUKISU_CHAIN_APPLY=PASS" \
+            | tee -a "$ARTIFACT_DIR/07-apply-state.txt"
+
+      - name: Backport latest SUSFS 5.4 process-state API only
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SUSFS_DEF="$KERNEL_ROOT/include/linux/susfs_def.h"
+          test -s "$SUSFS_DEF"
+
+          for f in \
+            fs/susfs.c \
+            fs/namei.c \
+            fs/proc/task_mmu.c
+          do
+            test -s "$KERNEL_ROOT/$f"
+            sha256sum "$KERNEL_ROOT/$f"
+          done > "$ARTIFACT_DIR/08a-stability-files-before.sha256"
+
+          cp "$SUSFS_DEF" "$ARTIFACT_DIR/08a-susfs_def-before.h"
+
+          grep -Eq '^[[:space:]]*#define[[:space:]]+TIF_PROC_UMOUNTED[[:space:]]+33([[:space:]]|$)' \
+            "$SUSFS_DEF"
+
+          for bit in 34 35; do
+            if grep -En \
+                "^[[:space:]]*#define[[:space:]]+TIF_[A-Za-z0-9_]+[[:space:]]+${bit}([[:space:]]|$)" \
+                "$KERNEL_ROOT/arch/arm64/include/asm/thread_info.h" \
+                > "$ARTIFACT_DIR/08a-arm64-tif-${bit}.txt"
+            then
+              echo "ERROR: arm64 TIF bit $bit is already assigned" >&2
+              cat "$ARTIFACT_DIR/08a-arm64-tif-${bit}.txt" >&2
+              exit 1
+            fi
+          done
+
+          export SUSFS_DEF
+          python3 - <<'PY'
+          import os
+          import re
+          from pathlib import Path
+
+          path = Path(os.environ["SUSFS_DEF"])
+          s = path.read_text(encoding="utf-8")
+
+          required_absent = [
+              "TIF_PROC_NO_SU",
+              "TIF_PROC_UMOUNTED_FOR_ZYGOTE_NEXT",
+              "susfs_is_current_proc_no_su",
+              "susfs_set_current_proc_no_su",
+              "susfs_clear_current_proc_no_su",
+              "susfs_is_current_proc_umounted_for_zygote_next",
+              "susfs_set_current_proc_umounted_for_zygote_next",
+              "susfs_clear_current_proc_umounted_for_zygote_next",
+          ]
+          present = [x for x in required_absent if x in s]
+          if present:
+              raise SystemExit("refusing duplicate/partial SUSFS process-state API: " + ", ".join(present))
+
+          define_pat = re.compile(
+              r"(^[ \t]*#define[ \t]+TIF_PROC_UMOUNTED[ \t]+33[^\n]*\n)",
+              re.M,
+          )
+          if len(define_pat.findall(s)) != 1:
+              raise SystemExit("expected exactly one TIF_PROC_UMOUNTED 33 define")
+
+          s = define_pat.sub(
+              r"\1#define TIF_PROC_NO_SU 34\n#define TIF_PROC_UMOUNTED_FOR_ZYGOTE_NEXT 35\n",
+              s, count=1,
+          )
+
+          set_umounted_pat = re.compile(
+              r"(static inline void susfs_set_current_proc_umounted\(void\)[ \t]*\{[ \t\r\n]*set_thread_flag\(TIF_PROC_UMOUNTED\);[ \t\r\n]*\}[ \t]*\n)",
+              re.M,
+          )
+          if len(set_umounted_pat.findall(s)) != 1:
+              raise SystemExit(
+                  "expected exactly one susfs_set_current_proc_umounted() anchor"
+              )
+
+          helpers = (
+              "\n"
+              "static inline bool susfs_is_current_proc_umounted_for_zygote_next(void) {\n"
+              "\treturn (likely(test_thread_flag(TIF_PROC_UMOUNTED_FOR_ZYGOTE_NEXT)));\n"
+              "}\n\n"
+              "static inline void susfs_set_current_proc_umounted_for_zygote_next(void) {\n"
+              "\tset_thread_flag(TIF_PROC_UMOUNTED_FOR_ZYGOTE_NEXT);\n"
+              "}\n\n"
+              "static inline void susfs_clear_current_proc_umounted_for_zygote_next(void) {\n"
+              "\tclear_thread_flag(TIF_PROC_UMOUNTED_FOR_ZYGOTE_NEXT);\n"
+              "}\n\n"
+              "static inline bool susfs_is_current_proc_no_su(void) {\n"
+              "\treturn (likely(test_thread_flag(TIF_PROC_NO_SU)));\n"
+              "}\n\n"
+              "static inline void susfs_set_current_proc_no_su(void) {\n"
+              "\tset_thread_flag(TIF_PROC_NO_SU);\n"
+              "}\n\n"
+              "static inline void susfs_clear_current_proc_no_su(void) {\n"
+              "\tclear_thread_flag(TIF_PROC_NO_SU);\n"
+              "}\n"
+          )
+          s = set_umounted_pat.sub(
+              lambda m: m.group(1) + helpers,
+              s,
+              count=1,
+          )
+          path.write_text(s, encoding="utf-8")
+          PY
+
+          if grep -Fq '\\n' "$SUSFS_DEF" || grep -Fq '\\t' "$SUSFS_DEF"; then
+            echo "ERROR: literal escaped newline/tab leaked into susfs_def.h" >&2
+            exit 1
+          fi
+
+          cp "$SUSFS_DEF" "$ARTIFACT_DIR/08a-susfs_def-after.h"
+          diff -u \
+            "$ARTIFACT_DIR/08a-susfs_def-before.h" \
+            "$ARTIFACT_DIR/08a-susfs_def-after.h" \
+            > "$ARTIFACT_DIR/08a-susfs-process-state-backport.diff" || true
+
+          grep -Eq '^[[:space:]]*#define[[:space:]]+TIF_PROC_NO_SU[[:space:]]+34([[:space:]]|$)' "$SUSFS_DEF"
+          grep -Eq '^[[:space:]]*#define[[:space:]]+TIF_PROC_UMOUNTED_FOR_ZYGOTE_NEXT[[:space:]]+35([[:space:]]|$)' "$SUSFS_DEF"
+          grep -Fq 'static inline void susfs_set_current_proc_umounted(void)' "$SUSFS_DEF"
+
+          for symbol in \
+            susfs_is_current_proc_no_su \
+            susfs_set_current_proc_no_su \
+            susfs_clear_current_proc_no_su \
+            susfs_is_current_proc_umounted_for_zygote_next \
+            susfs_set_current_proc_umounted_for_zygote_next \
+            susfs_clear_current_proc_umounted_for_zygote_next
+          do
+            test "$(grep -c "$symbol" "$SUSFS_DEF")" -eq 1
+          done
+
+          for f in \
+            fs/susfs.c \
+            fs/namei.c \
+            fs/proc/task_mmu.c
+          do
+            sha256sum "$KERNEL_ROOT/$f"
+          done > "$ARTIFACT_DIR/08a-stability-files-after.sha256"
+
+          diff -u \
+            "$ARTIFACT_DIR/08a-stability-files-before.sha256" \
+            "$ARTIFACT_DIR/08a-stability-files-after.sha256"
+
+          {
+            echo "SUSFS_PROCESS_STATE_BACKPORT=PASS"
+            echo "W69_PATCHER_VERSION=reused-proven-W68-v3-real-newlines"
+            echo "TIF_PROC_UMOUNTED=33"
+            echo "TIF_PROC_NO_SU=34"
+            echo "TIF_PROC_UMOUNTED_FOR_ZYGOTE_NEXT=35"
+            echo "ARM64_TIF_COLLISION_34=NO"
+            echo "ARM64_TIF_COLLISION_35=NO"
+            echo "OPEN_REDIRECT_SOURCE_CHANGED=NO"
+            echo "NAMEI_SOURCE_CHANGED_BY_W69=NO"
+            echo "PROC_TASK_MMU_SOURCE_CHANGED_BY_W69=NO"
+            echo "SUSFS_DEF_AFTER_SHA256=$(sha256sum "$SUSFS_DEF" | awk '{print $1}')"
+          } | tee "$ARTIFACT_DIR/08a-backport-state.txt"
+      - name: Audit SUSFS 2.2 5.4 caller compatibility
+        id: susfs_api
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          REPORT="$ARTIFACT_DIR/08-susfs-5.4-api.txt"
+          : > "$REPORT"
+
+          missing=0
+
+          check_symbol() {
+            local symbol="$1"
+            if grep -RqsF \
+                "$symbol" \
+                "$KERNEL_ROOT/include" \
+                "$KERNEL_ROOT/fs" \
+                "$KERNEL_ROOT/security" 2>/dev/null
+            then
+              echo "$symbol=PASS" | tee -a "$REPORT"
+            else
+              echo "$symbol=MISSING" | tee -a "$REPORT"
+              missing=$((missing + 1))
+            fi
+          }
+
+          check_symbol 'susfs_is_current_proc_no_su'
+          check_symbol 'susfs_set_current_proc_no_su'
+          check_symbol 'susfs_clear_current_proc_no_su'
+          check_symbol 'susfs_is_current_proc_umounted_for_zygote_next'
+          check_symbol 'susfs_set_current_proc_umounted_for_zygote_next'
+          check_symbol 'susfs_clear_current_proc_umounted_for_zygote_next'
+
+          if grep -RniE \
+              'ksu_handle_(stat|faccessat).*&[A-Za-z_]*filename' \
+              "$KERNEL_ROOT/fs" \
+              "$KERNEL_ROOT/security" \
+              > "$ARTIFACT_DIR/08-filename-pointer-callers.txt" 2>/dev/null
+          then
+            echo "SUSFS_STRUCT_FILENAME_DOUBLE_POINTER_CALLER=PASS" | tee -a "$REPORT"
+          else
+            echo "SUSFS_STRUCT_FILENAME_DOUBLE_POINTER_CALLER=MISSING" | tee -a "$REPORT"
+            missing=$((missing + 1))
+          fi
+
+          {
+            echo
+            echo "=== all stat/faccessat KSU callers ==="
+            grep -RniE \
+              'ksu_handle_(stat|faccessat)[[:space:]]*\(' \
+              "$KERNEL_ROOT/fs" \
+              "$KERNEL_ROOT/include" \
+              "$KERNEL_ROOT/security" || true
+
+            echo
+            echo "=== all no_su definitions/references ==="
+            grep -RniE \
+              'susfs_(is|set|clear)_current_proc_no_su' \
+              "$KERNEL_ROOT/include" \
+              "$KERNEL_ROOT/fs" \
+              "$KERNEL_ROOT/security" || true
+          } >> "$REPORT"
+
+          echo "MISSING_REQUIRED_API_COUNT=$missing" \
+            | tee -a "$REPORT"
+
+          if [ "$missing" -ne 0 ]; then
+            echo "SUSFS_5_4_CALLER_API_READY=NO" | tee -a "$REPORT"
+            echo "ready=no" >> "$GITHUB_OUTPUT"
+          else
+            echo "SUSFS_5_4_CALLER_API_READY=YES" | tee -a "$REPORT"
+            echo "ready=yes" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Locate proven 46C7 config and toolchain
+        if: steps.susfs_api.outputs.ready == 'yes'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          TOOLCHAIN_DIR="$GITHUB_WORKSPACE/toolchains/clang-r416183b"
+          test -x "$TOOLCHAIN_DIR/bin/clang"
+          test -x "$TOOLCHAIN_DIR/bin/ld.lld"
+
+          mapfile -t configs < <(
+            find "$KERNEL_ROOT" \
+              -maxdepth 2 \
+              -type f \
+              -name .config \
+              -print
+          )
+
+          if [ "${#configs[@]}" -lt 1 ]; then
+            echo "ERROR: no staged 46C7 .config found" >&2
+            exit 1
+          fi
+
+          # Prefer the proven 46C7 out-repro config if present.
+          CONFIG_SOURCE=""
+          for c in "${configs[@]}"; do
+            if [[ "$c" == */out-repro/.config ]]; then
+              CONFIG_SOURCE="$c"
+              break
+            fi
+          done
+          if [ -z "$CONFIG_SOURCE" ]; then
+            CONFIG_SOURCE="${configs[0]}"
+          fi
+
+          OUT_DIR="$KERNEL_ROOT/$OUT_DIR_NAME"
+          rm -rf "$OUT_DIR"
+          mkdir -p "$OUT_DIR"
+          cp "$CONFIG_SOURCE" "$OUT_DIR/.config"
+
+          {
+            echo "TOOLCHAIN_DIR=$TOOLCHAIN_DIR"
+            echo "OUT_DIR=$OUT_DIR"
+          } >> "$GITHUB_ENV"
+
+          {
+            echo "CONFIG_SOURCE=$CONFIG_SOURCE"
+            echo "CONFIG_SHA256=$(sha256sum "$OUT_DIR/.config" | awk '{print $1}')"
+            echo "CLANG_VERSION=$("$TOOLCHAIN_DIR/bin/clang" --version | head -n1)"
+          } | tee "$ARTIFACT_DIR/09-build-inputs.txt"
+
+      - name: Resolve W69 config
+        if: steps.susfs_api.outputs.ready == 'yes'
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH="$TOOLCHAIN_DIR/bin:$PATH"
+
+          make -C "$KERNEL_ROOT" \
+            O="$OUT_DIR" \
+            ARCH=arm64 \
+            CC=clang \
+            LD=ld.lld \
+            LLVM=1 \
+            LLVM_IAS=1 \
+            olddefconfig \
+            2>&1 | tee "$ARTIFACT_DIR/10-olddefconfig.log"
+
+          grep -Eq '^CONFIG_KSU=y$' "$OUT_DIR/.config"
+          grep -Eq '^CONFIG_KSU_SUSFS=y$' "$OUT_DIR/.config"
+
+          {
+            echo "RESOLVED_CONFIG_SHA256=$(sha256sum "$OUT_DIR/.config" | awk '{print $1}')"
+            grep -E '^CONFIG_KSU(=|_)' "$OUT_DIR/.config" || true
+          } > "$ARTIFACT_DIR/10-resolved-config.txt"
+
+      - name: Build A VEUX 5.4.274 updated kernel
+        if: steps.susfs_api.outputs.ready == 'yes'
+        shell: bash
+        timeout-minutes: 90
+        run: |
+          set -euo pipefail
+          export PATH="$TOOLCHAIN_DIR/bin:$PATH"
+
+          make -C "$KERNEL_ROOT" \
+            O="$OUT_DIR" \
+            ARCH=arm64 \
+            CC=clang \
+            LD=ld.lld \
+            LLVM=1 \
+            LLVM_IAS=1 \
+            -j"$(nproc)" \
+            Image dtbs \
+            2>&1 | tee "$ARTIFACT_DIR/11-build-a.log"
+
+          IMAGE_A="$OUT_DIR/arch/arm64/boot/Image"
+          test -s "$IMAGE_A"
+          test -s "$OUT_DIR/vmlinux"
+          test -s "$OUT_DIR/System.map"
+          test -s "$OUT_DIR/.config"
+
+          SNAPSHOT_A="$GITHUB_WORKSPACE/w69-build-a"
+          rm -rf "$SNAPSHOT_A"
+          mkdir -p "$SNAPSHOT_A"
+
+          cp "$IMAGE_A" "$SNAPSHOT_A/Image"
+          cp "$OUT_DIR/vmlinux" "$SNAPSHOT_A/vmlinux"
+          cp "$OUT_DIR/System.map" "$SNAPSHOT_A/System.map"
+          cp "$OUT_DIR/.config" "$SNAPSHOT_A/config"
+
+          {
+            echo "BUILD_A=PASS"
+            echo "IMAGE_BYTES=$(wc -c < "$SNAPSHOT_A/Image")"
+            echo "IMAGE_SHA256=$(sha256sum "$SNAPSHOT_A/Image" | awk '{print $1}')"
+            echo "VMLINUX_SHA256=$(sha256sum "$SNAPSHOT_A/vmlinux" | awk '{print $1}')"
+            echo "SYSTEM_MAP_SHA256=$(sha256sum "$SNAPSHOT_A/System.map" | awk '{print $1}')"
+            echo "CONFIG_SHA256=$(sha256sum "$SNAPSHOT_A/config" | awk '{print $1}')"
+            echo "KBUILD_BUILD_USER=$KBUILD_BUILD_USER"
+            echo "KBUILD_BUILD_HOST=$KBUILD_BUILD_HOST"
+            echo "KBUILD_BUILD_TIMESTAMP=$KBUILD_BUILD_TIMESTAMP"
+            echo "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH"
+          } | tee "$ARTIFACT_DIR/11-build-a-result.txt"
+
+      - name: Clean output tree for independent Build B
+        if: steps.susfs_api.outputs.ready == 'yes'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          CONFIG_A="$GITHUB_WORKSPACE/w69-build-a/config"
+          test -s "$CONFIG_A"
+
+          rm -rf "$OUT_DIR"
+          mkdir -p "$OUT_DIR"
+          cp "$CONFIG_A" "$OUT_DIR/.config"
+
+          export PATH="$TOOLCHAIN_DIR/bin:$PATH"
+
+          make -C "$KERNEL_ROOT" \
+            O="$OUT_DIR" \
+            ARCH=arm64 \
+            CC=clang \
+            LD=ld.lld \
+            LLVM=1 \
+            LLVM_IAS=1 \
+            olddefconfig \
+            2>&1 | tee "$ARTIFACT_DIR/12-build-b-olddefconfig.log"
+
+          test "$(sha256sum "$OUT_DIR/.config" | awk '{print $1}')" = \
+               "$(sha256sum "$CONFIG_A" | awk '{print $1}')"
+
+          echo "BUILD_B_CLEAN_OUTPUT_PREP=PASS" \
+            | tee "$ARTIFACT_DIR/12-build-b-prep.txt"
+
+      - name: Build B VEUX 5.4.274 updated kernel
+        if: steps.susfs_api.outputs.ready == 'yes'
+        shell: bash
+        timeout-minutes: 90
+        run: |
+          set -euo pipefail
+          export PATH="$TOOLCHAIN_DIR/bin:$PATH"
+
+          make -C "$KERNEL_ROOT" \
+            O="$OUT_DIR" \
+            ARCH=arm64 \
+            CC=clang \
+            LD=ld.lld \
+            LLVM=1 \
+            LLVM_IAS=1 \
+            -j"$(nproc)" \
+            Image dtbs \
+            2>&1 | tee "$ARTIFACT_DIR/13-build-b.log"
+
+          IMAGE_B="$OUT_DIR/arch/arm64/boot/Image"
+          test -s "$IMAGE_B"
+          test -s "$OUT_DIR/vmlinux"
+          test -s "$OUT_DIR/System.map"
+          test -s "$OUT_DIR/.config"
+
+          {
+            echo "BUILD_B=PASS"
+            echo "IMAGE_BYTES=$(wc -c < "$IMAGE_B")"
+            echo "IMAGE_SHA256=$(sha256sum "$IMAGE_B" | awk '{print $1}')"
+            echo "VMLINUX_SHA256=$(sha256sum "$OUT_DIR/vmlinux" | awk '{print $1}')"
+            echo "SYSTEM_MAP_SHA256=$(sha256sum "$OUT_DIR/System.map" | awk '{print $1}')"
+            echo "CONFIG_SHA256=$(sha256sum "$OUT_DIR/.config" | awk '{print $1}')"
+          } | tee "$ARTIFACT_DIR/13-build-b-result.txt"
+
+      - name: Prove deterministic A B reproducibility
+        if: steps.susfs_api.outputs.ready == 'yes'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SNAPSHOT_A="$GITHUB_WORKSPACE/w69-build-a"
+
+          cmp -s "$SNAPSHOT_A/Image" \
+            "$OUT_DIR/arch/arm64/boot/Image"
+          cmp -s "$SNAPSHOT_A/vmlinux" \
+            "$OUT_DIR/vmlinux"
+          cmp -s "$SNAPSHOT_A/System.map" \
+            "$OUT_DIR/System.map"
+          cmp -s "$SNAPSHOT_A/config" \
+            "$OUT_DIR/.config"
+
+          {
+            echo "IMAGE_AB_IDENTICAL=YES"
+            echo "VMLINUX_AB_IDENTICAL=YES"
+            echo "SYSTEM_MAP_AB_IDENTICAL=YES"
+            echo "CONFIG_AB_IDENTICAL=YES"
+            echo "IMAGE_SHA256=$(sha256sum "$OUT_DIR/arch/arm64/boot/Image" | awk '{print $1}')"
+            echo "VMLINUX_SHA256=$(sha256sum "$OUT_DIR/vmlinux" | awk '{print $1}')"
+            echo "SYSTEM_MAP_SHA256=$(sha256sum "$OUT_DIR/System.map" | awk '{print $1}')"
+            echo "CONFIG_SHA256=$(sha256sum "$OUT_DIR/.config" | awk '{print $1}')"
+            echo "REPRODUCIBILITY=PASS"
+          } | tee "$ARTIFACT_DIR/14-reproducibility.txt"
+
+          test "$(sha256sum "$OUT_DIR/arch/arm64/boot/Image" | awk '{print $1}')" =             "93f177d35f9ef142fcdb728f73177ed2b32c81272bfb77391ae1cba3b8446f4d"
+          test "$(sha256sum "$OUT_DIR/vmlinux" | awk '{print $1}')" =             "a54fa829d7398a01dd015e5facafb55c9f5cdc8e1eaa20051c0e98ab385482e1"
+          test "$(sha256sum "$OUT_DIR/System.map" | awk '{print $1}')" =             "2959dfabbae93c2d4118e892669006f06b128158ada971a5cf6cb3ebb935cf6d"
+          test "$(sha256sum "$OUT_DIR/.config" | awk '{print $1}')" =             "d7cd955abd59da45804acc9c5e450cf8fc953da3e66bbc274212b40ee9a0b372"
+
+          echo "W68_V3_CROSS_RUN_HASH_MATCH=PASS"             | tee -a "$ARTIFACT_DIR/14-reproducibility.txt"
+
+      - name: Validate ReSukiSU manual hook contracts
+        if: steps.susfs_api.outputs.ready == 'yes'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          REPORT="$ARTIFACT_DIR/15-hook-contracts.txt"
+          : > "$REPORT"
+
+          require() {
+            local needle="$1"
+            local label="$2"
+            shift 2
+            if grep -RqsF "$needle" "$@"; then
+              echo "$label=PASS" | tee -a "$REPORT"
+            else
+              echo "$label=FAIL" | tee -a "$REPORT"
+              exit 1
+            fi
+          }
+
+          require \
+            'ksu_handle_execveat' \
+            EXECVEAT_HANDLER_PRESENT \
+            "$KSU_ROOT/kernel" \
+            "$KERNEL_ROOT/fs"
+
+          require \
+            'do_execveat_common' \
+            EXECVEAT_COMMON_PRESENT \
+            "$KERNEL_ROOT/fs"
+
+          require \
+            'AT_FDCWD' \
+            OLD_HOOK_AT_FDCWD_COMPAT_PRESENT \
+            "$KSU_ROOT/kernel"
+
+          require \
+            'susfs_is_current_proc_no_su' \
+            SUSFS_NO_SU_READ_PRESENT \
+            "$KSU_ROOT/kernel" \
+            "$KERNEL_ROOT/include/linux/susfs_def.h"
+
+          require \
+            'susfs_set_current_proc_no_su' \
+            SUSFS_NO_SU_SET_PRESENT \
+            "$KSU_ROOT/kernel" \
+            "$KERNEL_ROOT/include/linux/susfs_def.h"
+
+          require \
+            'susfs_clear_current_proc_no_su' \
+            SUSFS_NO_SU_CLEAR_PRESENT \
+            "$KSU_ROOT/kernel" \
+            "$KERNEL_ROOT/include/linux/susfs_def.h"
+
+          require \
+            'susfs_set_current_proc_umounted_for_zygote_next' \
+            ZYGOTE_NEXT_UMOUNT_STATE_PRESENT \
+            "$KSU_ROOT/kernel" \
+            "$KERNEL_ROOT/include/linux/susfs_def.h"
+
+          require \
+            '__close_fd(current->files, fd)' \
+            PRE_5_11_CLOSE_FD_COMPAT_PRESENT \
+            "$KSU_ROOT/kernel"
+
+          require \
+            'disable_seccomp()' \
+            PRE_5_10_SECCOMP_PATH_PRESENT \
+            "$KSU_ROOT/kernel"
+
+          {
+            echo
+            echo "=== execveat caller evidence ==="
+            grep -RniE \
+              'ksu_handle_execveat|do_execveat_common' \
+              "$KERNEL_ROOT/fs" \
+              "$KSU_ROOT/kernel" || true
+
+            echo
+            echo "=== no_su / zygote_next evidence ==="
+            grep -RniE \
+              'susfs_(is|set|clear)_current_proc_no_su|zygote_next' \
+              "$KSU_ROOT/kernel" \
+              "$KERNEL_ROOT/include/linux/susfs_def.h" || true
+          } >> "$REPORT"
+
+          echo "MANUAL_HOOK_CONTRACTS=PASS" | tee -a "$REPORT"
+
+      - name: Revalidate protected SUSFS stability contracts
+        if: steps.susfs_api.outputs.ready == 'yes'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          REPORT="$ARTIFACT_DIR/16-susfs-stability-contracts.txt"
+          : > "$REPORT"
+
+          # These source files were guarded before/after the process-state
+          # backport; verify that the recorded guard comparison is still exact.
+          diff -u \
+            "$ARTIFACT_DIR/08a-stability-files-before.sha256" \
+            "$ARTIFACT_DIR/08a-stability-files-after.sha256"
+
+          grep -Fq 'OPEN_REDIRECT_SOURCE_CHANGED=NO' \
+            "$ARTIFACT_DIR/08a-backport-state.txt"
+          grep -Fq 'PROC_TASK_MMU_SOURCE_CHANGED_BY_W69=NO' \
+            "$ARTIFACT_DIR/08a-backport-state.txt"
+
+          # OPEN_REDIRECT must still use the already-proven SRCU semantics.
+          if grep -RqsF 'synchronize_srcu' \
+              "$KERNEL_ROOT/fs/susfs.c" \
+              "$KERNEL_ROOT/fs/namei.c"; then
+            echo "OPEN_REDIRECT_SRCU_SYNC_PRESENT=PASS" | tee -a "$REPORT"
+          else
+            echo "OPEN_REDIRECT_SRCU_SYNC_PRESENT=FAIL" | tee -a "$REPORT"
+            exit 1
+          fi
+
+          # The maps path must still carry SUSFS handling in task_mmu.c.
+          if grep -qsE 'SUSFS|susfs' "$KERNEL_ROOT/fs/proc/task_mmu.c"; then
+            echo "PROC_MAPS_SUSFS_PATH_PRESENT=PASS" | tee -a "$REPORT"
+          else
+            echo "PROC_MAPS_SUSFS_PATH_PRESENT=FAIL" | tee -a "$REPORT"
+            exit 1
+          fi
+
+          echo "SUSFS_STABILITY_CONTRACTS=PASS" | tee -a "$REPORT"
+
+      - name: Write W69 verdict
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ready="${{ steps.susfs_api.outputs.ready }}"
+
+          if [ "$ready" = "yes" ]              && grep -Fq 'REPRODUCIBILITY=PASS' "$ARTIFACT_DIR/14-reproducibility.txt"              && grep -Fq 'MANUAL_HOOK_CONTRACTS=PASS' "$ARTIFACT_DIR/15-hook-contracts.txt"              && grep -Fq 'SUSFS_STABILITY_CONTRACTS=PASS' "$ARTIFACT_DIR/16-susfs-stability-contracts.txt"
+          then
+            result="REPRO_AND_HOOK_CONTRACT_PASS"
+            next="PACKAGE_CANDIDATE_AND_RUNTIME_VALIDATION"
+          elif [ "$ready" = "no" ]; then
+            result="SUSFS_PROCESS_STATE_BACKPORT_FAILED"
+            next="INSPECT_W69_PROCESS_STATE_BACKPORT"
+          else
+            result="REPRO_OR_CONTRACT_VALIDATION_FAILED"
+            next="INSPECT_W69_ARTIFACT"
+          fi
+
+          {
+            echo "W69_V2_RESULT=$result"
+            echo "TARGET_KERNEL=VEUX_LINUX_5.4.274"
+            echo "REFERENCE=46C7"
+            echo "OLD_RESUKISU_PIN=$BASE_REF"
+            echo "SELECTED_TARGET=$TARGET_REF"
+            echo "W68_V3_IMAGE_SHA256=93f177d35f9ef142fcdb728f73177ed2b32c81272bfb77391ae1cba3b8446f4d"
+            echo "W68_V3_VMLINUX_SHA256=a54fa829d7398a01dd015e5facafb55c9f5cdc8e1eaa20051c0e98ab385482e1"
+            echo "W68_V3_SYSTEM_MAP_SHA256=2959dfabbae93c2d4118e892669006f06b128158ada971a5cf6cb3ebb935cf6d"
+            echo "W68_V3_CONFIG_SHA256=d7cd955abd59da45804acc9c5e450cf8fc953da3e66bbc274212b40ee9a0b372"
+            echo "MODULE_LOAD_FILTER_INCLUDED=NO"
+            echo "BOOT_IMAGE_CREATED=NO"
+            echo "FLASHABLE_ZIP_CREATED=NO"
+            echo "DEVICE_ACCESSED=NO"
+            echo "FLASHING_PERFORMED=NO"
+            echo "NEXT_STAGE=$next"
+          } | tee "$ARTIFACT_DIR/12-verdict.txt"
+
+          sha256sum "$ARTIFACT_DIR"/* \
+            2>/dev/null \
+            | sort -k2 \
+            > "$ARTIFACT_DIR/SHA256SUMS.txt" || true
+
+      - name: Upload W69 artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: W69-v2-VEUX-5.4.274-ReSukiSU-SUSFS-repro-hook-contract
+          path: w69-artifact/
+          if-no-files-found: error
+
+      - name: Fail when SUSFS 5.4 API adaptation is required
+        if: steps.susfs_api.outputs.ready == 'no'
+        shell: bash
+        run: |
+          echo "W69 stopped intentionally: current proven SUSFS 2.2 5.4 tree lacks one or more APIs required by ReSukiSU 03b60f26."
+          exit 2
