@@ -1,0 +1,572 @@
+name: 74 - VEUX 5.4.274 Updated Boot RC Promotion v1
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  promote:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    env:
+      SOURCE_ARTIFACT_NAME: W73-v2-VEUX-5.4.274-ReSukiSU-SUSFS-boot-img-candidate
+      DEVICE: veux
+      KERNEL_VERSION: "5.4.274"
+      RESUKISU_TARGET: 4a3785025a920e4f52584f14c663eea4850dc919
+      SUSFS_VERSION: 2.2.0_plus_process_state_backport
+
+      EXPECT_BOOT_SHA256: 7490870231b26fc8495d190a7425dc347351f9f0751db7e9f29403d6a0194145
+      EXPECT_BOOT_BYTES: "134217728"
+      EXPECT_BOOT_GZ_SHA256: f044a08eaf671187aa93a2fafcb364a39676d7f0fc5bb7b86bb31dc1e9143030
+      EXPECT_BOOT_GZ_BYTES: "32375146"
+      EXPECT_KERNEL_SHA256: 1ff4c57bb524b1d01de1d56739133ea4a9c9b3269ad87e013b8140f3654d8aea
+      EXPECT_KERNEL_BYTES: "29843968"
+      EXPECT_RAMDISK_SHA256: 0bc8b54373b5501818e8b252517419786db207771047b6def7ec9bc89beb607a
+      EXPECT_AVB_DIGEST: 7af81a3cf9f9a7575eee20ca76256700512db3a46153238789edafdf8adf8133
+
+      ROM_VERSION: OS1.0.12.0.TKCMIXM
+      ANDROID_VERSION: "13"
+      SECURITY_PATCH: 2024-12
+      BOOT_HEADER_VERSION: "3"
+
+      WORK_DIR: ${{ github.workspace }}/w74
+      INPUT_DIR: ${{ github.workspace }}/w74/input
+      OUTPUT_DIR: ${{ github.workspace }}/w74/output
+      VERIFY_DIR: ${{ github.workspace }}/w74/verify
+      REPORT_DIR: ${{ github.workspace }}/w74/report
+
+      FINAL_PACKAGE: VEUX_5.4.274_ReSukiSU_4a378502_SUSFS_W74_BOOT_RC.zip
+
+    steps:
+      - name: Initialize W74
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$WORK_DIR"
+          mkdir -p "$INPUT_DIR" "$OUTPUT_DIR" "$VERIFY_DIR" "$REPORT_DIR"
+
+          {
+            echo "W74_MODE=EXACT_W73_BOOT_PROMOTION"
+            echo "DEVICE=$DEVICE"
+            echo "KERNEL_VERSION=$KERNEL_VERSION"
+            echo "RESUKISU_TARGET=$RESUKISU_TARGET"
+            echo "SOURCE_ARTIFACT_NAME=$SOURCE_ARTIFACT_NAME"
+            echo "BOOT_IMG_EXPECTED_SHA256=$EXPECT_BOOT_SHA256"
+            echo "FLASHING_PERFORMED=NO"
+            echo "DEVICE_ACCESSED=NO"
+          } | tee "$REPORT_DIR/00-plan.txt"
+
+      - name: Install minimal dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ca-certificates curl jq unzip
+          python3 --version
+          echo "DEPENDENCIES=PASS" | tee "$REPORT_DIR/01-dependencies.txt"
+
+      - name: Locate exact W73 boot artifact
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          ALL="$WORK_DIR/artifacts.ndjson"
+          : > "$ALL"
+
+          page=1
+          while :; do
+            PAGE="$WORK_DIR/artifacts-${page}.json"
+
+            curl \
+              --fail \
+              --silent \
+              --show-error \
+              --retry 3 \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/artifacts?per_page=100&page=${page}" \
+              -o "$PAGE"
+
+            COUNT="$(jq '.artifacts | length' "$PAGE")"
+            jq -c '.artifacts[]' "$PAGE" >> "$ALL"
+
+            if [ "$COUNT" -lt 100 ]; then
+              break
+            fi
+
+            page=$((page + 1))
+            [ "$page" -le 30 ] || {
+              echo "ERROR: artifact pagination safety limit reached" >&2
+              exit 1
+            }
+          done
+
+          MATCHES="$(
+            jq -s \
+              --arg NAME "$SOURCE_ARTIFACT_NAME" \
+              '[.[] | select(.name == $NAME and .expired == false)] | sort_by(.created_at)' \
+              "$ALL"
+          )"
+
+          test "$(jq 'length' <<< "$MATCHES")" -ge 1
+
+          SELECTED="$(jq '.[-1]' <<< "$MATCHES")"
+          jq . <<< "$SELECTED" > "$REPORT_DIR/02-source-artifact.json"
+
+          SOURCE_RUN_ID="$(jq -r '.workflow_run.id // empty' <<< "$SELECTED")"
+          SOURCE_ARTIFACT_ID="$(jq -r '.id' <<< "$SELECTED")"
+          SOURCE_CREATED_AT="$(jq -r '.created_at' <<< "$SELECTED")"
+          SOURCE_URL="$(jq -r '.archive_download_url' <<< "$SELECTED")"
+
+          test -n "$SOURCE_ARTIFACT_ID"
+          test -n "$SOURCE_URL"
+
+          {
+            echo "SOURCE_ARTIFACT_LOOKUP=PASS"
+            echo "SOURCE_ARTIFACT_ID=$SOURCE_ARTIFACT_ID"
+            echo "SOURCE_RUN_ID=$SOURCE_RUN_ID"
+            echo "SOURCE_CREATED_AT=$SOURCE_CREATED_AT"
+          } | tee "$REPORT_DIR/02-source-artifact.txt"
+
+          printf '%s\n' "$SOURCE_URL" > "$WORK_DIR/source-url.txt"
+
+      - name: Download and extract W73 boot artifact
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          SOURCE_URL="$(cat "$WORK_DIR/source-url.txt")"
+
+          curl \
+            --fail \
+            --location \
+            --silent \
+            --show-error \
+            --retry 3 \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "$SOURCE_URL" \
+            -o "$WORK_DIR/source-artifact.zip"
+
+          unzip -t "$WORK_DIR/source-artifact.zip" \
+            > "$REPORT_DIR/03-source-artifact-crc.txt"
+
+          unzip -q "$WORK_DIR/source-artifact.zip" -d "$INPUT_DIR"
+
+          test -s "$INPUT_DIR/boot.img"
+          test -s "$INPUT_DIR/boot.img.gz"
+          test -s "$INPUT_DIR/boot.img.sha256"
+          test -s "$INPUT_DIR/boot.img.gz.sha256"
+          test -s "$INPUT_DIR/W71-BOOT-CANDIDATE-MANIFEST.txt"
+
+          echo "SOURCE_ARTIFACT_EXTRACT=PASS" \
+            | tee "$REPORT_DIR/03-source-artifact-extract.txt"
+
+      - name: Verify exact W73 boot bytes
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test "$(stat -c '%s' "$INPUT_DIR/boot.img")" = "$EXPECT_BOOT_BYTES"
+          test "$(sha256sum "$INPUT_DIR/boot.img" | awk '{print $1}')" = "$EXPECT_BOOT_SHA256"
+
+          test "$(stat -c '%s' "$INPUT_DIR/boot.img.gz")" = "$EXPECT_BOOT_GZ_BYTES"
+          test "$(sha256sum "$INPUT_DIR/boot.img.gz" | awk '{print $1}')" = "$EXPECT_BOOT_GZ_SHA256"
+
+          grep -Fxq "$EXPECT_BOOT_SHA256  boot.img" \
+            "$INPUT_DIR/boot.img.sha256"
+          grep -Fxq "$EXPECT_BOOT_GZ_SHA256  boot.img.gz" \
+            "$INPUT_DIR/boot.img.gz.sha256"
+
+          gzip -t "$INPUT_DIR/boot.img.gz"
+          gzip -dc "$INPUT_DIR/boot.img.gz" > "$WORK_DIR/from-gzip.img"
+          cmp -s "$INPUT_DIR/boot.img" "$WORK_DIR/from-gzip.img"
+
+          {
+            echo "W73_BOOT_BYTES=PASS"
+            echo "BOOT_IMG_SHA256=$EXPECT_BOOT_SHA256"
+            echo "BOOT_IMG_BYTES=$EXPECT_BOOT_BYTES"
+            echo "BOOT_GZ_SHA256=$EXPECT_BOOT_GZ_SHA256"
+            echo "BOOT_GZ_BYTES=$EXPECT_BOOT_GZ_BYTES"
+            echo "GZIP_ROUNDTRIP_BYTE_IDENTICAL=YES"
+          } | tee "$REPORT_DIR/04-w73-boot-bytes.txt"
+
+      - name: Verify W73 manifest contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          M="$INPUT_DIR/W71-BOOT-CANDIDATE-MANIFEST.txt"
+
+          grep -Fxq 'W71_BOOT_CANDIDATE=PASS' "$M"
+          grep -Fxq "DEVICE=$DEVICE" "$M"
+          grep -Fxq "KERNEL_VERSION=$KERNEL_VERSION" "$M"
+          grep -Fxq "ROM_VERSION=$ROM_VERSION" "$M"
+          grep -Fxq "ANDROID_VERSION=$ANDROID_VERSION" "$M"
+          grep -Fxq "SECURITY_PATCH=$SECURITY_PATCH" "$M"
+          grep -Fxq "RESUKISU_TARGET=$RESUKISU_TARGET" "$M"
+          grep -Fxq "SUSFS_VERSION=$SUSFS_VERSION" "$M"
+          grep -Fxq "BOOT_HEADER_VERSION=$BOOT_HEADER_VERSION" "$M"
+          grep -Fxq "BOOT_IMG_SHA256=$EXPECT_BOOT_SHA256" "$M"
+          grep -Fxq "BOOT_IMG_BYTES=$EXPECT_BOOT_BYTES" "$M"
+          grep -Fxq "KERNEL_SHA256=$EXPECT_KERNEL_SHA256" "$M"
+          grep -Fxq "KERNEL_BYTES=$EXPECT_KERNEL_BYTES" "$M"
+          grep -Fxq "STOCK_RAMDISK_SHA256=$EXPECT_RAMDISK_SHA256" "$M"
+          grep -Fxq "EMBEDDED_AVB_DIGEST=$EXPECT_AVB_DIGEST" "$M"
+          grep -Fxq 'EMBEDDED_AVB_VERIFIES=YES' "$M"
+          grep -Fxq 'HISTORICAL_W19_W21_CALIBRATION=PASS' "$M"
+          grep -Fxq 'BUILD_A_B_BYTE_IDENTICAL=YES' "$M"
+          grep -Fxq 'MAGISKBOOT_ARCH_AUDIT=PASS' "$M"
+          grep -Fxq 'DEVICE_ACCESSED=NO' "$M"
+          grep -Fxq 'FLASHING_PERFORMED=NO' "$M"
+          grep -Fxq 'PHYSICAL_DEVICE_BOOT_TESTED=NO' "$M"
+
+          echo "W73_MANIFEST_CONTRACTS=PASS" \
+            | tee "$REPORT_DIR/05-w73-manifest-contracts.txt"
+
+      - name: Independently parse Boot v3 and AVB descriptor
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - \
+            "$INPUT_DIR/boot.img" \
+            "$REPORT_DIR/06-independent-boot-audit.txt" <<'PY'
+          import hashlib
+          import struct
+          import sys
+          from pathlib import Path
+
+          path = Path(sys.argv[1])
+          report = Path(sys.argv[2])
+
+          EXPECT_BOOT = "7490870231b26fc8495d190a7425dc347351f9f0751db7e9f29403d6a0194145"
+          EXPECT_KERNEL = "1ff4c57bb524b1d01de1d56739133ea4a9c9b3269ad87e013b8140f3654d8aea"
+          EXPECT_RAMDISK = "0bc8b54373b5501818e8b252517419786db207771047b6def7ec9bc89beb607a"
+          EXPECT_AVB = "7af81a3cf9f9a7575eee20ca76256700512db3a46153238789edafdf8adf8133"
+
+          data = path.read_bytes()
+
+          def sha(blob):
+              return hashlib.sha256(blob).hexdigest()
+
+          def need(cond, msg):
+              if not cond:
+                  raise SystemExit("ERROR: " + msg)
+
+          need(len(data) == 134217728, "boot size")
+          need(sha(data) == EXPECT_BOOT, "boot hash")
+          need(data[:8] == b"ANDROID!", "Android boot magic")
+
+          kernel_size = struct.unpack_from("<I", data, 8)[0]
+          ramdisk_size = struct.unpack_from("<I", data, 12)[0]
+          header_size = struct.unpack_from("<I", data, 20)[0]
+          header_version = struct.unpack_from("<I", data, 40)[0]
+
+          need(kernel_size == 29843968, "kernel size")
+          need(ramdisk_size == 22061278, "ramdisk size")
+          need(header_size == 1580, "header size")
+          need(header_version == 3, "header version")
+
+          kernel = data[4096:4096 + kernel_size]
+          ramdisk_offset = 29851648
+          ramdisk = data[ramdisk_offset:ramdisk_offset + ramdisk_size]
+
+          need(sha(kernel) == EXPECT_KERNEL, "kernel hash")
+          need(sha(ramdisk) == EXPECT_RAMDISK, "ramdisk hash")
+
+          footer = data[-64:]
+          need(footer[:4] == b"AVBf", "AVB footer magic")
+          major, minor = struct.unpack_from(">II", footer, 4)
+          original_size, vbmeta_offset, vbmeta_size = struct.unpack_from(">QQQ", footer, 12)
+
+          need((major, minor) == (1, 0), "AVB footer version")
+          need(original_size == 51916800, "AVB original size")
+          need(vbmeta_offset == 51916800, "AVB vbmeta offset")
+          need(vbmeta_size == 896, "AVB vbmeta size")
+
+          vbmeta = data[vbmeta_offset:vbmeta_offset + vbmeta_size]
+          need(vbmeta[:4] == b"AVB0", "vbmeta magic")
+          algorithm_type = struct.unpack_from(">I", vbmeta, 28)[0]
+          need(algorithm_type == 0, "vbmeta algorithm NONE")
+
+          auth_size, _ = struct.unpack_from(">QQ", vbmeta, 12)
+          vals = struct.unpack_from(">QQQQQQQQQQQ", vbmeta, 32)
+          desc_offset = vals[8]
+          desc_size = vals[9]
+          pos = 256 + auth_size + desc_offset
+          end = pos + desc_size
+          matches = []
+
+          while pos < end:
+              tag, following = struct.unpack_from(">QQ", vbmeta, pos)
+              raw = vbmeta[pos:pos + 16 + following]
+              need(len(raw) == 16 + following, "descriptor truncation")
+
+              if tag == 2:
+                  image_size = struct.unpack_from(">Q", raw, 16)[0]
+                  algorithm = raw[24:56].split(b"\0", 1)[0].decode("ascii", "replace")
+                  name_len, salt_len, digest_len, flags = struct.unpack_from(">IIII", raw, 56)
+                  q = 132
+                  partition = raw[q:q + name_len].decode("ascii", "replace")
+                  q += name_len
+                  salt = raw[q:q + salt_len]
+                  q += salt_len
+                  digest = raw[q:q + digest_len]
+
+                  if partition == "boot":
+                      calculated = hashlib.sha256(salt + data[:image_size]).digest()
+                      matches.append((image_size, algorithm, flags, digest.hex(), calculated.hex()))
+
+              pos += 16 + following
+
+          need(len(matches) == 1, "exactly one boot hash descriptor")
+          image_size, algorithm, flags, digest, calculated = matches[0]
+          need(image_size == 51916800, "descriptor image size")
+          need(algorithm == "sha256", "descriptor algorithm")
+          need(digest == EXPECT_AVB, "descriptor digest")
+          need(digest == calculated, "descriptor verifies")
+
+          report.write_text(
+              "\n".join([
+                  "INDEPENDENT_BOOT_V3_AUDIT=PASS",
+                  f"BOOT_IMG_SHA256={sha(data)}",
+                  f"KERNEL_SHA256={sha(kernel)}",
+                  f"RAMDISK_SHA256={sha(ramdisk)}",
+                  "BOOT_HEADER_VERSION=3",
+                  "AVB_FOOTER_VERSION=1.0",
+                  "AVB_ALGORITHM=NONE",
+                  f"AVB_BOOT_DESCRIPTOR_DIGEST={digest}",
+                  "AVB_BOOT_DESCRIPTOR_VERIFIES=YES",
+              ]) + "\n",
+              encoding="utf-8",
+          )
+          PY
+
+          grep -Fxq 'INDEPENDENT_BOOT_V3_AUDIT=PASS' \
+            "$REPORT_DIR/06-independent-boot-audit.txt"
+          grep -Fxq 'AVB_BOOT_DESCRIPTOR_VERIFIES=YES' \
+            "$REPORT_DIR/06-independent-boot-audit.txt"
+
+      - name: Build clean W74 release-candidate metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cp "$INPUT_DIR/boot.img" "$OUTPUT_DIR/boot.img"
+          cp "$INPUT_DIR/boot.img.gz" "$OUTPUT_DIR/boot.img.gz"
+
+          cat > "$OUTPUT_DIR/W74-BOOT-RC-MANIFEST.txt" <<EOF
+          W74_BOOT_RC=PASS
+          DEVICE=$DEVICE
+          KERNEL_VERSION=$KERNEL_VERSION
+          ROM_FAMILY=Xiaomi_HyperOS_Stock
+          ROM_VERSION=$ROM_VERSION
+          ANDROID_VERSION=$ANDROID_VERSION
+          SECURITY_PATCH=$SECURITY_PATCH
+          RESUKISU_TARGET=$RESUKISU_TARGET
+          SUSFS_VERSION=$SUSFS_VERSION
+          BOOT_HEADER_VERSION=$BOOT_HEADER_VERSION
+          BOOT_IMG_SHA256=$EXPECT_BOOT_SHA256
+          BOOT_IMG_BYTES=$EXPECT_BOOT_BYTES
+          BOOT_GZ_SHA256=$EXPECT_BOOT_GZ_SHA256
+          BOOT_GZ_BYTES=$EXPECT_BOOT_GZ_BYTES
+          KERNEL_SHA256=$EXPECT_KERNEL_SHA256
+          KERNEL_BYTES=$EXPECT_KERNEL_BYTES
+          STOCK_RAMDISK_SHA256=$EXPECT_RAMDISK_SHA256
+          EMBEDDED_AVB_DIGEST=$EXPECT_AVB_DIGEST
+          EMBEDDED_AVB_VERIFIES=YES
+          HISTORICAL_W19_W21_CALIBRATION=PASS
+          BUILD_A_B_BYTE_IDENTICAL=YES
+          W72_KERNEL_REPRODUCIBILITY=PASS
+          W73_BOOT_STATIC_VALIDATION=PASS
+          SOURCE_ARTIFACT=$SOURCE_ARTIFACT_NAME
+          DEVICE_ACCESSED=NO
+          ADB_USED=NO
+          FASTBOOT_USED=NO
+          FLASHING_PERFORMED=NO
+          PHYSICAL_DEVICE_BOOT_TESTED=NO
+          AUTOFLASH_SCRIPT_INCLUDED=NO
+          EOF
+
+          cat > "$OUTPUT_DIR/README-FIRST.txt" <<EOF
+          VEUX Linux 5.4.274 W74 Boot Release Candidate
+
+          This package contains the exact statically validated W73-v2 boot.img.
+          No automatic flashing script is included.
+
+          boot.img SHA-256:
+          $EXPECT_BOOT_SHA256
+
+          ReSukiSU target:
+          $RESUKISU_TARGET
+
+          Device:
+          $DEVICE
+
+          Physical-device boot validation has NOT yet been performed.
+          EOF
+
+          printf '%s  boot.img\n' "$EXPECT_BOOT_SHA256" \
+            > "$OUTPUT_DIR/boot.img.sha256"
+          printf '%s  boot.img.gz\n' "$EXPECT_BOOT_GZ_SHA256" \
+            > "$OUTPUT_DIR/boot.img.gz.sha256"
+
+          sha256sum \
+            "$OUTPUT_DIR/boot.img" \
+            "$OUTPUT_DIR/boot.img.gz" \
+            "$OUTPUT_DIR/W74-BOOT-RC-MANIFEST.txt" \
+            "$OUTPUT_DIR/README-FIRST.txt" \
+            | sed "s#${OUTPUT_DIR}/##" \
+            | sort -k2 \
+            > "$OUTPUT_DIR/SHA256SUMS.txt"
+
+          echo "W74_METADATA_PROMOTION=PASS" \
+            | tee "$REPORT_DIR/07-w74-metadata.txt"
+
+      - name: Create deterministic W74 RC package
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          export OUTPUT_DIR FINAL_PACKAGE WORK_DIR
+          python3 - <<'PY'
+          import os
+          import zipfile
+          from pathlib import Path
+
+          root = Path(os.environ["OUTPUT_DIR"])
+          out = Path(os.environ["WORK_DIR"]) / os.environ["FINAL_PACKAGE"]
+
+          files = [
+              "boot.img",
+              "boot.img.gz",
+              "boot.img.sha256",
+              "boot.img.gz.sha256",
+              "W74-BOOT-RC-MANIFEST.txt",
+              "README-FIRST.txt",
+              "SHA256SUMS.txt",
+          ]
+
+          epoch = (2026, 8, 27, 0, 0, 0)
+
+          def build(path):
+              with zipfile.ZipFile(
+                  path,
+                  "w",
+                  compression=zipfile.ZIP_STORED,
+                  allowZip64=True,
+              ) as zf:
+                  for name in files:
+                      data = (root / name).read_bytes()
+                      info = zipfile.ZipInfo(name, date_time=epoch)
+                      info.compress_type = zipfile.ZIP_STORED
+                      info.create_system = 3
+                      info.external_attr = 0o100644 << 16
+                      zf.writestr(info, data)
+
+          build(out)
+          build(out.with_suffix(".second.zip"))
+          PY
+
+          cmp -s \
+            "$WORK_DIR/$FINAL_PACKAGE" \
+            "$WORK_DIR/${FINAL_PACKAGE%.zip}.second.zip"
+
+          unzip -t "$WORK_DIR/$FINAL_PACKAGE" \
+            > "$REPORT_DIR/08-final-package-crc.txt"
+
+          {
+            echo "DETERMINISTIC_PACKAGE=PASS"
+            echo "FINAL_PACKAGE=$FINAL_PACKAGE"
+            echo "FINAL_PACKAGE_SHA256=$(sha256sum "$WORK_DIR/$FINAL_PACKAGE" | awk '{print $1}')"
+            echo "FINAL_PACKAGE_BYTES=$(stat -c '%s' "$WORK_DIR/$FINAL_PACKAGE")"
+          } | tee "$REPORT_DIR/08-final-package.txt"
+
+      - name: Extract final package and compare every payload byte
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -rf "$VERIFY_DIR"
+          mkdir -p "$VERIFY_DIR"
+          unzip -q "$WORK_DIR/$FINAL_PACKAGE" -d "$VERIFY_DIR"
+
+          for f in \
+            boot.img \
+            boot.img.gz \
+            boot.img.sha256 \
+            boot.img.gz.sha256 \
+            W74-BOOT-RC-MANIFEST.txt \
+            README-FIRST.txt \
+            SHA256SUMS.txt
+          do
+            cmp -s "$OUTPUT_DIR/$f" "$VERIFY_DIR/$f"
+          done
+
+          test "$(sha256sum "$VERIFY_DIR/boot.img" | awk '{print $1}')" = \
+            "$EXPECT_BOOT_SHA256"
+          test "$(sha256sum "$VERIFY_DIR/boot.img.gz" | awk '{print $1}')" = \
+            "$EXPECT_BOOT_GZ_SHA256"
+
+          grep -Fxq 'W74_BOOT_RC=PASS' \
+            "$VERIFY_DIR/W74-BOOT-RC-MANIFEST.txt"
+          grep -Fxq 'AUTOFLASH_SCRIPT_INCLUDED=NO' \
+            "$VERIFY_DIR/W74-BOOT-RC-MANIFEST.txt"
+          grep -Fxq 'PHYSICAL_DEVICE_BOOT_TESTED=NO' \
+            "$VERIFY_DIR/W74-BOOT-RC-MANIFEST.txt"
+
+          echo "FINAL_PACKAGE_BYTE_RECHECK=PASS" \
+            | tee "$REPORT_DIR/09-final-byte-recheck.txt"
+
+      - name: Final W74 verdict
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          grep -Fq 'W73_BOOT_BYTES=PASS' \
+            "$REPORT_DIR/04-w73-boot-bytes.txt"
+          grep -Fq 'W73_MANIFEST_CONTRACTS=PASS' \
+            "$REPORT_DIR/05-w73-manifest-contracts.txt"
+          grep -Fq 'INDEPENDENT_BOOT_V3_AUDIT=PASS' \
+            "$REPORT_DIR/06-independent-boot-audit.txt"
+          grep -Fq 'W74_METADATA_PROMOTION=PASS' \
+            "$REPORT_DIR/07-w74-metadata.txt"
+          grep -Fq 'DETERMINISTIC_PACKAGE=PASS' \
+            "$REPORT_DIR/08-final-package.txt"
+          grep -Fq 'FINAL_PACKAGE_BYTE_RECHECK=PASS' \
+            "$REPORT_DIR/09-final-byte-recheck.txt"
+
+          {
+            echo "W74_V1_RESULT=BOOT_RC_PROMOTION_PASS"
+            echo "BOOT_IMG_SHA256=$EXPECT_BOOT_SHA256"
+            echo "KERNEL_SHA256=$EXPECT_KERNEL_SHA256"
+            echo "RESUKISU_TARGET=$RESUKISU_TARGET"
+            echo "AUTOFLASH_SCRIPT_INCLUDED=NO"
+            echo "DEVICE_ACCESSED=NO"
+            echo "FLASHING_PERFORMED=NO"
+            echo "PHYSICAL_DEVICE_BOOT_TESTED=NO"
+            echo "NEXT_STAGE=CONTROLLED_PHYSICAL_DEVICE_BOOT_TEST"
+          } | tee "$REPORT_DIR/10-final-verdict.txt"
+
+      - name: Upload W74 release-candidate package
+        uses: actions/upload-artifact@v4
+        with:
+          name: W74-v1-VEUX-5.4.274-ReSukiSU-SUSFS-boot-release-candidate
+          path: |
+            w74/VEUX_5.4.274_ReSukiSU_4a378502_SUSFS_W74_BOOT_RC.zip
+            w74/report/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
