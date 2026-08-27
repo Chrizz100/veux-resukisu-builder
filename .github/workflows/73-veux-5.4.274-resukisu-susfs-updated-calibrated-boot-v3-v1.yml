@@ -1,0 +1,2163 @@
+name: 73 - VEUX 5.4.274 ReSukiSU SUSFS Updated Calibrated Boot v3 v1
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  actions: read
+
+
+jobs:
+  integrate-compile:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+
+    env:
+      ARCH: arm64
+
+      RECIPE_PATH: .github/workflows/46C7-final-cumulative-resukisu-susfs-deterministic-cross-run-reference.yml
+      W65_PATH: .github/workflows/65-kernelsu-v0.9.5-susfs-2.2.0-cross-run-reproducibility-v1.yml
+      RECIPE_JOB: full-build
+      RECIPE_STOP_STEP: "27"
+
+      BASE_REF: faccf4c5edc7be37776216e7d43dd3dca0239331
+      TARGET_REF: 4a3785025a920e4f52584f14c663eea4850dc919
+      SUCOMPAT_REFACTOR: 75b99e3e2f312377fc9e5d3720324c0caaf1e610
+      EXECVEAT_SUPPORT: 9671b9d11e459467d41884c98e1366b13aaae2cc
+      OLD_HOOK_COMPAT: cc44ff62d9dc8b84dbd7c3e4d2703f6a6fb844c3
+      SUSFS_SYNC: 03b60f260cce36f23efbd26c9c334edfdc9ce7eb
+      INPUT_HOOK_STABILITY: 4a3785025a920e4f52584f14c663eea4850dc919
+
+      BUILDER_DIR: ${{ github.workspace }}/builder-repo
+      DRIVER_DIR: ${{ github.workspace }}/w71-driver
+      ARTIFACT_DIR: ${{ github.workspace }}/w71-artifact
+      PATCH_DIR: ${{ github.workspace }}/w71-patches
+      OUT_DIR_NAME: out-w68
+
+      KBUILD_BUILD_USER: w68
+      KBUILD_BUILD_HOST: veux-w68
+      KBUILD_BUILD_TIMESTAMP: "Tue Aug 25 00:00:00 UTC 2026"
+      KBUILD_BUILD_VERSION: "1"
+      SOURCE_DATE_EPOCH: "1787616000"
+
+      W53_CONTRACT_PATH: .github/workflows/53-gen1-5.4.274-github-built-boot-img-v1.yml
+      W21_ARTIFACT_NAME: "veux-5.4.274-resukisu-susfs-2.2-workflow21-exact-w19-final-flashable-1"
+      W21_FINAL_ZIP_NAME: "VEUX_5.4.274_ReSukiSU_SUSFS_2.2_EXACT_W19_BOOT_FLASHABLE.zip"
+      W21_FINAL_ZIP_SHA256: "b6f9c22582cf90aca3bd40d946f44f465f3b4324d377cabdd9a23668113fe4f2"
+      W21_FINAL_ZIP_BYTES: "75516120"
+
+      STOCK_ROM_VERSION: "OS1.0.12.0.TKCMIXM"
+      STOCK_ANDROID_VERSION: "13"
+      STOCK_SECURITY_PATCH: "2024-12"
+      STOCK_BOOT_SHA256: "ac6522e4eed55782dd2ae61362e9d345d01a1f229c87333818511d5537fa79c5"
+      STOCK_BOOT_BYTES: "134217728"
+      OLD_CUSTOM_BOOT_SHA256: "2baffafce260348c247674c5e8176408d45dc75b35ccbf7ca5834cbb4679398e"
+      OLD_KERNEL_SHA256: "e036175ada602df3bcb443da7c390e8cd4b0e900c26fbfa313725db02855ec96"
+      OLD_KERNEL_BYTES: "29839872"
+      STOCK_RAMDISK_SHA256: "0bc8b54373b5501818e8b252517419786db207771047b6def7ec9bc89beb607a"
+      ROLLBACK_GZIP_SHA256: "9a1532ccfc57b465256bba97863f927b80823fa8812a4d13e4f4c8bf9af0c78b"
+      MAGISKBOOT_SHA256: "0b19472b291ce9033c29a83155ff4c1b18be9d1d17d901d63e50f57436378762"
+
+      W70_IMAGE_SHA256: "1ff4c57bb524b1d01de1d56739133ea4a9c9b3269ad87e013b8140f3654d8aea"
+      W70_IMAGE_BYTES: "29843968"
+      W70_CONFIG_SHA256: "d7cd955abd59da45804acc9c5e450cf8fc953da3e66bbc274212b40ee9a0b372"
+
+      BOOT_WORK: ${{ github.workspace }}/w71-boot
+      BOOT_INPUTS: ${{ github.workspace }}/w71-boot/inputs
+      BOOT_W21: ${{ github.workspace }}/w71-boot/w21
+      BOOT_OLD_PACKAGE: ${{ github.workspace }}/w71-boot/old-package
+      BOOT_BUILD: ${{ github.workspace }}/w71-boot/build
+      BOOT_UNPACK: ${{ github.workspace }}/w71-boot/unpack
+      BOOT_OUTPUT: ${{ github.workspace }}/w71-boot/output
+
+      TZ: UTC
+      LANG: C.UTF-8
+      LC_ALL: C.UTF-8
+
+    steps:
+      - name: Initialize W70
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$DRIVER_DIR" "$ARTIFACT_DIR" "$PATCH_DIR"
+          mkdir -p "$DRIVER_DIR" "$ARTIFACT_DIR" "$PATCH_DIR"
+
+          cat > "$ARTIFACT_DIR/00-plan.txt" <<EOF
+          W70_V1
+          TARGET=VEUX_LINUX_5.4.274
+          BASELINE=46C7
+          CURRENT_RESUKISU_PIN=$BASE_REF
+          CANDIDATE_TARGET=$TARGET_REF
+          MODE=SELECTIVE_KERNEL_COMMIT_CHAIN
+          REQUIRED_CHAIN=$SUCOMPAT_REFACTOR,$EXECVEAT_SUPPORT,$OLD_HOOK_COMPAT,$SUSFS_SYNC,$INPUT_HOOK_STABILITY
+          MODULE_LOAD_FILTER=EXCLUDED
+          BOOT_IMAGE_CREATED=NO
+          FLASHABLE_ZIP_CREATED=NO
+          DEVICE_ACCESSED=NO
+          FLASHING_PERFORMED=NO
+          EOF
+
+      - name: Install W70 dependencies
+        shell: bash
+        timeout-minutes: 15
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            bc bison build-essential ca-certificates cpio curl flex git jq \
+            libelf-dev libncurses-dev libssl-dev patch python3 python3-pip \
+            rsync unzip xz-utils zstd
+
+          python3 -m pip install \
+            --disable-pip-version-check \
+            --no-input \
+            'PyYAML==6.0.2'
+
+      - name: Checkout builder repository
+        uses: actions/checkout@v6
+        with:
+          path: builder-repo
+          fetch-depth: 0
+
+      - name: Checkout ReSukiSU target
+        uses: actions/checkout@v6
+        with:
+          repository: ReSukiSU/ReSukiSU
+          ref: ${{ env.TARGET_REF }}
+          path: ReSukiSU-target
+          fetch-depth: 0
+
+      - name: Authenticate W70 inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          RECIPE="$BUILDER_DIR/$RECIPE_PATH"
+          W65="$BUILDER_DIR/$W65_PATH"
+
+          test -s "$RECIPE"
+          test -s "$W65"
+
+          grep -Fxq \
+            'name: 46C7 - VEUX Final Cumulative ReSukiSU SUSFS Deterministic Cross-Run Reference' \
+            "$RECIPE"
+          grep -Fq \
+            'RESUKISU_COMMIT: "faccf4c5edc7be37776216e7d43dd3dca0239331"' \
+            "$RECIPE"
+          grep -Fq \
+            'OPEN_REDIRECT SRCU/UAF fixed semantics must already be present' \
+            "$RECIPE"
+          grep -Fq \
+            '/proc/*/maps output-pointer/SRCU handling must already be present' \
+            "$RECIPE"
+
+          grep -Fxq \
+            'name: 65 - KernelSU v0.9.5 + SUSFS 2.2.0 Cross-Run Reproducibility v1' \
+            "$W65"
+          grep -Fq 'recipe_stop_step: "27"' "$W65"
+
+          test "$(git -C ReSukiSU-target rev-parse HEAD)" = "$TARGET_REF"
+
+          git -C ReSukiSU-target fetch --no-tags origin \
+            "$BASE_REF" \
+            "$SUCOMPAT_REFACTOR" \
+            "$EXECVEAT_SUPPORT" \
+            "$OLD_HOOK_COMPAT" \
+            "$SUSFS_SYNC" \
+            "$INPUT_HOOK_STABILITY"
+
+          for c in \
+            "$SUCOMPAT_REFACTOR" \
+            "$EXECVEAT_SUPPORT" \
+            "$OLD_HOOK_COMPAT" \
+            "$SUSFS_SYNC" \
+            "$INPUT_HOOK_STABILITY"
+          do
+            git -C ReSukiSU-target merge-base --is-ancestor "$BASE_REF" "$c"
+            git -C ReSukiSU-target merge-base --is-ancestor "$c" "$TARGET_REF"
+          done
+
+          {
+            echo "RECIPE_SHA256=$(sha256sum "$RECIPE" | awk '{print $1}')"
+            echo "W65_SHA256=$(sha256sum "$W65" | awk '{print $1}')"
+            echo "RESUKISU_TARGET=$(git -C ReSukiSU-target rev-parse HEAD)"
+            echo "INPUT_AUTH=PASS"
+          } | tee "$ARTIFACT_DIR/01-input-auth.txt"
+
+      - name: Reuse proven W65 staging driver
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          export W65_FILE="$BUILDER_DIR/$W65_PATH"
+
+          python3 - <<'PY'
+          import os
+          import subprocess
+          from pathlib import Path
+          import yaml
+
+          w65 = Path(os.environ["W65_FILE"])
+          doc = yaml.load(w65.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
+
+          steps = doc["jobs"]["full-link"]["steps"]
+          selected = [
+              step for step in steps
+              if step.get("name") == "Write generic proven-recipe staging driver"
+          ]
+          if len(selected) != 1:
+              raise SystemExit(
+                  f"expected exactly one proven staging-driver step, got {len(selected)}"
+              )
+
+          script = selected[0].get("run")
+          if not script:
+              raise SystemExit("proven staging-driver step has no run block")
+
+          subprocess.run(
+              ["bash", "-euo", "pipefail", "-c", script],
+              check=True,
+              env=os.environ.copy(),
+          )
+          PY
+
+          test -s "$DRIVER_DIR/run_recipe_until.py"
+          python3 -m py_compile "$DRIVER_DIR/run_recipe_until.py"
+
+          {
+            echo "PROVEN_STAGING_DRIVER_REUSED=YES"
+            echo "DRIVER_SHA256=$(sha256sum "$DRIVER_DIR/run_recipe_until.py" | awk '{print $1}')"
+          } | tee "$ARTIFACT_DIR/02-staging-driver.txt"
+
+      - name: Stage exact 46C7 source through step 27
+        shell: bash
+        timeout-minutes: 75
+        env:
+          W64_RECIPE_PATH: .github/workflows/46C7-final-cumulative-resukisu-susfs-deterministic-cross-run-reference.yml
+          W64_RECIPE_JOB: full-build
+          W64_RECIPE_STOP_STEP: "27"
+          W64_LANE: linux-5_4_274
+          W64_SOURCE_PROVEN_NOFAULT_FIX: "no"
+        run: |
+          set -euo pipefail
+
+          # The inherited 46C7 recipe downloads the 295 MiB Android clang
+          # archive. A transient truncated transfer must not invalidate W71.
+          # Retry the proven staging recipe from a clean non-input workspace.
+          : > "$ARTIFACT_DIR/03-46c7-staging.log"
+
+          for attempt in 1 2 3; do
+            echo "===== W71 staging attempt $attempt/3 =====" \
+              | tee -a "$ARTIFACT_DIR/03-46c7-staging.log"
+
+            # Preserve only immutable workflow inputs/diagnostics. Everything
+            # created by the staging recipe is disposable between attempts.
+            find "$GITHUB_WORKSPACE" -mindepth 1 -maxdepth 1 \
+              ! -name "$(basename "$BUILDER_DIR")" \
+              ! -name "ReSukiSU-target" \
+              ! -name "$(basename "$DRIVER_DIR")" \
+              ! -name "$(basename "$ARTIFACT_DIR")" \
+              ! -name "$(basename "$PATCH_DIR")" \
+              -exec rm -rf -- {} +
+
+            mkdir -p "$PATCH_DIR"
+
+            if python3 "$DRIVER_DIR/run_recipe_until.py" \
+              >> "$ARTIFACT_DIR/03-46c7-staging.log" 2>&1
+            then
+              echo "STAGING_ATTEMPT=$attempt" \
+                | tee "$ARTIFACT_DIR/03-46c7-staging-retry.txt"
+              echo "46C7_STAGING=PASS" \
+                | tee "$ARTIFACT_DIR/03-46c7-staging-state.txt"
+              break
+            fi
+
+            echo "STAGING_ATTEMPT_${attempt}=FAILED" \
+              | tee -a "$ARTIFACT_DIR/03-46c7-staging-retry.txt"
+
+            if [ "$attempt" -eq 3 ]; then
+              echo "ERROR: 46C7 staging failed after 3 clean attempts" >&2
+              tail -n 120 "$ARTIFACT_DIR/03-46c7-staging.log" >&2
+              exit 1
+            fi
+
+            sleep $((attempt * 10))
+          done
+
+          grep -Fq '46C7_STAGING=PASS' \
+            "$ARTIFACT_DIR/03-46c7-staging-state.txt"
+
+      - name: Locate staged VEUX kernel and ReSukiSU tree
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mapfile -t candidates < <(
+            find "$GITHUB_WORKSPACE" \
+              -type f \
+              -path '*/KernelSU/kernel/Kbuild' \
+              ! -path "$BUILDER_DIR/*" \
+              ! -path "$GITHUB_WORKSPACE/ReSukiSU-target/*" \
+              ! -path "$DRIVER_DIR/*" \
+              -print
+          )
+
+          if [ "${#candidates[@]}" -ne 1 ]; then
+            printf '%s\n' "${candidates[@]:-}" \
+              | tee "$ARTIFACT_DIR/04-kernel-tree-candidates.txt"
+            echo "ERROR: expected exactly one staged KernelSU/kernel/Kbuild, got ${#candidates[@]}" >&2
+            exit 1
+          fi
+
+          KSU_ROOT="$(dirname "$(dirname "${candidates[0]}")")"
+          KERNEL_ROOT="$(dirname "$KSU_ROOT")"
+
+          test -s "$KERNEL_ROOT/Makefile"
+          grep -Eq '^VERSION[[:space:]]*=[[:space:]]*5$' "$KERNEL_ROOT/Makefile"
+          grep -Eq '^PATCHLEVEL[[:space:]]*=[[:space:]]*4$' "$KERNEL_ROOT/Makefile"
+          grep -Eq '^SUBLEVEL[[:space:]]*=[[:space:]]*274$' "$KERNEL_ROOT/Makefile"
+
+          {
+            echo "KSU_ROOT=$KSU_ROOT"
+            echo "KERNEL_ROOT=$KERNEL_ROOT"
+          } >> "$GITHUB_ENV"
+
+          {
+            echo "KERNEL_ROOT=$KERNEL_ROOT"
+            echo "KSU_ROOT=$KSU_ROOT"
+            echo "KERNEL_VERSION=5.4.274"
+            echo "STAGED_TREE_LOCATE=PASS"
+          } | tee "$ARTIFACT_DIR/04-kernel-tree.txt"
+
+      - name: Snapshot pre-update ReSukiSU and SUSFS API
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          {
+            echo "=== pre-update ReSukiSU kernel files ==="
+            find "$KSU_ROOT/kernel" -type f -print | sort
+
+            echo
+            echo "=== pre-update SUSFS no_su symbols ==="
+            grep -RniE \
+              'susfs_(is|set|clear)_current_proc_no_su' \
+              "$KERNEL_ROOT/include" \
+              "$KERNEL_ROOT/fs" \
+              "$KSU_ROOT" || true
+
+            echo
+            echo "=== pre-update KSU stat/faccessat callers ==="
+            grep -RniE \
+              'ksu_handle_(stat|faccessat)[[:space:]]*\(' \
+              "$KERNEL_ROOT/fs" \
+              "$KERNEL_ROOT/include" \
+              "$KERNEL_ROOT/security" || true
+
+            echo
+            echo "=== pre-update execveat/manual-hook evidence ==="
+            grep -RniE \
+              'ksu_handle_execveat|do_execveat_common' \
+              "$KERNEL_ROOT/fs" \
+              "$KSU_ROOT/kernel" || true
+          } > "$ARTIFACT_DIR/05-pre-update-api.txt"
+
+          find "$KSU_ROOT/kernel" -type f -print0 \
+            | sort -z \
+            | xargs -0 sha256sum \
+            > "$ARTIFACT_DIR/05-pre-update-kernel-sha256.txt"
+
+      - name: Extract selected ReSukiSU kernel patches
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p "$PATCH_DIR"
+          test -d "$PATCH_DIR"
+
+          {
+            echo "PATCH_DIR_RECREATED=YES"
+            echo "PATCH_DIR=$PATCH_DIR"
+          } | tee "$ARTIFACT_DIR/05a-patch-dir-guard.txt"
+
+          for c in \
+            "$SUCOMPAT_REFACTOR" \
+            "$EXECVEAT_SUPPORT" \
+            "$OLD_HOOK_COMPAT" \
+            "$SUSFS_SYNC" \
+            "$INPUT_HOOK_STABILITY"
+          do
+            git -C ReSukiSU-target show \
+              --format= \
+              --binary \
+              "$c" -- kernel/ \
+              > "$PATCH_DIR/$c.patch"
+
+            test -s "$PATCH_DIR/$c.patch"
+
+            {
+              echo "COMMIT=$c"
+              echo "PATCH_SHA256=$(sha256sum "$PATCH_DIR/$c.patch" | awk '{print $1}')"
+              echo "PATCH_BYTES=$(wc -c < "$PATCH_DIR/$c.patch")"
+            } >> "$ARTIFACT_DIR/06-selected-patches.txt"
+          done
+
+          if grep -Rqs 'module_load_filter' "$PATCH_DIR"; then
+            echo "ERROR: excluded module_load_filter leaked into selected patch chain" >&2
+            exit 1
+          fi
+
+      - name: Apply selected ReSukiSU kernel chain
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          : > "$ARTIFACT_DIR/07-apply-state.txt"
+
+          for c in \
+            "$SUCOMPAT_REFACTOR" \
+            "$EXECVEAT_SUPPORT" \
+            "$OLD_HOOK_COMPAT" \
+            "$SUSFS_SYNC" \
+            "$INPUT_HOOK_STABILITY"
+          do
+            patch="$PATCH_DIR/$c.patch"
+
+            echo "CHECK $c" | tee -a "$ARTIFACT_DIR/07-apply-state.txt"
+            if ! git -C "$KSU_ROOT" apply \
+                --check \
+                --verbose \
+                "$patch" \
+                >> "$ARTIFACT_DIR/07-apply-state.txt" 2>&1
+            then
+              echo "APPLY_CHECK_FAILED=$c" \
+                | tee -a "$ARTIFACT_DIR/07-apply-state.txt"
+              exit 1
+            fi
+
+            git -C "$KSU_ROOT" apply \
+              --verbose \
+              "$patch" \
+              >> "$ARTIFACT_DIR/07-apply-state.txt" 2>&1
+
+            echo "APPLIED $c" | tee -a "$ARTIFACT_DIR/07-apply-state.txt"
+          done
+
+          for needle in \
+            'susfs_is_current_proc_no_su' \
+            'struct filename **filename' \
+            'ksu_handle_execveat' \
+            'AT_FDCWD'
+          do
+            grep -RqsF "$needle" "$KSU_ROOT/kernel"
+          done
+
+          if find "$KSU_ROOT/kernel" -type f -name '*module_load_filter*' | grep -q .; then
+            echo "ERROR: vendor module-load filter unexpectedly present" >&2
+            exit 1
+          fi
+
+          echo "SELECTED_RESUKISU_CHAIN_APPLY=PASS" \
+            | tee -a "$ARTIFACT_DIR/07-apply-state.txt"
+
+      - name: Verify input-hook atomic-context stability fix
+        shell: bash
+        run: |
+          set -euo pipefail
+          FILE="$KSU_ROOT/kernel/runtime/ksud_integration.c"
+          test -s "$FILE"
+          grep -Fq 'don'\''t stop hook, or sleep in atomic context' "$FILE"
+          grep -Fq 'keep for on_post_fs_data do that' "$FILE"
+          echo "INPUT_HOOK_ATOMIC_CONTEXT_FIX=PASS" \
+            | tee "$ARTIFACT_DIR/07a-input-hook-stability.txt"
+
+      - name: Backport latest SUSFS 5.4 process-state API only
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SUSFS_DEF="$KERNEL_ROOT/include/linux/susfs_def.h"
+          test -s "$SUSFS_DEF"
+
+          for f in \
+            fs/susfs.c \
+            fs/namei.c \
+            fs/proc/task_mmu.c
+          do
+            test -s "$KERNEL_ROOT/$f"
+            sha256sum "$KERNEL_ROOT/$f"
+          done > "$ARTIFACT_DIR/08a-stability-files-before.sha256"
+
+          cp "$SUSFS_DEF" "$ARTIFACT_DIR/08a-susfs_def-before.h"
+
+          grep -Eq '^[[:space:]]*#define[[:space:]]+TIF_PROC_UMOUNTED[[:space:]]+33([[:space:]]|$)' \
+            "$SUSFS_DEF"
+
+          for bit in 34 35; do
+            if grep -En \
+                "^[[:space:]]*#define[[:space:]]+TIF_[A-Za-z0-9_]+[[:space:]]+${bit}([[:space:]]|$)" \
+                "$KERNEL_ROOT/arch/arm64/include/asm/thread_info.h" \
+                > "$ARTIFACT_DIR/08a-arm64-tif-${bit}.txt"
+            then
+              echo "ERROR: arm64 TIF bit $bit is already assigned" >&2
+              cat "$ARTIFACT_DIR/08a-arm64-tif-${bit}.txt" >&2
+              exit 1
+            fi
+          done
+
+          export SUSFS_DEF
+          python3 - <<'PY'
+          import os
+          import re
+          from pathlib import Path
+
+          path = Path(os.environ["SUSFS_DEF"])
+          s = path.read_text(encoding="utf-8")
+
+          required_absent = [
+              "TIF_PROC_NO_SU",
+              "TIF_PROC_UMOUNTED_FOR_ZYGOTE_NEXT",
+              "susfs_is_current_proc_no_su",
+              "susfs_set_current_proc_no_su",
+              "susfs_clear_current_proc_no_su",
+              "susfs_is_current_proc_umounted_for_zygote_next",
+              "susfs_set_current_proc_umounted_for_zygote_next",
+              "susfs_clear_current_proc_umounted_for_zygote_next",
+          ]
+          present = [x for x in required_absent if x in s]
+          if present:
+              raise SystemExit("refusing duplicate/partial SUSFS process-state API: " + ", ".join(present))
+
+          define_pat = re.compile(
+              r"(^[ \t]*#define[ \t]+TIF_PROC_UMOUNTED[ \t]+33[^\n]*\n)",
+              re.M,
+          )
+          if len(define_pat.findall(s)) != 1:
+              raise SystemExit("expected exactly one TIF_PROC_UMOUNTED 33 define")
+
+          s = define_pat.sub(
+              r"\1#define TIF_PROC_NO_SU 34\n#define TIF_PROC_UMOUNTED_FOR_ZYGOTE_NEXT 35\n",
+              s, count=1,
+          )
+
+          set_umounted_pat = re.compile(
+              r"(static inline void susfs_set_current_proc_umounted\(void\)[ \t]*\{[ \t\r\n]*set_thread_flag\(TIF_PROC_UMOUNTED\);[ \t\r\n]*\}[ \t]*\n)",
+              re.M,
+          )
+          if len(set_umounted_pat.findall(s)) != 1:
+              raise SystemExit(
+                  "expected exactly one susfs_set_current_proc_umounted() anchor"
+              )
+
+          helpers = (
+              "\n"
+              "static inline bool susfs_is_current_proc_umounted_for_zygote_next(void) {\n"
+              "\treturn (likely(test_thread_flag(TIF_PROC_UMOUNTED_FOR_ZYGOTE_NEXT)));\n"
+              "}\n\n"
+              "static inline void susfs_set_current_proc_umounted_for_zygote_next(void) {\n"
+              "\tset_thread_flag(TIF_PROC_UMOUNTED_FOR_ZYGOTE_NEXT);\n"
+              "}\n\n"
+              "static inline void susfs_clear_current_proc_umounted_for_zygote_next(void) {\n"
+              "\tclear_thread_flag(TIF_PROC_UMOUNTED_FOR_ZYGOTE_NEXT);\n"
+              "}\n\n"
+              "static inline bool susfs_is_current_proc_no_su(void) {\n"
+              "\treturn (likely(test_thread_flag(TIF_PROC_NO_SU)));\n"
+              "}\n\n"
+              "static inline void susfs_set_current_proc_no_su(void) {\n"
+              "\tset_thread_flag(TIF_PROC_NO_SU);\n"
+              "}\n\n"
+              "static inline void susfs_clear_current_proc_no_su(void) {\n"
+              "\tclear_thread_flag(TIF_PROC_NO_SU);\n"
+              "}\n"
+          )
+          s = set_umounted_pat.sub(
+              lambda m: m.group(1) + helpers,
+              s,
+              count=1,
+          )
+          path.write_text(s, encoding="utf-8")
+          PY
+
+          if grep -Fq '\\n' "$SUSFS_DEF" || grep -Fq '\\t' "$SUSFS_DEF"; then
+            echo "ERROR: literal escaped newline/tab leaked into susfs_def.h" >&2
+            exit 1
+          fi
+
+          cp "$SUSFS_DEF" "$ARTIFACT_DIR/08a-susfs_def-after.h"
+          diff -u \
+            "$ARTIFACT_DIR/08a-susfs_def-before.h" \
+            "$ARTIFACT_DIR/08a-susfs_def-after.h" \
+            > "$ARTIFACT_DIR/08a-susfs-process-state-backport.diff" || true
+
+          grep -Eq '^[[:space:]]*#define[[:space:]]+TIF_PROC_NO_SU[[:space:]]+34([[:space:]]|$)' "$SUSFS_DEF"
+          grep -Eq '^[[:space:]]*#define[[:space:]]+TIF_PROC_UMOUNTED_FOR_ZYGOTE_NEXT[[:space:]]+35([[:space:]]|$)' "$SUSFS_DEF"
+          grep -Fq 'static inline void susfs_set_current_proc_umounted(void)' "$SUSFS_DEF"
+
+          for symbol in \
+            susfs_is_current_proc_no_su \
+            susfs_set_current_proc_no_su \
+            susfs_clear_current_proc_no_su \
+            susfs_is_current_proc_umounted_for_zygote_next \
+            susfs_set_current_proc_umounted_for_zygote_next \
+            susfs_clear_current_proc_umounted_for_zygote_next
+          do
+            test "$(grep -c "$symbol" "$SUSFS_DEF")" -eq 1
+          done
+
+          for f in \
+            fs/susfs.c \
+            fs/namei.c \
+            fs/proc/task_mmu.c
+          do
+            sha256sum "$KERNEL_ROOT/$f"
+          done > "$ARTIFACT_DIR/08a-stability-files-after.sha256"
+
+          diff -u \
+            "$ARTIFACT_DIR/08a-stability-files-before.sha256" \
+            "$ARTIFACT_DIR/08a-stability-files-after.sha256"
+
+          {
+            echo "SUSFS_PROCESS_STATE_BACKPORT=PASS"
+            echo "W70_PATCHER_VERSION=reused-proven-W68-v3-real-newlines"
+            echo "TIF_PROC_UMOUNTED=33"
+            echo "TIF_PROC_NO_SU=34"
+            echo "TIF_PROC_UMOUNTED_FOR_ZYGOTE_NEXT=35"
+            echo "ARM64_TIF_COLLISION_34=NO"
+            echo "ARM64_TIF_COLLISION_35=NO"
+            echo "OPEN_REDIRECT_SOURCE_CHANGED=NO"
+            echo "NAMEI_SOURCE_CHANGED_BY_W70=NO"
+            echo "PROC_TASK_MMU_SOURCE_CHANGED_BY_W70=NO"
+            echo "SUSFS_DEF_AFTER_SHA256=$(sha256sum "$SUSFS_DEF" | awk '{print $1}')"
+          } | tee "$ARTIFACT_DIR/08a-backport-state.txt"
+      - name: Audit SUSFS 2.2 5.4 caller compatibility
+        id: susfs_api
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          REPORT="$ARTIFACT_DIR/08-susfs-5.4-api.txt"
+          : > "$REPORT"
+
+          missing=0
+
+          check_symbol() {
+            local symbol="$1"
+            if grep -RqsF \
+                "$symbol" \
+                "$KERNEL_ROOT/include" \
+                "$KERNEL_ROOT/fs" \
+                "$KERNEL_ROOT/security" 2>/dev/null
+            then
+              echo "$symbol=PASS" | tee -a "$REPORT"
+            else
+              echo "$symbol=MISSING" | tee -a "$REPORT"
+              missing=$((missing + 1))
+            fi
+          }
+
+          check_symbol 'susfs_is_current_proc_no_su'
+          check_symbol 'susfs_set_current_proc_no_su'
+          check_symbol 'susfs_clear_current_proc_no_su'
+          check_symbol 'susfs_is_current_proc_umounted_for_zygote_next'
+          check_symbol 'susfs_set_current_proc_umounted_for_zygote_next'
+          check_symbol 'susfs_clear_current_proc_umounted_for_zygote_next'
+
+          if grep -RniE \
+              'ksu_handle_(stat|faccessat).*&[A-Za-z_]*filename' \
+              "$KERNEL_ROOT/fs" \
+              "$KERNEL_ROOT/security" \
+              > "$ARTIFACT_DIR/08-filename-pointer-callers.txt" 2>/dev/null
+          then
+            echo "SUSFS_STRUCT_FILENAME_DOUBLE_POINTER_CALLER=PASS" | tee -a "$REPORT"
+          else
+            echo "SUSFS_STRUCT_FILENAME_DOUBLE_POINTER_CALLER=MISSING" | tee -a "$REPORT"
+            missing=$((missing + 1))
+          fi
+
+          {
+            echo
+            echo "=== all stat/faccessat KSU callers ==="
+            grep -RniE \
+              'ksu_handle_(stat|faccessat)[[:space:]]*\(' \
+              "$KERNEL_ROOT/fs" \
+              "$KERNEL_ROOT/include" \
+              "$KERNEL_ROOT/security" || true
+
+            echo
+            echo "=== all no_su definitions/references ==="
+            grep -RniE \
+              'susfs_(is|set|clear)_current_proc_no_su' \
+              "$KERNEL_ROOT/include" \
+              "$KERNEL_ROOT/fs" \
+              "$KERNEL_ROOT/security" || true
+          } >> "$REPORT"
+
+          echo "MISSING_REQUIRED_API_COUNT=$missing" \
+            | tee -a "$REPORT"
+
+          if [ "$missing" -ne 0 ]; then
+            echo "SUSFS_5_4_CALLER_API_READY=NO" | tee -a "$REPORT"
+            echo "ready=no" >> "$GITHUB_OUTPUT"
+          else
+            echo "SUSFS_5_4_CALLER_API_READY=YES" | tee -a "$REPORT"
+            echo "ready=yes" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Locate proven 46C7 config and toolchain
+        if: steps.susfs_api.outputs.ready == 'yes'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          TOOLCHAIN_DIR="$GITHUB_WORKSPACE/toolchains/clang-r416183b"
+          test -x "$TOOLCHAIN_DIR/bin/clang"
+          test -x "$TOOLCHAIN_DIR/bin/ld.lld"
+
+          mapfile -t configs < <(
+            find "$KERNEL_ROOT" \
+              -maxdepth 2 \
+              -type f \
+              -name .config \
+              -print
+          )
+
+          if [ "${#configs[@]}" -lt 1 ]; then
+            echo "ERROR: no staged 46C7 .config found" >&2
+            exit 1
+          fi
+
+          # Prefer the proven 46C7 out-repro config if present.
+          CONFIG_SOURCE=""
+          for c in "${configs[@]}"; do
+            if [[ "$c" == */out-repro/.config ]]; then
+              CONFIG_SOURCE="$c"
+              break
+            fi
+          done
+          if [ -z "$CONFIG_SOURCE" ]; then
+            CONFIG_SOURCE="${configs[0]}"
+          fi
+
+          OUT_DIR="$KERNEL_ROOT/$OUT_DIR_NAME"
+          rm -rf "$OUT_DIR"
+          mkdir -p "$OUT_DIR"
+          cp "$CONFIG_SOURCE" "$OUT_DIR/.config"
+
+          {
+            echo "TOOLCHAIN_DIR=$TOOLCHAIN_DIR"
+            echo "OUT_DIR=$OUT_DIR"
+          } >> "$GITHUB_ENV"
+
+          {
+            echo "CONFIG_SOURCE=$CONFIG_SOURCE"
+            echo "CONFIG_SHA256=$(sha256sum "$OUT_DIR/.config" | awk '{print $1}')"
+            echo "CLANG_VERSION=$("$TOOLCHAIN_DIR/bin/clang" --version | head -n1)"
+          } | tee "$ARTIFACT_DIR/09-build-inputs.txt"
+
+      - name: Resolve W70 config
+        if: steps.susfs_api.outputs.ready == 'yes'
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH="$TOOLCHAIN_DIR/bin:$PATH"
+
+          make -C "$KERNEL_ROOT" \
+            O="$OUT_DIR" \
+            ARCH=arm64 \
+            CC=clang \
+            LD=ld.lld \
+            LLVM=1 \
+            LLVM_IAS=1 \
+            olddefconfig \
+            2>&1 | tee "$ARTIFACT_DIR/10-olddefconfig.log"
+
+          grep -Eq '^CONFIG_KSU=y$' "$OUT_DIR/.config"
+          grep -Eq '^CONFIG_KSU_SUSFS=y$' "$OUT_DIR/.config"
+
+          {
+            echo "RESOLVED_CONFIG_SHA256=$(sha256sum "$OUT_DIR/.config" | awk '{print $1}')"
+            grep -E '^CONFIG_KSU(=|_)' "$OUT_DIR/.config" || true
+          } > "$ARTIFACT_DIR/10-resolved-config.txt"
+
+      - name: Build A VEUX 5.4.274 updated kernel
+        if: steps.susfs_api.outputs.ready == 'yes'
+        shell: bash
+        timeout-minutes: 90
+        run: |
+          set -euo pipefail
+          export PATH="$TOOLCHAIN_DIR/bin:$PATH"
+
+          make -C "$KERNEL_ROOT" \
+            O="$OUT_DIR" \
+            ARCH=arm64 \
+            CC=clang \
+            LD=ld.lld \
+            LLVM=1 \
+            LLVM_IAS=1 \
+            -j"$(nproc)" \
+            Image dtbs \
+            2>&1 | tee "$ARTIFACT_DIR/11-build-a.log"
+
+          IMAGE_A="$OUT_DIR/arch/arm64/boot/Image"
+          test -s "$IMAGE_A"
+          test -s "$OUT_DIR/vmlinux"
+          test -s "$OUT_DIR/System.map"
+          test -s "$OUT_DIR/.config"
+
+          SNAPSHOT_A="$GITHUB_WORKSPACE/w70-build-a"
+          rm -rf "$SNAPSHOT_A"
+          mkdir -p "$SNAPSHOT_A"
+
+          cp "$IMAGE_A" "$SNAPSHOT_A/Image"
+          cp "$OUT_DIR/vmlinux" "$SNAPSHOT_A/vmlinux"
+          cp "$OUT_DIR/System.map" "$SNAPSHOT_A/System.map"
+          cp "$OUT_DIR/.config" "$SNAPSHOT_A/config"
+
+          {
+            echo "BUILD_A=PASS"
+            echo "IMAGE_BYTES=$(wc -c < "$SNAPSHOT_A/Image")"
+            echo "IMAGE_SHA256=$(sha256sum "$SNAPSHOT_A/Image" | awk '{print $1}')"
+            echo "VMLINUX_SHA256=$(sha256sum "$SNAPSHOT_A/vmlinux" | awk '{print $1}')"
+            echo "SYSTEM_MAP_SHA256=$(sha256sum "$SNAPSHOT_A/System.map" | awk '{print $1}')"
+            echo "CONFIG_SHA256=$(sha256sum "$SNAPSHOT_A/config" | awk '{print $1}')"
+            echo "KBUILD_BUILD_USER=$KBUILD_BUILD_USER"
+            echo "KBUILD_BUILD_HOST=$KBUILD_BUILD_HOST"
+            echo "KBUILD_BUILD_TIMESTAMP=$KBUILD_BUILD_TIMESTAMP"
+            echo "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH"
+            echo "OUT_DIR_NAME=$OUT_DIR_NAME"
+            echo "CROSS_RUN_IDENTITY_PROFILE=W68_V3_EXACT"
+          } | tee "$ARTIFACT_DIR/11-build-a-result.txt"
+
+      - name: Clean output tree for independent Build B
+        if: steps.susfs_api.outputs.ready == 'yes'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          CONFIG_A="$GITHUB_WORKSPACE/w70-build-a/config"
+          test -s "$CONFIG_A"
+
+          rm -rf "$OUT_DIR"
+          mkdir -p "$OUT_DIR"
+          cp "$CONFIG_A" "$OUT_DIR/.config"
+
+          export PATH="$TOOLCHAIN_DIR/bin:$PATH"
+
+          make -C "$KERNEL_ROOT" \
+            O="$OUT_DIR" \
+            ARCH=arm64 \
+            CC=clang \
+            LD=ld.lld \
+            LLVM=1 \
+            LLVM_IAS=1 \
+            olddefconfig \
+            2>&1 | tee "$ARTIFACT_DIR/12-build-b-olddefconfig.log"
+
+          test "$(sha256sum "$OUT_DIR/.config" | awk '{print $1}')" = \
+               "$(sha256sum "$CONFIG_A" | awk '{print $1}')"
+
+          echo "BUILD_B_CLEAN_OUTPUT_PREP=PASS" \
+            | tee "$ARTIFACT_DIR/12-build-b-prep.txt"
+
+      - name: Build B VEUX 5.4.274 updated kernel
+        if: steps.susfs_api.outputs.ready == 'yes'
+        shell: bash
+        timeout-minutes: 90
+        run: |
+          set -euo pipefail
+          export PATH="$TOOLCHAIN_DIR/bin:$PATH"
+
+          make -C "$KERNEL_ROOT" \
+            O="$OUT_DIR" \
+            ARCH=arm64 \
+            CC=clang \
+            LD=ld.lld \
+            LLVM=1 \
+            LLVM_IAS=1 \
+            -j"$(nproc)" \
+            Image dtbs \
+            2>&1 | tee "$ARTIFACT_DIR/13-build-b.log"
+
+          IMAGE_B="$OUT_DIR/arch/arm64/boot/Image"
+          test -s "$IMAGE_B"
+          test -s "$OUT_DIR/vmlinux"
+          test -s "$OUT_DIR/System.map"
+          test -s "$OUT_DIR/.config"
+
+          {
+            echo "BUILD_B=PASS"
+            echo "IMAGE_BYTES=$(wc -c < "$IMAGE_B")"
+            echo "IMAGE_SHA256=$(sha256sum "$IMAGE_B" | awk '{print $1}')"
+            echo "VMLINUX_SHA256=$(sha256sum "$OUT_DIR/vmlinux" | awk '{print $1}')"
+            echo "SYSTEM_MAP_SHA256=$(sha256sum "$OUT_DIR/System.map" | awk '{print $1}')"
+            echo "CONFIG_SHA256=$(sha256sum "$OUT_DIR/.config" | awk '{print $1}')"
+          } | tee "$ARTIFACT_DIR/13-build-b-result.txt"
+
+      - name: Prove deterministic A B reproducibility
+        if: steps.susfs_api.outputs.ready == 'yes'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SNAPSHOT_A="$GITHUB_WORKSPACE/w70-build-a"
+
+          cmp -s "$SNAPSHOT_A/Image" \
+            "$OUT_DIR/arch/arm64/boot/Image"
+          cmp -s "$SNAPSHOT_A/vmlinux" \
+            "$OUT_DIR/vmlinux"
+          cmp -s "$SNAPSHOT_A/System.map" \
+            "$OUT_DIR/System.map"
+          cmp -s "$SNAPSHOT_A/config" \
+            "$OUT_DIR/.config"
+
+          {
+            echo "IMAGE_AB_IDENTICAL=YES"
+            echo "VMLINUX_AB_IDENTICAL=YES"
+            echo "SYSTEM_MAP_AB_IDENTICAL=YES"
+            echo "CONFIG_AB_IDENTICAL=YES"
+            echo "IMAGE_SHA256=$(sha256sum "$OUT_DIR/arch/arm64/boot/Image" | awk '{print $1}')"
+            echo "VMLINUX_SHA256=$(sha256sum "$OUT_DIR/vmlinux" | awk '{print $1}')"
+            echo "SYSTEM_MAP_SHA256=$(sha256sum "$OUT_DIR/System.map" | awk '{print $1}')"
+            echo "CONFIG_SHA256=$(sha256sum "$OUT_DIR/.config" | awk '{print $1}')"
+            echo "REPRODUCIBILITY=PASS"
+          } | tee "$ARTIFACT_DIR/14-reproducibility.txt"
+
+          test "$(sha256sum "$OUT_DIR/arch/arm64/boot/Image" | awk '{print $1}')" =             "1ff4c57bb524b1d01de1d56739133ea4a9c9b3269ad87e013b8140f3654d8aea"
+          test "$(sha256sum "$OUT_DIR/vmlinux" | awk '{print $1}')" =             "a54fa829d7398a01dd015e5facafb55c9f5cdc8e1eaa20051c0e98ab385482e1"
+          test "$(sha256sum "$OUT_DIR/System.map" | awk '{print $1}')" =             "2959dfabbae93c2d4118e892669006f06b128158ada971a5cf6cb3ebb935cf6d"
+          test "$(sha256sum "$OUT_DIR/.config" | awk '{print $1}')" =             "d7cd955abd59da45804acc9c5e450cf8fc953da3e66bbc274212b40ee9a0b372"
+
+          echo "W68_V3_CROSS_RUN_HASH_MATCH=PASS"             | tee -a "$ARTIFACT_DIR/14-reproducibility.txt"
+
+      - name: Validate ReSukiSU manual hook contracts
+        if: steps.susfs_api.outputs.ready == 'yes'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          REPORT="$ARTIFACT_DIR/15-hook-contracts.txt"
+          : > "$REPORT"
+
+          require() {
+            local needle="$1"
+            local label="$2"
+            shift 2
+            if grep -RqsF "$needle" "$@"; then
+              echo "$label=PASS" | tee -a "$REPORT"
+            else
+              echo "$label=FAIL" | tee -a "$REPORT"
+              exit 1
+            fi
+          }
+
+          require \
+            'ksu_handle_execveat' \
+            EXECVEAT_HANDLER_PRESENT \
+            "$KSU_ROOT/kernel" \
+            "$KERNEL_ROOT/fs"
+
+          require \
+            'do_execveat_common' \
+            EXECVEAT_COMMON_PRESENT \
+            "$KERNEL_ROOT/fs"
+
+          require \
+            'AT_FDCWD' \
+            OLD_HOOK_AT_FDCWD_COMPAT_PRESENT \
+            "$KSU_ROOT/kernel"
+
+          require \
+            'susfs_is_current_proc_no_su' \
+            SUSFS_NO_SU_READ_PRESENT \
+            "$KSU_ROOT/kernel" \
+            "$KERNEL_ROOT/include/linux/susfs_def.h"
+
+          require \
+            'susfs_set_current_proc_no_su' \
+            SUSFS_NO_SU_SET_PRESENT \
+            "$KSU_ROOT/kernel" \
+            "$KERNEL_ROOT/include/linux/susfs_def.h"
+
+          require \
+            'susfs_clear_current_proc_no_su' \
+            SUSFS_NO_SU_CLEAR_PRESENT \
+            "$KSU_ROOT/kernel" \
+            "$KERNEL_ROOT/include/linux/susfs_def.h"
+
+          require \
+            'susfs_set_current_proc_umounted_for_zygote_next' \
+            ZYGOTE_NEXT_UMOUNT_STATE_PRESENT \
+            "$KSU_ROOT/kernel" \
+            "$KERNEL_ROOT/include/linux/susfs_def.h"
+
+          require \
+            '__close_fd(current->files, fd)' \
+            PRE_5_11_CLOSE_FD_COMPAT_PRESENT \
+            "$KSU_ROOT/kernel"
+
+          require \
+            'disable_seccomp()' \
+            PRE_5_10_SECCOMP_PATH_PRESENT \
+            "$KSU_ROOT/kernel"
+
+          {
+            echo
+            echo "=== execveat caller evidence ==="
+            grep -RniE \
+              'ksu_handle_execveat|do_execveat_common' \
+              "$KERNEL_ROOT/fs" \
+              "$KSU_ROOT/kernel" || true
+
+            echo
+            echo "=== no_su / zygote_next evidence ==="
+            grep -RniE \
+              'susfs_(is|set|clear)_current_proc_no_su|zygote_next' \
+              "$KSU_ROOT/kernel" \
+              "$KERNEL_ROOT/include/linux/susfs_def.h" || true
+          } >> "$REPORT"
+
+          echo "MANUAL_HOOK_CONTRACTS=PASS" | tee -a "$REPORT"
+
+      - name: Revalidate protected SUSFS stability contracts
+        if: steps.susfs_api.outputs.ready == 'yes'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          REPORT="$ARTIFACT_DIR/16-susfs-stability-contracts.txt"
+          : > "$REPORT"
+
+          # These source files were guarded before/after the process-state
+          # backport; verify that the recorded guard comparison is still exact.
+          diff -u \
+            "$ARTIFACT_DIR/08a-stability-files-before.sha256" \
+            "$ARTIFACT_DIR/08a-stability-files-after.sha256"
+
+          grep -Fq 'OPEN_REDIRECT_SOURCE_CHANGED=NO' \
+            "$ARTIFACT_DIR/08a-backport-state.txt"
+          grep -Fq 'PROC_TASK_MMU_SOURCE_CHANGED_BY_W70=NO' \
+            "$ARTIFACT_DIR/08a-backport-state.txt"
+
+          # OPEN_REDIRECT must still use the already-proven SRCU semantics.
+          if grep -RqsF 'synchronize_srcu' \
+              "$KERNEL_ROOT/fs/susfs.c" \
+              "$KERNEL_ROOT/fs/namei.c"; then
+            echo "OPEN_REDIRECT_SRCU_SYNC_PRESENT=PASS" | tee -a "$REPORT"
+          else
+            echo "OPEN_REDIRECT_SRCU_SYNC_PRESENT=FAIL" | tee -a "$REPORT"
+            exit 1
+          fi
+
+          # The maps path must still carry SUSFS handling in task_mmu.c.
+          if grep -qsE 'SUSFS|susfs' "$KERNEL_ROOT/fs/proc/task_mmu.c"; then
+            echo "PROC_MAPS_SUSFS_PATH_PRESENT=PASS" | tee -a "$REPORT"
+          else
+            echo "PROC_MAPS_SUSFS_PATH_PRESENT=FAIL" | tee -a "$REPORT"
+            exit 1
+          fi
+
+          echo "SUSFS_STABILITY_CONTRACTS=PASS" | tee -a "$REPORT"
+
+      - name: Stage validated kernel candidate
+        if: steps.susfs_api.outputs.ready == 'yes'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          CANDIDATE="$GITHUB_WORKSPACE/w71-kernel-candidate"
+          rm -rf "$CANDIDATE"
+          mkdir -p "$CANDIDATE"
+
+          cp "$OUT_DIR/arch/arm64/boot/Image" "$CANDIDATE/Image"
+          cp "$OUT_DIR/.config" "$CANDIDATE/config"
+          cp "$OUT_DIR/System.map" "$CANDIDATE/System.map"
+
+          test "$(sha256sum "$CANDIDATE/Image" | awk '{print $1}')" = \
+            "1ff4c57bb524b1d01de1d56739133ea4a9c9b3269ad87e013b8140f3654d8aea"
+          test "$(sha256sum "$CANDIDATE/config" | awk '{print $1}')" = \
+            "d7cd955abd59da45804acc9c5e450cf8fc953da3e66bbc274212b40ee9a0b372"
+
+          {
+            echo "TARGET=VEUX"
+            echo "KERNEL=5.4.274"
+            echo "RESUKISU_TARGET=$TARGET_REF"
+            echo "IMAGE_SHA256=$(sha256sum "$CANDIDATE/Image" | awk '{print $1}')"
+            echo "CONFIG_SHA256=$(sha256sum "$CANDIDATE/config" | awk '{print $1}')"
+            echo "SYSTEM_MAP_SHA256=$(sha256sum "$CANDIDATE/System.map" | awk '{print $1}')"
+            echo "REPRODUCIBILITY=PASS"
+            echo "HOOK_CONTRACTS=PASS"
+            echo "SUSFS_STABILITY_CONTRACTS=PASS"
+            echo "FLASHABLE=NO"
+          } > "$CANDIDATE/CANDIDATE_MANIFEST.txt"
+
+          sha256sum "$CANDIDATE"/* | sort -k2 > "$CANDIDATE/SHA256SUMS.txt"
+
+          echo "KERNEL_CANDIDATE_STAGE=PASS" \
+            | tee "$ARTIFACT_DIR/17-candidate-stage.txt"
+
+      - name: Validate candidate has no accidental flash payload
+        if: steps.susfs_api.outputs.ready == 'yes'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          CANDIDATE="$GITHUB_WORKSPACE/w71-kernel-candidate"
+
+          test -s "$CANDIDATE/Image"
+          test -s "$CANDIDATE/CANDIDATE_MANIFEST.txt"
+
+          if find "$CANDIDATE" -type f \( \
+              -name 'boot.img' -o \
+              -name '*.zip' -o \
+              -name 'anykernel.sh' -o \
+              -name 'flash*.sh' \
+            \) | grep -q .
+          then
+            echo "ERROR: unexpected flash payload in static candidate" >&2
+            exit 1
+          fi
+
+          grep -Fq 'FLASHABLE=NO' "$CANDIDATE/CANDIDATE_MANIFEST.txt"
+
+          {
+            echo "BOOT_IMAGE_PRESENT=NO"
+            echo "FLASHABLE_ZIP_PRESENT=NO"
+            echo "ANYKERNEL_PAYLOAD_PRESENT=NO"
+            echo "STATIC_CANDIDATE_BOUNDARY=PASS"
+          } | tee "$ARTIFACT_DIR/18-static-boundary.txt"
+
+      - name: Upload W71 kernel candidate
+        if: steps.susfs_api.outputs.ready == 'yes'
+        uses: actions/upload-artifact@v4
+        with:
+          name: W73-v1-VEUX-5.4.274-updated-kernel-candidate
+          path: w71-kernel-candidate/
+          if-no-files-found: error
+
+      - name: Guard W71 kernel candidate upload path
+        if: steps.susfs_api.outputs.ready == 'yes'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test -s "$GITHUB_WORKSPACE/w71-kernel-candidate/Image"
+          test -s "$GITHUB_WORKSPACE/w71-kernel-candidate/config"
+
+          test "$(sha256sum "$GITHUB_WORKSPACE/w71-kernel-candidate/Image" | awk '{print $1}')" =             "$W70_IMAGE_SHA256"
+          test "$(sha256sum "$GITHUB_WORKSPACE/w71-kernel-candidate/config" | awk '{print $1}')" =             "$W70_CONFIG_SHA256"
+
+          {
+            echo "W71_KERNEL_CANDIDATE_PATH_GUARD=PASS"
+            echo "W71_PATH_GUARD_VERSION=v3-config-filename"
+            echo "CANDIDATE_PATH=$GITHUB_WORKSPACE/w71-kernel-candidate"
+            echo "IMAGE_SHA256=$W70_IMAGE_SHA256"
+            echo "CONFIG_SHA256=$W70_CONFIG_SHA256"
+          } | tee "$ARTIFACT_DIR/18a-kernel-candidate-path-guard.txt"
+
+      - name: Authenticate proven GEN1 W53 boot contract
+        if: steps.susfs_api.outputs.ready == 'yes'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          CONTRACT="$BUILDER_DIR/$W53_CONTRACT_PATH"
+          test -s "$CONTRACT"
+
+          grep -Fxq \
+            'name: 53 - GEN1 5.4.274 GitHub-built boot.img v1' \
+            "$CONTRACT"
+
+          for expected in \
+            'STOCK_ROM_VERSION: "OS1.0.12.0.TKCMIXM"' \
+            'STOCK_BOOT_SHA256: "ac6522e4eed55782dd2ae61362e9d345d01a1f229c87333818511d5537fa79c5"' \
+            'STOCK_BOOT_BYTES: "134217728"' \
+            'OLD_CUSTOM_BOOT_SHA256: "2baffafce260348c247674c5e8176408d45dc75b35ccbf7ca5834cbb4679398e"' \
+            'STOCK_RAMDISK_SHA256: "0bc8b54373b5501818e8b252517419786db207771047b6def7ec9bc89beb607a"' \
+            'MAGISKBOOT_SHA256: "0b19472b291ce9033c29a83155ff4c1b18be9d1d17d901d63e50f57436378762"'
+          do
+            grep -Fq "$expected" "$CONTRACT"
+          done
+
+          grep -Fq \
+            'HISTORICAL_W19_CALIBRATION=PASS' \
+            "$CONTRACT"
+          grep -Fq \
+            'BOOT_HEADER_VERSION=3' \
+            "$CONTRACT"
+          grep -Fq \
+            'EMBEDDED_AVB_VERIFIES=YES' \
+            "$CONTRACT"
+
+          rm -rf "$BOOT_WORK"
+          mkdir -p \
+            "$BOOT_INPUTS" \
+            "$BOOT_W21" \
+            "$BOOT_OLD_PACKAGE" \
+            "$BOOT_BUILD" \
+            "$BOOT_UNPACK" \
+            "$BOOT_OUTPUT"
+
+          {
+            echo "W53_BOOT_CONTRACT_AUTH=PASS"
+            echo "CONTRACT_PATH=$W53_CONTRACT_PATH"
+            echo "CONTRACT_SHA256=$(sha256sum "$CONTRACT" | awk '{print $1}')"
+            echo "ROM_VERSION=$STOCK_ROM_VERSION"
+            echo "ANDROID_VERSION=$STOCK_ANDROID_VERSION"
+            echo "SECURITY_PATCH=$STOCK_SECURITY_PATCH"
+            echo "BOOT_HEADER_MODEL=ANDROID_BOOT_V3"
+          } | tee "$ARTIFACT_DIR/19-w53-boot-contract.txt"
+
+      - name: Download exact historical W21 boot calibration package
+        if: steps.susfs_api.outputs.ready == 'yes'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          ALL="$BOOT_WORK/repository-artifacts.ndjson"
+          : > "$ALL"
+
+          page=1
+          while :; do
+            PAGE="$BOOT_WORK/repository-artifacts-${page}.json"
+
+            curl \
+              --fail \
+              --silent \
+              --show-error \
+              --retry 3 \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/artifacts?per_page=100&page=${page}" \
+              -o "$PAGE"
+
+            COUNT="$(jq '.artifacts | length' "$PAGE")"
+            jq -c '.artifacts[]' "$PAGE" >> "$ALL"
+
+            if [ "$COUNT" -lt 100 ]; then
+              break
+            fi
+
+            page=$((page + 1))
+            [ "$page" -le 30 ] || {
+              echo "ERROR: artifact pagination safety limit" >&2
+              exit 1
+            }
+          done
+
+          MATCHES="$(
+            jq -s \
+              --arg NAME "$W21_ARTIFACT_NAME" \
+              '[.[] | select(.name == $NAME and .expired == false)] | sort_by(.created_at)' \
+              "$ALL"
+          )"
+
+          test "$(jq 'length' <<< "$MATCHES")" -ge 1
+
+          SELECTED="$(jq '.[-1]' <<< "$MATCHES")"
+          URL="$(jq -r '.archive_download_url' <<< "$SELECTED")"
+
+          jq . <<< "$SELECTED" \
+            > "$ARTIFACT_DIR/20-w21-artifact-metadata.json"
+
+          curl \
+            --fail \
+            --location \
+            --silent \
+            --show-error \
+            --retry 3 \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "$URL" \
+            -o "$BOOT_INPUTS/w21-artifact.zip"
+
+          unzip -t "$BOOT_INPUTS/w21-artifact.zip" \
+            > "$ARTIFACT_DIR/20-w21-outer-zip-crc.txt"
+
+          unzip -q \
+            "$BOOT_INPUTS/w21-artifact.zip" \
+            -d "$BOOT_W21"
+
+          echo "W21_CALIBRATION_ARTIFACT_DOWNLOAD=PASS" \
+            | tee "$ARTIFACT_DIR/20-w21-download.txt"
+
+      - name: Verify exact stock and historical custom boot inputs
+        if: steps.susfs_api.outputs.ready == 'yes'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          FINAL_OLD="$BOOT_W21/$W21_FINAL_ZIP_NAME"
+          test -s "$FINAL_OLD"
+
+          test "$(stat -c '%s' "$FINAL_OLD")" = \
+            "$W21_FINAL_ZIP_BYTES"
+          test "$(sha256sum "$FINAL_OLD" | awk '{print $1}')" = \
+            "$W21_FINAL_ZIP_SHA256"
+
+          unzip -t "$FINAL_OLD" \
+            > "$ARTIFACT_DIR/21-w21-final-zip-crc.txt"
+
+          unzip -q "$FINAL_OLD" -d "$BOOT_OLD_PACKAGE"
+
+          test -s "$BOOT_OLD_PACKAGE/boot.img"
+          test -s "$BOOT_OLD_PACKAGE/rollback_stock_boot.img.gz"
+          test -s "$BOOT_OLD_PACKAGE/tools/magiskboot"
+
+          test "$(sha256sum "$BOOT_OLD_PACKAGE/boot.img" | awk '{print $1}')" = \
+            "$OLD_CUSTOM_BOOT_SHA256"
+          test "$(sha256sum "$BOOT_OLD_PACKAGE/rollback_stock_boot.img.gz" | awk '{print $1}')" = \
+            "$ROLLBACK_GZIP_SHA256"
+          test "$(sha256sum "$BOOT_OLD_PACKAGE/tools/magiskboot" | awk '{print $1}')" = \
+            "$MAGISKBOOT_SHA256"
+
+          gzip -t "$BOOT_OLD_PACKAGE/rollback_stock_boot.img.gz"
+          gzip -dc \
+            "$BOOT_OLD_PACKAGE/rollback_stock_boot.img.gz" \
+            > "$BOOT_BUILD/stock_boot.img"
+
+          test "$(stat -c '%s' "$BOOT_BUILD/stock_boot.img")" = \
+            "$STOCK_BOOT_BYTES"
+          test "$(sha256sum "$BOOT_BUILD/stock_boot.img" | awk '{print $1}')" = \
+            "$STOCK_BOOT_SHA256"
+
+          NEW_IMAGE="$GITHUB_WORKSPACE/w71-kernel-candidate/Image"
+          test -s "$NEW_IMAGE"
+          test "$(stat -c '%s' "$NEW_IMAGE")" = "$W70_IMAGE_BYTES"
+          test "$(sha256sum "$NEW_IMAGE" | awk '{print $1}')" = "$W70_IMAGE_SHA256"
+
+          {
+            echo "BOOT_INPUT_GATE=PASS"
+            echo "STOCK_BOOT_SHA256=$STOCK_BOOT_SHA256"
+            echo "STOCK_BOOT_BYTES=$STOCK_BOOT_BYTES"
+            echo "OLD_CUSTOM_BOOT_SHA256=$OLD_CUSTOM_BOOT_SHA256"
+            echo "NEW_KERNEL_SHA256=$W70_IMAGE_SHA256"
+            echo "NEW_KERNEL_BYTES=$W70_IMAGE_BYTES"
+            echo "STOCK_RAMDISK_SHA256=$STOCK_RAMDISK_SHA256"
+            echo "MAGISKBOOT_SHA256=$MAGISKBOOT_SHA256"
+          } | tee "$ARTIFACT_DIR/21-boot-input-gate.txt"
+
+      - name: Build calibrated Boot v3 candidate twice
+        if: steps.susfs_api.outputs.ready == 'yes'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - \
+            "$BOOT_BUILD/stock_boot.img" \
+            "$BOOT_OLD_PACKAGE/boot.img" \
+            "$GITHUB_WORKSPACE/w71-kernel-candidate/Image" \
+            "$BOOT_BUILD/candidate-A.img" \
+            "$BOOT_BUILD/candidate-B.img" \
+            "$ARTIFACT_DIR/22-boot-build.json" \
+            "$ARTIFACT_DIR/22-boot-build.txt" <<'PY'
+          import hashlib
+          import json
+          import struct
+          import sys
+          from pathlib import Path
+
+          stock_path = Path(sys.argv[1])
+          old_boot_path = Path(sys.argv[2])
+          new_image_path = Path(sys.argv[3])
+          out_a = Path(sys.argv[4])
+          out_b = Path(sys.argv[5])
+          json_out = Path(sys.argv[6])
+          text_out = Path(sys.argv[7])
+
+          STOCK_SHA = "ac6522e4eed55782dd2ae61362e9d345d01a1f229c87333818511d5537fa79c5"
+          OLD_BOOT_SHA = "2baffafce260348c247674c5e8176408d45dc75b35ccbf7ca5834cbb4679398e"
+          OLD_KERNEL_SHA = "e036175ada602df3bcb443da7c390e8cd4b0e900c26fbfa313725db02855ec96"
+          NEW_IMAGE_SHA = "1ff4c57bb524b1d01de1d56739133ea4a9c9b3269ad87e013b8140f3654d8aea"
+          RAMDISK_SHA = "0bc8b54373b5501818e8b252517419786db207771047b6def7ec9bc89beb607a"
+          OLD_KERNEL_BYTES = 29839872
+          NEW_IMAGE_BYTES = 29843968
+          BOOT_BYTES = 134217728
+
+          stock = stock_path.read_bytes()
+          old_boot = old_boot_path.read_bytes()
+          new_image = new_image_path.read_bytes()
+
+          def sha(data):
+              return hashlib.sha256(data).hexdigest()
+
+          def align(value, size=4096):
+              return (value + size - 1) // size * size
+
+          def need(condition, message):
+              if not condition:
+                  raise SystemExit("ERROR: " + message)
+
+          def arm64_header(image):
+              need(len(image) >= 64, "ARM64 Image too small")
+              text_offset, image_size, flags = struct.unpack_from(
+                  "<QQQ", image, 8
+              )
+              magic, res5 = struct.unpack_from("<II", image, 56)
+              return {
+                  "text_offset": text_offset,
+                  "image_size": image_size,
+                  "flags": flags,
+                  "magic": magic,
+                  "res5": res5,
+              }
+
+          def parse_footer(data):
+              raw = data[-64:]
+              need(raw[:4] == b"AVBf", "AVB footer magic")
+              major, minor = struct.unpack_from(">II", raw, 4)
+              original, offset, size = struct.unpack_from(">QQQ", raw, 12)
+              need(offset + size <= len(data) - 64, "AVB footer geometry")
+              return {
+                  "major": major,
+                  "minor": minor,
+                  "original": original,
+                  "offset": offset,
+                  "size": size,
+                  "raw": raw,
+                  "vbmeta": data[offset:offset + size],
+              }
+
+          def parse_vbmeta(vb):
+              need(vb[:4] == b"AVB0", "AVB0 magic")
+              auth_size, aux_size = struct.unpack_from(">QQ", vb, 12)
+              algorithm_type = struct.unpack_from(">I", vb, 28)[0]
+              values = struct.unpack_from(">QQQQQQQQQQQ", vb, 32)
+              descriptors_offset = values[8]
+              descriptors_size = values[9]
+              aux_start = 256 + auth_size
+              pos = aux_start + descriptors_offset
+              end = pos + descriptors_size
+              need(end <= aux_start + aux_size, "AVB descriptor geometry")
+
+              descriptors = []
+              while pos < end:
+                  tag, following = struct.unpack_from(">QQ", vb, pos)
+                  raw = vb[pos:pos + 16 + following]
+                  need(len(raw) == 16 + following, "truncated AVB descriptor")
+                  item = {
+                      "tag": tag,
+                      "offset": pos,
+                      "raw": raw,
+                      "following": following,
+                  }
+                  if tag == 2:
+                      image_size = struct.unpack_from(">Q", raw, 16)[0]
+                      algorithm = (
+                          raw[24:56].split(b"\0", 1)[0]
+                          .decode("ascii", "replace")
+                      )
+                      name_len, salt_len, digest_len, dflags = \
+                          struct.unpack_from(">IIII", raw, 56)
+                      q = 132
+                      partition = raw[q:q + name_len].decode(
+                          "ascii", "replace"
+                      )
+                      q += name_len
+                      salt = raw[q:q + salt_len]
+                      q += salt_len
+                      digest = raw[q:q + digest_len]
+                      item.update({
+                          "type": "hash",
+                          "image_size": image_size,
+                          "hash_algorithm": algorithm,
+                          "partition": partition,
+                          "salt": salt,
+                          "digest": digest,
+                          "digest_offset": pos + q,
+                          "digest_len": digest_len,
+                          "image_size_offset": pos + 16,
+                          "flags": dflags,
+                      })
+                  else:
+                      item["type"] = "other"
+                  descriptors.append(item)
+                  pos += 16 + following
+
+              need(pos == end, "AVB descriptor parse end")
+              return {
+                  "algorithm_type": algorithm_type,
+                  "descriptors": descriptors,
+              }
+
+          def hash_descriptor(info, partition):
+              found = [
+                  d for d in info["descriptors"]
+                  if d.get("type") == "hash"
+                  and d.get("partition") == partition
+              ]
+              need(
+                  len(found) == 1,
+                  f"one hash descriptor for {partition}",
+              )
+              return found[0]
+
+          def verify_descriptor(data, descriptor):
+              need(
+                  descriptor["hash_algorithm"] == "sha256",
+                  "AVB hash algorithm",
+              )
+              calculated = hashlib.sha256(
+                  descriptor["salt"] + data[:descriptor["image_size"]]
+              ).digest()
+              return calculated == descriptor["digest"], calculated
+
+          need(len(stock) == BOOT_BYTES, "stock boot size")
+          need(sha(stock) == STOCK_SHA, "stock boot hash")
+          need(len(old_boot) == BOOT_BYTES, "old custom boot size")
+          need(sha(old_boot) == OLD_BOOT_SHA, "old custom boot hash")
+          need(len(new_image) == NEW_IMAGE_BYTES, "new Image bytes")
+          need(sha(new_image) == NEW_IMAGE_SHA, "new Image hash")
+          need(stock[:8] == b"ANDROID!", "stock Android boot magic")
+          need(old_boot[:8] == b"ANDROID!", "old Android boot magic")
+
+          stock_kernel_size, ramdisk_size, _, header_size = \
+              struct.unpack_from("<4I", stock, 8)
+          header_version = struct.unpack_from("<I", stock, 40)[0]
+
+          need(stock_kernel_size == 45480448, "stock kernel size")
+          need(ramdisk_size == 22061278, "stock ramdisk size")
+          need(header_size == 1580, "Boot v3 header size")
+          need(header_version == 3, "Boot v3 header version")
+
+          stock_ramdisk_offset = 4096 + align(stock_kernel_size)
+          ramdisk = stock[
+              stock_ramdisk_offset:
+              stock_ramdisk_offset + ramdisk_size
+          ]
+          need(sha(ramdisk) == RAMDISK_SHA, "stock ramdisk hash")
+
+          stock_footer = parse_footer(stock)
+          need(
+              (stock_footer["major"], stock_footer["minor"]) == (1, 0),
+              "stock AVB footer version",
+          )
+          need(stock_footer["size"] == 896, "embedded vbmeta size")
+
+          stock_embedded = parse_vbmeta(stock_footer["vbmeta"])
+          need(
+              stock_embedded["algorithm_type"] == 0,
+              "embedded vbmeta algorithm NONE",
+          )
+          stock_boot_desc = hash_descriptor(stock_embedded, "boot")
+          stock_ok, _ = verify_descriptor(stock, stock_boot_desc)
+          need(stock_ok, "stock embedded boot descriptor")
+
+          old_kernel_size = struct.unpack_from("<I", old_boot, 8)[0]
+          old_kernel = old_boot[4096:4096 + old_kernel_size]
+          need(
+              old_kernel_size == OLD_KERNEL_BYTES,
+              "historical custom kernel size",
+          )
+          need(
+              sha(old_kernel) == OLD_KERNEL_SHA,
+              "historical custom kernel hash",
+          )
+
+          def build_custom(image):
+              new_ramdisk_offset = 4096 + align(len(image))
+              new_payload_end = (
+                  new_ramdisk_offset + align(len(ramdisk))
+              )
+
+              output = bytearray(len(stock))
+              header = bytearray(stock[:4096])
+              struct.pack_into("<I", header, 8, len(image))
+
+              output[:4096] = header
+              output[4096:4096 + len(image)] = image
+              output[
+                  new_ramdisk_offset:
+                  new_ramdisk_offset + len(ramdisk)
+              ] = ramdisk
+
+              new_vbmeta = bytearray(stock_footer["vbmeta"])
+              struct.pack_into(
+                  ">Q",
+                  new_vbmeta,
+                  stock_boot_desc["image_size_offset"],
+                  new_payload_end,
+              )
+
+              digest = hashlib.sha256(
+                  stock_boot_desc["salt"] + bytes(output[:new_payload_end])
+              ).digest()
+
+              start = stock_boot_desc["digest_offset"]
+              end = start + stock_boot_desc["digest_len"]
+              new_vbmeta[start:end] = digest
+
+              output[
+                  new_payload_end:
+                  new_payload_end + len(new_vbmeta)
+              ] = new_vbmeta
+
+              new_footer = bytearray(stock_footer["raw"])
+              struct.pack_into(">Q", new_footer, 12, new_payload_end)
+              struct.pack_into(">Q", new_footer, 20, new_payload_end)
+              output[-64:] = new_footer
+
+              result = bytes(output)
+              footer = parse_footer(result)
+              embedded = parse_vbmeta(footer["vbmeta"])
+              desc = hash_descriptor(embedded, "boot")
+              ok, calculated = verify_descriptor(result, desc)
+              need(ok, "custom embedded boot descriptor")
+              need(
+                  calculated == digest,
+                  "custom embedded AVB digest",
+              )
+
+              return {
+                  "bytes": result,
+                  "ramdisk_offset": new_ramdisk_offset,
+                  "payload_end": new_payload_end,
+                  "digest": digest.hex(),
+              }
+
+          # Hard calibration gate: the W53 algorithm must first reproduce
+          # the historical W19/W21 custom boot byte-for-byte.
+          calibrated = build_custom(old_kernel)
+          need(
+              sha(calibrated["bytes"]) == OLD_BOOT_SHA,
+              "historical W19 calibration hash",
+          )
+          need(
+              calibrated["bytes"] == old_boot,
+              "historical W19 calibration byte identity",
+          )
+
+          new_a = build_custom(new_image)
+          new_b = build_custom(new_image)
+          need(
+              new_a["bytes"] == new_b["bytes"],
+              "updated A/B build byte identity",
+          )
+
+          out_a.write_bytes(new_a["bytes"])
+          out_b.write_bytes(new_b["bytes"])
+
+          new_kernel_size = struct.unpack_from("<I", new_a["bytes"], 8)[0]
+          new_kernel = new_a["bytes"][
+              4096:4096 + new_kernel_size
+          ]
+          new_ramdisk = new_a["bytes"][
+              new_a["ramdisk_offset"]:
+              new_a["ramdisk_offset"] + ramdisk_size
+          ]
+
+          need(
+              new_kernel_size == len(new_image),
+              "updated boot kernel size",
+          )
+          need(
+              sha(new_kernel) == NEW_IMAGE_SHA,
+              "updated boot exact W70 kernel",
+          )
+          need(
+              new_ramdisk == ramdisk,
+              "updated boot stock ramdisk preserved",
+          )
+          need(
+              new_a["ramdisk_offset"] == 29851648,
+              "updated ramdisk offset",
+          )
+          need(
+              new_a["payload_end"] == 51916800,
+              "updated payload end",
+          )
+
+          arm = arm64_header(new_image)
+          need(arm["text_offset"] == 0x80000, "ARM64 text_offset")
+          need(arm["image_size"] == 38825984, "ARM64 image_size")
+          need(arm["flags"] == 0xA, "ARM64 flags")
+          need(arm["magic"] == 0x644D5241, "ARM64 magic")
+          need(arm["res5"] == 0x40, "ARM64 res5")
+
+          report = {
+              "result": "PASS_W71_CALIBRATED_BOOT_V3_BUILD",
+              "historical_calibration": {
+                  "old_boot_sha256": OLD_BOOT_SHA,
+                  "byte_identical": True,
+              },
+              "candidate": {
+                  "boot_sha256": sha(new_a["bytes"]),
+                  "boot_bytes": len(new_a["bytes"]),
+                  "kernel_sha256": NEW_IMAGE_SHA,
+                  "kernel_bytes": len(new_image),
+                  "ramdisk_sha256": sha(new_ramdisk),
+                  "ramdisk_bytes": len(new_ramdisk),
+                  "ramdisk_offset": new_a["ramdisk_offset"],
+                  "payload_end": new_a["payload_end"],
+                  "embedded_avb_digest": new_a["digest"],
+                  "build_a_b_byte_identical": True,
+                  "arm64": arm,
+              },
+          }
+
+          json_out.write_text(
+              json.dumps(report, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          text_out.write_text(
+              "\n".join([
+                  "W71_CALIBRATED_BOOT_BUILD=PASS",
+                  "HISTORICAL_W19_W21_CALIBRATION=PASS",
+                  "HISTORICAL_CALIBRATION_BYTE_IDENTICAL=YES",
+                  f"BOOT_IMG_SHA256={sha(new_a['bytes'])}",
+                  f"BOOT_IMG_BYTES={len(new_a['bytes'])}",
+                  f"KERNEL_SHA256={NEW_IMAGE_SHA}",
+                  f"KERNEL_BYTES={len(new_image)}",
+                  f"RAMDISK_SHA256={sha(new_ramdisk)}",
+                  f"RAMDISK_BYTES={len(new_ramdisk)}",
+                  f"RAMDISK_OFFSET={new_a['ramdisk_offset']}",
+                  f"PAYLOAD_END={new_a['payload_end']}",
+                  f"EMBEDDED_AVB_DIGEST={new_a['digest']}",
+                  "EMBEDDED_AVB_VERIFIES=YES",
+                  "BUILD_A_B_BYTE_IDENTICAL=YES",
+                  "BOOT_HEADER_VERSION=3",
+              ]) + "\n",
+              encoding="utf-8",
+          )
+          PY
+
+          cmp -s \
+            "$BOOT_BUILD/candidate-A.img" \
+            "$BOOT_BUILD/candidate-B.img"
+
+          grep -Fxq \
+            'W71_CALIBRATED_BOOT_BUILD=PASS' \
+            "$ARTIFACT_DIR/22-boot-build.txt"
+          grep -Fxq \
+            'HISTORICAL_W19_W21_CALIBRATION=PASS' \
+            "$ARTIFACT_DIR/22-boot-build.txt"
+          grep -Fxq \
+            'EMBEDDED_AVB_VERIFIES=YES' \
+            "$ARTIFACT_DIR/22-boot-build.txt"
+          grep -Fxq \
+            'BUILD_A_B_BYTE_IDENTICAL=YES' \
+            "$ARTIFACT_DIR/22-boot-build.txt"
+
+      - name: Independently audit candidate Boot v3 binary
+        if: steps.susfs_api.outputs.ready == 'yes'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cp \
+            "$BOOT_BUILD/candidate-A.img" \
+            "$BOOT_OUTPUT/boot.img"
+
+          python3 - \
+            "$BOOT_OUTPUT/boot.img" \
+            "$ARTIFACT_DIR/23-boot-independent-audit.json" \
+            "$ARTIFACT_DIR/23-boot-independent-audit.txt" <<'PY'
+          import hashlib
+          import json
+          import struct
+          import sys
+          from pathlib import Path
+
+          path = Path(sys.argv[1])
+          json_out = Path(sys.argv[2])
+          text_out = Path(sys.argv[3])
+
+          EXPECT_IMAGE_SHA = "1ff4c57bb524b1d01de1d56739133ea4a9c9b3269ad87e013b8140f3654d8aea"
+          EXPECT_RAMDISK_SHA = "0bc8b54373b5501818e8b252517419786db207771047b6def7ec9bc89beb607a"
+
+          data = path.read_bytes()
+
+          def sha(blob):
+              return hashlib.sha256(blob).hexdigest()
+
+          def need(cond, msg):
+              if not cond:
+                  raise SystemExit("ERROR: " + msg)
+
+          need(len(data) == 134217728, "boot.img size")
+          need(data[:8] == b"ANDROID!", "Android boot magic")
+
+          kernel_size = struct.unpack_from("<I", data, 8)[0]
+          ramdisk_size = struct.unpack_from("<I", data, 12)[0]
+          header_size = struct.unpack_from("<I", data, 20)[0]
+          header_version = struct.unpack_from("<I", data, 40)[0]
+
+          need(kernel_size == 29843968, "kernel size")
+          need(ramdisk_size == 22061278, "ramdisk size")
+          need(header_size == 1580, "header size")
+          need(header_version == 3, "header version")
+
+          kernel_offset = 4096
+          ramdisk_offset = 29851648
+
+          kernel = data[kernel_offset:kernel_offset + kernel_size]
+          ramdisk = data[
+              ramdisk_offset:ramdisk_offset + ramdisk_size
+          ]
+
+          need(sha(kernel) == EXPECT_IMAGE_SHA, "embedded kernel hash")
+          need(sha(ramdisk) == EXPECT_RAMDISK_SHA, "raw stock ramdisk hash")
+
+          footer = data[-64:]
+          need(footer[:4] == b"AVBf", "AVB footer magic")
+          major, minor = struct.unpack_from(">II", footer, 4)
+          original_size, vbmeta_offset, vbmeta_size = \
+              struct.unpack_from(">QQQ", footer, 12)
+
+          need((major, minor) == (1, 0), "AVB footer version")
+          need(original_size == 51916800, "AVB original image size")
+          need(vbmeta_offset == 51916800, "AVB vbmeta offset")
+          need(vbmeta_size == 896, "AVB vbmeta size")
+
+          vbmeta = data[vbmeta_offset:vbmeta_offset + vbmeta_size]
+          need(vbmeta[:4] == b"AVB0", "embedded vbmeta magic")
+          algorithm_type = struct.unpack_from(">I", vbmeta, 28)[0]
+          need(algorithm_type == 0, "embedded vbmeta algorithm NONE")
+
+          auth_size, _ = struct.unpack_from(">QQ", vbmeta, 12)
+          values = struct.unpack_from(">QQQQQQQQQQQ", vbmeta, 32)
+          descriptors_offset = values[8]
+          descriptors_size = values[9]
+
+          pos = 256 + auth_size + descriptors_offset
+          end = pos + descriptors_size
+          matches = []
+
+          while pos < end:
+              tag, following = struct.unpack_from(">QQ", vbmeta, pos)
+              raw = vbmeta[pos:pos + 16 + following]
+              need(
+                  len(raw) == 16 + following,
+                  "AVB descriptor truncation",
+              )
+
+              if tag == 2:
+                  desc_image_size = struct.unpack_from(">Q", raw, 16)[0]
+                  algorithm = (
+                      raw[24:56].split(b"\0", 1)[0]
+                      .decode("ascii", "replace")
+                  )
+                  name_len, salt_len, digest_len, desc_flags = \
+                      struct.unpack_from(">IIII", raw, 56)
+                  q = 132
+                  partition = raw[q:q + name_len].decode(
+                      "ascii", "replace"
+                  )
+                  q += name_len
+                  salt = raw[q:q + salt_len]
+                  q += salt_len
+                  digest = raw[q:q + digest_len]
+
+                  if partition == "boot":
+                      calculated = hashlib.sha256(
+                          salt + data[:desc_image_size]
+                      ).digest()
+                      matches.append({
+                          "image_size": desc_image_size,
+                          "algorithm": algorithm,
+                          "flags": desc_flags,
+                          "digest": digest.hex(),
+                          "calculated": calculated.hex(),
+                          "verifies": digest == calculated,
+                      })
+
+              pos += 16 + following
+
+          need(len(matches) == 1, "exactly one boot hash descriptor")
+          desc = matches[0]
+          need(desc["image_size"] == 51916800, "descriptor image size")
+          need(desc["algorithm"] == "sha256", "descriptor algorithm")
+          need(desc["verifies"] is True, "embedded boot descriptor verifies")
+
+          result = {
+              "result": "PASS_W71_INDEPENDENT_BOOT_V3_AUDIT",
+              "boot_sha256": sha(data),
+              "boot_bytes": len(data),
+              "header_version": header_version,
+              "header_size": header_size,
+              "kernel_sha256": sha(kernel),
+              "kernel_bytes": len(kernel),
+              "ramdisk_sha256": sha(ramdisk),
+              "ramdisk_bytes": len(ramdisk),
+              "ramdisk_offset": ramdisk_offset,
+              "avb": {
+                  "footer_version": f"{major}.{minor}",
+                  "original_image_size": original_size,
+                  "vbmeta_offset": vbmeta_offset,
+                  "vbmeta_size": vbmeta_size,
+                  "algorithm": "NONE",
+                  "boot_descriptor": desc,
+              },
+          }
+
+          json_out.write_text(
+              json.dumps(result, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          text_out.write_text(
+              "\n".join([
+                  "W71_INDEPENDENT_BOOT_AUDIT=PASS",
+                  f"BOOT_IMG_SHA256={sha(data)}",
+                  f"BOOT_IMG_BYTES={len(data)}",
+                  "BOOT_HEADER_VERSION=3",
+                  "BOOT_HEADER_SIZE=1580",
+                  f"KERNEL_SHA256={sha(kernel)}",
+                  f"RAMDISK_SHA256={sha(ramdisk)}",
+                  "EMBEDDED_AVB_VERIFIES=YES",
+                  f"EMBEDDED_AVB_DIGEST={desc['digest']}",
+              ]) + "\n",
+              encoding="utf-8",
+          )
+          PY
+
+          grep -Fxq \
+            'W71_INDEPENDENT_BOOT_AUDIT=PASS' \
+            "$ARTIFACT_DIR/23-boot-independent-audit.txt"
+          grep -Fxq \
+            "KERNEL_SHA256=$W70_IMAGE_SHA256" \
+            "$ARTIFACT_DIR/23-boot-independent-audit.txt"
+          grep -Fxq \
+            "RAMDISK_SHA256=$STOCK_RAMDISK_SHA256" \
+            "$ARTIFACT_DIR/23-boot-independent-audit.txt"
+          grep -Fxq \
+            'EMBEDDED_AVB_VERIFIES=YES' \
+            "$ARTIFACT_DIR/23-boot-independent-audit.txt"
+
+      - name: Magiskboot architecture audit and structural validation
+        if: steps.susfs_api.outputs.ready == 'yes'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          MAGISKBOOT="$BOOT_OLD_PACKAGE/tools/magiskboot"
+          test -s "$MAGISKBOOT"
+          test "$(sha256sum "$MAGISKBOOT" | awk '{print $1}')" = \
+            "$MAGISKBOOT_SHA256"
+
+          FILE_DESC="$(file -b "$MAGISKBOOT")"
+          RUNNER_ARCH="$(uname -m)"
+
+          {
+            echo "MAGISKBOOT_SHA256=$MAGISKBOOT_SHA256"
+            echo "MAGISKBOOT_FILE=$FILE_DESC"
+            echo "RUNNER_ARCH=$RUNNER_ARCH"
+          } | tee "$ARTIFACT_DIR/24-magiskboot-architecture.txt"
+
+          # The historical package carries a device-side ARM64 magiskboot.
+          # Never treat an x86_64 Exec format error as a boot.img defect.
+          if printf '%s\n' "$FILE_DESC" | grep -Eqi '(^|[,[:space:]])ARM([,[:space:]]|$)|aarch64|ARM64|EABI'; then
+            if printf '%s\n' "$FILE_DESC" | grep -Eqi 'aarch64|ARM64'; then
+              DETECTED_ARCH="ARM64"
+            else
+              DETECTED_ARCH="ARM32"
+            fi
+
+            echo "MAGISKBOOT_ARCH=$DETECTED_ARCH" \
+              | tee -a "$ARTIFACT_DIR/24-magiskboot-architecture.txt"
+
+            if [ "$RUNNER_ARCH" != "aarch64" ] && [ "$RUNNER_ARCH" != "arm64" ]; then
+              {
+                echo "MAGISKBOOT_NATIVE_EXECUTION=SKIPPED_ARCH_MISMATCH"
+                echo "MAGISKBOOT_EXEC_FORMAT_ERROR_EXPECTED_IF_RUN=YES"
+                echo "BOOT_BINARY_STRUCTURAL_AUDIT=PASS"
+                echo "MAGISKBOOT_ARCH_AUDIT=PASS"
+                echo "MAGISKBOOT_ARCH_DETECTOR_VERSION=v6-arm32-arm64-eabi"
+              } | tee "$ARTIFACT_DIR/24-magiskboot-validation.txt"
+              exit 0
+            fi
+          fi
+
+          chmod +x "$MAGISKBOOT"
+          BEFORE="$(sha256sum "$BOOT_OUTPUT/boot.img" | awk '{print $1}')"
+
+          rm -rf "$BOOT_UNPACK"
+          mkdir -p "$BOOT_UNPACK"
+          cp "$BOOT_OUTPUT/boot.img" "$BOOT_UNPACK/boot.img"
+
+          (
+            cd "$BOOT_UNPACK"
+            "$MAGISKBOOT" unpack boot.img \
+              > "$ARTIFACT_DIR/24-magiskboot-unpack.log" 2>&1
+          )
+
+          test -s "$BOOT_UNPACK/kernel"
+          test "$(sha256sum "$BOOT_UNPACK/kernel" | awk '{print $1}')" = \
+            "$W70_IMAGE_SHA256"
+          test -e "$BOOT_UNPACK/ramdisk.cpio"
+
+          AFTER="$(sha256sum "$BOOT_OUTPUT/boot.img" | awk '{print $1}')"
+          test "$BEFORE" = "$AFTER"
+
+          {
+            echo "MAGISKBOOT_NATIVE_EXECUTION=PASS"
+            echo "UNPACKED_KERNEL_SHA256=$(sha256sum "$BOOT_UNPACK/kernel" | awk '{print $1}')"
+            echo "RAMDISK_CPIO_PRESENT=YES"
+            echo "SOURCE_BOOT_MUTATED_BY_UNPACK=NO"
+            echo "BOOT_BINARY_STRUCTURAL_AUDIT=PASS"
+            echo "MAGISKBOOT_ARCH_AUDIT=PASS"
+          } | tee "$ARTIFACT_DIR/24-magiskboot-validation.txt"
+
+      - name: Promote W71 nonflashed boot candidate
+        if: steps.susfs_api.outputs.ready == 'yes'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test -s "$BOOT_OUTPUT/boot.img"
+          test "$(stat -c '%s' "$BOOT_OUTPUT/boot.img")" = "$STOCK_BOOT_BYTES"
+
+          BOOT_SHA="$(
+            sha256sum "$BOOT_OUTPUT/boot.img" | awk '{print $1}'
+          )"
+          BOOT_BYTES="$(
+            stat -c '%s' "$BOOT_OUTPUT/boot.img"
+          )"
+          AVB_DIGEST="$(
+            sed -n 's/^EMBEDDED_AVB_DIGEST=//p' \
+              "$ARTIFACT_DIR/23-boot-independent-audit.txt"
+          )"
+
+          test -n "$BOOT_SHA"
+          test -n "$AVB_DIGEST"
+
+          printf '%s  boot.img\n' "$BOOT_SHA" \
+            > "$BOOT_OUTPUT/boot.img.sha256"
+
+          gzip -n -9 -c "$BOOT_OUTPUT/boot.img" \
+            > "$BOOT_OUTPUT/boot.img.gz"
+
+          GZIP_SHA="$(
+            sha256sum "$BOOT_OUTPUT/boot.img.gz" | awk '{print $1}'
+          )"
+          printf '%s  boot.img.gz\n' "$GZIP_SHA" \
+            > "$BOOT_OUTPUT/boot.img.gz.sha256"
+
+          cat > "$BOOT_OUTPUT/W71-BOOT-CANDIDATE-MANIFEST.txt" <<EOF
+          W71_BOOT_CANDIDATE=PASS
+          DEVICE=veux
+          KERNEL_VERSION=5.4.274
+          ROM_FAMILY=Xiaomi_HyperOS_Stock
+          ROM_VERSION=$STOCK_ROM_VERSION
+          ANDROID_VERSION=$STOCK_ANDROID_VERSION
+          SECURITY_PATCH=$STOCK_SECURITY_PATCH
+          RESUKISU_TARGET=$TARGET_REF
+          SUSFS_VERSION=2.2.0_plus_process_state_backport
+          BOOT_HEADER_VERSION=3
+          BOOT_IMG_SHA256=$BOOT_SHA
+          BOOT_IMG_BYTES=$BOOT_BYTES
+          KERNEL_SHA256=$W70_IMAGE_SHA256
+          KERNEL_BYTES=$W70_IMAGE_BYTES
+          STOCK_RAMDISK_SHA256=$STOCK_RAMDISK_SHA256
+          EMBEDDED_AVB_DIGEST=$AVB_DIGEST
+          EMBEDDED_AVB_VERIFIES=YES
+          HISTORICAL_W19_W21_CALIBRATION=PASS
+          BUILD_A_B_BYTE_IDENTICAL=YES
+          MAGISKBOOT_ARCH_AUDIT=PASS
+          MAGISKBOOT_NATIVE_EXECUTION=ARCH_DEPENDENT
+          DEVICE_ACCESSED=NO
+          ADB_USED=NO
+          FASTBOOT_USED=NO
+          FLASHING_PERFORMED=NO
+          PHYSICAL_DEVICE_BOOT_TESTED=NO
+          EOF
+
+          sha256sum \
+            "$BOOT_OUTPUT/boot.img" \
+            "$BOOT_OUTPUT/boot.img.gz" \
+            "$BOOT_OUTPUT/W71-BOOT-CANDIDATE-MANIFEST.txt" \
+            | sort -k2 \
+            > "$BOOT_OUTPUT/SHA256SUMS.txt"
+
+          {
+            echo "W71_BOOT_PROMOTION=PASS"
+            echo "BOOT_IMG_SHA256=$BOOT_SHA"
+            echo "BOOT_IMG_BYTES=$BOOT_BYTES"
+            echo "KERNEL_SHA256=$W70_IMAGE_SHA256"
+            echo "RAMDISK_SHA256=$STOCK_RAMDISK_SHA256"
+            echo "EMBEDDED_AVB_DIGEST=$AVB_DIGEST"
+            echo "EMBEDDED_AVB_VERIFIES=YES"
+            echo "MAGISKBOOT_ARCH_AUDIT=PASS"
+            echo "FLASHING_PERFORMED=NO"
+          } | tee "$ARTIFACT_DIR/25-boot-promotion.txt"
+
+      - name: Upload W71 boot.img candidate
+        if: steps.susfs_api.outputs.ready == 'yes'
+        uses: actions/upload-artifact@v4
+        with:
+          name: W73-v1-VEUX-5.4.274-ReSukiSU-SUSFS-boot-img-candidate
+          path: w71-boot/output/
+          if-no-files-found: error
+          compression-level: 9
+          retention-days: 30
+
+      - name: Write W71 verdict
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ready="${{ steps.susfs_api.outputs.ready }}"
+
+          if [ "$ready" = "yes" ]              && grep -Fq 'REPRODUCIBILITY=PASS' "$ARTIFACT_DIR/14-reproducibility.txt"              && grep -Fq 'MANUAL_HOOK_CONTRACTS=PASS' "$ARTIFACT_DIR/15-hook-contracts.txt"              && grep -Fq 'SUSFS_STABILITY_CONTRACTS=PASS' "$ARTIFACT_DIR/16-susfs-stability-contracts.txt"              && grep -Fq 'KERNEL_CANDIDATE_STAGE=PASS' "$ARTIFACT_DIR/17-candidate-stage.txt"              && grep -Fq 'STATIC_CANDIDATE_BOUNDARY=PASS' "$ARTIFACT_DIR/18-static-boundary.txt"              && grep -Fq 'W71_KERNEL_CANDIDATE_PATH_GUARD=PASS' "$ARTIFACT_DIR/18a-kernel-candidate-path-guard.txt"              && grep -Fq 'W53_BOOT_CONTRACT_AUTH=PASS' "$ARTIFACT_DIR/19-w53-boot-contract.txt"              && grep -Fq 'BOOT_INPUT_GATE=PASS' "$ARTIFACT_DIR/21-boot-input-gate.txt"              && grep -Fq 'W71_CALIBRATED_BOOT_BUILD=PASS' "$ARTIFACT_DIR/22-boot-build.txt"              && grep -Fq 'W71_INDEPENDENT_BOOT_AUDIT=PASS' "$ARTIFACT_DIR/23-boot-independent-audit.txt"              && grep -Fq 'MAGISKBOOT_ARCH_AUDIT=PASS' "$ARTIFACT_DIR/24-magiskboot-validation.txt"              && grep -Fq 'W71_BOOT_PROMOTION=PASS' "$ARTIFACT_DIR/25-boot-promotion.txt"
+          then
+            result="BOOT_REPACK_STATIC_VALIDATION_PASS"
+            next="CONTROLLED_DEVICE_BOOT_TEST"
+          elif [ "$ready" = "no" ]; then
+            result="SUSFS_PROCESS_STATE_BACKPORT_FAILED"
+            next="INSPECT_W71_PROCESS_STATE_BACKPORT"
+          else
+            result="REPRO_OR_CONTRACT_VALIDATION_FAILED"
+            next="INSPECT_W71_ARTIFACT"
+          fi
+
+          {
+            echo "W71_V1_RESULT=$result"
+            echo "TARGET_KERNEL=VEUX_LINUX_5.4.274"
+            echo "REFERENCE=46C7"
+            echo "OLD_RESUKISU_PIN=$BASE_REF"
+            echo "SELECTED_TARGET=$TARGET_REF"
+            echo "W68_V3_IMAGE_SHA256=1ff4c57bb524b1d01de1d56739133ea4a9c9b3269ad87e013b8140f3654d8aea"
+            echo "W68_V3_VMLINUX_SHA256=a54fa829d7398a01dd015e5facafb55c9f5cdc8e1eaa20051c0e98ab385482e1"
+            echo "W68_V3_SYSTEM_MAP_SHA256=2959dfabbae93c2d4118e892669006f06b128158ada971a5cf6cb3ebb935cf6d"
+            echo "W68_V3_CONFIG_SHA256=d7cd955abd59da45804acc9c5e450cf8fc953da3e66bbc274212b40ee9a0b372"
+            echo "MODULE_LOAD_FILTER_INCLUDED=NO"
+            if [ -s "$BOOT_OUTPUT/boot.img" ]; then
+              echo "BOOT_IMAGE_CREATED=YES"
+            else
+              echo "BOOT_IMAGE_CREATED=NO"
+            fi
+            echo "FLASHABLE_ZIP_CREATED=NO"
+            if grep -Fq 'W71_BOOT_PROMOTION=PASS' "$ARTIFACT_DIR/25-boot-promotion.txt" 2>/dev/null; then
+              echo "BOOT_IMAGE_STATIC_VALIDATION=PASS"
+            else
+              echo "BOOT_IMAGE_STATIC_VALIDATION=NOT_COMPLETED"
+            fi
+            echo "PHYSICAL_DEVICE_BOOT_TESTED=NO"
+            echo "DEVICE_ACCESSED=NO"
+            echo "FLASHING_PERFORMED=NO"
+            echo "NEXT_STAGE=$next"
+          } | tee "$ARTIFACT_DIR/12-verdict.txt"
+
+          sha256sum "$ARTIFACT_DIR"/* \
+            2>/dev/null \
+            | sort -k2 \
+            > "$ARTIFACT_DIR/SHA256SUMS.txt" || true
+
+      - name: Upload W71 artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: W73-v1-VEUX-5.4.274-ReSukiSU-SUSFS-boot-v3-validation
+          path: w71-artifact/
+          if-no-files-found: error
+
+      - name: Fail when SUSFS 5.4 API adaptation is required
+        if: steps.susfs_api.outputs.ready == 'no'
+        shell: bash
+        run: |
+          echo "W71 stopped intentionally: current proven SUSFS 2.2 5.4 tree lacks one or more APIs required by ReSukiSU 03b60f26."
+          exit 2
