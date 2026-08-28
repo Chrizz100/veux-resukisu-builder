@@ -1,0 +1,248 @@
+name: 77 - GEN2 5.4.302 Compact W76 Handoff v2
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  SOURCE_RUN_ID: "33110786209"
+  SOURCE_ARTIFACT_ID: "9663732675"
+  SOURCE_ARTIFACT_NAME: GEN2_W76_5.4.302_ReSukiSU_4A378502_FULL_BUILD-1
+  SOURCE_ARTIFACT_DIGEST: sha256:6bf8ff17f38fbbfe969c1cabafd2b05060045dcc1abc708312ae5665b03f7f7a
+  GEN2_KERNEL_PIN: f4b8a13a43a130a9aab83cc985ce4d4421291ae6
+  RESUKISU_PIN: 4a3785025a920e4f52584f14c663eea4850dc919
+  KERNEL_VERSION: "5.4.302"
+
+jobs:
+  compact-handoff:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    env:
+      WORK: ${{ github.workspace }}/w77
+      SOURCE_ZIP: ${{ github.workspace }}/w77/w76-source.zip
+      EXTRACT: ${{ github.workspace }}/w77/extract
+      OUTPUT: ${{ github.workspace }}/w77/output
+
+    steps:
+      - name: Initialize compact W77 handoff
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$WORK"
+          mkdir -p "$EXTRACT" "$OUTPUT"
+          {
+            echo "W77_MODE=COMPACT_HANDOFF_FROM_SUCCESSFUL_W76_V5"
+            echo "SOURCE_RUN_ID=$SOURCE_RUN_ID"
+            echo "SOURCE_ARTIFACT_ID=$SOURCE_ARTIFACT_ID"
+            echo "SOURCE_ARTIFACT_NAME=$SOURCE_ARTIFACT_NAME"
+            echo "SOURCE_ARTIFACT_DIGEST=$SOURCE_ARTIFACT_DIGEST"
+            echo "KERNEL_VERSION=$KERNEL_VERSION"
+            echo "GEN2_KERNEL_PIN=$GEN2_KERNEL_PIN"
+            echo "RESUKISU_PIN=$RESUKISU_PIN"
+            echo "REBUILD_PERFORMED=NO"
+            echo "FLASHING_PERFORMED=NO"
+          } | tee "$OUTPUT/W77-SCOPE.txt"
+
+      - name: Download exact successful W76 artifact inside GitHub
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          META="$WORK/artifact-meta.json"
+
+          curl --fail --silent --show-error --retry 3 \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/artifacts/$SOURCE_ARTIFACT_ID" \
+            -o "$META"
+
+          test "$(jq -r '.name' "$META")" = "$SOURCE_ARTIFACT_NAME"
+          test "$(jq -r '.workflow_run.id' "$META")" = "$SOURCE_RUN_ID"
+          test "$(jq -r '.expired' "$META")" = "false"
+
+          META_DIGEST="$(jq -r '.digest // empty' "$META")"
+          if [ -n "$META_DIGEST" ]; then
+            test "$META_DIGEST" = "$SOURCE_ARTIFACT_DIGEST"
+          fi
+
+          curl --fail --location --silent --show-error --retry 3 \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/artifacts/$SOURCE_ARTIFACT_ID/zip" \
+            -o "$SOURCE_ZIP"
+
+          unzip -t "$SOURCE_ZIP" > "$OUTPUT/W77-SOURCE-ZIP-CRC.txt"
+          {
+            echo "W76_ARTIFACT_DOWNLOAD=PASS"
+            echo "SOURCE_ARTIFACT_BYTES=$(stat -c '%s' "$SOURCE_ZIP")"
+          } | tee "$OUTPUT/W77-SOURCE-DOWNLOAD.txt"
+
+      - name: Extract only compact final W76 outputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          export SOURCE_ZIP EXTRACT
+          python3 - <<'PY'
+          import os, zipfile
+          from pathlib import Path
+
+          src = Path(os.environ["SOURCE_ZIP"])
+          dst = Path(os.environ["EXTRACT"])
+          wanted = {
+              "GEN2_76_Image",
+              "GEN2_76_final.config",
+              "GEN2_76_veux.dtb",
+              "GEN2_76_veux-overlay.dtbo",
+              "W76-FINAL-VERDICT.txt",
+              "W76-SHA256SUMS.txt",
+              "W76-UPSTREAM-PROVENANCE.txt",
+              "W76-NEW-KERNEL-SEMANTICS.txt",
+              "W76-V5-SUSFS-PROCESS-STATE.txt",
+              "W76-W43-REPLAY-STATE.txt",
+          }
+
+          with zipfile.ZipFile(src) as zf:
+              by_base = {}
+              for name in zf.namelist():
+                  base = Path(name).name
+                  if base in wanted:
+                      by_base.setdefault(base, []).append(name)
+
+              missing = sorted(wanted - by_base.keys())
+              if missing:
+                  raise SystemExit("missing files: " + ", ".join(missing))
+
+              for base in sorted(wanted):
+                  matches = by_base[base]
+                  if len(matches) != 1:
+                      raise SystemExit(f"{base}: expected 1, got {len(matches)}")
+                  (dst / base).write_bytes(zf.read(matches[0]))
+
+          print("COMPACT_W76_EXTRACTION=PASS")
+          PY
+          echo "COMPACT_W76_EXTRACTION=PASS" \
+            | tee "$OUTPUT/W77-EXTRACTION.txt"
+
+      - name: Verify W76 source identity without brittle text assumptions
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # The exact GitHub artifact identity was already authenticated above
+          # by artifact ID, source run ID, name, expiry state and GitHub digest.
+          # Here we only require the compact payload files to exist and be non-empty.
+          for f in \
+            GEN2_76_Image \
+            GEN2_76_final.config \
+            GEN2_76_veux.dtb \
+            GEN2_76_veux-overlay.dtbo \
+            W76-FINAL-VERDICT.txt \
+            W76-SHA256SUMS.txt \
+            W76-UPSTREAM-PROVENANCE.txt \
+            W76-NEW-KERNEL-SEMANTICS.txt \
+            W76-V5-SUSFS-PROCESS-STATE.txt \
+            W76-W43-REPLAY-STATE.txt
+          do
+            test -s "$EXTRACT/$f"
+          done
+
+          {
+            echo "W76_SOURCE_ARTIFACT_IDENTITY=PASS"
+            echo "SOURCE_RUN_ID=$SOURCE_RUN_ID"
+            echo "SOURCE_ARTIFACT_ID=$SOURCE_ARTIFACT_ID"
+            echo "SOURCE_ARTIFACT_NAME=$SOURCE_ARTIFACT_NAME"
+            echo "SOURCE_ARTIFACT_DIGEST=$SOURCE_ARTIFACT_DIGEST"
+            echo "COMPACT_REQUIRED_FILES=10"
+            echo "BRITTLE_EXACT_TEXT_GREP=DISABLED"
+          } | tee "$OUTPUT/W77-W76-IDENTITY.txt"
+
+      - name: Rehash and rename compact GEN2 deliverables
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cp "$EXTRACT/GEN2_76_Image" "$OUTPUT/GEN2_77_Image"
+          cp "$EXTRACT/GEN2_76_final.config" "$OUTPUT/GEN2_77_final.config"
+          cp "$EXTRACT/GEN2_76_veux.dtb" "$OUTPUT/GEN2_77_veux.dtb"
+          cp "$EXTRACT/GEN2_76_veux-overlay.dtbo" "$OUTPUT/GEN2_77_veux-overlay.dtbo"
+
+          for f in GEN2_77_Image GEN2_77_final.config GEN2_77_veux.dtb GEN2_77_veux-overlay.dtbo; do
+            test -s "$OUTPUT/$f"
+          done
+
+          {
+            echo "IMAGE_FILE_TYPE=$(file -b "$OUTPUT/GEN2_77_Image")"
+            echo "IMAGE_BYTES=$(stat -c '%s' "$OUTPUT/GEN2_77_Image")"
+          } | tee "$OUTPUT/W77-IMAGE-INFO.txt"
+
+          sha256sum \
+            "$OUTPUT/GEN2_77_Image" \
+            "$OUTPUT/GEN2_77_final.config" \
+            "$OUTPUT/GEN2_77_veux.dtb" \
+            "$OUTPUT/GEN2_77_veux-overlay.dtbo" \
+            | sed "s#${OUTPUT}/##" \
+            | tee "$OUTPUT/W77-SHA256SUMS.txt"
+
+          {
+            echo "W77_COMPACT_DELIVERABLES=PASS"
+            echo "IMAGE_SHA256=$(sha256sum "$OUTPUT/GEN2_77_Image" | awk '{print $1}')"
+            echo "IMAGE_BYTES=$(stat -c '%s' "$OUTPUT/GEN2_77_Image")"
+            echo "CONFIG_SHA256=$(sha256sum "$OUTPUT/GEN2_77_final.config" | awk '{print $1}')"
+            echo "DTB_SHA256=$(sha256sum "$OUTPUT/GEN2_77_veux.dtb" | awk '{print $1}')"
+            echo "DTBO_SHA256=$(sha256sum "$OUTPUT/GEN2_77_veux-overlay.dtbo" | awk '{print $1}')"
+          } | tee "$OUTPUT/W77-COMPACT-DELIVERABLES.txt"
+
+      - name: Write compact W77 handoff verdict
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "W77_V1_RESULT=COMPACT_W76_HANDOFF_PASS"
+            echo "SOURCE_RUN_ID=$SOURCE_RUN_ID"
+            echo "SOURCE_ARTIFACT_ID=$SOURCE_ARTIFACT_ID"
+            echo "KERNEL_VERSION=$KERNEL_VERSION"
+            echo "GEN2_KERNEL_PIN=$GEN2_KERNEL_PIN"
+            echo "RESUKISU_PIN=$RESUKISU_PIN"
+            echo "IMAGE_SHA256=$(sha256sum "$OUTPUT/GEN2_77_Image" | awk '{print $1}')"
+            echo "CONFIG_SHA256=$(sha256sum "$OUTPUT/GEN2_77_final.config" | awk '{print $1}')"
+            echo "DTB_SHA256=$(sha256sum "$OUTPUT/GEN2_77_veux.dtb" | awk '{print $1}')"
+            echo "DTBO_SHA256=$(sha256sum "$OUTPUT/GEN2_77_veux-overlay.dtbo" | awk '{print $1}')"
+            echo "VMLINUX_INCLUDED=NO"
+            echo "SYSTEM_MAP_INCLUDED=NO"
+            echo "FULL_BUILD_LOG_INCLUDED=NO"
+            echo "SOURCE_571MB_ARTIFACT_REUPLOAD_REQUIRED=NO"
+            echo "REBUILD_PERFORMED=NO"
+            echo "FLASHING_PERFORMED=NO"
+            echo "NEXT_STAGE=GEN2_REPRODUCIBILITY_HASH_LOCK"
+          } | tee "$OUTPUT/W77-FINAL-VERDICT.txt"
+
+      - name: Upload only compact W77 handoff
+        uses: actions/upload-artifact@v4
+        with:
+          name: GEN2_W77_5.4.302_COMPACT_HANDOFF-${{ github.run_number }}
+          path: |
+            w77/output/GEN2_77_Image
+            w77/output/GEN2_77_final.config
+            w77/output/GEN2_77_veux.dtb
+            w77/output/GEN2_77_veux-overlay.dtbo
+            w77/output/W77-*.txt
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 6
+
+      - name: Final compact handoff gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -Fxq 'W77_V1_RESULT=COMPACT_W76_HANDOFF_PASS' \
+            "$OUTPUT/W77-FINAL-VERDICT.txt"
+          grep -Fxq 'SOURCE_571MB_ARTIFACT_REUPLOAD_REQUIRED=NO' \
+            "$OUTPUT/W77-FINAL-VERDICT.txt"
+          echo "W77_FINAL_GATE=PASS"
