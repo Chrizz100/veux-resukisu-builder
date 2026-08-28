@@ -1,0 +1,155 @@
+name: 79 - GEN2 5.4.302 Locked Image AnyKernel3 Packaging v1
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  W78_RUN_ID: "33145874451"
+  W78_ARTIFACT_NAME: "GEN2_W78_V5_BUILD_A"
+  LOCKED_IMAGE_SHA256: "2448b0ee28ebb5c3781c22b29caa417a97e0662b093878477bbb4368a45f54f3"
+  GEN2_KERNEL_PIN: "f4b8a13a43a130a9aab83cc985ce4d4421291ae6"
+  RESUKISU_PIN: "4a3785025a920e4f52584f14c663eea4850dc919"
+
+jobs:
+  package:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout builder repository
+        uses: actions/checkout@v6
+
+      - name: Download locked W78 build A
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.W78_ARTIFACT_NAME }}
+          path: w78
+          repository: ${{ github.repository }}
+          run-id: ${{ env.W78_RUN_ID }}
+          github-token: ${{ github.token }}
+
+      - name: Verify locked kernel image
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s w78/GEN2_76_Image
+          actual="$(sha256sum w78/GEN2_76_Image | awk '{print $1}')"
+          echo "LOCKED_IMAGE_EXPECTED=$LOCKED_IMAGE_SHA256"
+          echo "LOCKED_IMAGE_ACTUAL=$actual"
+          test "$actual" = "$LOCKED_IMAGE_SHA256"
+          file w78/GEN2_76_Image | tee W79-IMAGE-FILE.txt
+          cp w78/GEN2_76_Image Image
+
+      - name: Fetch clean AnyKernel3
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git AnyKernel3
+          rm -rf AnyKernel3/.git AnyKernel3/.github
+          test -s AnyKernel3/anykernel.sh
+
+      - name: Configure VEUX AnyKernel3 package
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Image AnyKernel3/Image
+
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path("AnyKernel3/anykernel.sh")
+          s = p.read_text()
+          start = s.find("properties() {")
+          end = s.find("}", start)
+          if start < 0 or end < 0:
+              raise SystemExit("AnyKernel3 properties() block not found")
+          new = """properties() {
+          kernel.string=GEN2 Linux 5.4.302 ReSukiSU 4a378502 SUSFS 2.2 VEUX
+          do.devicecheck=1
+          do.modules=0
+          do.systemless=1
+          do.cleanup=1
+          do.cleanuponabort=0
+          device.name1=veux
+          device.name2=peux
+          supported.versions=
+          supported.patchlevels=
+          }"""
+          s = s[:start] + new + s[end+1:]
+          p.write_text(s)
+          PY
+
+          grep -nE 'kernel.string|device.name|do.devicecheck' AnyKernel3/anykernel.sh | tee W79-AK3-PROPERTIES.txt
+
+      - name: Build deterministic AnyKernel3 ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="VEUX_5.4.302_ReSukiSU_4A378502_SUSFS_2.2_AK3_W79.zip"
+
+          find AnyKernel3 -exec touch -h -d '@0' {} +
+          (
+            cd AnyKernel3
+            LC_ALL=C find . -type f -print | LC_ALL=C sort | \
+              zip -X -9 "../$out" -@
+          )
+
+          test -s "$out"
+          unzip -t "$out" | tee W79-AK3-UNZIP-TEST.txt
+          unzip -l "$out" | tee W79-AK3-CONTENTS.txt
+
+          embedded="$(unzip -p "$out" Image | sha256sum | awk '{print $1}')"
+          test "$embedded" = "$LOCKED_IMAGE_SHA256"
+
+          sha256sum "$out" | tee W79-AK3-SHA256.txt
+          printf '%s\n' "$out" > W79-AK3-FILENAME.txt
+
+      - name: Write W79 verdict
+        shell: bash
+        run: |
+          set -euo pipefail
+          zip_name="$(cat W79-AK3-FILENAME.txt)"
+          zip_sha="$(awk '{print $1}' W79-AK3-SHA256.txt)"
+          {
+            echo "W79_GEN2_AK3_PACKAGING=PASS"
+            echo "KERNEL_VERSION=5.4.302"
+            echo "GEN2_KERNEL_PIN=$GEN2_KERNEL_PIN"
+            echo "RESUKISU_PIN=$RESUKISU_PIN"
+            echo "LOCKED_IMAGE_SHA256=$LOCKED_IMAGE_SHA256"
+            echo "SOURCE_W78_RUN_ID=$W78_RUN_ID"
+            echo "SOURCE_W78_ARTIFACT=$W78_ARTIFACT_NAME"
+            echo "AK3_FILENAME=$zip_name"
+            echo "AK3_SHA256=$zip_sha"
+            echo "AK3_EMBEDDED_IMAGE_HASH_VERIFIED=YES"
+            echo "REBUILD_PERFORMED=NO"
+            echo "FLASHING_PERFORMED=NO"
+            echo "BOOT_IMAGE_PACKAGING=NOT_PERFORMED_NO_VERIFIED_BASE_BOOT"
+            echo "NEXT_STAGE=GEN2_VERIFIED_BOOT_IMAGE_BASE_ACQUISITION_AND_REPACK"
+          } | tee W79-FINAL-VERDICT.txt
+
+      - name: Upload W79 release package
+        uses: actions/upload-artifact@v4
+        with:
+          name: GEN2_W79_5.4.302_ReSukiSU_4A378502_AK3-${{ github.run_number }}
+          path: |
+            VEUX_5.4.302_ReSukiSU_4A378502_SUSFS_2.2_AK3_W79.zip
+            W79-FINAL-VERDICT.txt
+            W79-AK3-SHA256.txt
+            W79-AK3-FILENAME.txt
+            W79-AK3-PROPERTIES.txt
+            W79-AK3-UNZIP-TEST.txt
+            W79-AK3-CONTENTS.txt
+            W79-IMAGE-FILE.txt
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 0
+
+      - name: Final W79 gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -Fxq 'W79_GEN2_AK3_PACKAGING=PASS' W79-FINAL-VERDICT.txt
+          grep -Fxq 'AK3_EMBEDDED_IMAGE_HASH_VERIFIED=YES' W79-FINAL-VERDICT.txt
