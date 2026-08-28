@@ -1,0 +1,365 @@
+name: 78 - GEN2 5.4.302 Reproducibility Hash Lock v2
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  KERNEL_VERSION: "5.4.302"
+  GEN2_KERNEL_PIN: f4b8a13a43a130a9aab83cc985ce4d4421291ae6
+  RESUKISU_PIN: 4a3785025a920e4f52584f14c663eea4850dc919
+  W76_RECIPE: .github/workflows/76-gen2-5.4.302-resukisu-4a378502-full-build-v5.yml
+
+  BASELINE_IMAGE_SHA256: 8a43037f008b6db9d3ea82066cc52c8261b8fac6a7de2ef24e3532002e9a48d8
+  BASELINE_CONFIG_SHA256: 2931b6b74bf34a85f2a71cb4b76d1a3277a5538514411dd1047c841d46e92cbb
+  BASELINE_DTB_SHA256: 28a174d174cda7619bf674b29fa4e91625a6ad02f6ca4815ac7a943137b3df8c
+  BASELINE_DTBO_SHA256: 486ec73935e9805722df531cc3ddd5460f971c1edeec813fd25bef63500c0ca3
+
+jobs:
+  reproducibility-hash-lock:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+
+    env:
+      WORK: ${{ github.workspace }}/w78
+      OUT: ${{ github.workspace }}/w78/out
+
+    steps:
+      - name: Checkout builder repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+
+      - name: Checkout pinned GEN2 kernel source
+        uses: actions/checkout@v6
+        with:
+          repository: dereference23/kernel_xiaomi_sm6375
+          ref: f4b8a13a43a130a9aab83cc985ce4d4421291ae6
+          path: kernel-src
+          fetch-depth: 0
+
+      - name: Checkout exact ReSukiSU target
+        uses: actions/checkout@v6
+        with:
+          repository: ReSukiSU/ReSukiSU
+          ref: 4a3785025a920e4f52584f14c663eea4850dc919
+          path: resukisu
+          fetch-depth: 0
+
+      - name: Initialize W78 independent rebuild
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$WORK"
+          mkdir -p "$OUT"
+
+          test -s "$W76_RECIPE"
+          test "$(git -C kernel-src rev-parse HEAD)" = "$GEN2_KERNEL_PIN"
+          test "$(git -C resukisu rev-parse HEAD)" = "$RESUKISU_PIN"
+
+          {
+            echo "W78_MODE=EXACT_W76_V5_RECIPE_REPLAY"
+            echo "KERNEL_VERSION=$KERNEL_VERSION"
+            echo "GEN2_KERNEL_PIN=$GEN2_KERNEL_PIN"
+            echo "RESUKISU_PIN=$RESUKISU_PIN"
+            echo "W76_RECIPE_SHA256=$(sha256sum "$W76_RECIPE" | awk '{print $1}')"
+            echo "BASELINE_IMAGE_SHA256=$BASELINE_IMAGE_SHA256"
+            echo "BASELINE_CONFIG_SHA256=$BASELINE_CONFIG_SHA256"
+            echo "BASELINE_DTB_SHA256=$BASELINE_DTB_SHA256"
+            echo "BASELINE_DTBO_SHA256=$BASELINE_DTBO_SHA256"
+            echo "PREBUILT_W76_BINARY_REUSE=NO"
+            echo "FLASHING_PERFORMED=NO"
+          } | tee "$OUT/W78-SCOPE.txt"
+
+      - name: Build W76 v5 success-path replay driver
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          export W76_RECIPE
+          export OUT
+
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import yaml
+
+          recipe = Path(os.environ["W76_RECIPE"])
+          doc = yaml.load(
+              recipe.read_text(encoding="utf-8"),
+              Loader=yaml.BaseLoader,
+          )
+          steps = doc["jobs"]["build"]["steps"]
+
+          runnable = []
+          skipped = []
+
+          for index, step in enumerate(steps, 1):
+              name = step.get("name", f"step-{index}")
+              run = step.get("run")
+              condition = (step.get("if") or "").strip()
+
+              if not run:
+                  skipped.append((index, name, "action/non-run step"))
+                  continue
+
+              if "failure()" in condition or "always()" in condition:
+                  skipped.append((index, name, f"condition={condition}"))
+                  continue
+
+              runnable.append({
+                  "index": index,
+                  "name": name,
+                  "run": run,
+                  "env": step.get("env") or {},
+              })
+
+          Path(os.environ["OUT"], "W78-W76-RUN-STEPS.json").write_text(
+              json.dumps(runnable, indent=2),
+              encoding="utf-8",
+          )
+          Path(os.environ["OUT"], "W78-W76-SKIPPED-STEPS.txt").write_text(
+              "\n".join(
+                  f"{i}\t{name}\t{why}"
+                  for i, name, why in skipped
+              ) + "\n",
+              encoding="utf-8",
+          )
+
+          print("W76_V5_RECIPE_PARSE=PASS")
+          print("RUN_BLOCKS_TO_REPLAY=" + str(len(runnable)))
+          print("SKIPPED_STEPS=" + str(len(skipped)))
+          PY
+
+          echo "W78_REPLAY_DRIVER=PASS" \
+            | tee "$OUT/W78-REPLAY-DRIVER.txt"
+
+      - name: Execute independent W76 v5 rebuild
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          export W78_ENV_FILE="$RUNNER_TEMP/w78-replay-env"
+          export W78_OUTPUT_FILE="$RUNNER_TEMP/w78-replay-output"
+          : > "$W78_ENV_FILE"
+          : > "$W78_OUTPUT_FILE"
+
+          export GITHUB_ENV="$W78_ENV_FILE"
+          export GITHUB_OUTPUT="$W78_OUTPUT_FILE"
+
+          python3 - <<'PY'
+          import json
+          import os
+          import re
+          import subprocess
+          from pathlib import Path
+
+          steps = json.loads(
+              Path(os.environ["OUT"], "W78-W76-RUN-STEPS.json").read_text(
+                  encoding="utf-8"
+              )
+          )
+
+          env = os.environ.copy()
+          env["GH_TOKEN"] = os.environ.get("GH_TOKEN", "")
+
+          def expand(value):
+              if not isinstance(value, str):
+                  return value
+
+              replacements = {
+                  "${{ github.workspace }}": env["GITHUB_WORKSPACE"],
+                  "${{ runner.temp }}": env["RUNNER_TEMP"],
+                  "${{ github.token }}": env.get("GH_TOKEN", ""),
+              }
+              for old, new in replacements.items():
+                  value = value.replace(old, new)
+
+              value = re.sub(
+                  r"\$\{\{\s*steps\.[^.]+\.outcome\s*\}\}",
+                  "success",
+                  value,
+              )
+              return value
+
+          def import_github_env(path):
+              p = Path(path)
+              if not p.exists():
+                  return
+              lines = p.read_text(
+                  encoding="utf-8", errors="replace"
+              ).splitlines()
+              for line in lines:
+                  if not line or line.startswith("#"):
+                      continue
+                  if "<<" in line:
+                      raise SystemExit(
+                          "unsupported multiline GITHUB_ENV entry: " + line
+                      )
+                  if "=" in line:
+                      key, value = line.split("=", 1)
+                      if key:
+                          env[key] = value
+              p.write_text("", encoding="utf-8")
+
+          log = Path(os.environ["OUT"], "W78-W76-REBUILD.log")
+          state = Path(os.environ["OUT"], "W78-W76-REBUILD-STATE.txt")
+          completed = 0
+
+          with log.open("w", encoding="utf-8") as fp:
+              for item in steps:
+                  name = item["name"]
+                  script = expand(item["run"])
+
+                  expression_opener = "$" + "{{"
+                  if expression_opener in script:
+                      raise SystemExit(
+                          f"unresolved GitHub expression in step {name!r}"
+                      )
+
+                  step_env = env.copy()
+                  for key, value in item.get("env", {}).items():
+                      step_env[key] = expand(value)
+
+                  banner = (
+                      f"\n===== W78 REPLAY W76 STEP "
+                      f"{item['index']}: {name} =====\n"
+                  )
+                  print(banner, end="")
+                  fp.write(banner)
+                  fp.flush()
+
+                  cp = subprocess.run(
+                      ["bash", "-euo", "pipefail", "-c", script],
+                      env=step_env,
+                      text=True,
+                      stdout=subprocess.PIPE,
+                      stderr=subprocess.STDOUT,
+                  )
+
+                  fp.write(cp.stdout or "")
+                  fp.flush()
+                  print(cp.stdout or "", end="")
+
+                  if cp.returncode != 0:
+                      state.write_text(
+                          "\n".join([
+                              "W78_W76_REBUILD=FAIL",
+                              f"FAILED_INDEX={item['index']}",
+                              f"FAILED_STEP={name}",
+                              f"EXIT_CODE={cp.returncode}",
+                              f"COMPLETED_RUN_BLOCKS={completed}",
+                          ]) + "\n",
+                          encoding="utf-8",
+                      )
+                      raise SystemExit(cp.returncode)
+
+                  completed += 1
+                  import_github_env(env["GITHUB_ENV"])
+
+          state.write_text(
+              "\n".join([
+                  "W78_W76_REBUILD=PASS",
+                  f"COMPLETED_RUN_BLOCKS={completed}",
+                  "FAILED_STEP=NONE",
+              ]) + "\n",
+              encoding="utf-8",
+          )
+          PY
+
+          grep -Fxq 'W78_W76_REBUILD=PASS' \
+            "$OUT/W78-W76-REBUILD-STATE.txt"
+
+      - name: Verify rebuilt GEN2 outputs exist
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          for f in \
+            GEN2_76_Image \
+            GEN2_76_final.config \
+            GEN2_76_veux.dtb \
+            GEN2_76_veux-overlay.dtbo
+          do
+            test -s "$f"
+          done
+
+          {
+            echo "W78_REBUILT_OUTPUTS=PASS"
+            echo "IMAGE_BYTES=$(stat -c '%s' GEN2_76_Image)"
+            echo "CONFIG_BYTES=$(stat -c '%s' GEN2_76_final.config)"
+            echo "DTB_BYTES=$(stat -c '%s' GEN2_76_veux.dtb)"
+            echo "DTBO_BYTES=$(stat -c '%s' GEN2_76_veux-overlay.dtbo)"
+          } | tee "$OUT/W78-REBUILT-OUTPUTS.txt"
+
+      - name: Compare exact W77 baseline hashes
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          IMAGE_SHA="$(sha256sum GEN2_76_Image | awk '{print $1}')"
+          CONFIG_SHA="$(sha256sum GEN2_76_final.config | awk '{print $1}')"
+          DTB_SHA="$(sha256sum GEN2_76_veux.dtb | awk '{print $1}')"
+          DTBO_SHA="$(sha256sum GEN2_76_veux-overlay.dtbo | awk '{print $1}')"
+
+          {
+            echo "REBUILT_IMAGE_SHA256=$IMAGE_SHA"
+            echo "BASELINE_IMAGE_SHA256=$BASELINE_IMAGE_SHA256"
+            echo "REBUILT_CONFIG_SHA256=$CONFIG_SHA"
+            echo "BASELINE_CONFIG_SHA256=$BASELINE_CONFIG_SHA256"
+            echo "REBUILT_DTB_SHA256=$DTB_SHA"
+            echo "BASELINE_DTB_SHA256=$BASELINE_DTB_SHA256"
+            echo "REBUILT_DTBO_SHA256=$DTBO_SHA"
+            echo "BASELINE_DTBO_SHA256=$BASELINE_DTBO_SHA256"
+          } | tee "$OUT/W78-HASH-COMPARISON.txt"
+
+          test "$IMAGE_SHA" = "$BASELINE_IMAGE_SHA256"
+          test "$CONFIG_SHA" = "$BASELINE_CONFIG_SHA256"
+          test "$DTB_SHA" = "$BASELINE_DTB_SHA256"
+          test "$DTBO_SHA" = "$BASELINE_DTBO_SHA256"
+
+          {
+            echo "W78_REPRODUCIBILITY_HASH_LOCK=PASS"
+            echo "KERNEL_VERSION=$KERNEL_VERSION"
+            echo "GEN2_KERNEL_PIN=$GEN2_KERNEL_PIN"
+            echo "RESUKISU_PIN=$RESUKISU_PIN"
+            echo "IMAGE_BYTE_IDENTICAL=YES"
+            echo "CONFIG_BYTE_IDENTICAL=YES"
+            echo "DTB_BYTE_IDENTICAL=YES"
+            echo "DTBO_BYTE_IDENTICAL=YES"
+            echo "PREBUILT_W76_BINARY_REUSE=NO"
+            echo "FLASHING_PERFORMED=NO"
+            echo "NEXT_STAGE=GEN2_BOOT_IMAGE_AND_AK3_PACKAGING"
+          } | tee "$OUT/W78-FINAL-VERDICT.txt"
+
+      - name: Preserve compact W78 diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: GEN2_W78_5.4.302_REPRODUCIBILITY_HASH_LOCK_V2-${{ github.run_number }}
+          path: |
+            w78/out/W78-*.txt
+            w78/out/W78-*.json
+            w78/out/W78-*.log
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 9
+
+      - name: Final W78 gate
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! grep -Fxq \
+            'W78_REPRODUCIBILITY_HASH_LOCK=PASS' \
+            "$OUT/W78-FINAL-VERDICT.txt" 2>/dev/null
+          then
+            echo "ERROR: W78 reproducibility PASS verdict not produced." >&2
+            exit 1
+          fi
