@@ -1,0 +1,309 @@
+name: 80 - GEN2 5.4.302 Locked Image Verified Boot Repack v1
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  W78_RUN_ID: "33145874451"
+  W78_ARTIFACT_NAME: "GEN2_W78_V5_BUILD_A"
+  LOCKED_IMAGE_SHA256: "2448b0ee28ebb5c3781c22b29caa417a97e0662b093878477bbb4368a45f54f3"
+
+  VALIDATED_BOOT_GZIP_PATH: ".github/workflows/GEN2_W36_VALIDATED_LINEAGE_VEUX_ANDROID16_BOOT.img.gz"
+  VALIDATED_BOOT_GZIP_SHA256: "183984c727524325b36696a43419802fa9894a56bfc4c51c3b3cc6fa242a7bfa"
+  VALIDATED_BOOT_GZIP_SIZE: "16498759"
+  VALIDATED_BOOT_SHA256: "b4f8a81c19f89f2cfc0a179a3a01b3079119411e0325bbde758e885bf9d4aa8d"
+  VALIDATED_BOOT_SIZE: "133300224"
+  BOOT_PARTITION_SIZE: "134217728"
+
+  MAGISK_REPO: "topjohnwu/Magisk"
+  MAGISK_TAG: "v30.7"
+  MAGISK_APK_NAME: "Magisk-v30.7.apk"
+
+jobs:
+  repack:
+    name: GEN2 verified Lineage boot kernel-only repack
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout builder repository
+        uses: actions/checkout@v6
+
+      - name: Download locked W78 Image
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.W78_ARTIFACT_NAME }}
+          path: w80/w78
+          repository: ${{ github.repository }}
+          run-id: ${{ env.W78_RUN_ID }}
+          github-token: ${{ github.token }}
+
+      - name: Verify W78 locked Image
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p w80/evidence w80/source w80/work w80/output w80/magisk
+
+          test -s w80/w78/GEN2_76_Image
+          actual="$(sha256sum w80/w78/GEN2_76_Image | awk '{print $1}')"
+          test "$actual" = "$LOCKED_IMAGE_SHA256"
+
+          {
+            echo "W80_LOCKED_IMAGE=PASS"
+            echo "SOURCE_RUN_ID=$W78_RUN_ID"
+            echo "SOURCE_ARTIFACT=$W78_ARTIFACT_NAME"
+            echo "LOCKED_IMAGE_SHA256=$actual"
+            echo "LOCKED_IMAGE_BYTES=$(stat -c '%s' w80/w78/GEN2_76_Image)"
+          } | tee w80/evidence/locked-image.txt
+
+      - name: Verify and expand exact W36 validated boot base
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test -s "$VALIDATED_BOOT_GZIP_PATH"
+          test "$(stat -c '%s' "$VALIDATED_BOOT_GZIP_PATH")" = "$VALIDATED_BOOT_GZIP_SIZE"
+          test "$(sha256sum "$VALIDATED_BOOT_GZIP_PATH" | awk '{print $1}')" = "$VALIDATED_BOOT_GZIP_SHA256"
+
+          gzip -t "$VALIDATED_BOOT_GZIP_PATH"
+          gzip -dc "$VALIDATED_BOOT_GZIP_PATH" > w80/source/validated-boot.img
+
+          test "$(stat -c '%s' w80/source/validated-boot.img)" = "$VALIDATED_BOOT_SIZE"
+          test "$(sha256sum w80/source/validated-boot.img | awk '{print $1}')" = "$VALIDATED_BOOT_SHA256"
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import struct
+          p = Path("w80/source/validated-boot.img")
+          data = p.read_bytes()
+          assert data[:8] == b"ANDROID!", "ANDROID! magic missing"
+          header_version = struct.unpack_from("<I", data, 40)[0]
+          assert header_version == 3, f"expected boot header v3, got {header_version}"
+          raw_os_version = struct.unpack_from("<I", data, 16)[0]
+          android_major = (raw_os_version >> 25) & 0x7f
+          patch_year = ((raw_os_version >> 4) & 0x7f) + 2000
+          patch_month = raw_os_version & 0xf
+          assert android_major == 16, android_major
+          assert (patch_year, patch_month) == (2026, 4), (patch_year, patch_month)
+          assert b"5.4.302~positron/341987108" in data
+          assert b"Redmi/lineage_veux/veux:16/" in data
+          print("VALIDATED_BOOT_IDENTITY=PASS")
+          print("BOOT_HEADER_VERSION=3")
+          print("ANDROID_VERSION=16")
+          print("SECURITY_PATCH=2026-04")
+          PY
+
+          {
+            echo "W80_BOOT_BASE=PASS"
+            echo "VALIDATED_BOOT_SHA256=$VALIDATED_BOOT_SHA256"
+            echo "VALIDATED_BOOT_BYTES=$VALIDATED_BOOT_SIZE"
+            echo "BOOT_HEADER_VERSION=3"
+            echo "ANDROID_VERSION=16"
+            echo "SECURITY_PATCH=2026-04"
+          } | tee w80/evidence/boot-base.txt
+
+      - name: Fetch host Magiskboot v30.7
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          api="$GITHUB_API_URL/repos/$MAGISK_REPO/releases/tags/$MAGISK_TAG"
+          curl -fsSL \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "$api" > w80/evidence/magisk-release.json
+
+          asset_url="$(jq -r --arg n "$MAGISK_APK_NAME" '.assets[] | select(.name==$n) | .browser_download_url' w80/evidence/magisk-release.json | head -n1)"
+          asset_digest="$(jq -r --arg n "$MAGISK_APK_NAME" '.assets[] | select(.name==$n) | .digest // empty' w80/evidence/magisk-release.json | head -n1)"
+          test -n "$asset_url"
+
+          curl -fL --retry 4 --retry-delay 2 "$asset_url" -o w80/magisk/Magisk.apk
+
+          apk_sha="$(sha256sum w80/magisk/Magisk.apk | awk '{print $1}')"
+          digest_status=NOT_PUBLISHED
+          if [[ "$asset_digest" == sha256:* ]]; then
+            test "$apk_sha" = "${asset_digest#sha256:}"
+            digest_status=PASS
+          fi
+
+          unzip -p w80/magisk/Magisk.apk lib/x86_64/libmagiskboot.so > w80/magisk/magiskboot
+          chmod +x w80/magisk/magiskboot
+          test -s w80/magisk/magiskboot
+          file w80/magisk/magiskboot | tee w80/evidence/magiskboot-file.txt
+          grep -qi 'x86-64' w80/evidence/magiskboot-file.txt
+
+          {
+            echo "MAGISKBOOT_FETCH=PASS"
+            echo "MAGISK_TAG=$MAGISK_TAG"
+            echo "MAGISK_APK_SHA256=$apk_sha"
+            echo "MAGISK_RELEASE_DIGEST=$asset_digest"
+            echo "MAGISK_RELEASE_DIGEST_VERIFIED=$digest_status"
+            echo "MAGISKBOOT_SHA256=$(sha256sum w80/magisk/magiskboot | awk '{print $1}')"
+          } | tee w80/evidence/magiskboot.txt
+
+      - name: Unpack and characterize verified source boot
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          MB="$GITHUB_WORKSPACE/w80/magisk/magiskboot"
+          BOOT="$GITHUB_WORKSPACE/w80/source/validated-boot.img"
+
+          cd w80/work
+          "$MB" unpack -h "$BOOT" > "$GITHUB_WORKSPACE/w80/evidence/source-unpack.log" 2>&1
+
+          test -s kernel
+          test -s ramdisk.cpio
+
+          for f in dtb kernel_dtb extra recovery_dtbo; do
+            if [ -s "$f" ]; then
+              echo "ERROR: unexpected source boot payload: $f"
+              exit 1
+            fi
+          done
+
+          sha256sum kernel > "$GITHUB_WORKSPACE/w80/evidence/source-kernel.sha256"
+          sha256sum ramdisk.cpio > "$GITHUB_WORKSPACE/w80/evidence/source-ramdisk.sha256"
+
+          {
+            echo "SOURCE_BOOT_UNPACK=PASS"
+            echo "SOURCE_KERNEL_SHA256=$(sha256sum kernel | awk '{print $1}')"
+            echo "SOURCE_RAMDISK_SHA256=$(sha256sum ramdisk.cpio | awk '{print $1}')"
+            echo "EXTRA_DTB_PAYLOAD=NO"
+          } | tee "$GITHUB_WORKSPACE/w80/evidence/source-unpack.txt"
+
+      - name: Kernel-only repack with locked GEN2 Image
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          MB="$GITHUB_WORKSPACE/w80/magisk/magiskboot"
+          BOOT="$GITHUB_WORKSPACE/w80/source/validated-boot.img"
+          LOCKED="$GITHUB_WORKSPACE/w80/w78/GEN2_76_Image"
+
+          cd w80/work
+          source_ramdisk_sha="$(sha256sum ramdisk.cpio | awk '{print $1}')"
+
+          cp "$LOCKED" kernel
+          test "$(sha256sum kernel | awk '{print $1}')" = "$LOCKED_IMAGE_SHA256"
+
+          export PATCHVBMETAFLAG=false
+          "$MB" repack "$BOOT" "$GITHUB_WORKSPACE/w80/output/VEUX_5.4.302_ReSukiSU_4A378502_SUSFS_2.2_W80_boot.img" \
+            > "$GITHUB_WORKSPACE/w80/evidence/repack.log" 2>&1
+          unset PATCHVBMETAFLAG
+
+          out="$GITHUB_WORKSPACE/w80/output/VEUX_5.4.302_ReSukiSU_4A378502_SUSFS_2.2_W80_boot.img"
+          test -s "$out"
+          test "$(stat -c '%s' "$out")" -le "$BOOT_PARTITION_SIZE"
+
+          rm -rf verify
+          mkdir verify
+          cd verify
+          "$MB" unpack -h "$out" > "$GITHUB_WORKSPACE/w80/evidence/repacked-unpack.log" 2>&1
+
+          test -s kernel
+          test -s ramdisk.cpio
+          test "$(sha256sum kernel | awk '{print $1}')" = "$LOCKED_IMAGE_SHA256"
+          test "$(sha256sum ramdisk.cpio | awk '{print $1}')" = "$source_ramdisk_sha"
+
+          for f in dtb kernel_dtb extra recovery_dtbo; do
+            if [ -s "$f" ]; then
+              echo "ERROR: repacked boot unexpectedly contains $f"
+              exit 1
+            fi
+          done
+
+          {
+            echo "W80_KERNEL_ONLY_REPACK=PASS"
+            echo "OUTPUT_BOOT_SHA256=$(sha256sum "$out" | awk '{print $1}')"
+            echo "OUTPUT_BOOT_BYTES=$(stat -c '%s' "$out")"
+            echo "LOCKED_KERNEL_SHA256=$LOCKED_IMAGE_SHA256"
+            echo "RAMDISK_SHA256=$source_ramdisk_sha"
+            echo "RAMDISK_LOGICALLY_PRESERVED=YES"
+            echo "EXTRA_DTB_PAYLOAD=NO"
+            echo "PATCHVBMETAFLAG=false"
+          } | tee "$GITHUB_WORKSPACE/w80/evidence/repack-status.txt"
+
+      - name: Validate final boot header and partition fit
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="w80/output/VEUX_5.4.302_ReSukiSU_4A378502_SUSFS_2.2_W80_boot.img"
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import struct
+          p=Path("w80/output/VEUX_5.4.302_ReSukiSU_4A378502_SUSFS_2.2_W80_boot.img")
+          d=p.read_bytes()
+          assert d[:8] == b"ANDROID!"
+          hv=struct.unpack_from("<I", d, 40)[0]
+          assert hv == 3, hv
+          assert len(d) <= 134217728, len(d)
+          print("FINAL_ANDROID_MAGIC=PASS")
+          print("FINAL_BOOT_HEADER_VERSION=3")
+          print("FINAL_FITS_128M_BOOT_PARTITION=YES")
+          PY
+
+          sha256sum "$out" | tee w80/evidence/W80-BOOT-SHA256.txt
+
+      - name: Write W80 final verdict
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="w80/output/VEUX_5.4.302_ReSukiSU_4A378502_SUSFS_2.2_W80_boot.img"
+          boot_sha="$(sha256sum "$out" | awk '{print $1}')"
+
+          {
+            echo "W80_GEN2_VERIFIED_BOOT_REPACK=PASS"
+            echo "BASE_BOOT_SHA256=$VALIDATED_BOOT_SHA256"
+            echo "BASE_BOOT_HEADER_VERSION=3"
+            echo "BASE_ANDROID_VERSION=16"
+            echo "BASE_SECURITY_PATCH=2026-04"
+            echo "LOCKED_IMAGE_SHA256=$LOCKED_IMAGE_SHA256"
+            echo "OUTPUT_BOOT_FILENAME=$(basename "$out")"
+            echo "OUTPUT_BOOT_SHA256=$boot_sha"
+            echo "OUTPUT_BOOT_BYTES=$(stat -c '%s' "$out")"
+            echo "RAMDISK_LOGICALLY_PRESERVED=YES"
+            echo "EXTRA_DTB_PAYLOAD=NO"
+            echo "BOOT_PARTITION_SIZE=$BOOT_PARTITION_SIZE"
+            echo "PATCHVBMETAFLAG=false"
+            echo "REBUILD_PERFORMED=NO"
+            echo "REAL_DEVICE_ACCESSED=NO"
+            echo "FLASHING_PERFORMED=NO"
+            echo "NEXT_STAGE=GEN2_BOOT_AND_AK3_RELEASE_PROMOTION"
+          } | tee w80/evidence/W80-FINAL-VERDICT.txt
+
+      - name: Upload compact W80 boot deliverable
+        uses: actions/upload-artifact@v4
+        with:
+          name: GEN2_W80_5.4.302_ReSukiSU_4A378502_VERIFIED_BOOT-${{ github.run_number }}
+          path: |
+            w80/output/VEUX_5.4.302_ReSukiSU_4A378502_SUSFS_2.2_W80_boot.img
+            w80/evidence/W80-FINAL-VERDICT.txt
+            w80/evidence/W80-BOOT-SHA256.txt
+            w80/evidence/locked-image.txt
+            w80/evidence/boot-base.txt
+            w80/evidence/source-unpack.txt
+            w80/evidence/source-kernel.sha256
+            w80/evidence/source-ramdisk.sha256
+            w80/evidence/repack-status.txt
+            w80/evidence/magiskboot.txt
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 6
+
+      - name: Final W80 gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -Fxq 'W80_GEN2_VERIFIED_BOOT_REPACK=PASS' w80/evidence/W80-FINAL-VERDICT.txt
+          grep -Fxq 'RAMDISK_LOGICALLY_PRESERVED=YES' w80/evidence/W80-FINAL-VERDICT.txt
+          grep -Fxq 'EXTRA_DTB_PAYLOAD=NO' w80/evidence/W80-FINAL-VERDICT.txt
+          grep -Fxq "LOCKED_IMAGE_SHA256=$LOCKED_IMAGE_SHA256" w80/evidence/W80-FINAL-VERDICT.txt
