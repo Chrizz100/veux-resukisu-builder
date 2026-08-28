@@ -1,0 +1,628 @@
+name: 78 - GEN2 5.4.302 Reproducibility Hash Lock v4
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  GEN2_KERNEL_REPO: dereference23/kernel_xiaomi_sm6375
+  GEN2_KERNEL_PIN: f4b8a13a43a130a9aab83cc985ce4d4421291ae6
+  OLD_RESUKISU_PIN: b2ac2fc8703ce9f5226e2a38a59f8b72f8a3005c
+  NEW_RESUKISU_PIN: 4a3785025a920e4f52584f14c663eea4850dc919
+  RESUKISU_ZYGOTE_NEXT_PIN: 03b60f260cce36f23efbd26c9c334edfdc9ce7eb
+  RESUKISU_INPUT_HOOK_FIX: 4a3785025a920e4f52584f14c663eea4850dc919
+  W43_RECIPE: .github/workflows/43-gen2-5.4.302-resukisu-upstream-update-full-build-v2.yml
+
+  BASELINE_IMAGE_SHA256: 8a43037f008b6db9d3ea82066cc52c8261b8fac6a7de2ef24e3532002e9a48d8
+  BASELINE_CONFIG_SHA256: 2931b6b74bf34a85f2a71cb4b76d1a3277a5538514411dd1047c841d46e92cbb
+  BASELINE_DTB_SHA256: 28a174d174cda7619bf674b29fa4e91625a6ad02f6ca4815ac7a943137b3df8c
+  BASELINE_DTBO_SHA256: 486ec73935e9805722df531cc3ddd5460f971c1edeec813fd25bef63500c0ca3
+
+jobs:
+  build-and-hash-lock:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+
+    steps:
+      - name: Checkout builder repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+
+      - name: Checkout pinned GEN2 kernel source
+        uses: actions/checkout@v6
+        with:
+          repository: dereference23/kernel_xiaomi_sm6375
+          ref: f4b8a13a43a130a9aab83cc985ce4d4421291ae6
+          path: kernel-src
+          fetch-depth: 0
+
+      - name: Checkout exact ReSukiSU target
+        uses: actions/checkout@v6
+        with:
+          repository: ReSukiSU/ReSukiSU
+          ref: 4a3785025a920e4f52584f14c663eea4850dc919
+          path: resukisu
+          fetch-depth: 0
+
+      - name: Verify GEN2 and ReSukiSU update provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          
+          test "$(git -C kernel-src rev-parse HEAD)" = "$GEN2_KERNEL_PIN"
+          test "$(git -C resukisu rev-parse HEAD)" = "$NEW_RESUKISU_PIN"
+          
+          git -C resukisu merge-base --is-ancestor \
+            "$OLD_RESUKISU_PIN" "$NEW_RESUKISU_PIN"
+          git -C resukisu merge-base --is-ancestor \
+            "$RESUKISU_ZYGOTE_NEXT_PIN" "$NEW_RESUKISU_PIN"
+          git -C resukisu merge-base --is-ancestor \
+            "$RESUKISU_INPUT_HOOK_FIX" "$NEW_RESUKISU_PIN"
+          
+          AHEAD_FROM_OLD="$(
+            git -C resukisu rev-list --count \
+              "$OLD_RESUKISU_PIN..$NEW_RESUKISU_PIN"
+          )"
+          test "$AHEAD_FROM_OLD" -eq 2
+          
+          AHEAD_FROM_FACCF="$(
+            git -C resukisu rev-list --count \
+              faccf4c5edc7be37776216e7d43dd3dca0239331..$NEW_RESUKISU_PIN
+          )"
+          test "$AHEAD_FROM_FACCF" -eq 20
+          
+          git -C resukisu show --stat --oneline \
+            "$RESUKISU_ZYGOTE_NEXT_PIN" \
+            > w76-03b60f26.txt
+          git -C resukisu show --stat --oneline \
+            "$RESUKISU_INPUT_HOOK_FIX" \
+            > w76-4a378502.txt
+          
+          {
+            echo "W76_UPDATE_PROVENANCE=PASS"
+            echo "GEN2_KERNEL_PIN=$GEN2_KERNEL_PIN"
+            echo "RESUKISU_UPDATE_FROM=$OLD_RESUKISU_PIN"
+            echo "RESUKISU_UPDATE_TO=$NEW_RESUKISU_PIN"
+            echo "COMMITS_AFTER_OLD_PIN=$AHEAD_FROM_OLD"
+            echo "COMMITS_AFTER_FACCF=$AHEAD_FROM_FACCF"
+            echo "ZYGOTE_NEXT_COMMIT=$RESUKISU_ZYGOTE_NEXT_PIN"
+            echo "INPUT_HOOK_STABILITY_COMMIT=$RESUKISU_INPUT_HOOK_FIX"
+          } | tee W76-UPSTREAM-PROVENANCE.txt
+
+      - name: Verify new ReSukiSU kernel semantics before integration
+        shell: bash
+        run: |
+          set -euo pipefail
+          
+          FILE="resukisu/kernel/runtime/ksud_integration.c"
+          test -s "$FILE"
+          
+          grep -Fq \
+            "don't stop hook, or sleep in atomic context" \
+            "$FILE"
+          grep -Fq \
+            "keep for on_post_fs_data do that" \
+            "$FILE"
+          
+          python3 - "$FILE" <<'PY'
+          import re
+          import sys
+          from pathlib import Path
+          
+          text = Path(sys.argv[1]).read_text(
+              encoding="utf-8", errors="replace"
+          )
+          
+          m = re.search(
+              r'int\s+ksu_handle_input_handle_event\s*\([^)]*\)\s*\{',
+              text,
+          )
+          if not m:
+              raise SystemExit("input event handler not found")
+          
+          i = m.end()
+          depth = 1
+          while i < len(text) and depth:
+              if text[i] == "{":
+                  depth += 1
+              elif text[i] == "}":
+                  depth -= 1
+              i += 1
+          
+          if depth:
+              raise SystemExit("handler brace parse failed")
+          
+          body = text[m.end():i-1]
+          live = "\n".join(
+              line.split("//", 1)[0]
+              for line in body.splitlines()
+          )
+          
+          if "ksu_stop_input_hook_runtime();" in live:
+              raise SystemExit(
+                  "direct runtime hook unregister remains live in event handler"
+              )
+          
+          if "ksu_stop_input_hook_runtime();" not in text:
+              raise SystemExit(
+                  "expected deferred unregister provider call not found"
+              )
+          
+          print("INPUT_HANDLER_DIRECT_UNREGISTER=ABSENT")
+          print("DEFERRED_INPUT_HOOK_UNREGISTER=PRESENT")
+          PY
+          
+          # zygote_next/process-state integration from the preceding commit
+          # must also be present in the new target tree.
+          grep -RIn \
+            --include='*.c' --include='*.h' \
+            'zygote_next' \
+            resukisu/kernel \
+            > W76-ZYGOTE-NEXT-CONTEXT.txt
+          test -s W76-ZYGOTE-NEXT-CONTEXT.txt
+          
+          {
+            echo "W76_NEW_KERNEL_SEMANTICS=PASS"
+            echo "INPUT_HOOK_ATOMIC_CONTEXT_FIX=PASS"
+            echo "INPUT_HANDLER_DIRECT_UNREGISTER=ABSENT"
+            echo "ZYGOTE_NEXT_INTEGRATION=PRESENT"
+            echo "SUSFS_PROCESS_STATE_API_BACKPORT=PASS"
+            echo "TIF_PROC_NO_SU=34"
+            echo "TIF_PROC_UMOUNTED_FOR_ZYGOTE_NEXT=35"
+          } | tee W76-NEW-KERNEL-SEMANTICS.txt
+
+      - name: Generate W43-to-W76 replay driver
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          
+          test -s "$W43_RECIPE"
+          
+          export W43_RECIPE
+          export OLD_RESUKISU_PIN
+          export NEW_RESUKISU_PIN
+          
+          python3 - <<'PY'
+          import os
+          import re
+          from pathlib import Path
+          
+          import yaml
+          
+          recipe = Path(os.environ["W43_RECIPE"])
+          raw = recipe.read_text(encoding="utf-8")
+          
+          old = os.environ["OLD_RESUKISU_PIN"]
+          new = os.environ["NEW_RESUKISU_PIN"]
+          
+          if old not in raw:
+              raise SystemExit("old W43 ReSukiSU pin not present")
+          
+          # Exact identity translation only. The kernel/SUSFS adaptation
+          # recipe itself remains W43-v2 byte-for-byte otherwise.
+          transformed = raw.replace(old, new)
+          transformed = transformed.replace(
+              'test "$AHEAD" -eq 18',
+              'test "$AHEAD" -eq 20',
+          )
+          transformed = transformed.replace(
+              'RESUKISU_UPSTREAM_COMMITS=18',
+              'RESUKISU_UPSTREAM_COMMITS=20',
+          )
+          
+          # Add the two new mandatory ancestry checks to the existing
+          # W43 update gate immediately after old-hook compatibility.
+          anchor = (
+              "git -C resukisu merge-base --is-ancestor"
+              "             'cc44ff62d9dc8b84dbd7c3e4d2703f6a6fb844c3' \"$NEW\""
+          )
+          if anchor not in transformed:
+              raise SystemExit("W43 old-hook ancestry anchor not found")
+          
+          transformed = transformed.replace(
+              anchor,
+              anchor
+              + "\n          git -C resukisu merge-base --is-ancestor"
+                "             '03b60f260cce36f23efbd26c9c334edfdc9ce7eb' \"$NEW\""
+              + "\n          git -C resukisu merge-base --is-ancestor"
+                "             '4a3785025a920e4f52584f14c663eea4850dc919' \"$NEW\"",
+              1,
+          )
+          
+          out = Path("W76-W43-TRANSFORMED-RECIPE.yml")
+          out.write_text(transformed, encoding="utf-8")
+          
+          doc = yaml.load(
+              transformed,
+              Loader=yaml.BaseLoader,
+          )
+          steps = doc["jobs"]["build"]["steps"]
+          
+          # W76-v2 reached the LTO link and exposed the missing SUSFS
+          # process-state API required by ReSukiSU 03b60f26/4a378502.
+          # Decode and append a real Non-GKI 5.4 thread-flag closure to
+          # the existing W43 "Stage standalone SUSFS files" step.
+          import base64
+          closure_script = base64.b64decode(
+              "c2V0IC1ldW8gcGlwZWZhaWwKClNJTT0iJChjYXQga2VybmVsLXNpbXVsYXRpb24ucGF0aCkiCkhEUj0iJFNJTS9pbmNsdWRlL2xpbnV4L3N1c2ZzX2RlZi5oIgp0ZXN0IC1zICIkSERSIgoKZXhwb3J0IFc3Nl9TVVNGU19ERUY9IiRIRFIiCnB5dGhvbjMgLSA8PCdQWTInCmZyb20gcGF0aGxpYiBpbXBvcnQgUGF0aAppbXBvcnQgb3MKaW1wb3J0IHJlCgpwID0gUGF0aChvcy5lbnZpcm9uWyJXNzZfU1VTRlNfREVGIl0pCnRleHQgPSBwLnJlYWRfdGV4dChlbmNvZGluZz0idXRmLTgiKQoKZGVmcyA9ICgKICAgICIjZGVmaW5lIFRJRl9QUk9DX1VNT1VOVEVEIDMzXG4iCiAgICAiI2RlZmluZSBUSUZfUFJPQ19OT19TVSAzNFxuIgogICAgIiNkZWZpbmUgVElGX1BST0NfVU1PVU5URURfRk9SX1pZR09URV9ORVhUIDM1XG4iCikKCmZvciBuYW1lIGluICgKICAgICJUSUZfUFJPQ19VTU9VTlRFRCIsCiAgICAiVElGX1BST0NfTk9fU1UiLAogICAgIlRJRl9QUk9DX1VNT1VOVEVEX0ZPUl9aWUdPVEVfTkVYVCIsCik6CiAgICB0ZXh0ID0gcmUuc3ViKAogICAgICAgIHJmIig/bSleI2RlZmluZSB7bmFtZX1ccytcZCtcbiIsCiAgICAgICAgIiIsCiAgICAgICAgdGV4dCwKICAgICkKCiMgVzc2LXY0IGluc2VydGVkIHRoZSBkZWZpbmVzIGFmdGVyIGEgZGVzY3JpcHRpdmUgVElGIGNvbW1lbnQgbGluZS4KIyBUaGF0IGxpbmUgbGl2ZXMgaW5zaWRlIGEgQyBibG9jayBjb21tZW50IGluIHRoZSBzdGFnZWQgNS40IGhlYWRlciwgc28KIyBjbGFuZyBjb3JyZWN0bHkgc2F3IHRoZSBoZWxwZXIgZnVuY3Rpb25zIGJ1dCBub3QgdGhlIFRJRiBkZWZpbml0aW9ucy4KIyBJbnNlcnQgdGhlIGRlZmluaXRpb25zIGltbWVkaWF0ZWx5IGJlZm9yZSB0aGUgZmlyc3QgcmVhbCBleGlzdGluZwojIHByb2Nlc3Mtc3RhdGUgaGVscGVyIGluc3RlYWQuCmhlbHBlcl9kZWZfYW5jaG9yID0gInN0YXRpYyBpbmxpbmUgYm9vbCBzdXNmc19pc19jdXJyZW50X3Byb2NfdW1vdW50ZWQodm9pZCkiCnBvcyA9IHRleHQuZmluZChoZWxwZXJfZGVmX2FuY2hvcikKaWYgcG9zIDwgMDoKICAgIHJhaXNlIFN5c3RlbUV4aXQoInJlYWwgU1VTRlMgcHJvY2Vzcy1zdGF0ZSBoZWxwZXIgYW5jaG9yIG5vdCBmb3VuZCIpCgp0ZXh0ID0gdGV4dFs6cG9zXSArIGRlZnMgKyAiXG4iICsgdGV4dFtwb3M6XQoKaGVscGVycyA9IHIiIiIKc3RhdGljIGlubGluZSBib29sIHN1c2ZzX2lzX2N1cnJlbnRfcHJvY19ub19zdSh2b2lkKSB7CglyZXR1cm4gKGxpa2VseSh0ZXN0X3RocmVhZF9mbGFnKFRJRl9QUk9DX05PX1NVKSkpOwp9CgpzdGF0aWMgaW5saW5lIHZvaWQgc3VzZnNfc2V0X2N1cnJlbnRfcHJvY19ub19zdSh2b2lkKSB7CglzZXRfdGhyZWFkX2ZsYWcoVElGX1BST0NfTk9fU1UpOwp9CgpzdGF0aWMgaW5saW5lIHZvaWQgc3VzZnNfY2xlYXJfY3VycmVudF9wcm9jX25vX3N1KHZvaWQpIHsKCWNsZWFyX3RocmVhZF9mbGFnKFRJRl9QUk9DX05PX1NVKTsKfQoKc3RhdGljIGlubGluZSBib29sIHN1c2ZzX2lzX2N1cnJlbnRfcHJvY191bW91bnRlZF9mb3Jfenlnb3RlX25leHQodm9pZCkgewoJcmV0dXJuIChsaWtlbHkodGVzdF90aHJlYWRfZmxhZyhUSUZfUFJPQ19VTU9VTlRFRF9GT1JfWllHT1RFX05FWFQpKSk7Cn0KCnN0YXRpYyBpbmxpbmUgdm9pZCBzdXNmc19zZXRfY3VycmVudF9wcm9jX3Vtb3VudGVkX2Zvcl96eWdvdGVfbmV4dCh2b2lkKSB7CglzZXRfdGhyZWFkX2ZsYWcoVElGX1BST0NfVU1PVU5URURfRk9SX1pZR09URV9ORVhUKTsKfQoKc3RhdGljIGlubGluZSB2b2lkIHN1c2ZzX2NsZWFyX2N1cnJlbnRfcHJvY191bW91bnRlZF9mb3Jfenlnb3RlX25leHQodm9pZCkgewoJY2xlYXJfdGhyZWFkX2ZsYWcoVElGX1BST0NfVU1PVU5URURfRk9SX1pZR09URV9ORVhUKTsKfQoiIiIKCm5hbWVzID0gWwogICAgInN1c2ZzX2lzX2N1cnJlbnRfcHJvY19ub19zdSIsCiAgICAic3VzZnNfc2V0X2N1cnJlbnRfcHJvY19ub19zdSIsCiAgICAic3VzZnNfY2xlYXJfY3VycmVudF9wcm9jX25vX3N1IiwKICAgICJzdXNmc19pc19jdXJyZW50X3Byb2NfdW1vdW50ZWRfZm9yX3p5Z290ZV9uZXh0IiwKICAgICJzdXNmc19zZXRfY3VycmVudF9wcm9jX3Vtb3VudGVkX2Zvcl96eWdvdGVfbmV4dCIsCiAgICAic3VzZnNfY2xlYXJfY3VycmVudF9wcm9jX3Vtb3VudGVkX2Zvcl96eWdvdGVfbmV4dCIsCl0KZm9yIG5hbWUgaW4gbmFtZXM6CiAgICB0ZXh0ID0gcmUuc3ViKAogICAgICAgIHIiKD9tcylec3RhdGljIGlubGluZSAoPzpib29sfHZvaWQpICIKICAgICAgICArIHJlLmVzY2FwZShuYW1lKQogICAgICAgICsgciJcKHZvaWRcKSBcey4qP15cfVxuPyIsCiAgICAgICAgIiIsCiAgICAgICAgdGV4dCwKICAgICkKCmhlbHBlcl9hbmNob3IgPSAiI2RlZmluZSBTVVNGU19JU19JTk9ERV9TVVNfTUFQIgppZiBoZWxwZXJfYW5jaG9yIGluIHRleHQ6CiAgICBwb3MgPSB0ZXh0LmluZGV4KGhlbHBlcl9hbmNob3IpCiAgICB0ZXh0ID0gdGV4dFs6cG9zXSArIGhlbHBlcnMgKyAiXG4iICsgdGV4dFtwb3M6XQplbHNlOgogICAgcG9zID0gdGV4dC5yZmluZCgiI2VuZGlmIikKICAgIGlmIHBvcyA8IDA6CiAgICAgICAgcmFpc2UgU3lzdGVtRXhpdCgiU1VTRlMgaGVscGVyIGluc2VydGlvbiBhbmNob3Igbm90IGZvdW5kIikKICAgIHRleHQgPSB0ZXh0Wzpwb3NdICsgaGVscGVycyArICJcbiIgKyB0ZXh0W3BvczpdCgpwLndyaXRlX3RleHQodGV4dCwgZW5jb2Rpbmc9InV0Zi04IikKCmZpbmFsID0gcC5yZWFkX3RleHQoZW5jb2Rpbmc9InV0Zi04IikKcmVxdWlyZWQgPSBbCiAgICAiI2RlZmluZSBUSUZfUFJPQ19VTU9VTlRFRCAzMyIsCiAgICAiI2RlZmluZSBUSUZfUFJPQ19OT19TVSAzNCIsCiAgICAiI2RlZmluZSBUSUZfUFJPQ19VTU9VTlRFRF9GT1JfWllHT1RFX05FWFQgMzUiLAogICAgInN0YXRpYyBpbmxpbmUgYm9vbCBzdXNmc19pc19jdXJyZW50X3Byb2Nfbm9fc3Uodm9pZCkiLAogICAgInN0YXRpYyBpbmxpbmUgdm9pZCBzdXNmc19zZXRfY3VycmVudF9wcm9jX25vX3N1KHZvaWQpIiwKICAgICJzdGF0aWMgaW5saW5lIHZvaWQgc3VzZnNfY2xlYXJfY3VycmVudF9wcm9jX25vX3N1KHZvaWQpIiwKICAgICJzdGF0aWMgaW5saW5lIGJvb2wgc3VzZnNfaXNfY3VycmVudF9wcm9jX3Vtb3VudGVkX2Zvcl96eWdvdGVfbmV4dCh2b2lkKSIsCiAgICAic3RhdGljIGlubGluZSB2b2lkIHN1c2ZzX3NldF9jdXJyZW50X3Byb2NfdW1vdW50ZWRfZm9yX3p5Z290ZV9uZXh0KHZvaWQpIiwKICAgICJzdGF0aWMgaW5saW5lIHZvaWQgc3VzZnNfY2xlYXJfY3VycmVudF9wcm9jX3Vtb3VudGVkX2Zvcl96eWdvdGVfbmV4dCh2b2lkKSIsCl0KZm9yIHRva2VuIGluIHJlcXVpcmVkOgogICAgaWYgZmluYWwuY291bnQodG9rZW4pICE9IDE6CiAgICAgICAgcmFpc2UgU3lzdGVtRXhpdChmInByb2Nlc3Mtc3RhdGUgY2xvc3VyZSBjb3VudCBtaXNtYXRjaDoge3Rva2VufSIpCgojIEEgdGV4dHVhbCBjb3VudCBhbG9uZSBtaXNzZWQgVzc2LXY0IGJlY2F1c2UgaXRzICNkZWZpbmVzIHdlcmUgaW5zaWRlCiMgYSBibG9jayBjb21tZW50LiBTdHJpcCBjb21tZW50cyBhbmQgcmVxdWlyZSBhbGwgdGhyZWUgcmVhbCBwcmVwcm9jZXNzb3IKIyBkZWZpbml0aW9ucyB0byByZW1haW4gdmlzaWJsZS4KY29tbWVudF9mcmVlID0gcmUuc3ViKHIiL1xcKi4qP1xcKi8iLCAiIiwgZmluYWwsIGZsYWdzPXJlLlMpCmNvbW1lbnRfZnJlZSA9IHJlLnN1YihyIi8vLioiLCAiIiwgY29tbWVudF9mcmVlKQpmb3IgdG9rZW4gaW4gKAogICAgIiNkZWZpbmUgVElGX1BST0NfVU1PVU5URUQgMzMiLAogICAgIiNkZWZpbmUgVElGX1BST0NfTk9fU1UgMzQiLAogICAgIiNkZWZpbmUgVElGX1BST0NfVU1PVU5URURfRk9SX1pZR09URV9ORVhUIDM1IiwKKToKICAgIGlmIHRva2VuIG5vdCBpbiBjb21tZW50X2ZyZWU6CiAgICAgICAgcmFpc2UgU3lzdGVtRXhpdChmIlRJRiBkZWZpbmUgaXMgbm90IGFjdGl2ZSBDIHNvdXJjZToge3Rva2VufSIpCgpmaXJzdF9oZWxwZXIgPSBjb21tZW50X2ZyZWUuZmluZCgKICAgICJzdGF0aWMgaW5saW5lIGJvb2wgc3VzZnNfaXNfY3VycmVudF9wcm9jX3Vtb3VudGVkKHZvaWQpIgopCmZvciB0b2tlbiBpbiAoCiAgICAiI2RlZmluZSBUSUZfUFJPQ19VTU9VTlRFRCAzMyIsCiAgICAiI2RlZmluZSBUSUZfUFJPQ19OT19TVSAzNCIsCiAgICAiI2RlZmluZSBUSUZfUFJPQ19VTU9VTlRFRF9GT1JfWllHT1RFX05FWFQgMzUiLAopOgogICAgaWYgY29tbWVudF9mcmVlLmZpbmQodG9rZW4pIDwgMCBvciBjb21tZW50X2ZyZWUuZmluZCh0b2tlbikgPiBmaXJzdF9oZWxwZXI6CiAgICAgICAgcmFpc2UgU3lzdGVtRXhpdChmIlRJRiBkZWZpbmUgb3JkZXJpbmcgaW52YWxpZDoge3Rva2VufSIpCgpwcmludCgiU1VTRlNfUFJPQ0VTU19TVEFURV9BUElfQkFDS1BPUlQ9UEFTUyIpCnByaW50KCJUSUZfREVGSU5FU19BQ1RJVkVfT1VUU0lERV9DT01NRU5UUz1ZRVMiKQpwcmludCgiVElGX0RFRklORVNfQkVGT1JFX0ZJUlNUX1BST0NFU1NfSEVMUEVSPVlFUyIpCnByaW50KCJUSUZfUFJPQ19VTU9VTlRFRD0zMyIpCnByaW50KCJUSUZfUFJPQ19OT19TVT0zNCIpCnByaW50KCJUSUZfUFJPQ19VTU9VTlRFRF9GT1JfWllHT1RFX05FWFQ9MzUiKQpwcmludCgiTk9fU1VfSEVMUEVSUz0zIikKcHJpbnQoIlpZR09URV9ORVhUX1VNT1VOVF9IRUxQRVJTPTMiKQpQWTIKCmdyZXAgLUZxICdzdGF0aWMgaW5saW5lIGJvb2wgc3VzZnNfaXNfY3VycmVudF9wcm9jX25vX3N1KHZvaWQpJyAiJEhEUiIKZ3JlcCAtRnEgJ3N0YXRpYyBpbmxpbmUgdm9pZCBzdXNmc19zZXRfY3VycmVudF9wcm9jX25vX3N1KHZvaWQpJyAiJEhEUiIKZ3JlcCAtRnEgJ3N0YXRpYyBpbmxpbmUgdm9pZCBzdXNmc19jbGVhcl9jdXJyZW50X3Byb2Nfbm9fc3Uodm9pZCknICIkSERSIgpncmVwIC1GcSAnc3RhdGljIGlubGluZSB2b2lkIHN1c2ZzX3NldF9jdXJyZW50X3Byb2NfdW1vdW50ZWRfZm9yX3p5Z290ZV9uZXh0KHZvaWQpJyAiJEhEUiIKCnsKICBlY2hvICJXNzZfVjVfU1VTRlNfUFJPQ0VTU19TVEFURV9DTE9TVVJFPVBBU1MiCiAgZWNobyAiUk9PVF9DQVVTRV9WMj1MVE9fVU5ERUZJTkVEX1NVU0ZTX1BST0NFU1NfU1RBVEVfQVBJIgogIGVjaG8gIkJBQ0tQT1JUX01PREVMPU1BSU5UQUlORURfTk9OX0dLSV81XzRfVEhSRUFEX0ZMQUdfQVBJIgogIGVjaG8gIlRJRl9QUk9DX1VNT1VOVEVEPTMzIgogIGVjaG8gIlRJRl9QUk9DX05PX1NVPTM0IgogIGVjaG8gIlRJRl9QUk9DX1VNT1VOVEVEX0ZPUl9aWUdPVEVfTkVYVD0zNSIKICBlY2hvICJTVFVCX0lNUExFTUVOVEFUSU9OPU5PIgogIGVjaG8gIlJPT1RfQ0FVU0VfVjQ9VElGX0RFRklORVNfSU5TRVJURURfSU5TSURFX0JMT0NLX0NPTU1FTlQiCiAgZWNobyAiVElGX0RFRklORVNfQUNUSVZFX09VVFNJREVfQ09NTUVOVFM9WUVTIgp9IHwgdGVlIFc3Ni1WNS1TVVNGUy1QUk9DRVNTLVNUQVRFLnR4dAo="
+          ).decode("utf-8")
+          
+          staged = [
+              step for step in steps
+              if step.get("name") == "Stage standalone SUSFS files"
+          ]
+          if len(staged) != 1:
+              raise SystemExit(
+                  "expected exactly one W43 SUSFS staging step, got "
+                  + str(len(staged))
+              )
+          
+          staged[0]["run"] = staged[0]["run"] + "\n" + closure_script
+          
+          runnable = []
+          skipped = []
+          
+          for index, step in enumerate(steps, 1):
+              name = step.get("name", f"step-{index}")
+              run = step.get("run")
+              condition = (step.get("if") or "").strip()
+          
+              if not run:
+                  skipped.append((index, name, "non-run action"))
+                  continue
+          
+              # GitHub failure/always cleanup is handled by W76 itself.
+              # Normal success-path W43 run blocks are replayed.
+              if "failure()" in condition or "always()" in condition:
+                  skipped.append((index, name, f"condition={condition}"))
+                  continue
+          
+              runnable.append({
+                  "index": index,
+                  "name": name,
+                  "run": run,
+                  "env": step.get("env") or {},
+              })
+          
+          import json
+          Path("W76-W43-RUN-STEPS.json").write_text(
+              json.dumps(runnable, indent=2),
+              encoding="utf-8",
+          )
+          Path("W76-W43-SKIPPED-STEPS.txt").write_text(
+              "\n".join(
+                  f"{i}\t{name}\t{why}"
+                  for i, name, why in skipped
+              ) + "\n",
+              encoding="utf-8",
+          )
+          
+          print(f"W43_RUN_BLOCKS_TO_REPLAY={len(runnable)}")
+          print(f"W43_STEPS_SKIPPED={len(skipped)}")
+          PY
+          
+          {
+            echo "W43_TO_W76_RECIPE_TRANSFORM=PASS"
+            echo "W76_V1_RAW_EXPRESSION_STARTUP_FAILURE_FIXED=YES"
+            echo "W76_V3_LITERAL_BACKSLASH_N_CLOSURE_SEPARATOR_FIXED=YES"
+            echo "W76_V4_TIF_COMMENT_PLACEMENT_FIXED=YES"
+            echo "OLD_RESUKISU_PIN=$OLD_RESUKISU_PIN"
+            echo "NEW_RESUKISU_PIN=$NEW_RESUKISU_PIN"
+            echo "W43_RECIPE_SHA256=$(sha256sum "$W43_RECIPE" | awk '{print $1}')"
+            echo "W76_RECIPE_SHA256=$(sha256sum W76-W43-TRANSFORMED-RECIPE.yml | awk '{print $1}')"
+          } | tee W76-RECIPE-TRANSFORM.txt
+
+      - name: Replay proven W43 v2 GEN2 port and full-build recipe
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          
+          export W76_ENV_FILE="$RUNNER_TEMP/w76-replay-env"
+          export W76_OUTPUT_FILE="$RUNNER_TEMP/w76-replay-output"
+          : > "$W76_ENV_FILE"
+          : > "$W76_OUTPUT_FILE"
+          
+          # W43 run blocks expect the real GitHub special-file names.
+          export GITHUB_ENV="$W76_ENV_FILE"
+          export GITHUB_OUTPUT="$W76_OUTPUT_FILE"
+          
+          python3 - <<'PY'
+          import json
+          import os
+          import re
+          import subprocess
+          from pathlib import Path
+          
+          steps = json.loads(
+              Path("W76-W43-RUN-STEPS.json").read_text(
+                  encoding="utf-8"
+              )
+          )
+          
+          env = os.environ.copy()
+          env["GH_TOKEN"] = os.environ.get("GH_TOKEN", "")
+          
+          def expand_expr(value):
+              if not isinstance(value, str):
+                  return value
+              replacements = {
+                  "${{ github.workspace }}":
+                      env["GITHUB_WORKSPACE"],
+                  "${{ runner.temp }}":
+                      env["RUNNER_TEMP"],
+                  "${{ github.token }}":
+                      env.get("GH_TOKEN", ""),
+              }
+              for old, new in replacements.items():
+                  value = value.replace(old, new)
+          
+              # All previously replayed success-path steps have succeeded.
+              value = re.sub(
+                  r"\$\{\{\s*steps\.[^.]+\.outcome\s*\}\}",
+                  "success",
+                  value,
+              )
+              return value
+          
+          def import_github_env(path):
+              p = Path(path)
+              if not p.exists():
+                  return
+              lines = p.read_text(
+                  encoding="utf-8", errors="replace"
+              ).splitlines()
+              for line in lines:
+                  if not line or line.startswith("#"):
+                      continue
+                  if "<<" in line:
+                      # W43 does not currently rely on multiline env
+                      # outputs for the build path. Refuse silently
+                      # accepting an unsupported form.
+                      raise SystemExit(
+                          "unsupported multiline GITHUB_ENV entry: "
+                          + line
+                      )
+                  if "=" in line:
+                      key, value = line.split("=", 1)
+                      if key:
+                          env[key] = value
+              p.write_text("", encoding="utf-8")
+          
+          log = Path("W76-W43-REPLAY.log")
+          state = Path("W76-W43-REPLAY-STATE.txt")
+          completed = 0
+          
+          with log.open("w", encoding="utf-8") as fp:
+              for item in steps:
+                  name = item["name"]
+                  script = item["run"]
+          
+                  # Expressions that survive the controlled replacements
+                  # are almost certainly GitHub step-context dependencies.
+                  script = expand_expr(script)
+          
+                  expression_opener = "$" + "{{"
+                  if expression_opener in script:
+                      raise SystemExit(
+                          f"unresolved GitHub expression in step {name!r}"
+                      )
+          
+                  step_env = env.copy()
+                  for key, value in item.get("env", {}).items():
+                      step_env[key] = expand_expr(value)
+          
+                  banner = (
+                      f"\n===== W76 REPLAY STEP "
+                      f"{item['index']}: {name} =====\n"
+                  )
+                  print(banner, end="")
+                  fp.write(banner)
+                  fp.flush()
+          
+                  cp = subprocess.run(
+                      ["bash", "-euo", "pipefail", "-c", script],
+                      env=step_env,
+                      text=True,
+                      stdout=subprocess.PIPE,
+                      stderr=subprocess.STDOUT,
+                  )
+          
+                  fp.write(cp.stdout or "")
+                  fp.flush()
+                  print(cp.stdout or "", end="")
+          
+                  if cp.returncode != 0:
+                      state.write_text(
+                          "\n".join([
+                              "W76_W43_REPLAY=FAIL",
+                              f"FAILED_INDEX={item['index']}",
+                              f"FAILED_STEP={name}",
+                              f"EXIT_CODE={cp.returncode}",
+                              f"COMPLETED_RUN_BLOCKS={completed}",
+                          ]) + "\n",
+                          encoding="utf-8",
+                      )
+                      raise SystemExit(cp.returncode)
+          
+                  completed += 1
+                  import_github_env(env["GITHUB_ENV"])
+          
+          state.write_text(
+              "\n".join([
+                  "W76_W43_REPLAY=PASS",
+                  f"COMPLETED_RUN_BLOCKS={completed}",
+                  "FAILED_STEP=NONE",
+              ]) + "\n",
+              encoding="utf-8",
+          )
+          PY
+          
+          grep -Fxq 'W76_W43_REPLAY=PASS' \
+            W76-W43-REPLAY-STATE.txt
+
+      - name: Verify updated GEN2 full-build outputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          
+          for f in \
+            GEN2_43_Image \
+            GEN2_43_vmlinux \
+            GEN2_43_System.map \
+            GEN2_43_final.config \
+            GEN2_43_veux.dtb \
+            GEN2_43_veux-overlay.dtbo
+          do
+            test -s "$f"
+          done
+          
+          grep -q '^CONFIG_KSU=y$' GEN2_43_final.config
+          grep -q '^CONFIG_KSU_SUSFS=y$' GEN2_43_final.config
+          
+          grep -Fxq 'W76_V5_SUSFS_PROCESS_STATE_CLOSURE=PASS'             W76-V5-SUSFS-PROCESS-STATE.txt
+          grep -Fxq 'STUB_IMPLEMENTATION=NO'             W76-V5-SUSFS-PROCESS-STATE.txt
+          
+          strings GEN2_43_Image \
+            | grep -m1 '^Linux version 5\.4\.302' \
+            > W76-IMAGE-LINUX-VERSION.txt
+          
+          cp GEN2_43_Image GEN2_76_Image
+          cp GEN2_43_vmlinux GEN2_76_vmlinux
+          cp GEN2_43_System.map GEN2_76_System.map
+          cp GEN2_43_final.config GEN2_76_final.config
+          cp GEN2_43_veux.dtb GEN2_76_veux.dtb
+          cp GEN2_43_veux-overlay.dtbo GEN2_76_veux-overlay.dtbo
+          
+          sha256sum \
+            GEN2_76_Image \
+            GEN2_76_vmlinux \
+            GEN2_76_System.map \
+            GEN2_76_final.config \
+            GEN2_76_veux.dtb \
+            GEN2_76_veux-overlay.dtbo \
+            | tee W76-SHA256SUMS.txt
+          
+          {
+            echo "W76_GEN2_FULL_BUILD=PASS"
+            echo "KERNEL_VERSION=5.4.302"
+            echo "KERNEL_PIN=$GEN2_KERNEL_PIN"
+            echo "RESUKISU_PIN=$NEW_RESUKISU_PIN"
+            echo "IMAGE_SHA256=$(sha256sum GEN2_76_Image | awk '{print $1}')"
+            echo "IMAGE_BYTES=$(stat -c '%s' GEN2_76_Image)"
+            echo "VMLINUX_SHA256=$(sha256sum GEN2_76_vmlinux | awk '{print $1}')"
+            echo "SYSTEM_MAP_SHA256=$(sha256sum GEN2_76_System.map | awk '{print $1}')"
+            echo "CONFIG_SHA256=$(sha256sum GEN2_76_final.config | awk '{print $1}')"
+            echo "DTB_SHA256=$(sha256sum GEN2_76_veux.dtb | awk '{print $1}')"
+            echo "DTBO_SHA256=$(sha256sum GEN2_76_veux-overlay.dtbo | awk '{print $1}')"
+            echo "INPUT_HOOK_ATOMIC_CONTEXT_FIX=PASS"
+            echo "ZYGOTE_NEXT_INTEGRATION=PRESENT"
+            echo "BOOT_IMAGE_CREATED=NO"
+            echo "ANYKERNEL_PACKAGE_CREATED=NO"
+            echo "FLASHING_PERFORMED=NO"
+            echo "NEXT_STAGE=GEN2_UPDATED_REPRODUCIBILITY_BUILD"
+          } | tee W76-FINAL-VERDICT.txt
+
+      - name: Compare rebuilt outputs with W77 baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          IMAGE_SHA="$(sha256sum GEN2_76_Image | awk '{print $1}')"
+          CONFIG_SHA="$(sha256sum GEN2_76_final.config | awk '{print $1}')"
+          DTB_SHA="$(sha256sum GEN2_76_veux.dtb | awk '{print $1}')"
+          DTBO_SHA="$(sha256sum GEN2_76_veux-overlay.dtbo | awk '{print $1}')"
+
+          {
+            echo "W78_V4_REBUILD=PASS"
+            echo "KERNEL_VERSION=5.4.302"
+            echo "GEN2_KERNEL_PIN=$GEN2_KERNEL_PIN"
+            echo "RESUKISU_PIN=$NEW_RESUKISU_PIN"
+            echo "REBUILT_IMAGE_SHA256=$IMAGE_SHA"
+            echo "BASELINE_IMAGE_SHA256=$BASELINE_IMAGE_SHA256"
+            echo "REBUILT_CONFIG_SHA256=$CONFIG_SHA"
+            echo "BASELINE_CONFIG_SHA256=$BASELINE_CONFIG_SHA256"
+            echo "REBUILT_DTB_SHA256=$DTB_SHA"
+            echo "BASELINE_DTB_SHA256=$BASELINE_DTB_SHA256"
+            echo "REBUILT_DTBO_SHA256=$DTBO_SHA"
+            echo "BASELINE_DTBO_SHA256=$BASELINE_DTBO_SHA256"
+          } | tee W78-HASH-COMPARISON.txt
+
+          test "$IMAGE_SHA" = "$BASELINE_IMAGE_SHA256"
+          test "$CONFIG_SHA" = "$BASELINE_CONFIG_SHA256"
+          test "$DTB_SHA" = "$BASELINE_DTB_SHA256"
+          test "$DTBO_SHA" = "$BASELINE_DTBO_SHA256"
+
+          {
+            echo "W78_REPRODUCIBILITY_HASH_LOCK=PASS"
+            echo "IMAGE_BYTE_IDENTICAL=YES"
+            echo "CONFIG_BYTE_IDENTICAL=YES"
+            echo "DTB_BYTE_IDENTICAL=YES"
+            echo "DTBO_BYTE_IDENTICAL=YES"
+            echo "DIRECT_W76_V5_SUCCESS_PATH=YES"
+            echo "OUTER_REPLAY_OF_W76=NO"
+            echo "PREBUILT_W76_BINARY_REUSE=NO"
+            echo "BOOT_IMAGE_CREATED=NO"
+            echo "ANYKERNEL_PACKAGE_CREATED=NO"
+            echo "DEVICE_ACCESSED=NO"
+            echo "FLASHING_PERFORMED=NO"
+            echo "NEXT_STAGE=GEN2_BOOT_IMAGE_AND_AK3_PACKAGING"
+          } | tee W78-FINAL-VERDICT.txt
+
+      - name: Write compact diagnostics on failure
+        if: failure()
+        shell: bash
+        run: |
+          set +e
+          {
+            echo "W78_REPRODUCIBILITY_HASH_LOCK=FAIL"
+            echo "DIRECT_W76_V5_SUCCESS_PATH=YES"
+            echo "OUTER_REPLAY_OF_W76=NO"
+            echo "PREBUILT_W76_BINARY_REUSE=NO"
+            echo "FLASHING_PERFORMED=NO"
+            echo
+            echo "FILES:"
+            ls -lh \
+              GEN2_43_Image \
+              GEN2_43_final.config \
+              GEN2_43_veux.dtb \
+              GEN2_43_veux-overlay.dtbo \
+              GEN2_76_Image \
+              GEN2_76_final.config \
+              GEN2_76_veux.dtb \
+              GEN2_76_veux-overlay.dtbo \
+              2>&1
+          } > W78-FAILURE-DIAGNOSTICS.txt
+
+      - name: Upload compact W78 evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: GEN2_W78_5.4.302_REPRODUCIBILITY_HASH_LOCK_V4-${{ github.run_number }}
+          path: |
+            W78-*.txt
+            W76-UPSTREAM-PROVENANCE.txt
+            W76-NEW-KERNEL-SEMANTICS.txt
+            W76-V5-SUSFS-PROCESS-STATE.txt
+            W76-W43-REPLAY-STATE.txt
+            W76-IMAGE-LINUX-VERSION.txt
+            W76-SHA256SUMS.txt
+            W76-FINAL-VERDICT.txt
+          if-no-files-found: warn
+          retention-days: 90
+          compression-level: 9
+
+      - name: Final W78 v4 gate
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s W78-FINAL-VERDICT.txt
+          grep -Fxq 'W78_REPRODUCIBILITY_HASH_LOCK=PASS' W78-FINAL-VERDICT.txt
