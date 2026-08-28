@@ -1,0 +1,221 @@
+name: 78 - GEN2 5.4.302 Reproducibility Hash Lock v1
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  KERNEL_VERSION: "5.4.302"
+  GEN2_KERNEL_PIN: "f4b8a13a43a130a9aab83cc985ce4d4421291ae6"
+  RESUKISU_PIN: "4a3785025a920e4f52584f14c663eea4850dc919"
+
+  W77_SOURCE_RUN_ID: "33110786209"
+  W77_SOURCE_ARTIFACT_ID: "9663732675"
+
+  BASELINE_IMAGE_SHA256: "8a43037f008b6db9d3ea82066cc52c8261b8fac6a7de2ef24e3532002e9a48d8"
+  BASELINE_CONFIG_SHA256: "2931b6b74bf34a85f2a71cb4b76d1a3277a5538514411dd1047c841d46e92cbb"
+  BASELINE_DTB_SHA256: "28a174d174cda7619bf674b29fa4e91625a6ad02f6ca4815ac7a943137b3df8c"
+  BASELINE_DTBO_SHA256: "486ec73935e9805722df531cc3ddd5460f971c1edeec813fd25bef63500c0ca3"
+
+jobs:
+  reproducibility-hash-lock:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+
+    env:
+      WORK: ${{ github.workspace }}/w78
+      W76_ZIP: ${{ github.workspace }}/w78/w76-source.zip
+      W76: ${{ github.workspace }}/w78/w76
+      OUT: ${{ github.workspace }}/w78/out
+
+    steps:
+      - name: Initialize W78
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$WORK"
+          mkdir -p "$W76" "$OUT"
+          {
+            echo "W78_MODE=INDEPENDENT_REBUILD_HASH_LOCK"
+            echo "KERNEL_VERSION=$KERNEL_VERSION"
+            echo "GEN2_KERNEL_PIN=$GEN2_KERNEL_PIN"
+            echo "RESUKISU_PIN=$RESUKISU_PIN"
+            echo "BASELINE_IMAGE_SHA256=$BASELINE_IMAGE_SHA256"
+            echo "BASELINE_CONFIG_SHA256=$BASELINE_CONFIG_SHA256"
+            echo "BASELINE_DTB_SHA256=$BASELINE_DTB_SHA256"
+            echo "BASELINE_DTBO_SHA256=$BASELINE_DTBO_SHA256"
+            echo "FLASHING_PERFORMED=NO"
+          } | tee "$OUT/W78-SCOPE.txt"
+
+      - name: Download successful W76 build record
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          curl --fail --location --silent --show-error --retry 3             -H "Accept: application/vnd.github+json"             -H "Authorization: Bearer $GH_TOKEN"             -H "X-GitHub-Api-Version: 2022-11-28"             "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/runs/$W77_SOURCE_RUN_ID/artifacts"             -o "$WORK/artifacts.json"
+
+          AID="$(jq -r '.artifacts[] | select(.name | startswith("GEN2_W76_5.4.302_ReSukiSU_4A378502_FULL_BUILD")) | .id' "$WORK/artifacts.json" | head -n1)"
+          test -n "$AID"
+
+          curl --fail --location --silent --show-error --retry 3             -H "Accept: application/vnd.github+json"             -H "Authorization: Bearer $GH_TOKEN"             -H "X-GitHub-Api-Version: 2022-11-28"             "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/artifacts/$AID/zip"             -o "$W76_ZIP"
+
+          unzip -q "$W76_ZIP" -d "$W76"
+          test -s "$W76/W76-UPSTREAM-PROVENANCE.txt"
+          test -s "$W76/W76-SHA256SUMS.txt"
+          echo "W76_BUILD_RECORD=PASS" | tee "$OUT/W78-W76-RECORD.txt"
+
+      - name: Recover exact W76 build recipe
+        shell: bash
+        run: |
+          set -euo pipefail
+          export W76 OUT
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          root = Path(os.environ["W76"])
+          out = Path(os.environ["OUT"])
+          candidates = []
+          for p in root.rglob("*"):
+              if p.is_file() and p.stat().st_size < 8_000_000:
+                  try:
+                      t = p.read_text(errors="ignore")
+                  except Exception:
+                      continue
+                  score = sum(x in t for x in (
+                      "GEN2_76_Image",
+                      "make",
+                      "veux",
+                      "ReSukiSU",
+                      "f4b8a13a43a130a9aab83cc985ce4d4421291ae6",
+                  ))
+                  if score >= 3:
+                      candidates.append((score, len(t), p, t))
+          if not candidates:
+              raise SystemExit("exact W76 build recipe not found in build record")
+          candidates.sort(key=lambda x: (-x[0], x[1]))
+          score, size, p, text = candidates[0]
+          (out / "W78-RECIPE-SOURCE.txt").write_text(str(p) + "\n")
+          (out / "W78-RECOVERED-RECIPE.txt").write_text(text)
+          print("W76_RECIPE_RECOVERY=PASS")
+          print("RECIPE_SOURCE=" + str(p))
+          PY
+
+      - name: Execute independent rebuild from recovered recipe
+        shell: bash
+        run: |
+          set -euo pipefail
+          RECIPE="$OUT/W78-RECOVERED-RECIPE.txt"
+
+          # Accept a recovered executable shell recipe only. Never silently
+          # substitute the already-built W76 binaries for a reproducibility run.
+          if ! head -n1 "$RECIPE" | grep -Eq '^#!.*/(ba)?sh|^set -'; then
+            echo "RECOVERED_RECIPE_NOT_DIRECTLY_EXECUTABLE" >&2
+            echo "W78_REBUILD=BLOCKED_NO_EXECUTABLE_RECIPE" | tee "$OUT/W78-REBUILD.txt"
+            exit 1
+          fi
+
+          chmod +x "$RECIPE"
+          export W78_REPRODUCIBILITY_RUN=1
+          export W78_OUTPUT_DIR="$WORK/rebuild-output"
+          mkdir -p "$W78_OUTPUT_DIR"
+
+          bash "$RECIPE"
+
+          echo "W78_INDEPENDENT_REBUILD=PASS" | tee "$OUT/W78-REBUILD.txt"
+
+      - name: Locate rebuilt deliverables
+        shell: bash
+        run: |
+          set -euo pipefail
+          export WORK OUT
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          work = Path(os.environ["WORK"])
+          out = Path(os.environ["OUT"])
+
+          targets = {
+              "Image": ["Image"],
+              "config": [".config", "final.config"],
+              "dtb": ["veux.dtb"],
+              "dtbo": ["veux-overlay.dtbo"],
+          }
+
+          found = {}
+          for kind, names in targets.items():
+              hits = []
+              for p in work.rglob("*"):
+                  if not p.is_file():
+                      continue
+                  if "w76" in p.parts or "out" in p.parts:
+                      continue
+                  if p.name in names or any(p.name.endswith(n) for n in names):
+                      hits.append(p)
+              if not hits:
+                  raise SystemExit(f"rebuilt {kind} not found")
+              hits.sort(key=lambda p: p.stat().st_mtime_ns, reverse=True)
+              found[kind] = hits[0]
+
+          for kind, p in found.items():
+              (out / f"W78-REBUILT-{kind.upper()}.path").write_text(str(p)+"\n")
+              print(kind, p)
+          PY
+
+      - name: Compare reproducibility hashes
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          IMAGE="$(cat "$OUT/W78-REBUILT-IMAGE.path")"
+          CONFIG="$(cat "$OUT/W78-REBUILT-CONFIG.path")"
+          DTB="$(cat "$OUT/W78-REBUILT-DTB.path")"
+          DTBO="$(cat "$OUT/W78-REBUILT-DTBO.path")"
+
+          I="$(sha256sum "$IMAGE" | awk '{print $1}')"
+          C="$(sha256sum "$CONFIG" | awk '{print $1}')"
+          D="$(sha256sum "$DTB" | awk '{print $1}')"
+          O="$(sha256sum "$DTBO" | awk '{print $1}')"
+
+          {
+            echo "REBUILT_IMAGE_SHA256=$I"
+            echo "BASELINE_IMAGE_SHA256=$BASELINE_IMAGE_SHA256"
+            echo "REBUILT_CONFIG_SHA256=$C"
+            echo "BASELINE_CONFIG_SHA256=$BASELINE_CONFIG_SHA256"
+            echo "REBUILT_DTB_SHA256=$D"
+            echo "BASELINE_DTB_SHA256=$BASELINE_DTB_SHA256"
+            echo "REBUILT_DTBO_SHA256=$O"
+            echo "BASELINE_DTBO_SHA256=$BASELINE_DTBO_SHA256"
+          } | tee "$OUT/W78-HASH-COMPARISON.txt"
+
+          test "$I" = "$BASELINE_IMAGE_SHA256"
+          test "$C" = "$BASELINE_CONFIG_SHA256"
+          test "$D" = "$BASELINE_DTB_SHA256"
+          test "$O" = "$BASELINE_DTBO_SHA256"
+
+          {
+            echo "W78_REPRODUCIBILITY_HASH_LOCK=PASS"
+            echo "IMAGE_BYTE_IDENTICAL=YES"
+            echo "CONFIG_BYTE_IDENTICAL=YES"
+            echo "DTB_BYTE_IDENTICAL=YES"
+            echo "DTBO_BYTE_IDENTICAL=YES"
+            echo "FLASHING_PERFORMED=NO"
+            echo "NEXT_STAGE=GEN2_BOOT_IMAGE_AND_AK3_PACKAGING"
+          } | tee "$OUT/W78-FINAL-VERDICT.txt"
+
+      - name: Upload compact W78 reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: GEN2_W78_5.4.302_REPRODUCIBILITY_HASH_LOCK-${{ github.run_number }}
+          path: |
+            w78/out/W78-*.txt
+            w78/out/W78-*.path
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 9
