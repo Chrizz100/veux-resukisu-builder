@@ -1,0 +1,198 @@
+name: 87 - GEN2 5.4.302 Clean VEUX PEUX Release v1
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  W86_RUN_ID: "33242735517"
+  W86_ARTIFACT_ID: "9712421591"
+  W86_IMAGE_SHA256: "28dcd3797fde4782df9ffceefea1ca993ce7606757f4e0564be3b6bf650ac0c8"
+  AK3_REPO: "https://github.com/osm0sis/AnyKernel3.git"
+  AK3_PIN: "af770f7b16cf8f8eb7c68614b2a693b3b361c90c"
+
+jobs:
+  clean_release:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout builder repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+
+      - name: Download verified W86 compact artifact
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          mkdir -p input release audit
+
+          gh api \
+            -H "Accept: application/vnd.github+json" \
+            "/repos/${GITHUB_REPOSITORY}/actions/artifacts/${W86_ARTIFACT_ID}/zip" \
+            > input/w86.zip
+
+          unzip -q input/w86.zip -d input/w86
+
+          IMAGE="$(find input/w86 -type f -name 'GEN2_W86_Image' -print -quit)"
+          test -n "$IMAGE"
+          test -s "$IMAGE"
+
+          ACTUAL="$(sha256sum "$IMAGE" | awk '{print $1}')"
+          test "$ACTUAL" = "$W86_IMAGE_SHA256"
+
+          cp "$IMAGE" release/GEN2_5.4.302_ReSukiSU_419E270B_SUSFS_2.2_Image
+
+      - name: Build pinned minimal VEUX PEUX AnyKernel3
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git clone --no-checkout "$AK3_REPO" input/AnyKernel3
+          git -C input/AnyKernel3 fetch --depth=1 origin "$AK3_PIN"
+          git -C input/AnyKernel3 checkout --detach "$AK3_PIN"
+          test "$(git -C input/AnyKernel3 rev-parse HEAD)" = "$AK3_PIN"
+
+          AK3=input/ak3-clean
+          mkdir -p "$AK3"
+
+          # Copy only runtime files from the pinned AnyKernel3 tree.
+          cp -a input/AnyKernel3/META-INF "$AK3/"
+          cp -a input/AnyKernel3/tools "$AK3/"
+          cp input/AnyKernel3/LICENSE "$AK3/"
+
+          cp release/GEN2_5.4.302_ReSukiSU_419E270B_SUSFS_2.2_Image \
+            "$AK3/Image"
+
+          cat > "$AK3/anykernel.sh" <<'EOF'
+          ### AnyKernel3 Ramdisk Mod Script
+          ## VEUX/PEUX kernel-only package
+
+          properties() { '
+          kernel.string=VEUX PEUX Linux 5.4.302 ReSukiSU 419e270b SUSFS 2.2
+          do.devicecheck=1
+          do.modules=0
+          do.systemless=1
+          do.cleanup=1
+          do.cleanuponabort=0
+          device.name1=veux
+          device.name2=peux
+          supported.versions=16
+          supported.patchlevels=
+          supported.vendorpatchlevels=
+          '; }
+
+          boot_attributes() {
+            set_perm_recursive 0 0 755 644 $RAMDISK/*;
+            set_perm_recursive 0 0 750 750 $RAMDISK/init* $RAMDISK/sbin;
+          }
+
+          BLOCK=boot;
+          IS_SLOT_DEVICE=1;
+          SLOT_SELECT=active;
+          RAMDISK_COMPRESSION=auto;
+          PATCH_VBMETA_FLAG=0;
+
+          . tools/ak3-core.sh;
+
+          dump_boot;
+          write_boot;
+          EOF
+
+          chmod 0755 "$AK3/anykernel.sh"
+
+          (
+            cd "$AK3"
+            zip -9r -q \
+              "../../release/VEUX_PEUX_5.4.302_ReSukiSU_419E270B_SUSFS_2.2_AK3.zip" \
+              .
+          )
+
+      - name: Enforce clean release contents
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          AK3_ZIP="release/VEUX_PEUX_5.4.302_ReSukiSU_419E270B_SUSFS_2.2_AK3.zip"
+          IMAGE="release/GEN2_5.4.302_ReSukiSU_419E270B_SUSFS_2.2_Image"
+
+          test -s "$AK3_ZIP"
+          test -s "$IMAGE"
+
+          test "$(sha256sum "$IMAGE" | awk '{print $1}')" = "$W86_IMAGE_SHA256"
+
+          rm -rf audit/unpacked
+          mkdir -p audit/unpacked
+          unzip -q "$AK3_ZIP" -d audit/unpacked
+
+          test -s audit/unpacked/Image
+          test "$(sha256sum audit/unpacked/Image | awk '{print $1}')" = "$W86_IMAGE_SHA256"
+
+          grep -Fxq 'device.name1=veux' audit/unpacked/anykernel.sh
+          grep -Fxq 'device.name2=peux' audit/unpacked/anykernel.sh
+          grep -Fxq 'supported.versions=16' audit/unpacked/anykernel.sh
+          grep -Fxq 'BLOCK=boot;' audit/unpacked/anykernel.sh
+          grep -Fxq 'IS_SLOT_DEVICE=1;' audit/unpacked/anykernel.sh
+          grep -Fxq 'SLOT_SELECT=active;' audit/unpacked/anykernel.sh
+          grep -Fxq 'PATCH_VBMETA_FLAG=0;' audit/unpacked/anykernel.sh
+
+          # Reject development/work files from the actual release archive.
+          if find audit/unpacked -type f \
+            \( -iname '*report*' -o -iname '*verdict*' -o -iname '*evidence*' \
+               -o -iname '*workflow*' -o -iname '*replay*' -o -iname '*audit*' \
+               -o -iname '*.log' -o -iname '*.yml' -o -iname '*.yaml' \
+               -o -iname '*.patch' -o -iname '*.diff' \) \
+            | grep -q .
+          then
+            echo "ERROR: work/development files found in clean AK3 package" >&2
+            find audit/unpacked -type f | sort >&2
+            exit 1
+          fi
+
+          # Text scan only; binary Image/tool files are not interpreted as text.
+          if grep -RInaE \
+            --exclude='Image' \
+            --exclude='magiskboot' \
+            --exclude='busybox' \
+            --exclude='ak3-core.sh' \
+            '(ChatGPT|OpenAI|GPT-[0-9]|LLM|Copilot|Claude|Gemini)' \
+            audit/unpacked
+          then
+            echo "ERROR: AI/work reference found in clean AK3 package" >&2
+            exit 1
+          fi
+
+          # No unrelated generic device aliases.
+          if grep -Eiq '(tuna|maguro|toro|toroplus|omap)' audit/unpacked/anykernel.sh; then
+            echo "ERROR: unrelated generic device alias found" >&2
+            exit 1
+          fi
+
+          # The outer release directory itself must contain only end-user files.
+          COUNT="$(find release -maxdepth 1 -type f | wc -l)"
+          test "$COUNT" -eq 2
+
+          sha256sum "$IMAGE" "$AK3_ZIP" > audit/SHA256SUMS.txt
+
+          echo "CLEAN_RELEASE=PASS"
+          echo "DEVICE_SCOPE=VEUX_AND_PEUX"
+          echo "IMAGE_SHA256=$W86_IMAGE_SHA256"
+          echo "AK3_RUNTIME_ONLY=PASS"
+          echo "WORK_REPORTS_IN_RELEASE=NONE"
+          echo "AI_REFERENCES_IN_RELEASE=NONE"
+
+      - name: Upload clean end-user release only
+        uses: actions/upload-artifact@v6
+        with:
+          name: GEN2_W87_5.4.302_ReSukiSU_419E270B_CLEAN_VEUX_PEUX-${{ github.run_number }}
+          path: release/
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 0
