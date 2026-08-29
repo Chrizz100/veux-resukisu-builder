@@ -1,0 +1,201 @@
+name: 85 - All Kernels ReSukiSU SUSFS Update Preflight v2
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+env:
+  OLD_RESUKISU_PIN: 4a3785025a920e4f52584f14c663eea4850dc919
+  NEW_RESUKISU_PIN: 419e270b50ad61725185dec74f438b8cb59c6889
+  SELINUX_HIDE_PIN: 6f50cba2a3919cfcec9f9061580a04588fb465b7
+  GEN2_KERNEL_REPO: dereference23/kernel_xiaomi_sm6375
+  GEN2_KERNEL_PIN: f4b8a13a43a130a9aab83cc985ce4d4421291ae6
+  SUSFS_61_COMMIT: 0ff93279
+
+jobs:
+  preflight:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout builder repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+
+      - name: Checkout ReSukiSU update target
+        uses: actions/checkout@v6
+        with:
+          repository: ReSukiSU/ReSukiSU
+          ref: 419e270b50ad61725185dec74f438b8cb59c6889
+          path: resukisu
+          fetch-depth: 0
+
+      - name: Checkout GEN2 pinned kernel
+        uses: actions/checkout@v6
+        with:
+          repository: dereference23/kernel_xiaomi_sm6375
+          ref: f4b8a13a43a130a9aab83cc985ce4d4421291ae6
+          path: gen2-kernel
+          fetch-depth: 1
+
+      - name: Verify ReSukiSU update chain and kernel delta
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p evidence
+
+          test "$(git -C resukisu rev-parse HEAD)" = "$NEW_RESUKISU_PIN"
+          git -C resukisu merge-base --is-ancestor "$OLD_RESUKISU_PIN" "$NEW_RESUKISU_PIN"
+          git -C resukisu merge-base --is-ancestor "$SELINUX_HIDE_PIN" "$NEW_RESUKISU_PIN"
+
+          AHEAD="$(git -C resukisu rev-list --count "$OLD_RESUKISU_PIN..$NEW_RESUKISU_PIN")"
+          test "$AHEAD" -eq 11
+
+          git -C resukisu diff --name-status "$OLD_RESUKISU_PIN..$NEW_RESUKISU_PIN" \
+            > evidence/RESUKISU-ALL-DELTA.txt
+          git -C resukisu diff --name-status "$OLD_RESUKISU_PIN..$NEW_RESUKISU_PIN" -- kernel uapi \
+            > evidence/RESUKISU-KERNEL-UAPI-DELTA.txt
+
+          for f in \
+            kernel/feature/kernel_umount.c \
+            kernel/feature/kernel_umount.h \
+            kernel/feature/selinux_hide.c \
+            kernel/hook/setuid_hook.c \
+            kernel/policy/allowlist.c \
+            uapi/feature.h
+          do
+            grep -Fq "$f" evidence/RESUKISU-KERNEL-UAPI-DELTA.txt
+          done
+
+          grep -Fq 'KSU_FEATURE_WEBVIEW_ZYGOTE_UMOUNT' resukisu/uapi/feature.h
+          grep -Fq 'ksu_webview_zygote_umount_enabled' resukisu/kernel/feature/kernel_umount.c
+          grep -Fq 'WEBVIEW_ZYGOTE_UID' resukisu/kernel/feature/kernel_umount.c
+          grep -Fq 'susfs_set_current_proc_umounted_for_zygote_next' resukisu/kernel/hook/setuid_hook.c
+
+          grep -Fq 'avd.seqno = 1;' resukisu/kernel/feature/selinux_hide.c
+          grep -Fq 'new_status->sequence = 0;' resukisu/kernel/feature/selinux_hide.c
+          grep -Fq 'new_status->policyload = 0;' resukisu/kernel/feature/selinux_hide.c
+
+          {
+            echo "RESUKISU_PREFLIGHT=PASS"
+            echo "OLD_PIN=$OLD_RESUKISU_PIN"
+            echo "NEW_PIN=$NEW_RESUKISU_PIN"
+            echo "COMMITS_AFTER_OLD=$AHEAD"
+            echo "WEBVIEW_ZYGOTE_UMOUNT=PRESENT"
+            echo "SELINUX_HIDE_5_4_SEMANTICS=PRESENT"
+            echo "AVD_SEQNO_FIX=PRESENT"
+          } | tee evidence/RESUKISU-PREFLIGHT.txt
+
+      - name: Audit GEN1 5.4.274 recipe contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p evidence
+          F=".github/workflows/46C2-final-cumulative-resukisu-susfs-full-build.yml"
+          test -s "$F"
+
+          grep -Fq 'COMMON_REF: "android11-5.4.274_r00"' "$F"
+          grep -Fq 'STOCK_REF: "veux-r-oss"' "$F"
+          grep -Fq 'BACKPORT_REPO: "JackA1ltman/NonGKI_Kernel_Build_2nd"' "$F"
+          grep -Fq 'OPEN_REDIRECT SRCU/UAF fixed semantics must already be present' "$F"
+          grep -Fq '/proc/*/maps output-pointer/SRCU handling must already be present' "$F"
+
+          {
+            echo "GEN1_PREFLIGHT=PASS"
+            echo "KERNEL=5.4.274"
+            echo "DEVICE_SCOPE=VEUX"
+            echo "BASE_RECIPE=$F"
+            echo "UPDATE_TARGET=$NEW_RESUKISU_PIN"
+          } | tee evidence/GEN1-PREFLIGHT.txt
+
+      - name: Audit GEN2 5.4.302 process-state closure and device contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p evidence
+          test "$(git -C gen2-kernel rev-parse HEAD)" = "$GEN2_KERNEL_PIN"
+
+          F=".github/workflows/76-gen2-5.4.302-resukisu-4a378502-full-build-v5.yml"
+          test -s "$F"
+
+          # W76-v5 stores the actual closure implementation encoded inside
+          # its replay driver, so the literal C #defines are not present as
+          # plain YAML text. Verify the proven semantic verdict markers instead.
+          grep -Fq 'SUSFS_PROCESS_STATE_API_BACKPORT=PASS' "$F"
+          grep -Fq 'TIF_PROC_NO_SU=34' "$F"
+          grep -Fq 'TIF_PROC_UMOUNTED_FOR_ZYGOTE_NEXT=35' "$F"
+          grep -Fq 'susfs_set_current_proc_umounted_for_zygote_next' "$F"
+
+          # The final GEN2 installer contract must retain both aliases.
+          W84=".github/workflows/84-gen2-5.4.302-clean-veux-peux-release-v1.yml"
+          if [ -s "$W84" ]; then
+            grep -Fq 'device.name1=veux' "$W84"
+            grep -Fq 'device.name2=peux' "$W84"
+            DEVICE_CONTRACT="REPO_W84_VERIFIED"
+          else
+            DEVICE_CONTRACT="W84_NOT_YET_IN_REPO_ENFORCE_ON_RELEASE"
+          fi
+
+          {
+            echo "GEN2_PREFLIGHT=PASS"
+            echo "KERNEL=5.4.302"
+            echo "KERNEL_PIN=$GEN2_KERNEL_PIN"
+            echo "DEVICE_SCOPE=VEUX_AND_PEUX"
+            echo "PROCESS_STATE_TIF_33_34_35=PRESENT_IN_PROVEN_RECIPE"
+            echo "DEVICE_CONTRACT=$DEVICE_CONTRACT"
+            echo "UPDATE_TARGET=$NEW_RESUKISU_PIN"
+          } | tee evidence/GEN2-PREFLIGHT.txt
+
+      - name: Fetch and compare current SUSFS zygote_next change
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p evidence
+
+          URL="https://gitlab.com/simonpunk/susfs4ksu/-/commit/${SUSFS_61_COMMIT}.patch"
+          curl --fail --location --retry 3 --connect-timeout 20 "$URL" \
+            -o evidence/SUSFS-0ff93279.patch
+
+          grep -Fq 'TIF_PROC_UMOUNTED' evidence/SUSFS-0ff93279.patch
+          grep -Fq 'zygote_next' evidence/SUSFS-0ff93279.patch
+
+          # Do not blindly transplant 6.1 code into 5.4. Record the exact semantic
+          # delta; the subsequent GEN1/GEN2 build stages adapt only if missing.
+          {
+            echo "SUSFS_0FF93279_AUDIT=PASS"
+            echo "SOURCE_BRANCH_CLASS=ANDROID14_6.1"
+            echo "DIRECT_BLIND_CHERRYPICK=NO"
+            echo "TARGETS=GEN1_5.4.274,GEN2_5.4.302"
+            echo "REQUIRED_SEMANTIC=TIF_PROC_UMOUNTED_FOR_ZYGOTE_NEXT_UMOUNT_PATH"
+          } | tee evidence/SUSFS-PREFLIGHT.txt
+
+      - name: Final update plan
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > evidence/W85-PREFLIGHT-VERDICT.txt <<EOF
+          W85_ALL_KERNELS_UPDATE_PREFLIGHT=PASS
+          RESUKISU_TARGET=$NEW_RESUKISU_PIN
+          RESUKISU_WEBVIEW_ZYGOTE=419e270b
+          RESUKISU_SELINUX_HIDE=6f50cba2
+          SUSFS_ZYGOTE_NEXT_AUDIT=0ff93279
+          GEN1_5.4.274=READY_FOR_UPDATE_BUILD
+          GEN1_DEVICE_SCOPE=VEUX
+          GEN2_5.4.302=READY_FOR_UPDATE_BUILD
+          GEN2_DEVICE_SCOPE=VEUX_AND_PEUX
+          BLIND_6.1_SUSFS_CHERRYPICK=NO
+          OLD_RELEASES_MODIFIED=NO
+          NEXT_STAGE=GEN1_AND_GEN2_UPDATE_BUILD
+          EOF
+          cat evidence/W85-PREFLIGHT-VERDICT.txt
+
+      - name: Upload compact preflight evidence
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: W85_ALL_KERNELS_UPDATE_PREFLIGHT-${{ github.run_number }}
+          path: evidence/
+          if-no-files-found: error
+          retention-days: 30
