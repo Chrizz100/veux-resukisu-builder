@@ -1,0 +1,863 @@
+name: 91 - GEN1 5.4.274 SUSFS TRY_UMOUNT Isolated Compatibility Build v1
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  try-umount-compat:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+
+    env:
+      ARCH: arm64
+
+      W88_PATH: .github/workflows/88-gen1-5.4.274-resukisu-419e270b-update-repro-build-v3.yml
+      RECIPE_PATH: .github/workflows/46C7-final-cumulative-resukisu-susfs-deterministic-cross-run-reference.yml
+      W65_PATH: .github/workflows/65-kernelsu-v0.9.5-susfs-2.2.0-cross-run-reproducibility-v1.yml
+      RECIPE_JOB: full-build
+      RECIPE_STOP_STEP: "27"
+
+      BASE_REF: faccf4c5edc7be37776216e7d43dd3dca0239331
+      PREVIOUS_REF: 4a3785025a920e4f52584f14c663eea4850dc919
+      TARGET_REF: 419e270b50ad61725185dec74f438b8cb59c6889
+      SUCOMPAT_REFACTOR: 75b99e3e2f312377fc9e5d3720324c0caaf1e610
+      EXECVEAT_SUPPORT: 9671b9d11e459467d41884c98e1366b13aaae2cc
+      OLD_HOOK_COMPAT: cc44ff62d9dc8b84dbd7c3e4d2703f6a6fb844c3
+      SUSFS_SYNC: 03b60f260cce36f23efbd26c9c334edfdc9ce7eb
+      INPUT_HOOK_STABILITY: 4a3785025a920e4f52584f14c663eea4850dc919
+      SELINUX_HIDE_UPDATE: 6f50cba2a3919cfcec9f9061580a04588fb465b7
+      WEBVIEW_ZYGOTE_UPDATE: 419e270b50ad61725185dec74f438b8cb59c6889
+
+      BUILDER_DIR: ${{ github.workspace }}/builder-repo
+      DRIVER_DIR: ${{ github.workspace }}/w91-driver
+      ARTIFACT_DIR: ${{ github.workspace }}/w91-artifact
+      PATCH_DIR: ${{ github.workspace }}/w91-patches
+      COMPACT_DIR: ${{ github.workspace }}/w91-compact
+      OUT_DIR_NAME: out-w91
+
+      KBUILD_BUILD_USER: w68
+      KBUILD_BUILD_HOST: veux-w68
+      KBUILD_BUILD_TIMESTAMP: "Tue Aug 25 00:00:00 UTC 2026"
+      KBUILD_BUILD_VERSION: "1"
+      SOURCE_DATE_EPOCH: "1787616000"
+      TZ: UTC
+      LANG: C.UTF-8
+      LC_ALL: C.UTF-8
+
+      TRY_UMOUNT_SOURCE_COMMIT: 53aa7a21937c3dde100de6366118b5e49a9861c2
+      TRY_UMOUNT_PATCH_PATH: Patches/Patch/susfs_restore_try_umount.patch
+      TRY_UMOUNT_PATCH_BLOB_SHA1: d149c87cda0a7cb50293f6b69593c77625db2604
+
+      W88_RUN_ID: "33252124378"
+      W88_ARTIFACT_ID: "9715115041"
+      W88_ARTIFACT_NAME: GEN1_W88_5.4.274_ReSukiSU_419E270B_COMPACT-1
+      W88_ARTIFACT_SHA256: 25ec48457888386430604cab9fb20c91f778ae30672d90d2955bb38ca3fa080c
+      W88_IMAGE_SHA256: d0f7abcc526ec63413236fd440cef2d9fb6cc3819ce656b1b49efde7d65cda04
+      W88_IMAGE_BYTES: "29843968"
+      W88_CONFIG_SHA256: d7cd955abd59da45804acc9c5e450cf8fc953da3e66bbc274212b40ee9a0b372
+
+    steps:
+      - name: Install W91 dependencies
+        shell: bash
+        timeout-minutes: 15
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            bc bison build-essential ca-certificates cpio curl flex git jq \
+            libelf-dev libncurses-dev libssl-dev patch python3 python3-pip \
+            rsync xz-utils zstd
+
+          python3 -m pip install \
+            --disable-pip-version-check \
+            --no-input \
+            'PyYAML==6.0.2'
+
+      - name: Checkout builder repository
+        uses: actions/checkout@v6
+        with:
+          path: builder-repo
+          fetch-depth: 0
+
+      - name: Checkout ReSukiSU 419e270b target
+        uses: actions/checkout@v6
+        with:
+          repository: ReSukiSU/ReSukiSU
+          ref: ${{ env.TARGET_REF }}
+          path: ReSukiSU-target
+          fetch-depth: 0
+
+      - name: Initialize W91 and write exact W88 replay helper
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -rf \
+            "$DRIVER_DIR" \
+            "$ARTIFACT_DIR" \
+            "$PATCH_DIR" \
+            "$COMPACT_DIR" \
+            "$GITHUB_WORKSPACE/w72-build-a"
+
+          mkdir -p \
+            "$DRIVER_DIR" \
+            "$ARTIFACT_DIR" \
+            "$PATCH_DIR" \
+            "$COMPACT_DIR"
+
+          W88="$BUILDER_DIR/$W88_PATH"
+          test -s "$W88"
+          test "$(sha256sum "$W88" | awk '{print $1}')" = \
+            "d7f97c5c09615132c135a81891dc139d49e52e9c262b8c00ca934b369a01f472" || {
+              echo "ERROR: W88-v3 workflow content changed; refusing replay" >&2
+              sha256sum "$W88" >&2
+              exit 1
+            }
+
+          cat > "$GITHUB_WORKSPACE/w91-run-w88-step.py" <<'PY'
+          import os
+          import subprocess
+          import sys
+          from pathlib import Path
+          import yaml
+
+          if len(sys.argv) != 2:
+              raise SystemExit("usage: w91-run-w88-step.py <exact-step-name>")
+
+          workflow = Path(os.environ["BUILDER_DIR"]) / os.environ["W88_PATH"]
+          doc = yaml.load(workflow.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
+          steps = doc["jobs"]["integrate-compile"]["steps"]
+
+          name = sys.argv[1]
+          matches = [s for s in steps if s.get("name") == name]
+          if len(matches) != 1:
+              raise SystemExit(f"expected exactly one W88 step {name!r}, got {len(matches)}")
+
+          script = matches[0].get("run")
+          if not script:
+              raise SystemExit(f"W88 step {name!r} has no run block")
+
+          print(f"=== REPLAY_W88_STEP: {name} ===", flush=True)
+          subprocess.run(
+              ["bash", "-euo", "pipefail", "-c", script],
+              check=True,
+              env=os.environ.copy(),
+          )
+          PY
+
+          python3 -m py_compile "$GITHUB_WORKSPACE/w91-run-w88-step.py"
+
+          cat > "$ARTIFACT_DIR/00-plan.txt" <<EOF
+          W91_GEN1_5.4.274_TRY_UMOUNT_ISOLATED_TEST
+          BASELINE=W88_V3
+          RESUKISU_PIN=$TARGET_REF
+          SUSFS_VERSION=2.2
+          NEW_FEATURE=CONFIG_KSU_SUSFS_TRY_UMOUNT
+          RESTORE_REFERENCE=cyberc3dr/nGKI_Kernel_Build@$TRY_UMOUNT_SOURCE_COMMIT
+          NORMAL_ZYGOTE_CALL_PATH=YES
+          ZYGOTE_NEXT_DIRECT_UMOUNT=NO_INTENTIONALLY
+          MODULE_LOAD_FILTER=EXCLUDED
+          BOOT_IMAGE_CREATED=NO
+          FLASHABLE_ZIP_CREATED=NO
+          DEVICE_ACCESSED=NO
+          FLASHING_PERFORMED=NO
+          EOF
+
+      - name: Replay W88 input authentication
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 "$GITHUB_WORKSPACE/w91-run-w88-step.py" \
+            "Authenticate W88 inputs"
+
+      - name: Replay proven W65 staging driver
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 "$GITHUB_WORKSPACE/w91-run-w88-step.py" \
+            "Reuse proven W65 staging driver"
+
+      - name: Replay exact 46C7 staging through step 27
+        shell: bash
+        timeout-minutes: 75
+        env:
+          W64_RECIPE_PATH: .github/workflows/46C7-final-cumulative-resukisu-susfs-deterministic-cross-run-reference.yml
+          W64_RECIPE_JOB: full-build
+          W64_RECIPE_STOP_STEP: "27"
+          W64_LANE: linux-5_4_274
+          W64_SOURCE_PROVEN_NOFAULT_FIX: "no"
+        run: |
+          set -euo pipefail
+          python3 "$GITHUB_WORKSPACE/w91-run-w88-step.py" \
+            "Stage exact 46C7 source through step 27"
+
+      - name: Replay W88 staged tree location
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 "$GITHUB_WORKSPACE/w91-run-w88-step.py" \
+            "Locate staged VEUX kernel and ReSukiSU tree"
+
+      - name: Replay W88 pre-update snapshot
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 "$GITHUB_WORKSPACE/w91-run-w88-step.py" \
+            "Snapshot pre-update ReSukiSU and SUSFS API"
+
+      - name: Replay W88 selected patch extraction
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 "$GITHUB_WORKSPACE/w91-run-w88-step.py" \
+            "Extract selected ReSukiSU kernel patches"
+
+      - name: Replay W88 selected ReSukiSU chain
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 "$GITHUB_WORKSPACE/w91-run-w88-step.py" \
+            "Apply selected ReSukiSU kernel chain"
+
+      - name: Replay W88 cumulative 419e270b kernel uapi delta
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 "$GITHUB_WORKSPACE/w91-run-w88-step.py" \
+            "Apply cumulative 419e270b kernel uapi delta"
+
+      - name: Replay W88 input hook stability validation
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 "$GITHUB_WORKSPACE/w91-run-w88-step.py" \
+            "Validate new input-hook atomic-context stability fix"
+
+      - name: Replay W88 SUSFS process state backport
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 "$GITHUB_WORKSPACE/w91-run-w88-step.py" \
+            "Backport latest SUSFS 5.4 process-state API only"
+
+      - name: Audit TRY_UMOUNT prerequisites and snapshot W88-equivalent tree
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SUSFS_C="$KERNEL_ROOT/fs/susfs.c"
+          SUSFS_H="$KERNEL_ROOT/include/linux/susfs.h"
+          SUSFS_DEF="$KERNEL_ROOT/include/linux/susfs_def.h"
+          KCONFIG="$KSU_ROOT/kernel/Kconfig"
+          KERNEL_UMOUNT="$KSU_ROOT/kernel/feature/kernel_umount.c"
+          DISPATCH="$KSU_ROOT/kernel/supercall/dispatch.c"
+          SETUID="$KSU_ROOT/kernel/hook/setuid_hook.c"
+
+          for f in \
+            "$SUSFS_C" \
+            "$SUSFS_H" \
+            "$SUSFS_DEF" \
+            "$KCONFIG" \
+            "$KERNEL_UMOUNT" \
+            "$DISPATCH" \
+            "$SETUID"
+          do
+            test -s "$f"
+          done
+
+          grep -Fq '#define TRY_UMOUNT_DEFAULT 0' "$SUSFS_DEF"
+          grep -Fq '#define TRY_UMOUNT_DETACH 1' "$SUSFS_DEF"
+          grep -Fq 'CMD_SUSFS_ADD_TRY_UMOUNT' "$SUSFS_DEF"
+          grep -Fq 'void try_umount(const char *mnt, int flags)' "$KERNEL_UMOUNT"
+
+          find "$KERNEL_ROOT/fs" "$KERNEL_ROOT/include/linux" "$KSU_ROOT/kernel" \
+            -type f -print0 \
+            | sort -z \
+            | xargs -0 sha256sum \
+            > "$ARTIFACT_DIR/17-pre-try-umount-tree.sha256"
+
+          {
+            echo "TRY_UMOUNT_PREREQUISITES=PASS"
+            echo "TRY_UMOUNT_DEFAULT=0"
+            echo "TRY_UMOUNT_DETACH=1"
+            echo "CMD_SUSFS_ADD_TRY_UMOUNT_PRESENT=YES"
+            echo "RESUKISU_TRY_UMOUNT_EXPORT_PRESENT=YES"
+            echo
+            echo "=== existing TRY_UMOUNT references before W91 delta ==="
+            grep -RniE \
+              'CONFIG_KSU_SUSFS_TRY_UMOUNT|susfs_(add_)?try_umount|CMD_SUSFS_ADD_TRY_UMOUNT' \
+              "$KERNEL_ROOT/fs" \
+              "$KERNEL_ROOT/include/linux" \
+              "$KSU_ROOT/kernel" || true
+          } | tee "$ARTIFACT_DIR/17-try-umount-prerequisites.txt"
+
+      - name: Restore SUSFS TRY_UMOUNT implementation from pinned nGKI reference
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          RESTORE="$PATCH_DIR/susfs_restore_try_umount.patch"
+          RAW_URL="https://raw.githubusercontent.com/cyberc3dr/nGKI_Kernel_Build/${TRY_UMOUNT_SOURCE_COMMIT}/${TRY_UMOUNT_PATCH_PATH}"
+
+          curl --fail --location --retry 4 --retry-all-errors \
+            --connect-timeout 20 \
+            "$RAW_URL" \
+            -o "$RESTORE"
+
+          test -s "$RESTORE"
+
+          python3 - "$RESTORE" "$TRY_UMOUNT_PATCH_BLOB_SHA1" <<'PY'
+          import hashlib
+          import sys
+          from pathlib import Path
+
+          p = Path(sys.argv[1])
+          expected = sys.argv[2]
+          data = p.read_bytes()
+          got = hashlib.sha1(f"blob {len(data)}\0".encode() + data).hexdigest()
+          if got != expected:
+              raise SystemExit(f"Git blob SHA mismatch: {got} != {expected}")
+          print("TRY_UMOUNT_REFERENCE_BLOB_AUTH=PASS")
+          print("TRY_UMOUNT_REFERENCE_SHA256=" + hashlib.sha256(data).hexdigest())
+          PY
+
+          impl="$(grep -c 'void susfs_add_try_umount' "$KERNEL_ROOT/fs/susfs.c" || true)"
+          structs="$(grep -c 'struct st_susfs_try_umount {' "$KERNEL_ROOT/include/linux/susfs.h" || true)"
+          proto="$(grep -c 'void susfs_try_umount(uid_t uid);' "$KERNEL_ROOT/include/linux/susfs.h" || true)"
+
+          if [ "$impl" -eq 0 ] && [ "$structs" -eq 0 ] && [ "$proto" -eq 0 ]; then
+            git -C "$KERNEL_ROOT" apply --check --verbose "$RESTORE"
+            git -C "$KERNEL_ROOT" apply --verbose "$RESTORE"
+            restore_state="APPLIED_PINNED_REFERENCE"
+          elif [ "$impl" -eq 1 ] && [ "$structs" -eq 1 ] && [ "$proto" -eq 1 ]; then
+            restore_state="ALREADY_PRESENT_COMPLETE"
+          else
+            echo "ERROR: partial TRY_UMOUNT implementation already exists" >&2
+            echo "impl=$impl structs=$structs proto=$proto" >&2
+            exit 1
+          fi
+
+          grep -Fq 'void susfs_add_try_umount' "$KERNEL_ROOT/fs/susfs.c"
+          grep -Fq 'void susfs_try_umount(uid_t uid)' "$KERNEL_ROOT/fs/susfs.c"
+          grep -Fq 'struct st_susfs_try_umount {' "$KERNEL_ROOT/include/linux/susfs.h"
+          grep -Fq 'void susfs_add_try_umount(void __user **user_info);' "$KERNEL_ROOT/include/linux/susfs.h"
+          grep -Fq 'void susfs_try_umount(uid_t uid);' "$KERNEL_ROOT/include/linux/susfs.h"
+          grep -Fq 'CONFIG_KSU_SUSFS_TRY_UMOUNT' "$KERNEL_ROOT/fs/susfs.c"
+
+          {
+            echo "TRY_UMOUNT_KERNEL_IMPLEMENTATION=PASS"
+            echo "RESTORE_STATE=$restore_state"
+            echo "REFERENCE_COMMIT=$TRY_UMOUNT_SOURCE_COMMIT"
+            echo "REFERENCE_BLOB_SHA1=$TRY_UMOUNT_PATCH_BLOB_SHA1"
+            echo "REFERENCE_SHA256=$(sha256sum "$RESTORE" | awk '{print $1}')"
+          } | tee "$ARTIFACT_DIR/18-try-umount-restore.txt"
+
+      - name: Add ReSukiSU TRY_UMOUNT Kconfig dispatch and safe normal zygote call path
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          export W91_KCONFIG="$KSU_ROOT/kernel/Kconfig"
+          export W91_DISPATCH="$KSU_ROOT/kernel/supercall/dispatch.c"
+          export W91_UMOUNT="$KSU_ROOT/kernel/feature/kernel_umount.c"
+          export W91_SETUID="$KSU_ROOT/kernel/hook/setuid_hook.c"
+
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          def one_replace(path, old, new, label):
+              s = path.read_text(encoding="utf-8")
+              count = s.count(old)
+              if count != 1:
+                  raise SystemExit(f"{label}: expected one anchor, got {count}")
+              path.write_text(s.replace(old, new, 1), encoding="utf-8")
+
+          kconfig = Path(os.environ["W91_KCONFIG"])
+          dispatch = Path(os.environ["W91_DISPATCH"])
+          umount = Path(os.environ["W91_UMOUNT"])
+          setuid = Path(os.environ["W91_SETUID"])
+
+          ks = kconfig.read_text(encoding="utf-8")
+          if "config KSU_SUSFS_TRY_UMOUNT" not in ks:
+              anchor = """config KSU_SUSFS_SPOOF_UNAME
+          """
+              block = """config KSU_SUSFS_TRY_UMOUNT
+              bool "Enable SUSFS custom try_umount list"
+              depends on KSU_SUSFS
+              default y
+              help
+                  - Allow SUSFS to unmount user-defined mount paths before
+                    ReSukiSU's normal KernelSU umount list.
+                  - Effective only on the normal zygote umount path selected
+                    by the existing ReSukiSU policy.
+                  - zygote_next is intentionally not unmounted here because
+                    ReSukiSU handles that path through process-state flags.
+
+          config KSU_SUSFS_SPOOF_UNAME
+          """
+              one_replace(kconfig, anchor, block, "Kconfig TRY_UMOUNT insertion")
+
+          ds = dispatch.read_text(encoding="utf-8")
+          if "case CMD_SUSFS_ADD_TRY_UMOUNT" not in ds:
+              anchor = """#ifdef CONFIG_KSU_SUSFS_SPOOF_UNAME
+              case CMD_SUSFS_SET_UNAME: {
+          """
+              block = """#ifdef CONFIG_KSU_SUSFS_TRY_UMOUNT
+              case CMD_SUSFS_ADD_TRY_UMOUNT: {
+                  susfs_add_try_umount(arg);
+                  return 0;
+              }
+          #endif //#ifdef CONFIG_KSU_SUSFS_TRY_UMOUNT
+          #ifdef CONFIG_KSU_SUSFS_SPOOF_UNAME
+              case CMD_SUSFS_SET_UNAME: {
+          """
+              one_replace(dispatch, anchor, block, "SUSFS dispatch insertion")
+
+          us = umount.read_text(encoding="utf-8")
+          if "extern void susfs_try_umount(uid_t uid);" not in us:
+              anchor = """#ifdef CONFIG_KSU_SUSFS
+          extern struct work_struct susfs_extra_works;
+          #endif
+          """
+              block = """#ifdef CONFIG_KSU_SUSFS
+          extern struct work_struct susfs_extra_works;
+          #ifdef CONFIG_KSU_SUSFS_TRY_UMOUNT
+          extern void susfs_try_umount(uid_t uid);
+          #endif
+          #endif
+          """
+              one_replace(umount, anchor, block, "TRY_UMOUNT extern insertion")
+
+          us = umount.read_text(encoding="utf-8")
+          if "susfs_try_umount(new_uid);" not in us:
+              anchor = """    if (!ksu_uid_should_umount(new_uid) && !is_isolated_process(new_uid)) {
+                  return 0;
+              }
+
+              // no need to check zygote here, because we already check it in the setuid call.
+          """
+              block = """    if (!ksu_uid_should_umount(new_uid) && !is_isolated_process(new_uid)) {
+                  return 0;
+              }
+
+          #ifdef CONFIG_KSU_SUSFS_TRY_UMOUNT
+              /*
+               * Run SUSFS custom unmounts first.  Keep this in the normal
+               * zygote path only; handle_zygote_next_setresuid() explicitly
+               * avoids direct unmounts because it is in the init namespace.
+               */
+              susfs_try_umount(new_uid);
+          #endif
+
+              // no need to check zygote here, because we already check it in the setuid call.
+          """
+              one_replace(umount, anchor, block, "normal zygote TRY_UMOUNT call insertion")
+
+          ss = setuid.read_text(encoding="utf-8")
+          if "susfs_try_umount" in ss:
+              raise SystemExit(
+                  "refusing direct TRY_UMOUNT call in setuid_hook.c / zygote_next path"
+              )
+          PY
+
+          grep -Fq 'config KSU_SUSFS_TRY_UMOUNT' "$KSU_ROOT/kernel/Kconfig"
+          grep -Fq 'default y' "$KSU_ROOT/kernel/Kconfig"
+          grep -Fq 'case CMD_SUSFS_ADD_TRY_UMOUNT' "$KSU_ROOT/kernel/supercall/dispatch.c"
+          grep -Fq 'susfs_add_try_umount(arg);' "$KSU_ROOT/kernel/supercall/dispatch.c"
+          grep -Fq 'extern void susfs_try_umount(uid_t uid);' "$KSU_ROOT/kernel/feature/kernel_umount.c"
+          test "$(grep -c 'susfs_try_umount(new_uid);' "$KSU_ROOT/kernel/feature/kernel_umount.c")" -eq 1
+
+          if grep -Fq 'susfs_try_umount' "$KSU_ROOT/kernel/hook/setuid_hook.c"; then
+            echo "ERROR: direct TRY_UMOUNT leaked into zygote_next setuid hook" >&2
+            exit 1
+          fi
+
+          {
+            echo "TRY_UMOUNT_KCONFIG=PASS"
+            echo "TRY_UMOUNT_USERSPACE_DISPATCH=PASS"
+            echo "TRY_UMOUNT_NORMAL_ZYGOTE_CALL_PATH=PASS"
+            echo "TRY_UMOUNT_ZYGOTE_NEXT_DIRECT_CALL=ABSENT_INTENTIONALLY"
+            echo "NORMAL_ZYGOTE_ORDER=CUSTOM_SUSFS_BEFORE_RESUKISU_DEFAULT_LIST"
+          } | tee "$ARTIFACT_DIR/19-try-umount-integration.txt"
+
+      - name: Audit W91 delta scope before compile
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          for required in \
+            "$KERNEL_ROOT/fs/susfs.c" \
+            "$KERNEL_ROOT/include/linux/susfs.h" \
+            "$KSU_ROOT/kernel/Kconfig" \
+            "$KSU_ROOT/kernel/supercall/dispatch.c" \
+            "$KSU_ROOT/kernel/feature/kernel_umount.c"
+          do
+            test -s "$required"
+          done
+
+          if find "$KSU_ROOT/kernel" -type f -name '*module_load_filter*' | grep -q .; then
+            echo "ERROR: excluded module_load_filter unexpectedly present" >&2
+            exit 1
+          fi
+
+          grep -Fq 'synchronize_srcu' "$KERNEL_ROOT/fs/susfs.c"
+          grep -Eq 'SUSFS|susfs' "$KERNEL_ROOT/fs/proc/task_mmu.c"
+
+          {
+            echo "W91_DELTA_SCOPE_AUDIT=PASS"
+            echo "EXPECTED_MODIFIED_FILES:"
+            echo "fs/susfs.c"
+            echo "include/linux/susfs.h"
+            echo "KernelSU/kernel/Kconfig"
+            echo "KernelSU/kernel/supercall/dispatch.c"
+            echo "KernelSU/kernel/feature/kernel_umount.c"
+            echo
+            echo "PROTECTED_CONTRACTS:"
+            echo "OPEN_REDIRECT_SRCU=PASS"
+            echo "PROC_MAPS_SUSFS=PASS"
+            echo "MODULE_LOAD_FILTER_INCLUDED=NO"
+            echo "ZYGOTE_NEXT_DIRECT_TRY_UMOUNT=NO"
+          } | tee "$ARTIFACT_DIR/20-w91-delta-scope.txt"
+
+      - name: Replay W88 SUSFS caller compatibility audit
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 "$GITHUB_WORKSPACE/w91-run-w88-step.py" \
+            "Audit SUSFS 2.2 5.4 caller compatibility"
+
+          grep -Fq 'SUSFS_5_4_CALLER_API_READY=YES' \
+            "$ARTIFACT_DIR/08-susfs-5.4-api.txt"
+
+      - name: Replay W88 config and toolchain location
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 "$GITHUB_WORKSPACE/w91-run-w88-step.py" \
+            "Locate proven 46C7 config and toolchain"
+
+      - name: Replay W88 olddefconfig with W91 TRY_UMOUNT option
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 "$GITHUB_WORKSPACE/w91-run-w88-step.py" \
+            "Resolve W72 config"
+
+          grep -Fxq 'CONFIG_KSU_SUSFS_TRY_UMOUNT=y' "$OUT_DIR/.config"
+
+          {
+            echo "CONFIG_KSU_SUSFS_TRY_UMOUNT=y"
+            echo "TRY_UMOUNT_CONFIG_RESOLUTION=PASS"
+            echo "RESOLVED_CONFIG_SHA256=$(sha256sum "$OUT_DIR/.config" | awk '{print $1}')"
+          } | tee "$ARTIFACT_DIR/21-try-umount-config.txt"
+
+      - name: Replay W88 Build A with TRY_UMOUNT
+        shell: bash
+        timeout-minutes: 90
+        run: |
+          set -euo pipefail
+          python3 "$GITHUB_WORKSPACE/w91-run-w88-step.py" \
+            "Build A VEUX 5.4.274 updated kernel"
+
+          grep -Fq 'susfs_try_umount' "$GITHUB_WORKSPACE/w72-build-a/System.map"
+          grep -Fq 'susfs_add_try_umount' "$GITHUB_WORKSPACE/w72-build-a/System.map"
+
+          echo "TRY_UMOUNT_BUILD_A_SYMBOLS=PASS" \
+            | tee "$ARTIFACT_DIR/22-build-a-try-umount.txt"
+
+      - name: Replay W88 clean output prep for Build B
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 "$GITHUB_WORKSPACE/w91-run-w88-step.py" \
+            "Clean output tree for independent Build B"
+
+      - name: Replay W88 Build B with TRY_UMOUNT
+        shell: bash
+        timeout-minutes: 90
+        run: |
+          set -euo pipefail
+          python3 "$GITHUB_WORKSPACE/w91-run-w88-step.py" \
+            "Build B VEUX 5.4.274 updated kernel"
+
+          grep -Fq 'susfs_try_umount' "$OUT_DIR/System.map"
+          grep -Fq 'susfs_add_try_umount' "$OUT_DIR/System.map"
+
+          echo "TRY_UMOUNT_BUILD_B_SYMBOLS=PASS" \
+            | tee "$ARTIFACT_DIR/23-build-b-try-umount.txt"
+
+      - name: Replay W88 deterministic A B proof
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 "$GITHUB_WORKSPACE/w91-run-w88-step.py" \
+            "Prove deterministic A B reproducibility"
+
+      - name: Replay W88 manual hook contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 "$GITHUB_WORKSPACE/w91-run-w88-step.py" \
+            "Validate ReSukiSU manual hook contracts"
+
+      - name: Replay W88 protected SUSFS stability contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 "$GITHUB_WORKSPACE/w91-run-w88-step.py" \
+            "Revalidate protected SUSFS stability contracts"
+
+      - name: Compare W91 result against exact W88-v3 artifact
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          W88_ZIP="$GITHUB_WORKSPACE/w91-w88-source.zip"
+          W88_DIR="$GITHUB_WORKSPACE/w91-w88-source"
+          rm -rf "$W88_DIR"
+          mkdir -p "$W88_DIR"
+
+          gh api \
+            -H "Accept: application/vnd.github+json" \
+            "/repos/${GITHUB_REPOSITORY}/actions/artifacts/${W88_ARTIFACT_ID}/zip" \
+            > "$W88_ZIP"
+
+          echo "$W88_ARTIFACT_SHA256  $W88_ZIP" | sha256sum -c -
+          unzip -t "$W88_ZIP" >/dev/null
+          unzip -q "$W88_ZIP" -d "$W88_DIR"
+
+          test "$(stat -c '%s' "$W88_DIR/GEN1_W88_Image")" = "$W88_IMAGE_BYTES"
+          echo "$W88_IMAGE_SHA256  $W88_DIR/GEN1_W88_Image" | sha256sum -c -
+          echo "$W88_CONFIG_SHA256  $W88_DIR/GEN1_W88_config" | sha256sum -c -
+
+          W91_IMAGE="$GITHUB_WORKSPACE/w72-build-a/Image"
+          W91_CONFIG="$GITHUB_WORKSPACE/w72-build-a/config"
+
+          test -s "$W91_IMAGE"
+          test -s "$W91_CONFIG"
+
+          W91_IMAGE_SHA="$(sha256sum "$W91_IMAGE" | awk '{print $1}')"
+          W91_CONFIG_SHA="$(sha256sum "$W91_CONFIG" | awk '{print $1}')"
+
+          test "$W91_IMAGE_SHA" != "$W88_IMAGE_SHA"
+          test "$W91_CONFIG_SHA" != "$W88_CONFIG_SHA"
+
+          python3 - \
+            "$W88_DIR/GEN1_W88_config" \
+            "$W91_CONFIG" \
+            "$ARTIFACT_DIR/24-config-delta.txt" <<'PY'
+          import sys
+          from pathlib import Path
+
+          old = Path(sys.argv[1]).read_text(encoding="utf-8").splitlines()
+          new = Path(sys.argv[2]).read_text(encoding="utf-8").splitlines()
+          report = Path(sys.argv[3])
+
+          old_set = set(old)
+          new_set = set(new)
+
+          added = sorted(new_set - old_set)
+          removed = sorted(old_set - new_set)
+
+          allowed_added = {"CONFIG_KSU_SUSFS_TRY_UMOUNT=y"}
+          if set(added) != allowed_added or removed:
+              report.write_text(
+                  "CONFIG_DELTA=UNEXPECTED\n"
+                  + "ADDED:\n" + "\n".join(added) + "\n"
+                  + "REMOVED:\n" + "\n".join(removed) + "\n",
+                  encoding="utf-8",
+              )
+              raise SystemExit("W91 config changed by more than TRY_UMOUNT")
+
+          report.write_text(
+              "CONFIG_DELTA=PASS_EXACTLY_ONE_OPTION\n"
+              "ADDED=CONFIG_KSU_SUSFS_TRY_UMOUNT=y\n"
+              "REMOVED_COUNT=0\n",
+              encoding="utf-8",
+          )
+          PY
+
+          {
+            echo "W88_EXACT_ARTIFACT_AUTH=PASS"
+            echo "W88_IMAGE_SHA256=$W88_IMAGE_SHA256"
+            echo "W91_IMAGE_SHA256=$W91_IMAGE_SHA"
+            echo "W91_IMAGE_DIFFERS_FROM_W88=YES"
+            echo "W88_CONFIG_SHA256=$W88_CONFIG_SHA256"
+            echo "W91_CONFIG_SHA256=$W91_CONFIG_SHA"
+            echo "W91_CONFIG_DELTA_EXACTLY_TRY_UMOUNT=YES"
+          } | tee "$ARTIFACT_DIR/24-w88-vs-w91.txt"
+
+      - name: Promote compact W91 isolated test outputs
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SNAPSHOT_A="$GITHUB_WORKSPACE/w72-build-a"
+
+          for f in \
+            "$SNAPSHOT_A/Image" \
+            "$SNAPSHOT_A/config" \
+            "$ARTIFACT_DIR/18-try-umount-restore.txt" \
+            "$ARTIFACT_DIR/19-try-umount-integration.txt" \
+            "$ARTIFACT_DIR/20-w91-delta-scope.txt" \
+            "$ARTIFACT_DIR/21-try-umount-config.txt" \
+            "$ARTIFACT_DIR/24-config-delta.txt" \
+            "$ARTIFACT_DIR/24-w88-vs-w91.txt" \
+            "$ARTIFACT_DIR/14-reproducibility.txt" \
+            "$ARTIFACT_DIR/15-hook-contracts.txt" \
+            "$ARTIFACT_DIR/16-susfs-stability-contracts.txt"
+          do
+            test -s "$f"
+          done
+
+          cp "$SNAPSHOT_A/Image" "$COMPACT_DIR/GEN1_W91_Image"
+          cp "$SNAPSHOT_A/config" "$COMPACT_DIR/GEN1_W91_config"
+
+          cat \
+            "$ARTIFACT_DIR/17-try-umount-prerequisites.txt" \
+            "$ARTIFACT_DIR/18-try-umount-restore.txt" \
+            "$ARTIFACT_DIR/19-try-umount-integration.txt" \
+            "$ARTIFACT_DIR/20-w91-delta-scope.txt" \
+            "$ARTIFACT_DIR/21-try-umount-config.txt" \
+            "$ARTIFACT_DIR/22-build-a-try-umount.txt" \
+            "$ARTIFACT_DIR/23-build-b-try-umount.txt" \
+            "$ARTIFACT_DIR/24-config-delta.txt" \
+            "$ARTIFACT_DIR/24-w88-vs-w91.txt" \
+            > "$COMPACT_DIR/W91-TRY-UMOUNT-REPORT.txt"
+
+          image_sha="$(sha256sum "$COMPACT_DIR/GEN1_W91_Image" | awk '{print $1}')"
+          image_bytes="$(wc -c < "$COMPACT_DIR/GEN1_W91_Image")"
+          config_sha="$(sha256sum "$COMPACT_DIR/GEN1_W91_config" | awk '{print $1}')"
+
+          {
+            echo "W91_GEN1_5.4.274_TRY_UMOUNT_TEST=PASS"
+            echo "DEVICE_SCOPE=VEUX"
+            echo "KERNEL_VERSION=5.4.274"
+            echo "RESUKISU_PIN=$TARGET_REF"
+            echo "SUSFS_VERSION=2.2"
+            echo "TRY_UMOUNT_REFERENCE_COMMIT=$TRY_UMOUNT_SOURCE_COMMIT"
+            echo "TRY_UMOUNT_REFERENCE_BLOB_SHA1=$TRY_UMOUNT_PATCH_BLOB_SHA1"
+            echo "TRY_UMOUNT_KCONFIG=PASS"
+            echo "TRY_UMOUNT_KERNEL_IMPLEMENTATION=PASS"
+            echo "TRY_UMOUNT_USERSPACE_DISPATCH=PASS"
+            echo "TRY_UMOUNT_NORMAL_ZYGOTE_CALL_PATH=PASS"
+            echo "TRY_UMOUNT_ZYGOTE_NEXT_DIRECT_CALL=ABSENT_INTENTIONALLY"
+            echo "TRY_UMOUNT_BUILD_A_SYMBOLS=PASS"
+            echo "TRY_UMOUNT_BUILD_B_SYMBOLS=PASS"
+            echo "CONFIG_DELTA_EXACTLY_TRY_UMOUNT=YES"
+            echo "WEBVIEW_ZYGOTE_UMOUNT=PASS_PRESERVED_FROM_W88"
+            echo "SUSFS_ZYGOTE_NEXT_TIF_PROC_UMOUNTED=PASS_PRESERVED_FROM_W88"
+            echo "SUSFS_PROCESS_STATE_BACKPORT=PASS"
+            echo "OPEN_REDIRECT_SRCU=PASS"
+            echo "PROC_MAPS_SUSFS=PASS"
+            echo "MODULE_LOAD_FILTER_INCLUDED=NO"
+            echo "IMAGE_AB_IDENTICAL=YES"
+            echo "VMLINUX_AB_IDENTICAL=YES"
+            echo "SYSTEM_MAP_AB_IDENTICAL=YES"
+            echo "CONFIG_AB_IDENTICAL=YES"
+            echo "REPRODUCIBILITY=PASS"
+            echo "W88_IMAGE_SHA256=$W88_IMAGE_SHA256"
+            echo "W91_IMAGE_SHA256=$image_sha"
+            echo "W91_IMAGE_BYTES=$image_bytes"
+            echo "W91_CONFIG_SHA256=$config_sha"
+            echo "W91_IMAGE_DIFFERS_FROM_W88=YES"
+            echo "BOOT_IMAGE_CREATED=NO"
+            echo "FLASHING_PERFORMED=NO"
+            echo "REAL_DEVICE_BOOT_TEST=NO"
+            echo "NEXT_STAGE=DECIDE_GEN1_TRY_UMOUNT_R2_RELEASE"
+          } | tee "$COMPACT_DIR/W91-FINAL-VERDICT.txt"
+
+          (
+            cd "$COMPACT_DIR"
+            sha256sum \
+              GEN1_W91_Image \
+              GEN1_W91_config \
+              W91-TRY-UMOUNT-REPORT.txt \
+              W91-FINAL-VERDICT.txt \
+              > SHA256SUMS.txt
+          )
+
+      - name: Preserve W91 failure summary
+        if: failure()
+        shell: bash
+        run: |
+          set -u
+          mkdir -p "$COMPACT_DIR"
+
+          {
+            echo "W91_RESULT=FAILURE"
+            echo "TARGET=VEUX_5.4.274"
+            echo "RESUKISU_PIN=$TARGET_REF"
+            echo "FEATURE=CONFIG_KSU_SUSFS_TRY_UMOUNT"
+            echo "W88_BASELINE_UNCHANGED=YES"
+            echo "BOOT_IMAGE_CREATED=NO"
+            echo "FLASHING_PERFORMED=NO"
+            echo "CHECK_GITHUB_JOB_LOGS=YES"
+          } > "$COMPACT_DIR/W91-FAILURE-SUMMARY.txt"
+
+          for f in \
+            "$ARTIFACT_DIR/17-try-umount-prerequisites.txt" \
+            "$ARTIFACT_DIR/18-try-umount-restore.txt" \
+            "$ARTIFACT_DIR/19-try-umount-integration.txt" \
+            "$ARTIFACT_DIR/20-w91-delta-scope.txt" \
+            "$ARTIFACT_DIR/21-try-umount-config.txt" \
+            "$ARTIFACT_DIR/24-config-delta.txt" \
+            "$ARTIFACT_DIR/24-w88-vs-w91.txt"
+          do
+            if [ -s "$f" ]; then
+              cp "$f" "$COMPACT_DIR/"
+            fi
+          done
+
+      - name: Upload compact W91 artifact
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: GEN1_W91_5.4.274_SUSFS_TRY_UMOUNT_ISOLATED-${{ github.run_number }}
+          path: w91-compact/
+          if-no-files-found: error
+          compression-level: 9
+          retention-days: 90
+
+      - name: Final W91 gate
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          grep -Fxq \
+            'W91_GEN1_5.4.274_TRY_UMOUNT_TEST=PASS' \
+            "$COMPACT_DIR/W91-FINAL-VERDICT.txt"
+          grep -Fxq \
+            'TRY_UMOUNT_KERNEL_IMPLEMENTATION=PASS' \
+            "$COMPACT_DIR/W91-FINAL-VERDICT.txt"
+          grep -Fxq \
+            'TRY_UMOUNT_USERSPACE_DISPATCH=PASS' \
+            "$COMPACT_DIR/W91-FINAL-VERDICT.txt"
+          grep -Fxq \
+            'TRY_UMOUNT_NORMAL_ZYGOTE_CALL_PATH=PASS' \
+            "$COMPACT_DIR/W91-FINAL-VERDICT.txt"
+          grep -Fxq \
+            'TRY_UMOUNT_ZYGOTE_NEXT_DIRECT_CALL=ABSENT_INTENTIONALLY' \
+            "$COMPACT_DIR/W91-FINAL-VERDICT.txt"
+          grep -Fxq \
+            'CONFIG_DELTA_EXACTLY_TRY_UMOUNT=YES' \
+            "$COMPACT_DIR/W91-FINAL-VERDICT.txt"
+          grep -Fxq \
+            'REPRODUCIBILITY=PASS' \
+            "$COMPACT_DIR/W91-FINAL-VERDICT.txt"
+          grep -Fxq \
+            'MODULE_LOAD_FILTER_INCLUDED=NO' \
+            "$COMPACT_DIR/W91-FINAL-VERDICT.txt"
+          grep -Fxq \
+            'BOOT_IMAGE_CREATED=NO' \
+            "$COMPACT_DIR/W91-FINAL-VERDICT.txt"
+          grep -Fxq \
+            'FLASHING_PERFORMED=NO' \
+            "$COMPACT_DIR/W91-FINAL-VERDICT.txt"
