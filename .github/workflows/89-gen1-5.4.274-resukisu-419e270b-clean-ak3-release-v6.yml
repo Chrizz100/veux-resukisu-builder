@@ -1,0 +1,238 @@
+name: 89 - GEN1 5.4.274 ReSukiSU 419e270b Clean AK3 Release v6
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  package:
+    name: Build clean GEN1 W89 AnyKernel3 release without W75 dependency
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      W88_ARTIFACT_PREFIX: GEN1_W88_5.4.274_ReSukiSU_419E270B_COMPACT-
+      IMAGE_SHA256: 47b6687df11c77dc2d9c93cc3f80af7ee0e1420e185a752874462a9a12ed9a4d
+      IMAGE_BYTES: "36943872"
+      RESUKISU_COMMIT: 419e270b50ad61725185dec74f438b8cb59c6889
+      AK3_REPO: https://github.com/osm0sis/AnyKernel3.git
+      AK3_PIN: af770f7b16cf8f8eb7c68614b2a693b3b361c90c
+      RELEASE_ZIP: VEUX_5.4.274_ReSukiSU_419E270B_SUSFS_2.2_HyperOS_OS1.0.12.0_TKCMIXM_AK3_STANDALONE_W89.zip
+      WORK: ${{ github.workspace }}/gen1-w89-v6
+
+    steps:
+      - name: Checkout builder repository
+        uses: actions/checkout@v6
+
+      - name: Prepare workspace
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$WORK"
+          mkdir -p "$WORK/input" "$WORK/w88" "$WORK/ak3" "$WORK/release"
+
+      - name: Install tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ca-certificates curl jq unzip zip git
+
+      - name: Download exact W88 compact artifact
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          ALL="$WORK/artifacts.ndjson"
+          : > "$ALL"
+          page=1
+          while :; do
+            PAGE="$WORK/artifacts-$page.json"
+            curl --fail --silent --show-error --retry 3 \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/artifacts?per_page=100&page=$page" \
+              -o "$PAGE"
+            COUNT="$(jq '.artifacts | length' "$PAGE")"
+            jq -c '.artifacts[]' "$PAGE" >> "$ALL"
+            [ "$COUNT" -lt 100 ] && break
+            page=$((page + 1))
+            [ "$page" -le 30 ] || { echo "artifact pagination limit reached" >&2; exit 1; }
+          done
+
+          SELECTED="$(jq -s --arg P "$W88_ARTIFACT_PREFIX" '
+            [.[] | select(.expired == false and (.name | startswith($P)))]
+            | sort_by(.created_at) | .[-1]
+          ' "$ALL")"
+
+          test "$(jq -r 'type' <<< "$SELECTED")" = object || {
+            echo "No usable W88 artifact found" >&2
+            exit 1
+          }
+
+          URL="$(jq -r '.archive_download_url' <<< "$SELECTED")"
+          echo "Using W88 artifact: $(jq -r '.name' <<< "$SELECTED")"
+
+          curl --fail --location --silent --show-error --retry 3 \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "$URL" -o "$WORK/input/w88.zip"
+
+          unzip -t "$WORK/input/w88.zip" >/dev/null
+          unzip -q "$WORK/input/w88.zip" -d "$WORK/w88"
+
+      - name: Verify exact W88 kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          IMG="$(find "$WORK/w88" -type f -name 'GEN1_W88_Image' -print -quit)"
+          VERDICT="$(find "$WORK/w88" -type f -name 'W88-FINAL-VERDICT.txt' -print -quit)"
+
+          test -n "$IMG"
+          test -n "$VERDICT"
+          test "$(stat -c '%s' "$IMG")" = "$IMAGE_BYTES"
+          echo "$IMAGE_SHA256  $IMG" | sha256sum -c -
+
+          grep -Fxq 'W88_GEN1_5.4.274_UPDATE=PASS' "$VERDICT"
+          grep -Fxq 'REPRODUCIBILITY=PASS' "$VERDICT"
+          grep -Fxq "RESUKISU_PIN=$RESUKISU_COMMIT" "$VERDICT"
+
+          cp "$IMG" "$WORK/kernel-Image"
+
+      - name: Fetch pinned AnyKernel3
+        shell: bash
+        run: |
+          set -euo pipefail
+          git init "$WORK/ak3"
+          git -C "$WORK/ak3" remote add origin "$AK3_REPO"
+          git -C "$WORK/ak3" fetch --depth=1 origin "$AK3_PIN"
+          git -C "$WORK/ak3" checkout --detach FETCH_HEAD
+          test "$(git -C "$WORK/ak3" rev-parse HEAD)" = "$AK3_PIN"
+
+      - name: Assemble VEUX standalone AK3
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          PKG="$WORK/package"
+          rm -rf "$PKG"
+          mkdir -p "$PKG"
+
+          cp -a "$WORK/ak3/META-INF" "$PKG/"
+          cp -a "$WORK/ak3/tools" "$PKG/"
+          [ ! -f "$WORK/ak3/LICENSE" ] || cp "$WORK/ak3/LICENSE" "$PKG/"
+          cp "$WORK/kernel-Image" "$PKG/Image"
+
+          cat > "$PKG/anykernel.sh" <<'AK3'
+          # AnyKernel3 Ramdisk Mod Script
+          properties() { '
+          kernel.string=VEUX Linux 5.4.274 ReSukiSU 419e270b SUSFS 2.2
+          do.devicecheck=1
+          do.modules=0
+          do.systemless=1
+          do.cleanup=1
+          do.cleanuponabort=0
+          device.name1=veux
+          supported.versions=13
+          '; }
+
+          block=/dev/block/bootdevice/by-name/boot;
+          is_slot_device=1;
+          ramdisk_compression=auto;
+          patch_vbmeta_flag=0;
+
+          . tools/ak3-core.sh;
+
+          dump_boot;
+          write_boot;
+          AK3
+
+          chmod 0755 "$PKG/anykernel.sh"
+
+          test -s "$PKG/Image"
+          test -s "$PKG/anykernel.sh"
+          test -s "$PKG/tools/ak3-core.sh"
+
+          echo "$IMAGE_SHA256  $PKG/Image" | sha256sum -c -
+          grep -Fq 'device.name1=veux' "$PKG/anykernel.sh"
+          grep -Fq 'supported.versions=13' "$PKG/anykernel.sh"
+          grep -Fq 'block=/dev/block/bootdevice/by-name/boot;' "$PKG/anykernel.sh"
+          grep -Fq 'is_slot_device=1;' "$PKG/anykernel.sh"
+          grep -Fq 'patch_vbmeta_flag=0;' "$PKG/anykernel.sh"
+
+      - name: Build deterministic clean ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+          PKG="$WORK/package"
+          OUT="$WORK/release/$RELEASE_ZIP"
+
+          # Remove repository metadata and non-runtime material.
+          rm -rf "$PKG/.git" "$PKG/.github" "$PKG/.gitignore" "$PKG/README.md" 2>/dev/null || true
+
+          # Normalize timestamps for deterministic ZIP metadata.
+          find "$PKG" -exec touch -h -d '@0' {} +
+
+          (
+            cd "$PKG"
+            LC_ALL=C find . -type f -print | sort | zip -X -9 "$OUT" -@
+          )
+
+          unzip -t "$OUT" >/dev/null
+          sha256sum "$OUT" > "$OUT.sha256"
+
+      - name: Final clean release audit
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT="$WORK/release/$RELEASE_ZIP"
+          AUDIT="$WORK/audit"
+          rm -rf "$AUDIT"
+          mkdir -p "$AUDIT"
+          unzip -q "$OUT" -d "$AUDIT"
+
+          test -f "$AUDIT/Image"
+          test -f "$AUDIT/anykernel.sh"
+          test -f "$AUDIT/tools/ak3-core.sh"
+          echo "$IMAGE_SHA256  $AUDIT/Image" | sha256sum -c -
+
+          # End-user archive must not contain development/workflow/report material.
+          if find "$AUDIT" -type f | grep -Eiq '/([^/]*(report|verdict|evidence|workflow|replay|audit|\.ya?ml|\.patch|\.diff|\.log)[^/]*)$'; then
+            echo "Development material found in release" >&2
+            find "$AUDIT" -type f | grep -Ei '/([^/]*(report|verdict|evidence|workflow|replay|audit|\.ya?ml|\.patch|\.diff|\.log)[^/]*)$' >&2
+            exit 1
+          fi
+
+          # No AI/assistant references in text files shipped to the user.
+          if grep -RInaE --binary-files=without-match \
+            'ChatGPT|OpenAI|GPT-[0-9]|LLM|Copilot|Claude|Gemini' "$AUDIT"; then
+            echo "Forbidden assistant reference found" >&2
+            exit 1
+          fi
+
+          grep -Fq 'device.name1=veux' "$AUDIT/anykernel.sh"
+          grep -Fq 'supported.versions=13' "$AUDIT/anykernel.sh"
+          grep -Fq 'patch_vbmeta_flag=0;' "$AUDIT/anykernel.sh"
+
+          echo "FINAL_RESULT=PASS_GEN1_W89_CLEAN_STANDALONE_AK3"
+          echo "IMAGE_SHA256=$IMAGE_SHA256"
+          echo "RELEASE_SHA256=$(sha256sum "$OUT" | awk '{print $1}')"
+          echo "RELEASE_BYTES=$(stat -c '%s' "$OUT")"
+
+      - name: Upload final clean W89 release
+        uses: actions/upload-artifact@v6
+        with:
+          name: GEN1_W89_FINAL_5.4.274_ReSukiSU_419E270B_CLEAN_AK3-${{ github.run_number }}
+          path: |
+            gen1-w89-v6/release/VEUX_5.4.274_ReSukiSU_419E270B_SUSFS_2.2_HyperOS_OS1.0.12.0_TKCMIXM_AK3_STANDALONE_W89.zip
+            gen1-w89-v6/release/VEUX_5.4.274_ReSukiSU_419E270B_SUSFS_2.2_HyperOS_OS1.0.12.0_TKCMIXM_AK3_STANDALONE_W89.zip.sha256
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 0
