@@ -1,0 +1,349 @@
+name: 89 - GEN1 5.4.274 ReSukiSU 419e270b Clean AK3 Release v7
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  W88_RUN_ID: "33252124378"
+  W88_RUN_HEAD_SHA: "13ca2de251f8a64ca0658ebf9f38f174d26fa307"
+  W88_WORKFLOW_PATH: ".github/workflows/88-gen1-5.4.274-resukisu-419e270b-update-repro-build-v3.yml"
+  W88_ARTIFACT_ID: "9715115041"
+  W88_ARTIFACT_NAME: "GEN1_W88_5.4.274_ReSukiSU_419E270B_COMPACT-1"
+  W88_ARTIFACT_SHA256: "25ec48457888386430604cab9fb20c91f778ae30672d90d2955bb38ca3fa080c"
+  IMAGE_SHA256: "d0f7abcc526ec63413236fd440cef2d9fb6cc3819ce656b1b49efde7d65cda04"
+  IMAGE_BYTES: "29843968"
+  CONFIG_SHA256: "d7cd955abd59da45804acc9c5e450cf8fc953da3e66bbc274212b40ee9a0b372"
+  RESUKISU_COMMIT: "419e270b50ad61725185dec74f438b8cb59c6889"
+  AK3_REPO: "https://github.com/osm0sis/AnyKernel3.git"
+  AK3_PIN: "af770f7b16cf8f8eb7c68614b2a693b3b361c90c"
+  RELEASE_ZIP: "VEUX_5.4.274_ReSukiSU_419E270B_SUSFS_2.2_HyperOS_OS1.0.12.0_TKCMIXM_Android13_AnyKernel3.zip"
+  WORK: ${{ github.workspace }}/gen1-w89-v7
+
+jobs:
+  clean-release:
+    name: Build clean GEN1 W89 AnyKernel3 from verified W88-v3
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+
+    steps:
+      - name: Verify runner tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          for tool in gh jq git unzip zip sha256sum stat find grep awk; do
+            command -v "$tool" >/dev/null
+          done
+
+      - name: Prepare isolated workspace
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$WORK"
+          mkdir -p "$WORK/input" "$WORK/w88" "$WORK/ak3" "$WORK/package" "$WORK/release" "$WORK/audit"
+
+      - name: Authenticate exact successful W88-v3 run and artifact
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          RUN_JSON="$WORK/input/w88-run.json"
+          ART_JSON="$WORK/input/w88-artifact.json"
+
+          gh api \
+            -H "Accept: application/vnd.github+json" \
+            "/repos/${GITHUB_REPOSITORY}/actions/runs/${W88_RUN_ID}" \
+            > "$RUN_JSON"
+
+          test "$(jq -r '.id' "$RUN_JSON")" = "$W88_RUN_ID"
+          test "$(jq -r '.status' "$RUN_JSON")" = "completed"
+          test "$(jq -r '.conclusion' "$RUN_JSON")" = "success"
+          test "$(jq -r '.path' "$RUN_JSON")" = "$W88_WORKFLOW_PATH"
+          test "$(jq -r '.head_sha' "$RUN_JSON")" = "$W88_RUN_HEAD_SHA"
+
+          gh api \
+            -H "Accept: application/vnd.github+json" \
+            "/repos/${GITHUB_REPOSITORY}/actions/artifacts/${W88_ARTIFACT_ID}" \
+            > "$ART_JSON"
+
+          test "$(jq -r '.id' "$ART_JSON")" = "$W88_ARTIFACT_ID"
+          test "$(jq -r '.name' "$ART_JSON")" = "$W88_ARTIFACT_NAME"
+          test "$(jq -r '.expired' "$ART_JSON")" = "false"
+          test "$(jq -r '.workflow_run.id' "$ART_JSON")" = "$W88_RUN_ID"
+          test "$(jq -r '.workflow_run.head_sha' "$ART_JSON")" = "$W88_RUN_HEAD_SHA"
+          test "$(jq -r '.digest' "$ART_JSON")" = "sha256:${W88_ARTIFACT_SHA256}"
+
+          echo "W88_V3_RUN_AUTH=PASS"
+          echo "W88_RUN_ID=$W88_RUN_ID"
+          echo "W88_ARTIFACT_ID=$W88_ARTIFACT_ID"
+
+      - name: Download and verify exact W88-v3 compact artifact
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          gh api \
+            -H "Accept: application/vnd.github+json" \
+            "/repos/${GITHUB_REPOSITORY}/actions/artifacts/${W88_ARTIFACT_ID}/zip" \
+            > "$WORK/input/w88.zip"
+
+          echo "$W88_ARTIFACT_SHA256  $WORK/input/w88.zip" | sha256sum -c -
+          unzip -t "$WORK/input/w88.zip" >/dev/null
+          unzip -q "$WORK/input/w88.zip" -d "$WORK/w88"
+
+          test "$(find "$WORK/w88" -maxdepth 1 -type f | wc -l)" -eq 4
+          test -s "$WORK/w88/GEN1_W88_Image"
+          test -s "$WORK/w88/GEN1_W88_config"
+          test -s "$WORK/w88/SHA256SUMS.txt"
+          test -s "$WORK/w88/W88-FINAL-VERDICT.txt"
+
+          (
+            cd "$WORK/w88"
+            sha256sum -c SHA256SUMS.txt
+          )
+
+          test "$(stat -c '%s' "$WORK/w88/GEN1_W88_Image")" = "$IMAGE_BYTES"
+          echo "$IMAGE_SHA256  $WORK/w88/GEN1_W88_Image" | sha256sum -c -
+          echo "$CONFIG_SHA256  $WORK/w88/GEN1_W88_config" | sha256sum -c -
+
+      - name: Enforce W88-v3 final verdict contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          V="$WORK/w88/W88-FINAL-VERDICT.txt"
+
+          for required in \
+            'W88_GEN1_5.4.274_UPDATE=PASS' \
+            'DEVICE_SCOPE=VEUX' \
+            'KERNEL_VERSION=5.4.274' \
+            "RESUKISU_PIN=$RESUKISU_COMMIT" \
+            'SUSFS_VERSION=2.2' \
+            'WEBVIEW_ZYGOTE_UMOUNT=PASS' \
+            'SELINUX_HIDE_5_4=PASS' \
+            'AVD_SEQNO_1=PASS' \
+            'SUSFS_ZYGOTE_NEXT_TIF_PROC_UMOUNTED=PASS' \
+            'SUSFS_PROCESS_STATE_BACKPORT=PASS' \
+            'OPEN_REDIRECT_SRCU=PASS' \
+            'PROC_MAPS_SUSFS=PASS' \
+            'MODULE_LOAD_FILTER_INCLUDED=NO' \
+            'IMAGE_AB_IDENTICAL=YES' \
+            'VMLINUX_AB_IDENTICAL=YES' \
+            'SYSTEM_MAP_AB_IDENTICAL=YES' \
+            'CONFIG_AB_IDENTICAL=YES' \
+            'REPRODUCIBILITY=PASS' \
+            "IMAGE_SHA256=$IMAGE_SHA256" \
+            "IMAGE_BYTES=$IMAGE_BYTES" \
+            "CONFIG_SHA256=$CONFIG_SHA256" \
+            'BOOT_IMAGE_CREATED=NO' \
+            'FLASHING_PERFORMED=NO' \
+            'REAL_DEVICE_BOOT_TEST=NO' \
+            'NEXT_STAGE=GEN1_CLEAN_RELEASE'
+          do
+            grep -Fxq "$required" "$V"
+          done
+
+          cp "$WORK/w88/GEN1_W88_Image" "$WORK/input/verified-Image"
+          echo "W88_V3_VERDICT_CONTRACT=PASS"
+
+      - name: Fetch pinned AnyKernel3 runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git init -q "$WORK/ak3"
+          git -C "$WORK/ak3" remote add origin "$AK3_REPO"
+          git -C "$WORK/ak3" fetch -q --depth=1 origin "$AK3_PIN"
+          git -C "$WORK/ak3" checkout -q --detach FETCH_HEAD
+          test "$(git -C "$WORK/ak3" rev-parse HEAD)" = "$AK3_PIN"
+
+          test -d "$WORK/ak3/META-INF"
+          test -d "$WORK/ak3/tools"
+          test -s "$WORK/ak3/tools/ak3-core.sh"
+          test -s "$WORK/ak3/LICENSE"
+
+          grep -Fq 'BLOCK=' "$WORK/ak3/anykernel.sh"
+          grep -Fq 'IS_SLOT_DEVICE=' "$WORK/ak3/anykernel.sh"
+          grep -Fq 'PATCH_VBMETA_FLAG=' "$WORK/ak3/anykernel.sh"
+
+      - name: Assemble VEUX-only Android 13 AnyKernel3 package
+        shell: bash
+        run: |
+          set -euo pipefail
+          PKG="$WORK/package"
+
+          rm -rf "$PKG"
+          mkdir -p "$PKG"
+
+          cp -a "$WORK/ak3/META-INF" "$PKG/"
+          cp -a "$WORK/ak3/tools" "$PKG/"
+          cp "$WORK/ak3/LICENSE" "$PKG/"
+          cp "$WORK/input/verified-Image" "$PKG/Image"
+
+          cat > "$PKG/anykernel.sh" <<'AK3'
+          ### AnyKernel3 Ramdisk Mod Script
+          ## VEUX kernel-only package
+
+          properties() { '
+          kernel.string=VEUX Linux 5.4.274 ReSukiSU 419e270b SUSFS 2.2
+          do.devicecheck=1
+          do.modules=0
+          do.systemless=1
+          do.cleanup=1
+          do.cleanuponabort=0
+          device.name1=veux
+          supported.versions=13
+          supported.patchlevels=
+          supported.vendorpatchlevels=
+          '; }
+
+          boot_attributes() {
+            set_perm_recursive 0 0 755 644 $RAMDISK/*;
+            set_perm_recursive 0 0 750 750 $RAMDISK/init* $RAMDISK/sbin;
+          }
+
+          BLOCK=boot;
+          IS_SLOT_DEVICE=1;
+          SLOT_SELECT=active;
+          RAMDISK_COMPRESSION=auto;
+          PATCH_VBMETA_FLAG=0;
+
+          . tools/ak3-core.sh;
+
+          dump_boot;
+          write_boot;
+          AK3
+
+          chmod 0755 "$PKG/anykernel.sh"
+
+          echo "$IMAGE_SHA256  $PKG/Image" | sha256sum -c -
+          grep -Fxq 'device.name1=veux' "$PKG/anykernel.sh"
+          grep -Fxq 'supported.versions=13' "$PKG/anykernel.sh"
+          grep -Fxq 'BLOCK=boot;' "$PKG/anykernel.sh"
+          grep -Fxq 'IS_SLOT_DEVICE=1;' "$PKG/anykernel.sh"
+          grep -Fxq 'SLOT_SELECT=active;' "$PKG/anykernel.sh"
+          grep -Fxq 'PATCH_VBMETA_FLAG=0;' "$PKG/anykernel.sh"
+
+          if grep -Eq '^device\.name[0-9]+=peux$|^supported\.versions=16$' "$PKG/anykernel.sh"; then
+            echo "ERROR: non-GEN1 device/Android scope leaked into package" >&2
+            exit 1
+          fi
+
+      - name: Build deterministic clean end-user ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+          PKG="$WORK/package"
+          OUT="$WORK/release/$RELEASE_ZIP"
+
+          rm -rf "$PKG/.git" "$PKG/.github" "$PKG/.gitignore" "$PKG/README.md" 2>/dev/null || true
+
+          # Stable archive metadata; the Image payload itself remains byte-identical to W88-v3.
+          find "$PKG" -exec touch -h -d '2026-08-29 00:00:00 UTC' {} +
+
+          (
+            cd "$PKG"
+            LC_ALL=C find . -type f -print | sort | zip -X -9 -q "$OUT" -@
+          )
+
+          unzip -t "$OUT" >/dev/null
+          (
+            cd "$WORK/release"
+            sha256sum "$RELEASE_ZIP" > "$RELEASE_ZIP.sha256"
+          )
+
+      - name: Final clean release audit
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT="$WORK/release/$RELEASE_ZIP"
+          SIDE="$OUT.sha256"
+          AUDIT="$WORK/audit/unpacked"
+
+          test -s "$OUT"
+          test -s "$SIDE"
+          test "$(find "$WORK/release" -maxdepth 1 -type f | wc -l)" -eq 2
+
+          rm -rf "$AUDIT"
+          mkdir -p "$AUDIT"
+          unzip -q "$OUT" -d "$AUDIT"
+
+          test -s "$AUDIT/Image"
+          test -s "$AUDIT/anykernel.sh"
+          test -s "$AUDIT/tools/ak3-core.sh"
+          test -s "$AUDIT/META-INF/com/google/android/update-binary"
+          test -s "$AUDIT/META-INF/com/google/android/updater-script"
+
+          echo "$IMAGE_SHA256  $AUDIT/Image" | sha256sum -c -
+
+          grep -Fxq 'device.name1=veux' "$AUDIT/anykernel.sh"
+          grep -Fxq 'supported.versions=13' "$AUDIT/anykernel.sh"
+          grep -Fxq 'BLOCK=boot;' "$AUDIT/anykernel.sh"
+          grep -Fxq 'IS_SLOT_DEVICE=1;' "$AUDIT/anykernel.sh"
+          grep -Fxq 'SLOT_SELECT=active;' "$AUDIT/anykernel.sh"
+          grep -Fxq 'PATCH_VBMETA_FLAG=0;' "$AUDIT/anykernel.sh"
+
+          if find "$AUDIT" -type f \
+            \( -iname '*report*' -o -iname '*verdict*' -o -iname '*evidence*' \
+               -o -iname '*workflow*' -o -iname '*replay*' -o -iname '*audit*' \
+               -o -iname '*.log' -o -iname '*.yml' -o -iname '*.yaml' \
+               -o -iname '*.patch' -o -iname '*.diff' \) \
+            | grep -q .
+          then
+            echo "ERROR: development/work material found in end-user ZIP" >&2
+            find "$AUDIT" -type f | sort >&2
+            exit 1
+          fi
+
+          if grep -RInaE --binary-files=without-match \
+            '(ChatGPT|OpenAI|GPT-[0-9]|LLM|Copilot|Claude|Gemini)' \
+            "$AUDIT"
+          then
+            echo "ERROR: assistant/AI reference found in end-user ZIP" >&2
+            exit 1
+          fi
+
+          if grep -Eiq '(peux|tuna|maguro|toro|toroplus|omap)' "$AUDIT/anykernel.sh"; then
+            echo "ERROR: unrelated device alias found in VEUX-only installer" >&2
+            exit 1
+          fi
+
+          RELEASE_SHA="$(sha256sum "$OUT" | awk '{print $1}')"
+          RELEASE_BYTES="$(stat -c '%s' "$OUT")"
+
+          echo "FINAL_RESULT=PASS_GEN1_W89_CLEAN_AK3"
+          echo "DEVICE_SCOPE=VEUX"
+          echo "KERNEL_VERSION=5.4.274"
+          echo "ANDROID_VERSION=13"
+          echo "ROM_TARGET=HyperOS_OS1.0.12.0.TKCMIXM"
+          echo "RESUKISU_PIN=$RESUKISU_COMMIT"
+          echo "SUSFS_VERSION=2.2"
+          echo "W88_RUN_ID=$W88_RUN_ID"
+          echo "W88_ARTIFACT_ID=$W88_ARTIFACT_ID"
+          echo "IMAGE_SHA256=$IMAGE_SHA256"
+          echo "IMAGE_BYTES=$IMAGE_BYTES"
+          echo "RELEASE_SHA256=$RELEASE_SHA"
+          echo "RELEASE_BYTES=$RELEASE_BYTES"
+          echo "MODULE_LOAD_FILTER_INCLUDED=NO_FROM_VERIFIED_W88_V3"
+          echo "BOOT_IMAGE_CREATED=NO"
+          echo "FLASHING_PERFORMED=NO"
+          echo "REAL_DEVICE_BOOT_TEST=NO"
+          echo "END_USER_ZIP_CLEAN=PASS"
+          echo "RELEASE_DIRECTORY_FILES=2"
+
+      - name: Upload clean W89 end-user release only
+        uses: actions/upload-artifact@v6
+        with:
+          name: GEN1_W89_5.4.274_ReSukiSU_419E270B_CLEAN_VEUX-${{ github.run_number }}
+          path: |
+            gen1-w89-v7/release/VEUX_5.4.274_ReSukiSU_419E270B_SUSFS_2.2_HyperOS_OS1.0.12.0_TKCMIXM_Android13_AnyKernel3.zip
+            gen1-w89-v7/release/VEUX_5.4.274_ReSukiSU_419E270B_SUSFS_2.2_HyperOS_OS1.0.12.0_TKCMIXM_Android13_AnyKernel3.zip.sha256
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 0
