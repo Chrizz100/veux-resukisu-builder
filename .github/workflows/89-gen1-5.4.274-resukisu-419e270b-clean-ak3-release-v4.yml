@@ -1,0 +1,700 @@
+name: 89 - GEN1 5.4.274 ReSukiSU 419e270b Clean AK3 Release v4
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: gen1-w89-clean-ak3-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  W88_ARTIFACT_PREFIX: GEN1_W88_5.4.274_ReSukiSU_419E270B_COMPACT-
+  W75_ARTIFACT_PREFIX: GEN1_W75_FINAL_5.4.274_STANDALONE_AK3-
+
+  IMAGE_SHA256: 47b6687df11c77dc2d9c93cc3f80af7ee0e1420e185a752874462a9a12ed9a4d
+  IMAGE_BYTES: "36943872"
+  RESUKISU_COMMIT: 419e270b50ad61725185dec74f438b8cb59c6889
+  SUSFS_VERSION: "2.2"
+
+  STOCK_ROM_VERSION: OS1.0.12.0.TKCMIXM
+  STOCK_ANDROID_VERSION: "13"
+  STOCK_SECURITY_PATCH: 2024-12
+  STOCK_BOOT_SHA256: ac6522e4eed55782dd2ae61362e9d345d01a1f229c87333818511d5537fa79c5
+  STOCK_BOOT_BYTES: "134217728"
+  STOCK_RAMDISK_SHA256: 0bc8b54373b5501818e8b252517419786db207771047b6def7ec9bc89beb607a
+  ROLLBACK_GZIP_SHA256: 9a1532ccfc57b465256bba97863f927b80823fa8812a4d13e4f4c8bf9af0c78b
+
+  AK3_CORE_SHA256: f7a51cfe2e093016a34a76e16de6c9885c2d1992c3482fcabc668680e1f0f6bb
+  BUSYBOX_SHA256: 66436dc1e97d22886ed2d35bd69a9cb82bb0fdba4e4267c5184cee1d39a2f5f4
+  MAGISKBOOT_SHA256: 0b19472b291ce9033c29a83155ff4c1b18be9d1d17d901d63e50f57436378762
+
+  RELEASE_ZIP_NAME: VEUX_5.4.274_ReSukiSU_419E270B_SUSFS_2.2_HyperOS_OS1.0.12.0_TKCMIXM_AK3_STANDALONE_W89.zip
+  MAX_RELEASE_BYTES: "65000000"
+  SOURCE_DATE_EPOCH: "1787961600"
+
+jobs:
+  release:
+    name: Build clean GEN1 W89 AnyKernel3 release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    env:
+      WORK: ${{ github.workspace }}/gen1-w89
+      INPUTS: ${{ github.workspace }}/gen1-w89/inputs
+      W88: ${{ github.workspace }}/gen1-w89/w88
+      W75: ${{ github.workspace }}/gen1-w89/w75
+      TEMPLATE: ${{ github.workspace }}/gen1-w89/template
+      PACKAGE: ${{ github.workspace }}/gen1-w89/package
+      BUILD: ${{ github.workspace }}/gen1-w89/build
+      OUTPUT: ${{ github.workspace }}/gen1-w89/output
+
+    steps:
+      - name: Checkout builder repository
+        uses: actions/checkout@v6
+
+      - name: Initialize clean W89 workspace
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$WORK"
+          mkdir -p "$INPUTS" "$W88" "$W75" "$TEMPLATE" "$PACKAGE" "$BUILD" "$OUTPUT"
+          {
+            echo "W89_SCOPE=GEN1_CLEAN_END_USER_AK3_RELEASE"
+            echo "DEVICE=veux"
+            echo "KERNEL_VERSION=5.4.274"
+            echo "RESUKISU_COMMIT=$RESUKISU_COMMIT"
+            echo "SUSFS_VERSION=$SUSFS_VERSION"
+            echo "ROM_VERSION=$STOCK_ROM_VERSION"
+            echo "ANDROID_VERSION=$STOCK_ANDROID_VERSION"
+            echo "SECURITY_PATCH=$STOCK_SECURITY_PATCH"
+            echo "REAL_DEVICE_ACCESSED=NO"
+            echo "FLASHING_PERFORMED=NO"
+          } > "$OUTPUT/W89-SCOPE.txt"
+
+      - name: Install packaging dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ca-certificates curl jq python3 unzip zip gzip
+
+      - name: Download exact latest successful W88 and W75 artifacts
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          ALL="$WORK/repository-artifacts.ndjson"
+          : > "$ALL"
+          page=1
+          while :; do
+            PAGE="$WORK/artifacts-${page}.json"
+            curl --fail --silent --show-error --retry 3 \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/artifacts?per_page=100&page=${page}" \
+              -o "$PAGE"
+            COUNT="$(jq '.artifacts | length' "$PAGE")"
+            jq -c '.artifacts[]' "$PAGE" >> "$ALL"
+            [ "$COUNT" -lt 100 ] && break
+            page=$((page + 1))
+            [ "$page" -le 30 ] || { echo "ERROR: artifact pagination safety limit" >&2; exit 1; }
+          done
+
+          download_latest_prefix() {
+            local prefix="$1" out="$2" meta="$3"
+            local selected url
+            selected="$(jq -s --arg P "$prefix" \
+              '[.[] | select(.expired == false and (.name | startswith($P)))] | sort_by(.created_at) | .[-1]' \
+              "$ALL")"
+            test "$(jq -r 'type' <<< "$selected")" = object
+            url="$(jq -r '.archive_download_url' <<< "$selected")"
+            jq . <<< "$selected" > "$meta"
+            curl --fail --location --silent --show-error --retry 3 \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "$url" -o "$out"
+            unzip -t "$out" >/dev/null
+          }
+
+          download_latest_prefix "$W88_ARTIFACT_PREFIX" "$INPUTS/w88.zip" "$OUTPUT/W88-ARTIFACT.json"
+          download_latest_prefix "$W75_ARTIFACT_PREFIX" "$INPUTS/w75.zip" "$OUTPUT/W75-ARTIFACT.json"
+
+          unzip -q "$INPUTS/w88.zip" -d "$W88"
+          unzip -q "$INPUTS/w75.zip" -d "$W75"
+
+          W88_VERDICT="$(find "$W88" -type f -name 'W88-FINAL-VERDICT.txt' -print -quit)"
+          W88_IMAGE="$(find "$W88" -type f -name 'GEN1_W88_Image' -print -quit)"
+          test -n "$W88_VERDICT"
+          test -n "$W88_IMAGE"
+
+          grep -Fxq 'W88_GEN1_5.4.274_UPDATE=PASS' "$W88_VERDICT"
+          grep -Fxq 'REPRODUCIBILITY=PASS' "$W88_VERDICT"
+          grep -Fxq "RESUKISU_PIN=$RESUKISU_COMMIT" "$W88_VERDICT"
+
+          W88_VERDICT_CANON="$W88/W88-FINAL-VERDICT.txt"
+          W88_IMAGE_CANON="$W88/GEN1_W88_Image"
+
+          if [ "$W88_VERDICT" != "$W88_VERDICT_CANON" ]; then
+            cp "$W88_VERDICT" "$W88_VERDICT_CANON"
+          fi
+          if [ "$W88_IMAGE" != "$W88_IMAGE_CANON" ]; then
+            cp "$W88_IMAGE" "$W88_IMAGE_CANON"
+          fi
+
+          test -s "$W88_VERDICT_CANON"
+          test -s "$W88_IMAGE_CANON"
+
+          W75_ZIP="$(find "$W75" -type f -name 'VEUX_5.4.274_*_AK3_STANDALONE_W75.zip' -print -quit)"
+          test -n "$W75_ZIP"
+          unzip -t "$W75_ZIP" >/dev/null
+          printf '%s\n' "$W75_ZIP" > "$WORK/w75-release-path.txt"
+
+      - name: Verify W88 Image and extract proven W75 installer template
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          IMAGE="$W88/GEN1_W88_Image"
+          test -s "$IMAGE"
+          test "$(stat -c '%s' "$IMAGE")" = "$IMAGE_BYTES"
+          test "$(sha256sum "$IMAGE" | awk '{print $1}')" = "$IMAGE_SHA256"
+
+          W75_ZIP="$(cat "$WORK/w75-release-path.txt")"
+          unzip -q "$W75_ZIP" -d "$TEMPLATE"
+
+          for f in \
+            LICENSE \
+            META-INF/com/google/android/update-binary \
+            META-INF/com/google/android/updater-script \
+            rollback_stock_boot.img.gz \
+            tools/ak3-core.sh tools/busybox tools/fec tools/httools_static \
+            tools/lptools_static tools/magiskboot tools/magiskpolicy tools/snapshotupdater_static
+          do
+            test -s "$TEMPLATE/$f"
+          done
+
+          test "$(sha256sum "$TEMPLATE/rollback_stock_boot.img.gz" | awk '{print $1}')" = "$ROLLBACK_GZIP_SHA256"
+          test "$(sha256sum "$TEMPLATE/tools/ak3-core.sh" | awk '{print $1}')" = "$AK3_CORE_SHA256"
+          test "$(sha256sum "$TEMPLATE/tools/busybox" | awk '{print $1}')" = "$BUSYBOX_SHA256"
+          test "$(sha256sum "$TEMPLATE/tools/magiskboot" | awk '{print $1}')" = "$MAGISKBOOT_SHA256"
+
+          gzip -dc "$TEMPLATE/rollback_stock_boot.img.gz" > "$BUILD/stock_boot.img"
+          test "$(stat -c '%s' "$BUILD/stock_boot.img")" = "$STOCK_BOOT_BYTES"
+          test "$(sha256sum "$BUILD/stock_boot.img" | awk '{print $1}')" = "$STOCK_BOOT_SHA256"
+
+      - name: Reconstruct exact new Boot v3 and derive runtime templates
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - "$BUILD/stock_boot.img" "$W88/GEN1_W88_Image" "$BUILD" "$OUTPUT/W89-BOOT-MODEL.txt" <<'PY'
+          import hashlib
+          import struct
+          import sys
+          from pathlib import Path
+
+          stock_path, image_path, build_dir, report_path = map(Path, sys.argv[1:])
+          stock = stock_path.read_bytes()
+          image = image_path.read_bytes()
+          build_dir.mkdir(parents=True, exist_ok=True)
+
+          STOCK_SHA = "ac6522e4eed55782dd2ae61362e9d345d01a1f229c87333818511d5537fa79c5"
+          IMAGE_SHA = "47b6687df11c77dc2d9c93cc3f80af7ee0e1420e185a752874462a9a12ed9a4d"
+          RAMDISK_SHA = "0bc8b54373b5501818e8b252517419786db207771047b6def7ec9bc89beb607a"
+          BOOT_BYTES = 134217728
+          PAGE = 4096
+
+          def sha(b): return hashlib.sha256(b).hexdigest()
+          def align(v): return (v + PAGE - 1) // PAGE * PAGE
+          def need(c, m):
+              if not c: raise SystemExit("ERROR: " + m)
+
+          need(len(stock) == BOOT_BYTES, "stock boot bytes")
+          need(sha(stock) == STOCK_SHA, "stock boot SHA")
+          need(sha(image) == IMAGE_SHA, "new Image SHA")
+          need(stock[:8] == b"ANDROID!", "Android boot magic")
+          need(struct.unpack_from("<I", stock, 40)[0] == 3, "Boot Header v3")
+
+          stock_kernel_size, ramdisk_size, _, header_size = struct.unpack_from("<4I", stock, 8)
+          need(header_size == 1580, "header size")
+          stock_ramdisk_offset = PAGE + align(stock_kernel_size)
+          ramdisk = stock[stock_ramdisk_offset:stock_ramdisk_offset + ramdisk_size]
+          need(sha(ramdisk) == RAMDISK_SHA, "stock ramdisk SHA")
+
+          footer = bytearray(stock[-64:])
+          need(footer[:4] == b"AVBf", "AVB footer")
+          major, minor = struct.unpack_from(">II", footer, 4)
+          original, vbmeta_offset, vbmeta_size = struct.unpack_from(">QQQ", footer, 12)
+          need((major, minor) == (1, 0), "AVB footer version")
+          stock_vbmeta = stock[vbmeta_offset:vbmeta_offset + vbmeta_size]
+          need(stock_vbmeta[:4] == b"AVB0", "AVB0 magic")
+
+          auth_size, aux_size = struct.unpack_from(">QQ", stock_vbmeta, 12)
+          need(struct.unpack_from(">I", stock_vbmeta, 28)[0] == 0, "embedded vbmeta algorithm NONE")
+          vals = struct.unpack_from(">QQQQQQQQQQQ", stock_vbmeta, 32)
+          descriptors_offset, descriptors_size = vals[8], vals[9]
+          aux_start = 256 + auth_size
+          pos = aux_start + descriptors_offset
+          end = pos + descriptors_size
+          hash_desc = None
+          while pos < end:
+              tag, following = struct.unpack_from(">QQ", stock_vbmeta, pos)
+              raw_end = pos + 16 + following
+              need(raw_end <= len(stock_vbmeta), "descriptor bounds")
+              if tag == 2:
+                  raw = stock_vbmeta[pos:raw_end]
+                  name_len, salt_len, digest_len, _ = struct.unpack_from(">IIII", raw, 56)
+                  q = 132
+                  partition = raw[q:q+name_len].decode("ascii", "replace")
+                  q += name_len
+                  salt = raw[q:q+salt_len]
+                  q += salt_len
+                  if partition == "boot":
+                      need(hash_desc is None, "single boot hash descriptor")
+                      hash_desc = {
+                          "image_size_offset": pos + 16,
+                          "digest_offset": pos + q,
+                          "digest_len": digest_len,
+                          "salt": salt,
+                          "hash_algorithm": raw[24:56].split(b"\0",1)[0].decode("ascii"),
+                      }
+              pos = raw_end
+          need(hash_desc is not None, "boot hash descriptor")
+          need(hash_desc["hash_algorithm"] == "sha256", "AVB sha256")
+
+          new_ramdisk_offset = PAGE + align(len(image))
+          new_payload_end = new_ramdisk_offset + align(ramdisk_size)
+          need(new_ramdisk_offset % PAGE == 0, "new ramdisk alignment")
+          need(new_payload_end % PAGE == 0, "payload alignment")
+          need(new_payload_end + vbmeta_size < BOOT_BYTES - 64, "payload geometry")
+
+          out = bytearray(BOOT_BYTES)
+          header = bytearray(stock[:PAGE])
+          struct.pack_into("<I", header, 8, len(image))
+          out[:PAGE] = header
+          out[PAGE:PAGE+len(image)] = image
+          out[new_ramdisk_offset:new_ramdisk_offset+len(ramdisk)] = ramdisk
+
+          vbmeta = bytearray(stock_vbmeta)
+          struct.pack_into(">Q", vbmeta, hash_desc["image_size_offset"], new_payload_end)
+          digest = hashlib.sha256(hash_desc["salt"] + bytes(out[:new_payload_end])).digest()
+          d0 = hash_desc["digest_offset"]
+          vbmeta[d0:d0+hash_desc["digest_len"]] = digest
+          out[new_payload_end:new_payload_end+len(vbmeta)] = vbmeta
+
+          new_footer = bytearray(footer)
+          struct.pack_into(">Q", new_footer, 12, new_payload_end)
+          struct.pack_into(">Q", new_footer, 20, new_payload_end)
+          out[-64:] = new_footer
+
+          result = bytes(out)
+          boot_sha = sha(result)
+          header_sha = sha(bytes(header))
+          vbmeta_sha = sha(bytes(vbmeta))
+          footer_sha = sha(bytes(new_footer))
+
+          # Independent descriptor verification on the final image.
+          calc = hashlib.sha256(hash_desc["salt"] + result[:new_payload_end]).digest()
+          need(calc == digest, "final AVB digest")
+          need(result[new_ramdisk_offset:new_ramdisk_offset+len(ramdisk)] == ramdisk, "ramdisk preserved")
+
+          # Minimal arm64 Image identity checks without assuming an old image_size field.
+          need(len(image) >= 64, "arm64 Image header")
+          need(struct.unpack_from("<Q", image, 8)[0] == 0x80000, "arm64 text_offset")
+          need(struct.unpack_from("<I", image, 56)[0] == 0x644D5241, "arm64 magic")
+
+          (build_dir / "expected-new-boot.img").write_bytes(result)
+          (build_dir / "boot-header-v3.bin").write_bytes(bytes(header))
+          (build_dir / "boot-vbmeta-v3.bin").write_bytes(bytes(vbmeta))
+          (build_dir / "boot-footer-v3.bin").write_bytes(bytes(new_footer))
+
+          report = [
+              "W89_BOOT_MODEL=PASS",
+              f"IMAGE_SHA256={IMAGE_SHA}",
+              f"IMAGE_BYTES={len(image)}",
+              f"STOCK_KERNEL_BYTES={stock_kernel_size}",
+              f"RAMDISK_BYTES={ramdisk_size}",
+              f"STOCK_RAMDISK_OFFSET={stock_ramdisk_offset}",
+              f"NEW_RAMDISK_OFFSET={new_ramdisk_offset}",
+              f"NEW_RAMDISK_BLOCK={new_ramdisk_offset // PAGE}",
+              f"RAMDISK_ALIGNED_BLOCKS={align(ramdisk_size) // PAGE}",
+              f"NEW_PAYLOAD_END={new_payload_end}",
+              f"NEW_VBMETA_BLOCK={new_payload_end // PAGE}",
+              f"EXPECTED_BOOT_SHA256={boot_sha}",
+              f"EXPECTED_BOOT_BYTES={len(result)}",
+              f"EXPECTED_AVB_DIGEST={digest.hex()}",
+              f"EXPECTED_HEADER_SHA256={header_sha}",
+              f"EXPECTED_VBMETA_SHA256={vbmeta_sha}",
+              f"EXPECTED_FOOTER_SHA256={footer_sha}",
+              "STOCK_RAMDISK_PRESERVED=YES",
+          ]
+          report_path.write_text("\n".join(report) + "\n", encoding="utf-8")
+          print("\n".join(report))
+          PY
+
+          grep -Fxq 'W89_BOOT_MODEL=PASS' "$OUTPUT/W89-BOOT-MODEL.txt"
+          grep -Fxq 'STOCK_RAMDISK_PRESERVED=YES' "$OUTPUT/W89-BOOT-MODEL.txt"
+
+      - name: Assemble clean deterministic W89 AnyKernel3 package
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -rf "$PACKAGE"
+          mkdir -p "$PACKAGE/META-INF/com/google/android" "$PACKAGE/tools"
+
+          cp "$TEMPLATE/LICENSE" "$PACKAGE/LICENSE"
+          cp "$TEMPLATE/META-INF/com/google/android/update-binary" "$PACKAGE/META-INF/com/google/android/update-binary"
+          cp "$TEMPLATE/META-INF/com/google/android/updater-script" "$PACKAGE/META-INF/com/google/android/updater-script"
+          cp "$TEMPLATE/rollback_stock_boot.img.gz" "$PACKAGE/rollback_stock_boot.img.gz"
+          cp "$W88/GEN1_W88_Image" "$PACKAGE/Image"
+
+          for tool in ak3-core.sh busybox fec httools_static lptools_static magiskboot magiskpolicy snapshotupdater_static; do
+            cp "$TEMPLATE/tools/$tool" "$PACKAGE/tools/$tool"
+          done
+          cp "$BUILD/boot-header-v3.bin" "$PACKAGE/tools/boot-header-v3.bin"
+          cp "$BUILD/boot-vbmeta-v3.bin" "$PACKAGE/tools/boot-vbmeta-v3.bin"
+          cp "$BUILD/boot-footer-v3.bin" "$PACKAGE/tools/boot-footer-v3.bin"
+
+          EXPECT_BOOT_SHA="$(sed -n 's/^EXPECTED_BOOT_SHA256=//p' "$OUTPUT/W89-BOOT-MODEL.txt")"
+          EXPECT_HEADER_SHA="$(sed -n 's/^EXPECTED_HEADER_SHA256=//p' "$OUTPUT/W89-BOOT-MODEL.txt")"
+          EXPECT_VBMETA_SHA="$(sed -n 's/^EXPECTED_VBMETA_SHA256=//p' "$OUTPUT/W89-BOOT-MODEL.txt")"
+          EXPECT_FOOTER_SHA="$(sed -n 's/^EXPECTED_FOOTER_SHA256=//p' "$OUTPUT/W89-BOOT-MODEL.txt")"
+          RAMDISK_BLOCK="$(sed -n 's/^NEW_RAMDISK_BLOCK=//p' "$OUTPUT/W89-BOOT-MODEL.txt")"
+          RAMDISK_COUNT="$(sed -n 's/^RAMDISK_ALIGNED_BLOCKS=//p' "$OUTPUT/W89-BOOT-MODEL.txt")"
+          VBMETA_BLOCK="$(sed -n 's/^NEW_VBMETA_BLOCK=//p' "$OUTPUT/W89-BOOT-MODEL.txt")"
+
+          python3 - "$PACKAGE/anykernel.sh" \
+            "$IMAGE_SHA256" "$IMAGE_BYTES" "$EXPECT_BOOT_SHA" \
+            "$EXPECT_HEADER_SHA" "$EXPECT_VBMETA_SHA" "$EXPECT_FOOTER_SHA" \
+            "$RAMDISK_BLOCK" "$RAMDISK_COUNT" "$VBMETA_BLOCK" <<'PY'
+          import sys
+          from pathlib import Path
+          out = Path(sys.argv[1])
+          image_sha, image_bytes, boot_sha, header_sha, vbmeta_sha, footer_sha, ramdisk_block, ramdisk_count, vbmeta_block = sys.argv[2:]
+          slot_ref = "$" + "{SLOT}"
+          text = f'''### AnyKernel3 Ramdisk Mod Script
+          ## VEUX 5.4.274 standalone kernel installer
+
+          properties() {{ '\n          kernel.string=VEUX 5.4.274 ReSukiSU 419e270b SUSFS 2.2 HyperOS OS1.0.12.0\n          do.devicecheck=1\n          do.modules=0\n          do.systemless=0\n          do.cleanup=1\n          do.cleanuponabort=1\n          device.name1=veux\n          device.name2=\n          device.name3=\n          device.name4=\n          device.name5=\n          supported.versions=13\n          supported.patchlevels=2024-12 - 2024-12\n          supported.vendorpatchlevels=2024-12 - 2024-12\n          '; }}
+
+          BLOCK=boot;
+          IS_SLOT_DEVICE=1;
+          SLOT_SELECT=active;
+          PATCH_VBMETA_FLAG=0;
+          NO_VBMETA_PARTITION_PATCH=1;
+          NO_MAGISK_CHECK=1;
+
+          . tools/ak3-core.sh;
+
+          BB="$AKHOME/tools/busybox";
+          IMAGE="$AKHOME/Image";
+          ROLLBACK_GZ="$AKHOME/rollback_stock_boot.img.gz";
+          HEADER="$AKHOME/tools/boot-header-v3.bin";
+          VBMETA="$AKHOME/tools/boot-vbmeta-v3.bin";
+          FOOTER="$AKHOME/tools/boot-footer-v3.bin";
+          NEWBOOT="$AKHOME/.gen1-boot-new.img";
+
+          EXPECT_STOCK_SHA="ac6522e4eed55782dd2ae61362e9d345d01a1f229c87333818511d5537fa79c5";
+          EXPECT_IMAGE_SHA="{image_sha}";
+          EXPECT_BOOT_SHA="{boot_sha}";
+          EXPECT_ROLLBACK_GZ_SHA="9a1532ccfc57b465256bba97863f927b80823fa8812a4d13e4f4c8bf9af0c78b";
+          EXPECT_HEADER_SHA="{header_sha}";
+          EXPECT_VBMETA_SHA="{vbmeta_sha}";
+          EXPECT_FOOTER_SHA="{footer_sha}";
+          EXPECT_IMAGE_BYTES="{image_bytes}";
+          EXPECT_BOOT_BYTES="134217728";
+
+          cleanup_gen1() {{ $BB rm -f "$NEWBOOT" 2>/dev/null || true; }}
+          trap cleanup_gen1 EXIT;
+
+          [ -x "$BB" ] || abort "Missing packaged busybox. Aborting.";
+          for F in "$IMAGE" "$ROLLBACK_GZ" "$HEADER" "$VBMETA" "$FOOTER"; do [ -f "$F" ] || abort "Missing required packaged file. Aborting."; done;
+
+          IMAGE_BYTES="$($BB wc -c < "$IMAGE" | $BB tr -d ' ')";
+          [ "$IMAGE_BYTES" = "$EXPECT_IMAGE_BYTES" ] || abort "Kernel Image size mismatch.";
+          set -- $($BB sha256sum "$IMAGE") || abort "Cannot hash kernel Image.";
+          [ "$1" = "$EXPECT_IMAGE_SHA" ] || abort "Kernel Image SHA-256 mismatch.";
+          set -- $($BB sha256sum "$ROLLBACK_GZ") || abort "Cannot hash rollback image.";
+          [ "$1" = "$EXPECT_ROLLBACK_GZ_SHA" ] || abort "Rollback gzip SHA-256 mismatch.";
+          set -- $($BB sha256sum "$HEADER") || abort "Cannot hash boot header template.";
+          [ "$1" = "$EXPECT_HEADER_SHA" ] || abort "Boot header template SHA-256 mismatch.";
+          set -- $($BB sha256sum "$VBMETA") || abort "Cannot hash boot metadata template.";
+          [ "$1" = "$EXPECT_VBMETA_SHA" ] || abort "Boot metadata template SHA-256 mismatch.";
+          set -- $($BB sha256sum "$FOOTER") || abort "Cannot hash boot footer template.";
+          [ "$1" = "$EXPECT_FOOTER_SHA" ] || abort "Boot footer template SHA-256 mismatch.";
+          set -- $($BB gzip -dc "$ROLLBACK_GZ" | $BB sha256sum) || abort "Cannot verify stock rollback image.";
+          [ "$1" = "$EXPECT_STOCK_SHA" ] || abort "Stock rollback image SHA-256 mismatch.";
+
+          SLOT="$(getprop ro.boot.slot_suffix 2>/dev/null || true)";
+          case "$SLOT" in _a|_b) ;; *) abort "Could not determine a valid active A/B slot. Aborting." ;; esac;
+          TARGET="/dev/block/by-name/boot{slot_ref}";
+          [ -e "$TARGET" ] || TARGET="/dev/block/bootdevice/by-name/boot{slot_ref}";
+          [ -e "$TARGET" ] || abort "Active-slot boot block device not found. Aborting.";
+
+          FLASH_LOCKED="$(getprop ro.boot.flash.locked 2>/dev/null || true)";
+          VBMETA_STATE="$(getprop ro.boot.vbmeta.device_state 2>/dev/null || true)";
+          if [ "$FLASH_LOCKED" != "0" ] && [ "$VBMETA_STATE" != "unlocked" ]; then abort "Positive bootloader-unlocked evidence was not found."; fi;
+
+          set -- $($BB sha256sum "$TARGET" 2>/dev/null) || abort "Cannot hash active boot partition. Aborting.";
+          [ "$1" = "$EXPECT_STOCK_SHA" ] || abort "Active boot is not the exact supported stock boot.";
+
+          $BB rm -f "$NEWBOOT";
+          $BB dd if=/dev/zero of="$NEWBOOT" bs=1048576 count=128 || abort "Cannot create temporary boot image.";
+          $BB dd if="$HEADER" of="$NEWBOOT" bs=4096 seek=0 conv=notrunc || abort "Cannot write boot header.";
+          $BB dd if="$IMAGE" of="$NEWBOOT" bs=4096 seek=1 conv=notrunc || abort "Cannot write kernel Image.";
+          $BB dd if="$TARGET" of="$NEWBOOT" bs=4096 skip=11105 seek={ramdisk_block} count={ramdisk_count} conv=notrunc || abort "Cannot preserve stock ramdisk.";
+          $BB dd if="$VBMETA" of="$NEWBOOT" bs=4096 seek={vbmeta_block} conv=notrunc || abort "Cannot write boot metadata.";
+          $BB dd if="$FOOTER" of="$NEWBOOT" bs=64 seek=2097151 conv=notrunc || abort "Cannot write boot footer.";
+
+          NEWBOOT_BYTES="$($BB wc -c < "$NEWBOOT" | $BB tr -d ' ')";
+          [ "$NEWBOOT_BYTES" = "$EXPECT_BOOT_BYTES" ] || abort "Constructed boot image size mismatch.";
+          set -- $($BB sha256sum "$NEWBOOT") || abort "Cannot hash constructed boot image.";
+          [ "$1" = "$EXPECT_BOOT_SHA" ] || abort "Constructed boot image SHA-256 mismatch. Nothing has been written.";
+
+          restore_stock() {{
+            $BB gzip -dc "$ROLLBACK_GZ" | $BB dd of="$TARGET" bs=1048576 || return 1;
+            $BB sync;
+            set -- $($BB sha256sum "$TARGET" 2>/dev/null) || return 1;
+            [ "$1" = "$EXPECT_STOCK_SHA" ];
+          }}
+
+          ui_print " " "VEUX 5.4.274 ReSukiSU 419e270b SUSFS 2.2" "Target: boot{slot_ref}" "Stock boot verified." "New boot image constructed and verified.";
+          if ! $BB dd if="$NEWBOOT" of="$TARGET" bs=1048576; then
+            $BB sync;
+            if restore_stock; then abort "Custom boot write failed. Exact stock boot was restored and verified."; else abort "Custom boot write failed and stock rollback could not be verified."; fi;
+          fi;
+          $BB sync;
+          set -- $($BB sha256sum "$TARGET" 2>/dev/null) || {{ if restore_stock; then abort "Could not hash written custom boot. Exact stock boot was restored and verified."; else abort "Could not hash written custom boot and rollback could not be verified."; fi; }};
+          if [ "$1" != "$EXPECT_BOOT_SHA" ]; then
+            if restore_stock; then abort "Custom boot readback SHA-256 mismatch. Exact stock boot was restored and verified."; else abort "Custom boot readback SHA-256 mismatch and rollback could not be verified."; fi;
+          fi;
+          ui_print "Updated boot written and readback verified.";
+          '''
+          # Strip workflow indentation while keeping readable installer text.
+          lines = [line[10:] if line.startswith("          ") else line for line in text.splitlines()]
+          out.write_text("\n".join(lines) + "\n", encoding="utf-8")
+          PY
+
+          chmod 755 "$PACKAGE/anykernel.sh" "$PACKAGE/META-INF/com/google/android/update-binary" \
+            "$PACKAGE/tools/ak3-core.sh" "$PACKAGE/tools/busybox" "$PACKAGE/tools/fec" \
+            "$PACKAGE/tools/httools_static" "$PACKAGE/tools/lptools_static" "$PACKAGE/tools/magiskboot" \
+            "$PACKAGE/tools/magiskpolicy" "$PACKAGE/tools/snapshotupdater_static"
+          chmod 644 "$PACKAGE/LICENSE" "$PACKAGE/META-INF/com/google/android/updater-script" \
+            "$PACKAGE/Image" "$PACKAGE/rollback_stock_boot.img.gz" "$PACKAGE/tools/boot-header-v3.bin" \
+            "$PACKAGE/tools/boot-vbmeta-v3.bin" "$PACKAGE/tools/boot-footer-v3.bin"
+
+          bash -n "$PACKAGE/anykernel.sh"
+          grep -Fqx 'device.name1=veux' "$PACKAGE/anykernel.sh"
+          grep -Fqx 'supported.versions=13' "$PACKAGE/anykernel.sh"
+          grep -Fqx 'supported.patchlevels=2024-12 - 2024-12' "$PACKAGE/anykernel.sh"
+          grep -Fq 'ReSukiSU 419e270b' "$PACKAGE/anykernel.sh"
+          grep -Fq "EXPECT_IMAGE_SHA=\"$IMAGE_SHA256\"" "$PACKAGE/anykernel.sh"
+
+          python3 - "$PACKAGE" <<'PY'
+          import sys
+          from pathlib import Path
+          root=Path(sys.argv[1])
+          actual={p.relative_to(root).as_posix() for p in root.rglob('*') if p.is_file()}
+          expected={
+            'LICENSE','META-INF/com/google/android/update-binary','META-INF/com/google/android/updater-script',
+            'anykernel.sh','Image','rollback_stock_boot.img.gz',
+            'tools/ak3-core.sh','tools/busybox','tools/fec','tools/httools_static','tools/lptools_static',
+            'tools/magiskboot','tools/magiskpolicy','tools/snapshotupdater_static',
+            'tools/boot-header-v3.bin','tools/boot-vbmeta-v3.bin','tools/boot-footer-v3.bin'
+          }
+          if actual != expected:
+              raise SystemExit(f"ERROR: package file-set mismatch missing={sorted(expected-actual)} extra={sorted(actual-expected)}")
+          print("W89_CLEAN_FILE_SET=PASS")
+          print("W89_FILE_COUNT=17")
+          PY
+
+      - name: Independently emulate packaged runtime reconstruction
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          MODEL="$OUTPUT/W89-BOOT-MODEL.txt"
+          EXPECT_BOOT_SHA="$(sed -n 's/^EXPECTED_BOOT_SHA256=//p' "$MODEL")"
+          RAMDISK_BLOCK="$(sed -n 's/^NEW_RAMDISK_BLOCK=//p' "$MODEL")"
+          RAMDISK_COUNT="$(sed -n 's/^RAMDISK_ALIGNED_BLOCKS=//p' "$MODEL")"
+          VBMETA_BLOCK="$(sed -n 's/^NEW_VBMETA_BLOCK=//p' "$MODEL")"
+
+          runtime_rebuild() {
+            local stock="$1" out="$2"
+            dd if=/dev/zero of="$out" bs=1048576 count=128 status=none
+            dd if="$PACKAGE/tools/boot-header-v3.bin" of="$out" bs=4096 seek=0 conv=notrunc status=none
+            dd if="$PACKAGE/Image" of="$out" bs=4096 seek=1 conv=notrunc status=none
+            dd if="$stock" of="$out" bs=4096 skip=11105 seek="$RAMDISK_BLOCK" count="$RAMDISK_COUNT" conv=notrunc status=none
+            dd if="$PACKAGE/tools/boot-vbmeta-v3.bin" of="$out" bs=4096 seek="$VBMETA_BLOCK" conv=notrunc status=none
+            dd if="$PACKAGE/tools/boot-footer-v3.bin" of="$out" bs=64 seek=2097151 conv=notrunc status=none
+          }
+
+          cp "$BUILD/stock_boot.img" "$BUILD/fake-boot-a.img"
+          cp "$BUILD/stock_boot.img" "$BUILD/fake-boot-b.img"
+          runtime_rebuild "$BUILD/fake-boot-a.img" "$BUILD/runtime-a.img"
+          runtime_rebuild "$BUILD/fake-boot-b.img" "$BUILD/runtime-b.img"
+
+          test "$(sha256sum "$BUILD/runtime-a.img" | awk '{print $1}')" = "$EXPECT_BOOT_SHA"
+          test "$(sha256sum "$BUILD/runtime-b.img" | awk '{print $1}')" = "$EXPECT_BOOT_SHA"
+          cmp -s "$BUILD/runtime-a.img" "$BUILD/runtime-b.img"
+          cmp -s "$BUILD/runtime-a.img" "$BUILD/expected-new-boot.img"
+
+          # Rollback payload is independently checked against the exact supported stock boot.
+          gzip -dc "$PACKAGE/rollback_stock_boot.img.gz" > "$BUILD/rollback-check.img"
+          cmp -s "$BUILD/rollback-check.img" "$BUILD/stock_boot.img"
+
+          {
+            echo "W89_RUNTIME_RECONSTRUCTION=PASS"
+            echo "SLOT_A_MODEL=PASS"
+            echo "SLOT_B_MODEL=PASS"
+            echo "A_B_BYTE_IDENTICAL=YES"
+            echo "PYTHON_AND_DD_MODEL_BYTE_IDENTICAL=YES"
+            echo "ROLLBACK_STOCK_BYTE_IDENTICAL=YES"
+            echo "EXPECTED_RUNTIME_BOOT_SHA256=$EXPECT_BOOT_SHA"
+          } > "$OUTPUT/W89-RUNTIME-MODEL.txt"
+
+      - name: Build deterministic clean release ZIP and audit contents
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - "$PACKAGE" "$OUTPUT/$RELEASE_ZIP_NAME" <<'PY'
+          import os
+          import sys
+          import zipfile
+          from pathlib import Path
+
+          root=Path(sys.argv[1]); out=Path(sys.argv[2])
+          files=sorted(p for p in root.rglob('*') if p.is_file())
+          dt=(2026,8,29,0,0,0)
+          with zipfile.ZipFile(out,'w',compression=zipfile.ZIP_DEFLATED,compresslevel=9) as z:
+              for p in files:
+                  rel=p.relative_to(root).as_posix()
+                  info=zipfile.ZipInfo(rel,dt)
+                  info.compress_type=zipfile.ZIP_DEFLATED
+                  mode=p.stat().st_mode & 0o777
+                  info.external_attr=(mode & 0xFFFF) << 16
+                  info.create_system=3
+                  z.writestr(info,p.read_bytes(),compress_type=zipfile.ZIP_DEFLATED,compresslevel=9)
+          PY
+
+          ZIP="$OUTPUT/$RELEASE_ZIP_NAME"
+          test -s "$ZIP"
+          unzip -t "$ZIP" > "$OUTPUT/W89-ZIP-CRC.txt"
+          test "$(stat -c '%s' "$ZIP")" -le "$MAX_RELEASE_BYTES"
+
+          rm -rf "$WORK/recheck"
+          mkdir -p "$WORK/recheck"
+          unzip -q "$ZIP" -d "$WORK/recheck"
+          test "$(sha256sum "$WORK/recheck/Image" | awk '{print $1}')" = "$IMAGE_SHA256"
+          cmp -s "$WORK/recheck/Image" "$W88/GEN1_W88_Image"
+
+          # End-user ZIP must contain only the exact 17-file installer set and no work/debug reports.
+          python3 - "$WORK/recheck" <<'PY'
+          import sys
+          from pathlib import Path
+          root=Path(sys.argv[1])
+          actual={p.relative_to(root).as_posix() for p in root.rglob('*') if p.is_file()}
+          expected={
+            'LICENSE','META-INF/com/google/android/update-binary','META-INF/com/google/android/updater-script',
+            'anykernel.sh','Image','rollback_stock_boot.img.gz',
+            'tools/ak3-core.sh','tools/busybox','tools/fec','tools/httools_static','tools/lptools_static',
+            'tools/magiskboot','tools/magiskpolicy','tools/snapshotupdater_static',
+            'tools/boot-header-v3.bin','tools/boot-vbmeta-v3.bin','tools/boot-footer-v3.bin'
+          }
+          if actual != expected: raise SystemExit(f"ERROR clean ZIP file-set mismatch: {sorted(actual)}")
+          PY
+
+          if grep -RIn --binary-files=without-match -E 'ChatGPT|OpenAI|GPT-[0-9]|Copilot|Claude|Gemini|LLM' "$WORK/recheck"; then
+            echo "ERROR: disallowed AI-reference text found in final release ZIP" >&2
+            exit 1
+          fi
+
+          if find "$WORK/recheck" -type f \( -iname '*report*' -o -iname '*audit*' -o -iname '*debug*' -o -iname '*log*' -o -iname '*w88*' -o -iname '*w89*' \) | grep -q .; then
+            echo "ERROR: work/debug file leaked into final release ZIP" >&2
+            exit 1
+          fi
+
+          RELEASE_SHA="$(sha256sum "$ZIP" | awk '{print $1}')"
+          RELEASE_BYTES="$(stat -c '%s' "$ZIP")"
+          printf '%s  %s\n' "$RELEASE_SHA" "$RELEASE_ZIP_NAME" > "$OUTPUT/$RELEASE_ZIP_NAME.sha256"
+
+          EXPECT_BOOT_SHA="$(sed -n 's/^EXPECTED_BOOT_SHA256=//p' "$OUTPUT/W89-BOOT-MODEL.txt")"
+          {
+            echo "FINAL_RESULT=PASS_GEN1_W89_CLEAN_STANDALONE_AK3"
+            echo "DEVICE=veux"
+            echo "KERNEL_VERSION=5.4.274"
+            echo "IMAGE_SHA256=$IMAGE_SHA256"
+            echo "IMAGE_BYTES=$IMAGE_BYTES"
+            echo "RESUKISU_COMMIT=$RESUKISU_COMMIT"
+            echo "SUSFS_VERSION=$SUSFS_VERSION"
+            echo "ROM_VERSION=$STOCK_ROM_VERSION"
+            echo "ANDROID_VERSION=$STOCK_ANDROID_VERSION"
+            echo "SECURITY_PATCH=$STOCK_SECURITY_PATCH"
+            echo "EXPECTED_RUNTIME_BOOT_SHA256=$EXPECT_BOOT_SHA"
+            echo "W88_REPRODUCIBLE_IMAGE_REUSED=YES"
+            echo "W75_PROVEN_INSTALLER_ASSETS_REUSED=YES"
+            echo "RUNTIME_RECONSTRUCTION_MODEL=PASS"
+            echo "SLOT_A_MODEL=PASS"
+            echo "SLOT_B_MODEL=PASS"
+            echo "ROLLBACK_MODEL=PASS"
+            echo "CLEAN_FILE_SET=PASS"
+            echo "FINAL_ZIP_FILE_COUNT=17"
+            echo "AI_REFERENCE_SCAN=PASS"
+            echo "WORK_DEBUG_FILES_IN_ZIP=NO"
+            echo "BOOT_IMG_PACKAGED=NO"
+            echo "ROLLBACK_STOCK_BOOT_PACKAGED=YES"
+            echo "RELEASE_ZIP_NAME=$RELEASE_ZIP_NAME"
+            echo "RELEASE_ZIP_SHA256=$RELEASE_SHA"
+            echo "RELEASE_ZIP_BYTES=$RELEASE_BYTES"
+            echo "REAL_DEVICE_ACCESSED=NO"
+            echo "FLASHING_PERFORMED=NO"
+            echo "PHYSICAL_DEVICE_BOOT_TESTED=NO"
+          } > "$OUTPUT/W89-FINAL-VERDICT.txt"
+
+          cat "$OUTPUT/W89-FINAL-VERDICT.txt"
+
+      - name: Preserve compact W89 failure summary
+        if: failure()
+        shell: bash
+        run: |
+          set +e
+          mkdir -p "$OUTPUT"
+          {
+            echo "W89_RESULT=FAILURE"
+            echo "IMAGE_SHA256=$IMAGE_SHA256"
+            echo "RESUKISU_COMMIT=$RESUKISU_COMMIT"
+            for f in W89-BOOT-MODEL.txt W89-RUNTIME-MODEL.txt; do
+              [ -f "$OUTPUT/$f" ] && cat "$OUTPUT/$f"
+            done
+          } > "$OUTPUT/W89-FAILURE-SUMMARY.txt"
+
+      - name: Upload compact W89 release artifact
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: GEN1_W89_FINAL_5.4.274_ReSukiSU_419E270B_CLEAN_AK3-${{ github.run_number }}
+          path: |
+            gen1-w89/output/VEUX_5.4.274_ReSukiSU_419E270B_SUSFS_2.2_HyperOS_OS1.0.12.0_TKCMIXM_AK3_STANDALONE_W89.zip
+            gen1-w89/output/VEUX_5.4.274_ReSukiSU_419E270B_SUSFS_2.2_HyperOS_OS1.0.12.0_TKCMIXM_AK3_STANDALONE_W89.zip.sha256
+            gen1-w89/output/W89-FINAL-VERDICT.txt
+            gen1-w89/output/W89-FAILURE-SUMMARY.txt
+          if-no-files-found: warn
+          retention-days: 90
+          compression-level: 0
+
+      - name: Final W89 gate
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -Fxq 'FINAL_RESULT=PASS_GEN1_W89_CLEAN_STANDALONE_AK3' "$OUTPUT/W89-FINAL-VERDICT.txt"
