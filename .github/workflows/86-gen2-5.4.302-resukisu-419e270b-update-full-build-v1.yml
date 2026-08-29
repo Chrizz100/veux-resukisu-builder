@@ -1,0 +1,346 @@
+name: 86 - GEN2 5.4.302 ReSukiSU 419e270b Update Full Build v1
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  GEN2_KERNEL_PIN: f4b8a13a43a130a9aab83cc985ce4d4421291ae6
+  OLD_RESUKISU_PIN: b2ac2fc8703ce9f5226e2a38a59f8b72f8a3005c
+  PREVIOUS_RESUKISU_PIN: 4a3785025a920e4f52584f14c663eea4850dc919
+  NEW_RESUKISU_PIN: 419e270b50ad61725185dec74f438b8cb59c6889
+  SELINUX_HIDE_PIN: 6f50cba2a3919cfcec9f9061580a04588fb465b7
+  W76_RECIPE: .github/workflows/76-gen2-5.4.302-resukisu-4a378502-full-build-v5.yml
+  W43_RECIPE: .github/workflows/43-gen2-5.4.302-resukisu-upstream-update-full-build-v2.yml
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+
+    steps:
+      - name: Checkout builder repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+
+      - name: Checkout pinned GEN2 kernel source
+        uses: actions/checkout@v6
+        with:
+          repository: dereference23/kernel_xiaomi_sm6375
+          ref: f4b8a13a43a130a9aab83cc985ce4d4421291ae6
+          path: kernel-src
+          fetch-depth: 0
+
+      - name: Checkout ReSukiSU 419e270b target
+        uses: actions/checkout@v6
+        with:
+          repository: ReSukiSU/ReSukiSU
+          ref: 419e270b50ad61725185dec74f438b8cb59c6889
+          path: resukisu
+          fetch-depth: 0
+
+      - name: Verify exact update provenance and 5.4 semantics
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p w86-compact
+
+          test "$(git -C kernel-src rev-parse HEAD)" = "$GEN2_KERNEL_PIN"
+          test "$(git -C resukisu rev-parse HEAD)" = "$NEW_RESUKISU_PIN"
+
+          git -C resukisu merge-base --is-ancestor "$OLD_RESUKISU_PIN" "$NEW_RESUKISU_PIN"
+          git -C resukisu merge-base --is-ancestor "$PREVIOUS_RESUKISU_PIN" "$NEW_RESUKISU_PIN"
+          git -C resukisu merge-base --is-ancestor "$SELINUX_HIDE_PIN" "$NEW_RESUKISU_PIN"
+
+          FROM_OLD="$(git -C resukisu rev-list --count "$OLD_RESUKISU_PIN..$NEW_RESUKISU_PIN")"
+          FROM_PREVIOUS="$(git -C resukisu rev-list --count "$PREVIOUS_RESUKISU_PIN..$NEW_RESUKISU_PIN")"
+          FROM_FACCF="$(git -C resukisu rev-list --count faccf4c5edc7be37776216e7d43dd3dca0239331..$NEW_RESUKISU_PIN)"
+
+          test "$FROM_OLD" -eq 13
+          test "$FROM_PREVIOUS" -eq 11
+          test "$FROM_FACCF" -eq 31
+
+          SETUID=resukisu/kernel/hook/setuid_hook.c
+          UMOUNT=resukisu/kernel/feature/kernel_umount.c
+          SELINUX=resukisu/kernel/feature/selinux_hide.c
+
+          test -s "$SETUID"
+          test -s "$UMOUNT"
+          test -s "$SELINUX"
+
+          grep -Fq 'ksu_webview_zygote_umount_enabled' "$UMOUNT"
+          grep -Fq 'WEBVIEW_ZYGOTE_UID' "$UMOUNT"
+          grep -Fq 'KSU_FEATURE_WEBVIEW_ZYGOTE_UMOUNT' resukisu/uapi/feature.h
+
+          grep -Fq 'avd.seqno = 1;' "$SELINUX"
+          grep -Fq 'new_status->sequence = 0;' "$SELINUX"
+          grep -Fq 'new_status->policyload = 0;' "$SELINUX"
+
+          # 0ff93279 semantic is already carried by ReSukiSU 419e270b.
+          # Require TIF_PROC_UMOUNTED together with the zygote_next marker
+          # in both isolated and normal-app umount paths.
+          python3 - "$SETUID" <<'PY'
+          import re, sys
+          from pathlib import Path
+
+          text = Path(sys.argv[1]).read_text(encoding="utf-8")
+
+          m = re.search(
+              r"static int handle_zygote_next_setresuid\s*\([^)]*\)\s*\{",
+              text,
+          )
+          if not m:
+              raise SystemExit("zygote_next handler not found")
+
+          i = m.end()
+          depth = 1
+          while i < len(text) and depth:
+              if text[i] == "{":
+                  depth += 1
+              elif text[i] == "}":
+                  depth -= 1
+              i += 1
+          if depth:
+              raise SystemExit("zygote_next handler brace parse failed")
+
+          body = text[m.end():i-1]
+
+          isolated = re.search(
+              r"if\s*\(is_isolated_process\(new_uid\)\)\s*\{(.*?)\n\s*\}",
+              body,
+              re.S,
+          )
+          normal = re.search(
+              r"if\s*\(likely\(is_appuid\(new_uid\)\s*&&\s*"
+              r"ksu_uid_should_umount\(new_uid\)\)\)\s*\{(.*?)\n\s*\}",
+              body,
+              re.S,
+          )
+          webview = re.search(
+              r"if\s*\(unlikely\(new_uid\s*==\s*WEBVIEW_ZYGOTE_UID\)\)\s*\{"
+              r"(.*?)\n\s*\}",
+              body,
+              re.S,
+          )
+
+          for name, block in (
+              ("isolated", isolated),
+              ("normal_app", normal),
+              ("webview", webview),
+          ):
+              if not block:
+                  raise SystemExit(f"{name} zygote_next block not found")
+              b = block.group(1)
+              for call in (
+                  "susfs_set_current_proc_no_su();",
+                  "susfs_set_current_proc_umounted();",
+                  "susfs_set_current_proc_umounted_for_zygote_next();",
+              ):
+                  if call not in b:
+                      raise SystemExit(f"{name}: missing {call}")
+
+          print("ZYGOTE_NEXT_TIF_PROC_UMOUNTED_SEMANTIC=PASS")
+          PY
+
+          {
+            echo "W86_PROVENANCE=PASS"
+            echo "GEN2_KERNEL_PIN=$GEN2_KERNEL_PIN"
+            echo "RESUKISU_FROM=$PREVIOUS_RESUKISU_PIN"
+            echo "RESUKISU_TO=$NEW_RESUKISU_PIN"
+            echo "COMMITS_FROM_PREVIOUS=$FROM_PREVIOUS"
+            echo "COMMITS_FROM_W43_BASE=$FROM_OLD"
+            echo "COMMITS_FROM_FACCF=$FROM_FACCF"
+            echo "WEBVIEW_ZYGOTE_UMOUNT=PASS"
+            echo "SELINUX_HIDE_5_4_SEQUENCE_POLICYLOAD=PASS"
+            echo "AVD_SEQNO_1=PASS"
+            echo "SUSFS_0FF93279_SEMANTIC=ALREADY_PRESENT_IN_RESUKISU_TARGET"
+            echo "DEVICE_SCOPE=VEUX_AND_PEUX"
+          } | tee w86-compact/W86-PROVENANCE.txt
+
+      - name: Derive W86 replay driver from proven W76 v5
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          test -s "$W76_RECIPE"
+          test -s "$W43_RECIPE"
+
+          export W76_RECIPE W43_RECIPE OLD_RESUKISU_PIN NEW_RESUKISU_PIN
+
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          import yaml
+
+          src = Path(os.environ["W76_RECIPE"])
+          doc = yaml.load(src.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
+          steps = doc["jobs"]["build"]["steps"]
+
+          wanted = {
+              "Generate W43-to-W76 replay driver": "w86-generate.sh",
+              "Replay proven W43 v2 GEN2 port and full-build recipe": "w86-replay.sh",
+          }
+          found = set()
+
+          for step in steps:
+              name = step.get("name", "")
+              if name not in wanted:
+                  continue
+              script = step.get("run")
+              if not script:
+                  raise SystemExit(f"missing run block: {name}")
+
+              if name == "Generate W43-to-W76 replay driver":
+                  # W76 targeted 4a378502: 20 commits after faccf.
+                  # W86 targets 419e270b: 31 commits after faccf.
+                  old = "'test \"$AHEAD\" -eq 20'"
+                  new = "'test \"$AHEAD\" -eq 31'"
+                  if old not in script:
+                      raise SystemExit("W76 expected AHEAD=20 transform not found")
+                  script = script.replace(old, new, 1)
+
+                  old = "'RESUKISU_UPSTREAM_COMMITS=20'"
+                  new = "'RESUKISU_UPSTREAM_COMMITS=31'"
+                  if old not in script:
+                      raise SystemExit("W76 expected commit-marker=20 transform not found")
+                  script = script.replace(old, new, 1)
+
+              out = Path(wanted[name])
+              out.write_text(script, encoding="utf-8")
+              found.add(name)
+
+          missing = set(wanted) - found
+          if missing:
+              raise SystemExit("missing W76 driver steps: " + ", ".join(sorted(missing)))
+
+          print("W76_V5_DRIVER_EXTRACTION=PASS")
+          print("W86_EXPECTED_FACCF_AHEAD=31")
+          PY
+
+          bash -n w86-generate.sh
+          bash -n w86-replay.sh
+
+          bash w86-generate.sh
+
+          grep -Fxq 'W43_TO_W76_RECIPE_TRANSFORM=PASS' W76-RECIPE-TRANSFORM.txt
+
+          # The transformed W43 recipe must now be pinned to 419e270b
+          # and must expect 31 commits from faccf.
+          grep -Fq "$NEW_RESUKISU_PIN" W76-W43-TRANSFORMED-RECIPE.yml
+          grep -Fq 'test "$AHEAD" -eq 31' W76-W43-TRANSFORMED-RECIPE.yml
+          grep -Fq 'RESUKISU_UPSTREAM_COMMITS=31' W76-W43-TRANSFORMED-RECIPE.yml
+
+          {
+            echo "W86_W76_REPLAY_DERIVATION=PASS"
+            echo "BASE_DRIVER=W76_V5"
+            echo "TARGET_RESUKISU=$NEW_RESUKISU_PIN"
+            echo "FACCF_AHEAD=31"
+          } | tee w86-compact/W86-REPLAY-DERIVATION.txt
+
+      - name: Replay proven GEN2 integration and full build
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          bash w86-replay.sh
+          grep -Fxq 'W76_W43_REPLAY=PASS' W76-W43-REPLAY-STATE.txt
+
+      - name: Verify W86 updated GEN2 outputs
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          for f in \
+            GEN2_43_Image \
+            GEN2_43_final.config \
+            GEN2_43_veux.dtb \
+            GEN2_43_veux-overlay.dtbo
+          do
+            test -s "$f"
+          done
+
+          grep -q '^CONFIG_KSU=y$' GEN2_43_final.config
+          grep -q '^CONFIG_KSU_SUSFS=y$' GEN2_43_final.config
+          grep -Fxq 'W76_V5_SUSFS_PROCESS_STATE_CLOSURE=PASS' \
+            W76-V5-SUSFS-PROCESS-STATE.txt
+          grep -Fxq 'STUB_IMPLEMENTATION=NO' \
+            W76-V5-SUSFS-PROCESS-STATE.txt
+
+          strings GEN2_43_Image \
+            | grep -m1 '^Linux version 5\.4\.302' \
+            > w86-compact/W86-IMAGE-LINUX-VERSION.txt
+
+          cp GEN2_43_Image w86-compact/GEN2_W86_Image
+          cp GEN2_43_final.config w86-compact/GEN2_W86_final.config
+          cp GEN2_43_veux.dtb w86-compact/GEN2_W86_veux.dtb
+          cp GEN2_43_veux-overlay.dtbo w86-compact/GEN2_W86_veux-overlay.dtbo
+          cp W76-V5-SUSFS-PROCESS-STATE.txt w86-compact/
+          cp W76-W43-REPLAY-STATE.txt w86-compact/
+
+          sha256sum \
+            w86-compact/GEN2_W86_Image \
+            w86-compact/GEN2_W86_final.config \
+            w86-compact/GEN2_W86_veux.dtb \
+            w86-compact/GEN2_W86_veux-overlay.dtbo \
+            | tee w86-compact/W86-SHA256SUMS.txt
+
+          {
+            echo "W86_GEN2_UPDATE_FULL_BUILD=PASS"
+            echo "KERNEL_VERSION=5.4.302"
+            echo "RESUKISU_PIN=$NEW_RESUKISU_PIN"
+            echo "SUSFS_VERSION=2.2"
+            echo "WEBVIEW_ZYGOTE_UMOUNT=PASS"
+            echo "SELINUX_HIDE_5_4=PASS"
+            echo "SUSFS_ZYGOTE_NEXT_TIF_PROC_UMOUNTED=PASS"
+            echo "DEVICE_SCOPE=VEUX_AND_PEUX"
+            echo "IMAGE_SHA256=$(sha256sum w86-compact/GEN2_W86_Image | awk '{print $1}')"
+            echo "IMAGE_BYTES=$(stat -c '%s' w86-compact/GEN2_W86_Image)"
+            echo "BOOT_IMAGE_CREATED=NO"
+            echo "FLASHING_PERFORMED=NO"
+            echo "NEXT_STAGE=GEN2_REPRODUCIBILITY_AND_RELEASE"
+          } | tee w86-compact/W86-FINAL-VERDICT.txt
+
+      - name: Preserve compact failure diagnostics
+        if: failure()
+        shell: bash
+        run: |
+          set +e
+          mkdir -p w86-compact
+          {
+            echo "W86_RESULT=FAILURE"
+            echo "GEN2_KERNEL_PIN=$GEN2_KERNEL_PIN"
+            echo "RESUKISU_PIN=$NEW_RESUKISU_PIN"
+            if [ -f W76-W43-REPLAY-STATE.txt ]; then
+              cat W76-W43-REPLAY-STATE.txt
+            fi
+            echo "REPLAY_LOG_TAIL_BEGIN"
+            tail -n 350 W76-W43-REPLAY.log 2>/dev/null || true
+            echo "REPLAY_LOG_TAIL_END"
+          } > w86-compact/W86-FAILURE-SUMMARY.txt
+          cp W76-W43-REPLAY-STATE.txt w86-compact/ 2>/dev/null || true
+          cp W76-V5-SUSFS-PROCESS-STATE.txt w86-compact/ 2>/dev/null || true
+
+      - name: Upload compact W86 artifact
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: GEN2_W86_5.4.302_ReSukiSU_419E270B_COMPACT-${{ github.run_number }}
+          path: w86-compact/
+          if-no-files-found: error
+          retention-days: 60
+          compression-level: 6
+
+      - name: Final W86 gate
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -Fxq 'W86_GEN2_UPDATE_FULL_BUILD=PASS' \
+            w86-compact/W86-FINAL-VERDICT.txt
