@@ -1,0 +1,492 @@
+name: 93 - GEN1-r2 5.4.274 SUSFS 2.3 TRY_UMOUNT Clean AK3 Release v2
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  W92_RUN_ID: "33305977956"
+  W92_RUN_HEAD_SHA: "39777c741c74f2af61d508d6aee8bf5e6c343f5b"
+  W92_WORKFLOW_PATH: ".github/workflows/92-gen1-5.4.274-susfs-2.3-try-umount-isolated-compat-build-v1.yml"
+  W92_WORKFLOW_SHA256: "51d19d95bcd46fc35318eb498e5f8ae10fd0a399e4972c02da27bf2da416327a"
+  W92_ARTIFACT_ID: "9730903546"
+  W92_ARTIFACT_NAME: "GEN1_W92_5.4.274_SUSFS_2.3_TRY_UMOUNT_ISOLATED_v1-1"
+  W92_ARTIFACT_SHA256: "1a01b70ad569aa505d863b9d2547f2ebc31583b99a427d79786187887f418223"
+  IMAGE_SHA256: "f36f89f46a996bbaff8084c1595c0e66dbfa44da04c895ad79f6e654109c4289"
+  IMAGE_BYTES: "29843968"
+  CONFIG_SHA256: "a27c7cdd86bf7e7eb6a5ef515c28fab8d9a19a26b430694e582b339800db62ee"
+  W91_BASE_IMAGE_SHA256: "3fb447a5767939102079c993fea2e38d05715bb0bc2e4d6ba1538c7f0e3d7f9d"
+  W91_BASE_CONFIG_SHA256: "a27c7cdd86bf7e7eb6a5ef515c28fab8d9a19a26b430694e582b339800db62ee"
+  RESUKISU_COMMIT: "419e270b50ad61725185dec74f438b8cb59c6889"
+  SUSFS_2_3_COMMIT: "fb16b41a65180979f05eac837681c4dd0addffd1"
+  AK3_REPO: "https://github.com/osm0sis/AnyKernel3.git"
+  AK3_PIN: "af770f7b16cf8f8eb7c68614b2a693b3b361c90c"
+  RELEASE_ZIP: "VEUX_5.4.274_ReSukiSU_419E270B_SUSFS_2.3_TRY_UMOUNT_HyperOS_OS1.0.12.0_TKCMIXM_Android13_AnyKernel3.zip"
+  WORK: ${{ github.workspace }}/gen1-w93-v2
+
+jobs:
+  clean-release:
+    name: Build clean GEN1-r2 W93-v2 AnyKernel3 from verified W92-v1
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+
+    steps:
+      - name: Verify runner tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          for tool in gh jq git unzip zip sha256sum stat find grep awk cmp; do
+            command -v "$tool" >/dev/null
+          done
+
+      - name: Checkout repository for W92 workflow provenance
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Prepare isolated workspace
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$WORK"
+          mkdir -p \
+            "$WORK/input" \
+            "$WORK/w92" \
+            "$WORK/ak3" \
+            "$WORK/package" \
+            "$WORK/repro" \
+            "$WORK/release" \
+            "$WORK/audit"
+
+      - name: Authenticate exact W92 workflow source
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # W93 itself is a later commit; authenticate the historical W92 source by its run head.
+          git cat-file -e "$W92_RUN_HEAD_SHA:$W92_WORKFLOW_PATH"
+
+          git show "$W92_RUN_HEAD_SHA:$W92_WORKFLOW_PATH" \
+            > "$WORK/input/w92-workflow.yml"
+
+          echo "$W92_WORKFLOW_SHA256  $WORK/input/w92-workflow.yml" | sha256sum -c -
+
+          # The exact workflow SHA already authenticates the historical source.
+          # Semantic guards below must therefore use values that existed BEFORE W92 ran.
+          # Do not require W92 output hashes here: those are produced by W92 and are
+          # authenticated later from the exact GitHub Actions artifact + final verdict.
+          grep -Fxq \
+            'name: 92 - GEN1 5.4.274 SUSFS 2.3 + TRY_UMOUNT Isolated Compatibility Build v1' \
+            "$WORK/input/w92-workflow.yml"
+          grep -Fq "$RESUKISU_COMMIT" "$WORK/input/w92-workflow.yml"
+          grep -Fq "$SUSFS_2_3_COMMIT" "$WORK/input/w92-workflow.yml"
+          grep -Fq "$W91_BASE_IMAGE_SHA256" "$WORK/input/w92-workflow.yml"
+          grep -Fq "$W91_BASE_CONFIG_SHA256" "$WORK/input/w92-workflow.yml"
+          grep -Fq "SUSFS23_EXPECTED_COMMITS: '21'" "$WORK/input/w92-workflow.yml"
+
+          echo "W92_WORKFLOW_SHA256_AUTH=PASS"
+          echo "W92_WORKFLOW_PREBUILD_SEMANTICS=PASS"
+          echo "W92_OUTPUT_HASH_AUTH_DEFERRED_TO_ARTIFACT=YES"
+          echo "W92_WORKFLOW_SOURCE_AUTH=PASS"
+
+      - name: Authenticate exact successful W92-v1 run and artifact
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          RUN_JSON="$WORK/input/w92-run.json"
+          ART_JSON="$WORK/input/w92-artifact.json"
+
+          gh api \
+            -H "Accept: application/vnd.github+json" \
+            "/repos/${GITHUB_REPOSITORY}/actions/runs/${W92_RUN_ID}" \
+            > "$RUN_JSON"
+
+          test "$(jq -r '.id' "$RUN_JSON")" = "$W92_RUN_ID"
+          test "$(jq -r '.status' "$RUN_JSON")" = "completed"
+          test "$(jq -r '.conclusion' "$RUN_JSON")" = "success"
+          test "$(jq -r '.path' "$RUN_JSON")" = "$W92_WORKFLOW_PATH"
+          test "$(jq -r '.head_sha' "$RUN_JSON")" = "$W92_RUN_HEAD_SHA"
+          test "$(jq -r '.event' "$RUN_JSON")" = "workflow_dispatch"
+
+          gh api \
+            -H "Accept: application/vnd.github+json" \
+            "/repos/${GITHUB_REPOSITORY}/actions/artifacts/${W92_ARTIFACT_ID}" \
+            > "$ART_JSON"
+
+          test "$(jq -r '.id' "$ART_JSON")" = "$W92_ARTIFACT_ID"
+          test "$(jq -r '.name' "$ART_JSON")" = "$W92_ARTIFACT_NAME"
+          test "$(jq -r '.expired' "$ART_JSON")" = "false"
+          test "$(jq -r '.workflow_run.id' "$ART_JSON")" = "$W92_RUN_ID"
+          test "$(jq -r '.workflow_run.head_sha' "$ART_JSON")" = "$W92_RUN_HEAD_SHA"
+          test "$(jq -r '.digest' "$ART_JSON")" = "sha256:${W92_ARTIFACT_SHA256}"
+
+          echo "W92_V1_RUN_AUTH=PASS"
+          echo "W92_RUN_ID=$W92_RUN_ID"
+          echo "W92_ARTIFACT_ID=$W92_ARTIFACT_ID"
+
+      - name: Download and verify exact W92-v1 artifact
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          gh api \
+            -H "Accept: application/vnd.github+json" \
+            "/repos/${GITHUB_REPOSITORY}/actions/artifacts/${W92_ARTIFACT_ID}/zip" \
+            > "$WORK/input/w92.zip"
+
+          echo "$W92_ARTIFACT_SHA256  $WORK/input/w92.zip" | sha256sum -c -
+          unzip -t "$WORK/input/w92.zip" >/dev/null
+          unzip -q "$WORK/input/w92.zip" -d "$WORK/w92"
+
+          test "$(find "$WORK/w92" -mindepth 1 -maxdepth 1 -type f | wc -l)" -eq 16
+          test "$(find "$WORK/w92" -mindepth 1 -maxdepth 1 -type d | wc -l)" -eq 0
+
+          for required in \
+            GEN1_W92_Image \
+            GEN1_W92_config \
+            SHA256SUMS.txt \
+            W92-FINAL-VERDICT.txt \
+            W92-REPORT.txt \
+            21-susfs23-source-auth.txt \
+            22-susfs23-classification.txt \
+            23-susfs23-applied-delta.txt \
+            24-susfs23-final-audit.txt \
+            25-try-umount-config.txt \
+            28-w91-vs-w92.txt
+          do
+            test -s "$WORK/w92/$required"
+          done
+
+          (
+            cd "$WORK/w92"
+            sha256sum -c SHA256SUMS.txt
+          )
+
+          test "$(stat -c '%s' "$WORK/w92/GEN1_W92_Image")" = "$IMAGE_BYTES"
+          echo "$IMAGE_SHA256  $WORK/w92/GEN1_W92_Image" | sha256sum -c -
+          echo "$CONFIG_SHA256  $WORK/w92/GEN1_W92_config" | sha256sum -c -
+
+          echo "W92_V1_ARTIFACT_CONTENT=PASS"
+
+      - name: Enforce W92-v1 final verdict contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          V="$WORK/w92/W92-FINAL-VERDICT.txt"
+
+          for required in \
+            'W92_GEN1_5.4.274_SUSFS_2.3_TRY_UMOUNT=PASS' \
+            'OFFICIAL_SUSFS_2_3_SOURCE_AUTH=PASS' \
+            'SUSFS_2_2_TO_2_3_COMMIT_COUNT=21' \
+            'SUSFS_2_3_COMMIT_CLASSIFICATION=PASS' \
+            'SUSFS_2_3_5_4_SEMANTIC_BACKPORT=PASS' \
+            "RESUKISU_PIN=$RESUKISU_COMMIT" \
+            'KERNELSU_3_3_WHOLESALE_SYNC=NO' \
+            'ZYGOTE_NEXT_LOOKUP_MNT_FIX=PASS' \
+            'ROOT_REVOKE_RECHECK=PASS' \
+            'UID_EUID_CAPTURE_ORDER_FIX=PASS' \
+            'OPEN_REDIRECT_2_3_EQUIVALENT=PASS' \
+            'MOUNT_VISIBILITY_STATIC_KEY_EQUIVALENT=PASS' \
+            'TRY_UMOUNT=PASS' \
+            'TRY_UMOUNT_ZYGOTE_NEXT_DIRECT_CALL=ABSENT_INTENTIONALLY' \
+            'MODULE_LOAD_FILTER_INCLUDED=NO' \
+            'CONFIG_UNCHANGED_FROM_W91=YES' \
+            "W92_IMAGE_SHA256=$IMAGE_SHA256" \
+            "W92_CONFIG_SHA256=$CONFIG_SHA256" \
+            'REPRODUCIBILITY=PASS' \
+            'BOOT_IMAGE_CREATED=NO' \
+            'FLASHABLE_ZIP_CREATED=NO' \
+            'NEXT_STAGE=FREEZE_W92_THEN_BUILD_AK3_R2'
+          do
+            grep -Fxq "$required" "$V"
+          done
+
+          grep -Fxq \
+            "SUSFS_2_3_COMMIT=$SUSFS_2_3_COMMIT" \
+            "$WORK/w92/21-susfs23-source-auth.txt"
+          grep -Fxq 'SUSFS_VERSION=v2.3.0' "$WORK/w92/24-susfs23-final-audit.txt"
+          grep -Fxq 'TRY_UMOUNT_NORMAL_ZYGOTE=PASS' "$WORK/w92/24-susfs23-final-audit.txt"
+          grep -Fxq \
+            'TRY_UMOUNT_ZYGOTE_NEXT_DIRECT_CALL=ABSENT_INTENTIONALLY' \
+            "$WORK/w92/24-susfs23-final-audit.txt"
+          grep -Fxq 'MODULE_LOAD_FILTER_INCLUDED=NO' "$WORK/w92/24-susfs23-final-audit.txt"
+
+          cp "$WORK/w92/GEN1_W92_Image" "$WORK/input/verified-Image"
+          echo "$IMAGE_SHA256  $WORK/input/verified-Image" | sha256sum -c -
+
+          echo "W92_V1_VERDICT_CONTRACT=PASS"
+
+      - name: Fetch exact W89-v7 pinned AnyKernel3 runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git init -q "$WORK/ak3"
+          git -C "$WORK/ak3" remote add origin "$AK3_REPO"
+          git -C "$WORK/ak3" fetch -q --depth=1 origin "$AK3_PIN"
+          git -C "$WORK/ak3" checkout -q --detach FETCH_HEAD
+          test "$(git -C "$WORK/ak3" rev-parse HEAD)" = "$AK3_PIN"
+
+          test -d "$WORK/ak3/META-INF"
+          test -d "$WORK/ak3/tools"
+          test -s "$WORK/ak3/tools/ak3-core.sh"
+          test -s "$WORK/ak3/LICENSE"
+
+          grep -Fq 'BLOCK=' "$WORK/ak3/anykernel.sh"
+          grep -Fq 'IS_SLOT_DEVICE=' "$WORK/ak3/anykernel.sh"
+          grep -Fq 'PATCH_VBMETA_FLAG=' "$WORK/ak3/anykernel.sh"
+
+          echo "AK3_PIN_AUTH=PASS"
+          echo "AK3_PIN=$AK3_PIN"
+
+      - name: Assemble VEUX-only Android 13 SUSFS 2.3 TRY_UMOUNT package
+        shell: bash
+        run: |
+          set -euo pipefail
+          PKG="$WORK/package"
+
+          rm -rf "$PKG"
+          mkdir -p "$PKG"
+
+          # Exact W89-v7 runtime selection: META-INF + tools + LICENSE + Image + custom anykernel.sh.
+          cp -a "$WORK/ak3/META-INF" "$PKG/"
+          cp -a "$WORK/ak3/tools" "$PKG/"
+          cp "$WORK/ak3/LICENSE" "$PKG/"
+          cp "$WORK/input/verified-Image" "$PKG/Image"
+
+          cat > "$PKG/anykernel.sh" <<'AK3'
+          ### AnyKernel3 Ramdisk Mod Script
+          ## VEUX kernel-only package
+
+          properties() { '
+          kernel.string=VEUX Linux 5.4.274 ReSukiSU 419e270b SUSFS 2.3 TRY_UMOUNT
+          do.devicecheck=1
+          do.modules=0
+          do.systemless=1
+          do.cleanup=1
+          do.cleanuponabort=0
+          device.name1=veux
+          supported.versions=13
+          supported.patchlevels=
+          supported.vendorpatchlevels=
+          '; }
+
+          boot_attributes() {
+            set_perm_recursive 0 0 755 644 $RAMDISK/*;
+            set_perm_recursive 0 0 750 750 $RAMDISK/init* $RAMDISK/sbin;
+          }
+
+          BLOCK=boot;
+          IS_SLOT_DEVICE=1;
+          SLOT_SELECT=active;
+          RAMDISK_COMPRESSION=auto;
+          PATCH_VBMETA_FLAG=0;
+
+          . tools/ak3-core.sh;
+
+          dump_boot;
+          write_boot;
+          AK3
+
+          chmod 0755 "$PKG/anykernel.sh"
+
+          echo "$IMAGE_SHA256  $PKG/Image" | sha256sum -c -
+          grep -Fxq \
+            'kernel.string=VEUX Linux 5.4.274 ReSukiSU 419e270b SUSFS 2.3 TRY_UMOUNT' \
+            "$PKG/anykernel.sh"
+          grep -Fxq 'device.name1=veux' "$PKG/anykernel.sh"
+          grep -Fxq 'supported.versions=13' "$PKG/anykernel.sh"
+          grep -Fxq 'BLOCK=boot;' "$PKG/anykernel.sh"
+          grep -Fxq 'IS_SLOT_DEVICE=1;' "$PKG/anykernel.sh"
+          grep -Fxq 'SLOT_SELECT=active;' "$PKG/anykernel.sh"
+          grep -Fxq 'PATCH_VBMETA_FLAG=0;' "$PKG/anykernel.sh"
+
+          if grep -Eq '^device\.name[0-9]+=peux$|^supported\.versions=16$' "$PKG/anykernel.sh"; then
+            echo "ERROR: non-GEN1 device/Android scope leaked into package" >&2
+            exit 1
+          fi
+
+          if find "$PKG" -type f -iname 'boot.img' | grep -q .; then
+            echo "ERROR: boot.img must not be embedded in W93" >&2
+            exit 1
+          fi
+
+          echo "W89_V7_INSTALLER_LOGIC_REUSED=YES"
+          echo "PACKAGE_ASSEMBLY=PASS"
+
+      - name: Build deterministic release ZIP A and B
+        shell: bash
+        run: |
+          set -euo pipefail
+          PKG="$WORK/package"
+          A="$WORK/repro/release-a.zip"
+          B="$WORK/repro/release-b.zip"
+
+          rm -rf "$PKG/.git" "$PKG/.github" "$PKG/.gitignore" "$PKG/README.md" 2>/dev/null || true
+
+          # Stable archive metadata. The W92 Image itself stays byte-identical.
+          find "$PKG" -exec touch -h -d '2026-08-30 00:00:00 UTC' {} +
+
+          pack_zip() {
+            local out="$1"
+            rm -f "$out"
+            (
+              cd "$PKG"
+              LC_ALL=C find . -type f -print | sort | zip -X -9 -q "$out" -@
+            )
+            unzip -t "$out" >/dev/null
+          }
+
+          pack_zip "$A"
+          pack_zip "$B"
+
+          cmp -s "$A" "$B"
+          test "$(sha256sum "$A" | awk '{print $1}')" = \
+               "$(sha256sum "$B" | awk '{print $1}')"
+
+          echo "ZIP_AB_IDENTICAL=YES"
+          echo "ZIP_A_SHA256=$(sha256sum "$A" | awk '{print $1}')"
+          echo "ZIP_B_SHA256=$(sha256sum "$B" | awk '{print $1}')"
+
+      - name: Promote deterministic ZIP to clean end-user release
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          OUT="$WORK/release/$RELEASE_ZIP"
+          cp "$WORK/repro/release-a.zip" "$OUT"
+
+          unzip -t "$OUT" >/dev/null
+          (
+            cd "$WORK/release"
+            sha256sum "$RELEASE_ZIP" > "$RELEASE_ZIP.sha256"
+          )
+
+          test "$(find "$WORK/release" -mindepth 1 -maxdepth 1 -type f | wc -l)" -eq 2
+          echo "RELEASE_PROMOTION=PASS"
+
+      - name: Final clean W93 release audit
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT="$WORK/release/$RELEASE_ZIP"
+          SIDE="$OUT.sha256"
+          AUDIT="$WORK/audit/unpacked"
+
+          test -s "$OUT"
+          test -s "$SIDE"
+          test "$(find "$WORK/release" -mindepth 1 -maxdepth 1 -type f | wc -l)" -eq 2
+
+          (
+            cd "$WORK/release"
+            sha256sum -c "$RELEASE_ZIP.sha256"
+          )
+
+          rm -rf "$AUDIT"
+          mkdir -p "$AUDIT"
+          unzip -q "$OUT" -d "$AUDIT"
+
+          test -s "$AUDIT/Image"
+          test -s "$AUDIT/anykernel.sh"
+          test -s "$AUDIT/tools/ak3-core.sh"
+          test -s "$AUDIT/META-INF/com/google/android/update-binary"
+          test -s "$AUDIT/META-INF/com/google/android/updater-script"
+          test -s "$AUDIT/LICENSE"
+
+          test "$(stat -c '%s' "$AUDIT/Image")" = "$IMAGE_BYTES"
+          echo "$IMAGE_SHA256  $AUDIT/Image" | sha256sum -c -
+          cmp -s "$AUDIT/Image" "$WORK/w92/GEN1_W92_Image"
+
+          grep -Fxq \
+            'kernel.string=VEUX Linux 5.4.274 ReSukiSU 419e270b SUSFS 2.3 TRY_UMOUNT' \
+            "$AUDIT/anykernel.sh"
+          grep -Fxq 'device.name1=veux' "$AUDIT/anykernel.sh"
+          grep -Fxq 'supported.versions=13' "$AUDIT/anykernel.sh"
+          grep -Fxq 'BLOCK=boot;' "$AUDIT/anykernel.sh"
+          grep -Fxq 'IS_SLOT_DEVICE=1;' "$AUDIT/anykernel.sh"
+          grep -Fxq 'SLOT_SELECT=active;' "$AUDIT/anykernel.sh"
+          grep -Fxq 'PATCH_VBMETA_FLAG=0;' "$AUDIT/anykernel.sh"
+
+          if find "$AUDIT" -type f \
+            \( -iname 'boot.img' -o -iname '*report*' -o -iname '*verdict*' \
+               -o -iname '*evidence*' -o -iname '*workflow*' -o -iname '*replay*' \
+               -o -iname '*audit*' -o -iname '*.log' -o -iname '*.yml' \
+               -o -iname '*.yaml' -o -iname '*.patch' -o -iname '*.diff' \) \
+            | grep -q .
+          then
+            echo "ERROR: development/work or boot.img material found in end-user ZIP" >&2
+            find "$AUDIT" -type f | sort >&2
+            exit 1
+          fi
+
+          if grep -RInaE --binary-files=without-match \
+            '(ChatGPT|OpenAI|GPT-[0-9]|LLM|Copilot|Claude|Gemini)' \
+            "$AUDIT"
+          then
+            echo "ERROR: assistant/AI reference found in end-user ZIP" >&2
+            exit 1
+          fi
+
+          if grep -Eiq '(peux|tuna|maguro|toro|toroplus|omap)' "$AUDIT/anykernel.sh"; then
+            echo "ERROR: unrelated device alias found in VEUX-only installer" >&2
+            exit 1
+          fi
+
+          if grep -RIna --binary-files=without-match 'module_load_filter' "$AUDIT"; then
+            echo "ERROR: excluded module_load_filter reference found in end-user ZIP" >&2
+            exit 1
+          fi
+
+          cmp -s "$WORK/repro/release-a.zip" "$WORK/repro/release-b.zip"
+          cmp -s "$WORK/repro/release-a.zip" "$OUT"
+
+          RELEASE_SHA="$(sha256sum "$OUT" | awk '{print $1}')"
+          RELEASE_BYTES="$(stat -c '%s' "$OUT")"
+
+          echo "FINAL_RESULT=PASS_GEN1_W93_SUSFS_2.3_TRY_UMOUNT_CLEAN_AK3"
+          echo "DEVICE_SCOPE=VEUX"
+          echo "KERNEL_VERSION=5.4.274"
+          echo "ANDROID_VERSION=13"
+          echo "ROM_TARGET=HyperOS_OS1.0.12.0.TKCMIXM"
+          echo "RESUKISU_PIN=$RESUKISU_COMMIT"
+          echo "SUSFS_VERSION=2.3.0"
+          echo "SUSFS_2_3_PIN=$SUSFS_2_3_COMMIT"
+          echo "TRY_UMOUNT=ENABLED_FROM_VERIFIED_W92"
+          echo "TRY_UMOUNT_ZYGOTE_NEXT_DIRECT_CALL=ABSENT_INTENTIONALLY_FROM_VERIFIED_W92"
+          echo "W92_RUN_ID=$W92_RUN_ID"
+          echo "W92_ARTIFACT_ID=$W92_ARTIFACT_ID"
+          echo "W92_ARTIFACT_SHA256=$W92_ARTIFACT_SHA256"
+          echo "IMAGE_SHA256=$IMAGE_SHA256"
+          echo "IMAGE_BYTES=$IMAGE_BYTES"
+          echo "CONFIG_SHA256=$CONFIG_SHA256"
+          echo "AK3_PIN=$AK3_PIN"
+          echo "RELEASE_SHA256=$RELEASE_SHA"
+          echo "RELEASE_BYTES=$RELEASE_BYTES"
+          echo "ZIP_AB_IDENTICAL=YES"
+          echo "MODULE_LOAD_FILTER_INCLUDED=NO_FROM_VERIFIED_W92"
+          echo "KERNEL_BUILD_PERFORMED=NO"
+          echo "BOOT_IMAGE_CREATED=NO"
+          echo "FLASHING_PERFORMED=NO"
+          echo "DEVICE_ACCESSED=NO"
+          echo "REAL_DEVICE_BOOT_TEST=NO"
+          echo "END_USER_ZIP_CLEAN=PASS"
+          echo "RELEASE_DIRECTORY_FILES=2"
+          echo "NEXT_STAGE=W94_GEN1_SUSFS_2.3_BOOT_IMAGE"
+
+      - name: Upload clean W93 end-user release only
+        uses: actions/upload-artifact@v6
+        with:
+          name: GEN1_W93_5.4.274_SUSFS_2.3_TRY_UMOUNT_CLEAN_VEUX-${{ github.run_number }}
+          if-no-files-found: error
+          retention-days: 90
+          path: |
+            gen1-w93-v2/release/VEUX_5.4.274_ReSukiSU_419E270B_SUSFS_2.3_TRY_UMOUNT_HyperOS_OS1.0.12.0_TKCMIXM_Android13_AnyKernel3.zip
+            gen1-w93-v2/release/VEUX_5.4.274_ReSukiSU_419E270B_SUSFS_2.3_TRY_UMOUNT_HyperOS_OS1.0.12.0_TKCMIXM_Android13_AnyKernel3.zip.sha256
