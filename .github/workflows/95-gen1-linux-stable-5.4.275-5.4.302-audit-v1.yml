@@ -1,0 +1,488 @@
+name: "GEN1 W95 · Linux 5.4.275-5.4.302 selective backport audit v1"
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  STABLE_REPO: https://github.com/gregkh/linux.git
+  STABLE_BRANCH: linux-5.4.y
+  STABLE_BASE: v5.4.274
+  STABLE_HEAD: v5.4.302
+  EXPECTED_STABLE_COMMIT_COUNT: "4467"
+  VENDOR_REPO: https://github.com/dereference23/kernel_xiaomi_sm6375.git
+  VENDOR_REF: "20240819"
+  VENDOR_START_SHA: 73abf25364481d3e0c43d951695aea69a8d05c58
+  VENDOR_KERNELVERSION: 5.4.274
+  VEUX_DTS: arch/arm64/boot/dts/vendor/qcom/veux.dts
+  VEUX_DEFCONFIG: arch/arm64/configs/vendor/veux_defconfig
+  OUT_DIR: w95-audit
+
+jobs:
+  audit:
+    name: Complete stable inventory + conservative VEUX triage
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+
+    steps:
+      - name: Record audit contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$OUT_DIR"
+          cat > "$OUT_DIR/AUDIT_CONTRACT.txt" <<'EOF'
+          W95_MODE=AUDIT_ONLY
+          PATCHES_APPLIED=NO
+          KERNEL_BUILD_PERFORMED=NO
+          BOOT_IMAGE_CREATED=NO
+          FLASHING_PERFORMED=NO
+          DEVICE_ACCESSED=NO
+          REAL_DEVICE_BOOT_TEST=NO
+          W94_MODIFIED=NO
+          RESUKISU_MODIFIED=NO
+          SUSFS_MODIFIED=NO
+          MODULE_LOAD_FILTER_ENABLED=NO
+          EOF
+
+      - name: Clone Linux stable 5.4.y
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --filter=blob:none --single-branch --branch "$STABLE_BRANCH" "$STABLE_REPO" stable
+          git -C stable fetch --force --no-tags origin \
+            "refs/tags/$STABLE_BASE:refs/tags/$STABLE_BASE" \
+            "refs/tags/$STABLE_HEAD:refs/tags/$STABLE_HEAD"
+          git -C stable rev-parse --verify "$STABLE_BASE^{commit}"
+          git -C stable rev-parse --verify "$STABLE_HEAD^{commit}"
+
+      - name: Verify complete stable range
+        shell: bash
+        run: |
+          set -euo pipefail
+          count="$(git -C stable rev-list --count "$STABLE_BASE..$STABLE_HEAD")"
+          printf 'STABLE_BASE=%s\nSTABLE_HEAD=%s\nSTABLE_COMMIT_COUNT=%s\n' \
+            "$STABLE_BASE" "$STABLE_HEAD" "$count" | tee "$OUT_DIR/STABLE_RANGE.txt"
+          if [ "$count" != "$EXPECTED_STABLE_COMMIT_COUNT" ]; then
+            echo "Unexpected stable commit count: expected $EXPECTED_STABLE_COMMIT_COUNT, got $count" >&2
+            exit 1
+          fi
+
+      - name: Clone VEUX vendor source and resolve exact 5.4.274 commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --filter=blob:none --single-branch --branch "$VENDOR_REF" "$VENDOR_REPO" vendor
+          git -C vendor checkout --detach HEAD
+          git -C vendor cat-file -e "$VENDOR_START_SHA^{commit}"
+
+          exact=""
+          scanned=0
+          while IFS= read -r sha; do
+            scanned=$((scanned + 1))
+            if ! git -C vendor cat-file -e "$sha:$VEUX_DTS" 2>/dev/null; then
+              continue
+            fi
+            if ! git -C vendor cat-file -e "$sha:$VEUX_DEFCONFIG" 2>/dev/null; then
+              continue
+            fi
+            kv="$(git -C vendor show "$sha:Makefile" 2>/dev/null | awk '
+              /^VERSION[[:space:]]*=/ {v=$3}
+              /^PATCHLEVEL[[:space:]]*=/ {p=$3}
+              /^SUBLEVEL[[:space:]]*=/ {s=$3}
+              END {if (v!="" && p!="" && s!="") print v "." p "." s}
+            ')"
+            if [ "$kv" = "$VENDOR_KERNELVERSION" ]; then
+              exact="$sha"
+              break
+            fi
+          done < <(git -C vendor rev-list --first-parent "$VENDOR_START_SHA")
+
+          if [ -z "$exact" ]; then
+            echo "Could not resolve exact VEUX 5.4.274 vendor commit" >&2
+            exit 1
+          fi
+
+          git -C vendor checkout --detach "$exact"
+          {
+            echo "VENDOR_REPO=$VENDOR_REPO"
+            echo "VENDOR_REF=$VENDOR_REF"
+            echo "VENDOR_START_SHA=$VENDOR_START_SHA"
+            echo "VENDOR_EXACT_SHA=$exact"
+            echo "VENDOR_KERNELVERSION=$VENDOR_KERNELVERSION"
+            echo "COMMITS_SCANNED=$scanned"
+            echo "VEUX_DTS=$VEUX_DTS"
+            echo "VEUX_DEFCONFIG=$VEUX_DEFCONFIG"
+          } | tee "$OUT_DIR/EXACT_SOURCE_PROVENANCE.txt"
+
+      - name: Build complete inventory and conservative VEUX triage
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > /tmp/w95_audit.py <<'PY'
+          import csv
+          import json
+          import os
+          import re
+          import subprocess
+          from collections import Counter
+          from pathlib import Path
+
+          STABLE = Path('stable')
+          VENDOR = Path('vendor')
+          OUT = Path(os.environ['OUT_DIR'])
+          BASE = os.environ['STABLE_BASE']
+          HEAD = os.environ['STABLE_HEAD']
+          EXPECTED = int(os.environ['EXPECTED_STABLE_COMMIT_COUNT'])
+
+          OUT.mkdir(parents=True, exist_ok=True)
+
+          def git(repo, *args, check=True):
+              p = subprocess.run(
+                  ['git', '-C', str(repo), *args],
+                  text=True,
+                  stdout=subprocess.PIPE,
+                  stderr=subprocess.PIPE,
+              )
+              if check and p.returncode != 0:
+                  raise RuntimeError(f"git {' '.join(args)} failed: {p.stderr.strip()}")
+              return p
+
+          def text(repo, *args):
+              return git(repo, *args).stdout
+
+          vendor_paths = set(text(VENDOR, 'ls-tree', '-r', '--name-only', 'HEAD').splitlines())
+
+          def paths_at_vendor(paths):
+              present = [p for p in paths if p in vendor_paths]
+              absent = [p for p in paths if p not in vendor_paths]
+              return present, absent
+
+          def classify(subject, body, paths):
+              s = (subject + '\n' + body + '\n' + '\n'.join(paths)).lower()
+              cats = set()
+
+              def any_path(prefixes):
+                  return any(p.startswith(prefixes) for p in paths)
+
+              if any_path(('security/',)) or any(x in s for x in (
+                  'cve-', 'security', 'privilege escalation', 'use-after-free', 'use after free',
+                  'out-of-bounds', 'out of bounds', 'double free', 'memory corruption', 'info leak',
+                  'information leak', 'selinux', 'lsm', 'permission bypass')):
+                  cats.add('SECURITY')
+              if any_path(('mm/',)) or any(x in s for x in (
+                  'use-after-free', 'use after free', 'out-of-bounds', 'out of bounds', 'slab',
+                  'page fault', 'refcount', 'memory leak', 'memory corruption', 'mm:')):
+                  cats.add('MEMORY')
+              if any_path(('fs/proc/',)) or 'procfs' in s or '/proc' in s:
+                  cats.add('PROCFS')
+              if any(p in {
+                  'fs/namespace.c', 'fs/mount.h', 'fs/pnode.c', 'fs/pnode.h'
+              } for p in paths) or re.search(r'\bmount namespace\b|\bumount\b|\bmount\b', s):
+                  cats.add('MOUNT')
+              vfs_files = {
+                  'fs/namei.c', 'fs/open.c', 'fs/file.c', 'fs/file_table.c', 'fs/dcache.c',
+                  'fs/inode.c', 'fs/stat.c', 'fs/read_write.c', 'fs/exec.c', 'include/linux/fs.h',
+                  'include/linux/namei.h', 'include/linux/mount.h'
+              }
+              if any(p in vfs_files for p in paths) or re.search(r'\bvfs\b|path lookup|namei', s):
+                  cats.add('VFS')
+              if any_path(('fs/',)) and not ({'PROCFS', 'MOUNT', 'VFS'} & cats):
+                  cats.add('FILESYSTEM')
+              if any_path(('arch/arm64/',)) or 'arm64:' in s or 'aarch64' in s:
+                  cats.add('ARM64')
+              if any_path(('net/', 'include/net/')) or re.search(r'\bnet:|network|tcp|udp|ipv4|ipv6|netfilter|nf_tables|socket', s):
+                  cats.add('NETWORK')
+              if any_path(('crypto/', 'include/crypto/')) or re.search(r'\bcrypto:|cryptographic|aes|sha[0-9]|chacha|poly1305', s):
+                  cats.add('CRYPTO')
+              if any_path(('drivers/android/',)) or re.search(r'\bandroid\b|\bbinder\b', s):
+                  cats.add('ANDROID')
+              if any_path(('drivers/',)):
+                  cats.add('DRIVER')
+              build_only = bool(paths) and all(
+                  p.startswith(('scripts/', 'tools/')) or
+                  p.endswith(('Makefile', 'Kconfig', '.mk')) or
+                  p in {'Makefile', 'Kconfig'}
+                  for p in paths
+              )
+              if build_only:
+                  cats.add('BUILD')
+
+              irrelevant_arch = ('arch/powerpc/', 'arch/s390/', 'arch/mips/', 'arch/riscv/', 'arch/x86/')
+              irrelevant_driver = (
+                  'drivers/gpu/drm/amd/', 'drivers/gpu/drm/i915/', 'drivers/infiniband/',
+                  'drivers/s390/', 'drivers/platform/x86/'
+              )
+              likely_veux_driver_prefixes = (
+                  'drivers/soc/qcom/', 'drivers/clk/qcom/', 'drivers/pinctrl/qcom/',
+                  'drivers/gpu/drm/msm/', 'drivers/firmware/qcom', 'drivers/remoteproc/',
+                  'drivers/rpmsg/', 'drivers/scsi/ufs/', 'drivers/iommu/', 'drivers/usb/',
+                  'drivers/mmc/', 'drivers/regulator/', 'drivers/thermal/', 'drivers/power/',
+                  'drivers/input/', 'drivers/staging/android/'
+              )
+              likely_veux_driver = any(p.startswith(likely_veux_driver_prefixes) for p in paths) or any(
+                  x in s for x in ('qcom', 'qualcomm', 'sm6375', 'msm drm', 'ufs:', 'remoteproc:', 'rpmsg:')
+              )
+              all_irrelevant_paths = bool(paths) and all(
+                  p.startswith(irrelevant_arch + irrelevant_driver) for p in paths
+              )
+              relevant = {'SECURITY', 'MEMORY', 'FILESYSTEM', 'VFS', 'PROCFS', 'MOUNT',
+                          'ARM64', 'NETWORK', 'CRYPTO', 'ANDROID'}
+              if all_irrelevant_paths or not (cats & relevant) and not likely_veux_driver:
+                  if all_irrelevant_paths or cats <= {'DRIVER', 'BUILD'}:
+                      cats.add('IRRELEVANT_FOR_VEUX')
+              return sorted(cats)
+
+          def score_candidate(cats, subject, body, paths, present_count):
+              score = 0
+              weights = {
+                  'SECURITY': 10, 'MEMORY': 8, 'VFS': 8, 'PROCFS': 8, 'MOUNT': 8,
+                  'ANDROID': 8, 'ARM64': 6, 'NETWORK': 5, 'CRYPTO': 5, 'FILESYSTEM': 4,
+              }
+              score += sum(weights.get(c, 0) for c in cats)
+              low = (subject + '\n' + body).lower()
+              for term, w in (
+                  ('use-after-free', 8), ('use after free', 8), ('out-of-bounds', 8),
+                  ('out of bounds', 8), ('race', 5), ('deadlock', 5), ('refcount', 5),
+                  ('rcu', 5), ('srcu', 5), ('memory corruption', 8), ('privilege', 7),
+                  ('selinux', 5), ('binder', 5), ('procfs', 4), ('mount', 3),
+              ):
+                  if term in low:
+                      score += w
+              score += min(present_count, 5)
+              likely_veux_driver_prefixes = (
+                  'drivers/soc/qcom/', 'drivers/clk/qcom/', 'drivers/pinctrl/qcom/',
+                  'drivers/gpu/drm/msm/', 'drivers/firmware/qcom', 'drivers/remoteproc/',
+                  'drivers/rpmsg/', 'drivers/scsi/ufs/', 'drivers/iommu/', 'drivers/usb/',
+                  'drivers/mmc/', 'drivers/regulator/', 'drivers/thermal/', 'drivers/power/',
+                  'drivers/input/', 'drivers/staging/android/'
+              )
+              if any(p.startswith(likely_veux_driver_prefixes) for p in paths) or any(
+                  x in low for x in ('qcom', 'qualcomm', 'sm6375', 'remoteproc:', 'rpmsg:', 'ufs:')
+              ):
+                  score += 6
+              if 'IRRELEVANT_FOR_VEUX' in cats:
+                  score -= 20
+              if len(paths) > 25:
+                  score -= 3
+              return score
+
+          version_map = {}
+          for n in range(275, 303):
+              prev = f'v5.4.{n-1}'
+              cur = f'v5.4.{n}'
+              for c in text(STABLE, 'rev-list', '--reverse', '--topo-order', f'{prev}..{cur}').splitlines():
+                  version_map.setdefault(c, cur)
+
+          def patch_check(sha, paths, present):
+              if not paths:
+                  return 'NO_FILE_CHANGES', 'N/A'
+              if not present:
+                  return 'CODE_ABSENT', 'LOW'
+
+              patch = git(STABLE, 'show', '--format=', '--binary', sha).stdout
+              if not patch.strip():
+                  return 'NO_PATCH', 'N/A'
+
+              env = os.environ.copy()
+              # Check only: never modify the vendor working tree.
+              rev = subprocess.run(
+                  ['git', '-C', str(VENDOR), 'apply', '--reverse', '--check', '--whitespace=nowarn', '-'],
+                  input=patch, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env
+              )
+              if rev.returncode == 0:
+                  return 'LIKELY_PRESENT_REVERSE_APPLY', 'LOW'
+
+              fwd = subprocess.run(
+                  ['git', '-C', str(VENDOR), 'apply', '--check', '--whitespace=nowarn', '-'],
+                  input=patch, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env
+              )
+              if fwd.returncode == 0:
+                  return 'MISSING_CLEAN_APPLY', 'LOW'
+
+              return 'DIVERGED_MANUAL_SEMANTIC_REVIEW', 'MEDIUM'
+
+          shas = [x for x in text(STABLE, 'rev-list', '--reverse', '--topo-order', f'{BASE}..{HEAD}').splitlines() if x]
+          if len(shas) != EXPECTED:
+              raise SystemExit(f'expected {EXPECTED} commits, got {len(shas)}')
+
+          fieldnames = [
+              'index', 'commit', 'linux_version', 'author_date', 'subject', 'categories',
+              'changed_files', 'paths', 'vendor_paths_present', 'vendor_paths_absent',
+              'candidate_score', 'fixes_trailers', 'cc_stable_trailer'
+          ]
+          inv_path = OUT / 'phaseA_complete_inventory.csv'
+          counts = Counter()
+          candidates = []
+
+          with inv_path.open('w', newline='', encoding='utf-8') as f:
+              w = csv.DictWriter(f, fieldnames=fieldnames)
+              w.writeheader()
+              for idx, sha in enumerate(shas, 1):
+                  meta = text(STABLE, 'show', '-s', '--format=%aI%n%s%n%B', sha).splitlines()
+                  author_date = meta[0] if meta else ''
+                  subject = meta[1] if len(meta) > 1 else ''
+                  body = '\n'.join(meta[2:])
+                  paths = [p for p in text(STABLE, 'diff-tree', '--no-commit-id', '--name-only', '-r', sha).splitlines() if p]
+                  cats = classify(subject, body, paths)
+                  for c in cats:
+                      counts[c] += 1
+                  present, absent = paths_at_vendor(paths)
+                  score = score_candidate(cats, subject, body, paths, len(present))
+                  fixes = re.findall(r'(?im)^Fixes:\s*(.+)$', body)
+                  ccstable = bool(re.search(r'(?im)^Cc:\s*stable@vger\.kernel\.org', body))
+                  row = {
+                      'index': idx,
+                      'commit': sha,
+                      'linux_version': version_map.get(sha, ''),
+                      'author_date': author_date,
+                      'subject': subject,
+                      'categories': ';'.join(cats),
+                      'changed_files': len(paths),
+                      'paths': ';'.join(paths),
+                      'vendor_paths_present': len(present),
+                      'vendor_paths_absent': len(absent),
+                      'candidate_score': score,
+                      'fixes_trailers': ' | '.join(fixes),
+                      'cc_stable_trailer': 'YES' if ccstable else 'NO',
+                  }
+                  w.writerow(row)
+                  if score > 0 and 'IRRELEVANT_FOR_VEUX' not in cats and present:
+                      candidates.append((score, sha, row, paths, present, absent, body))
+
+          with (OUT / 'phaseA_classification_counts.csv').open('w', newline='', encoding='utf-8') as f:
+              w = csv.writer(f)
+              w.writerow(['category', 'commit_count'])
+              for c, n in sorted(counts.items()):
+                  w.writerow([c, n])
+
+          # Conservative Phase B/C: patch-check only a broad, scored candidate pool.
+          candidates.sort(key=lambda x: (-x[0], x[1]))
+          triage_rows = []
+          for score, sha, row, paths, present, absent, body in candidates:
+              status, base_risk = patch_check(sha, paths, present)
+              cats = row['categories'].split(';') if row['categories'] else []
+              risk = base_risk
+              if status == 'DIVERGED_MANUAL_SEMANTIC_REVIEW':
+                  risk = 'HIGH' if any(c in cats for c in ('MEMORY', 'VFS', 'MOUNT', 'ANDROID')) else 'MEDIUM'
+              elif len(paths) > 12:
+                  risk = 'MEDIUM'
+
+              if status == 'LIKELY_PRESENT_REVERSE_APPLY':
+                  recommendation = 'SKIP_UNLESS_SEMANTIC_AUDIT_DISAGREES'
+                  already = 'LIKELY_YES'
+              elif status == 'CODE_ABSENT':
+                  recommendation = 'SKIP_CODE_ABSENT'
+                  already = 'N/A'
+              elif status == 'MISSING_CLEAN_APPLY':
+                  recommendation = 'REVIEW_FOR_FIRST_BACKPORT_BATCH'
+                  already = 'LIKELY_NO'
+              else:
+                  recommendation = 'MANUAL_SEMANTIC_REVIEW_BEFORE_DECISION'
+                  already = 'UNKNOWN_OR_PARTIAL'
+
+              fixes = row['fixes_trailers'] or ''
+              dependency = 'CHECK_FIXES_TRAILER' if fixes else 'NO_EXPLICIT_FIXES_TRAILER; MANUAL_DEPENDENCY_CHECK'
+              triage_rows.append({
+                  'commit': sha,
+                  'linux_version': row['linux_version'],
+                  'problem': row['subject'],
+                  'subsystem': row['categories'],
+                  'veux_relevance_score': score,
+                  'vendor_code_overlap': f"{len(present)}/{len(paths)} paths",
+                  'already_present': already,
+                  'evidence_status': status,
+                  'dependencies': dependency,
+                  'fixes_trailers': fixes,
+                  'backport_risk': risk,
+                  'recommendation': recommendation,
+              })
+
+          triage_fields = [
+              'commit', 'linux_version', 'problem', 'subsystem', 'veux_relevance_score',
+              'vendor_code_overlap', 'already_present', 'evidence_status', 'dependencies',
+              'fixes_trailers', 'backport_risk', 'recommendation'
+          ]
+          with (OUT / 'phaseBC_vendor_triage.csv').open('w', newline='', encoding='utf-8') as f:
+              w = csv.DictWriter(f, fieldnames=triage_fields)
+              w.writeheader()
+              w.writerows(triage_rows)
+
+          # Phase D is intentionally only a review queue, not an automatic backport decision.
+          reviewable = [r for r in triage_rows if r['recommendation'] == 'REVIEW_FOR_FIRST_BACKPORT_BATCH']
+          reviewable.sort(key=lambda r: (-int(r['veux_relevance_score']), r['backport_risk'], r['commit']))
+          phase_d = reviewable[:100]
+
+          with (OUT / 'phaseD_first_safe_candidate_list.csv').open('w', newline='', encoding='utf-8') as f:
+              w = csv.DictWriter(f, fieldnames=triage_fields)
+              w.writeheader()
+              w.writerows(phase_d)
+
+          with (OUT / 'phaseD_first_safe_candidate_list.md').open('w', encoding='utf-8') as f:
+              f.write('# W95 Phase D – first safe candidate review list\n\n')
+              f.write('This is an audit queue only. No patch was applied. Reverse/forward apply checks are evidence, not proof of semantic equivalence.\n\n')
+              f.write('| Commit | Linux-Version | Problem | Subsystem | VEUX-Relevanz | bereits vorhanden? | Abhängigkeiten | Risiko | Empfehlung |\n')
+              f.write('|---|---|---|---|---:|---|---|---|---|\n')
+              for r in phase_d:
+                  problem = r['problem'].replace('|', '\\|')
+                  f.write(
+                      f"| `{r['commit'][:12]}` | {r['linux_version']} | {problem} | {r['subsystem']} | "
+                      f"{r['veux_relevance_score']} | {r['already_present']} | {r['dependencies']} | "
+                      f"{r['backport_risk']} | {r['recommendation']} |\n"
+                  )
+
+          status_counts = Counter(r['evidence_status'] for r in triage_rows)
+          with (OUT / 'phaseA-D_summary.md').open('w', encoding='utf-8') as f:
+              f.write('# GEN1 W95 Linux-stable audit summary\n\n')
+              f.write(f'- Stable range: `{BASE}` .. `{HEAD}`\n')
+              f.write(f'- Complete stable commits inventoried: **{len(shas)}**\n')
+              f.write(f'- Broad VEUX candidate pool: **{len(triage_rows)}**\n')
+              f.write(f'- Phase D clean-apply review queue: **{len(reviewable)}** (top {len(phase_d)} exported)\n\n')
+              f.write('## Classification counts\n\n')
+              for c, n in sorted(counts.items()):
+                  f.write(f'- {c}: {n}\n')
+              f.write('\n## Vendor evidence statuses\n\n')
+              for c, n in sorted(status_counts.items()):
+                  f.write(f'- {c}: {n}\n')
+              f.write('\n## Interpretation guardrails\n\n')
+              f.write('- `LIKELY_PRESENT_REVERSE_APPLY` is strong textual evidence, not semantic proof.\n')
+              f.write('- `MISSING_CLEAN_APPLY` means the upstream patch can apply cleanly to the vendor baseline; it still requires dependency and semantic review before any backport.\n')
+              f.write('- `DIVERGED_MANUAL_SEMANTIC_REVIEW` may mean vendor equivalent, partial fix, different implementation, or a genuinely missing fix with context drift.\n')
+              f.write('- No W94/ReSukiSU/SUSFS source was modified by this workflow.\n')
+
+          json_summary = {
+              'stable_base': BASE,
+              'stable_head': HEAD,
+              'complete_commit_count': len(shas),
+              'classification_counts': dict(sorted(counts.items())),
+              'broad_candidate_count': len(triage_rows),
+              'evidence_status_counts': dict(sorted(status_counts.items())),
+              'phase_d_clean_apply_count': len(reviewable),
+              'phase_d_exported_count': len(phase_d),
+          }
+          (OUT / 'summary.json').write_text(json.dumps(json_summary, indent=2, sort_keys=True) + '\n', encoding='utf-8')
+          PY
+          python3 /tmp/w95_audit.py
+
+      - name: Hash audit outputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          (
+            cd "$OUT_DIR"
+            sha256sum * > SHA256SUMS.txt
+          )
+          cat "$OUT_DIR/phaseA-D_summary.md"
+          echo
+          cat "$OUT_DIR/EXACT_SOURCE_PROVENANCE.txt"
+          echo
+          cat "$OUT_DIR/AUDIT_CONTRACT.txt"
+
+      - name: Upload W95 audit artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: GEN1_W95_LINUX_STABLE_5.4.275_5.4.302_AUDIT_v1
+          path: w95-audit/
+          if-no-files-found: error
+          retention-days: 30
