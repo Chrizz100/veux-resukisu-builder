@@ -1,0 +1,463 @@
+name: 95 - GEN1 DIAG W91 SUSFS 2.2 TRY_UMOUNT Boot.img v1
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  W91_RUN_ID: "33301281813"
+  W91_RUN_HEAD_SHA: "75d3ef7524faa8f6dd08618be8eb441215f71376"
+  W91_WORKFLOW_PATH: ".github/workflows/91-gen1-5.4.274-susfs-try-umount-isolated-compat-build-v7(1).yml"
+  W91_ARTIFACT_ID: "9729439395"
+  W91_ARTIFACT_NAME: "GEN1_W91_5.4.274_SUSFS_TRY_UMOUNT_ISOLATED_v7-1"
+  W91_ARTIFACT_SHA256: "7b21cf32d663b48839160f47b4b790537a46fdada581e83b8b58934d95a4966a"
+
+  IMAGE_FILE: "GEN1_W91_Image"
+  CONFIG_FILE: "GEN1_W91_config"
+  IMAGE_SHA256: "3fb447a5767939102079c993fea2e38d05715bb0bc2e4d6ba1538c7f0e3d7f9d"
+  IMAGE_BYTES: "29843968"
+  CONFIG_SHA256: "a27c7cdd86bf7e7eb6a5ef515c28fab8d9a19a26b430694e582b339800db62ee"
+  CONFIG_BYTES: "157435"
+  RESUKISU_COMMIT: "419e270b50ad61725185dec74f438b8cb59c6889"
+  SUSFS_VERSION: "2.2"
+  TRY_UMOUNT_SOURCE_COMMIT: "53aa7a21937c3dde100de6366118b5e49a9861c2"
+  W90_WORKFLOW_PATH: ".github/workflows/90-gen1-5.4.274-resukisu-419e270b-final-boot-img-v1.yml"
+  W90_WORKFLOW_BLOB_SHA1: "e1f14a1a163bb0fe8e67e2ed3e07b74e3046630b"
+  W90_IMAGE_SHA256: "d0f7abcc526ec63413236fd440cef2d9fb6cc3819ce656b1b49efde7d65cda04"
+  W90_BOOT_SHA256: "98e12c49bd20dcb5f780ac0358b6fadc06c27843999052a2bf0ad1b362c55eee"
+
+
+  STOCK_RAMDISK_SHA256: "0bc8b54373b5501818e8b252517419786db207771047b6def7ec9bc89beb607a"
+  FINAL_BOOT_NAME: "VEUX_5.4.274_ReSukiSU_419E270B_SUSFS_2.2_TRY_UMOUNT_HyperOS_OS1.0.12.0_TKCMIXM_Android13_DIAG_BOOT.img"
+  WORK: ${{ github.workspace }}/gen1-w95-diag-w91
+
+jobs:
+  final-boot:
+    name: Repack diagnostic W91 SUSFS 2.2 TRY_UMOUNT boot.img with proven W90 method
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    steps:
+      - name: Verify runner tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          for tool in gh jq git unzip zip gzip sha256sum stat find grep awk cmp python3; do
+            command -v "$tool" >/dev/null
+          done
+          python3 -m pip --version >/dev/null
+
+      - name: Checkout repository for provenance
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Prepare isolated W95 diagnostic workspace
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$WORK"
+          mkdir -p \
+            "$WORK/input" \
+            "$WORK/w91" \
+            "$WORK/w21" \
+            "$WORK/oldpkg" \
+            "$WORK/build" \
+            "$WORK/release" \
+            "$WORK/audit"
+
+      - name: Authenticate exact historical W91-v7 workflow source
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git cat-file -e "$W91_RUN_HEAD_SHA:$W91_WORKFLOW_PATH"
+          git show "$W91_RUN_HEAD_SHA:$W91_WORKFLOW_PATH" > "$WORK/input/w91-workflow.yml"
+
+          grep -Fxq \
+            'name: 91 - GEN1 5.4.274 SUSFS TRY_UMOUNT Isolated Compatibility Build v7' \
+            "$WORK/input/w91-workflow.yml"
+          grep -Fq "$IMAGE_SHA256" "$WORK/input/w91-workflow.yml"
+          grep -Fq "$CONFIG_SHA256" "$WORK/input/w91-workflow.yml"
+          grep -Fq "$RESUKISU_COMMIT" "$WORK/input/w91-workflow.yml"
+          grep -Fq "$TRY_UMOUNT_SOURCE_COMMIT" "$WORK/input/w91-workflow.yml"
+          grep -Fq 'SUSFS_VERSION=2.2' "$WORK/input/w91-workflow.yml"
+          grep -Fq 'CONFIG_KSU_SUSFS_TRY_UMOUNT=y' "$WORK/input/w91-workflow.yml"
+
+          echo "W91_WORKFLOW_SOURCE_AUTH=PASS"
+
+      - name: Authenticate exact successful W91-v7 run and artifact
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          RUN_JSON="$WORK/input/w91-run.json"
+          ART_JSON="$WORK/input/w91-artifact.json"
+
+          gh api -H "Accept: application/vnd.github+json" \
+            "/repos/${GITHUB_REPOSITORY}/actions/runs/${W91_RUN_ID}" > "$RUN_JSON"
+
+          test "$(jq -r '.id' "$RUN_JSON")" = "$W91_RUN_ID"
+          test "$(jq -r '.status' "$RUN_JSON")" = "completed"
+          test "$(jq -r '.conclusion' "$RUN_JSON")" = "success"
+          test "$(jq -r '.path' "$RUN_JSON")" = "$W91_WORKFLOW_PATH"
+          test "$(jq -r '.head_sha' "$RUN_JSON")" = "$W91_RUN_HEAD_SHA"
+
+          gh api -H "Accept: application/vnd.github+json" \
+            "/repos/${GITHUB_REPOSITORY}/actions/artifacts/${W91_ARTIFACT_ID}" > "$ART_JSON"
+
+          test "$(jq -r '.id' "$ART_JSON")" = "$W91_ARTIFACT_ID"
+          test "$(jq -r '.name' "$ART_JSON")" = "$W91_ARTIFACT_NAME"
+          test "$(jq -r '.expired' "$ART_JSON")" = "false"
+          test "$(jq -r '.workflow_run.id' "$ART_JSON")" = "$W91_RUN_ID"
+          test "$(jq -r '.workflow_run.head_sha' "$ART_JSON")" = "$W91_RUN_HEAD_SHA"
+          test "$(jq -r '.digest' "$ART_JSON")" = "sha256:${W91_ARTIFACT_SHA256}"
+
+          echo "W91_V7_RUN_ARTIFACT_AUTH=PASS"
+
+      - name: Download exact W91-v7 artifact and recover Image
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          gh api -H "Accept: application/vnd.github+json" \
+            "/repos/${GITHUB_REPOSITORY}/actions/artifacts/${W91_ARTIFACT_ID}/zip" \
+            > "$WORK/input/w91-outer.zip"
+
+          echo "$W91_ARTIFACT_SHA256  $WORK/input/w91-outer.zip" | sha256sum -c -
+          unzip -t "$WORK/input/w91-outer.zip" >/dev/null
+          unzip -q "$WORK/input/w91-outer.zip" -d "$WORK/w91"
+
+          test -s "$WORK/w91/$IMAGE_FILE"
+          test -s "$WORK/w91/$CONFIG_FILE"
+          test "$(stat -c '%s' "$WORK/w91/$IMAGE_FILE")" = "$IMAGE_BYTES"
+          test "$(stat -c '%s' "$WORK/w91/$CONFIG_FILE")" = "$CONFIG_BYTES"
+          echo "$IMAGE_SHA256  $WORK/w91/$IMAGE_FILE" | sha256sum -c -
+          echo "$CONFIG_SHA256  $WORK/w91/$CONFIG_FILE" | sha256sum -c -
+
+          cp "$WORK/w91/$IMAGE_FILE" "$WORK/input/new-Image"
+          cmp -s "$WORK/w91/$IMAGE_FILE" "$WORK/input/new-Image"
+
+          echo "W91_IMAGE_RECOVERED=PASS"
+          echo "W91_SUSFS_VERSION=2.2"
+          echo "W91_TRY_UMOUNT=YES"
+
+      - name: Authenticate exact proven W90 repack workflow blob
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git cat-file -e "${W90_WORKFLOW_BLOB_SHA1}^{blob}"
+          git cat-file blob "$W90_WORKFLOW_BLOB_SHA1" > "$WORK/input/w90-workflow.yml"
+
+          test "$(git hash-object "$WORK/input/w90-workflow.yml")" = "$W90_WORKFLOW_BLOB_SHA1"
+          grep -Fxq \
+            'name: 90 - GEN1 5.4.274 ReSukiSU 419e270b Final boot.img v1' \
+            "$WORK/input/w90-workflow.yml"
+          grep -Fq "$W90_IMAGE_SHA256" "$WORK/input/w90-workflow.yml"
+          grep -Fq "$STOCK_RAMDISK_SHA256" "$WORK/input/w90-workflow.yml"
+
+          python3 -m pip install \
+            --disable-pip-version-check \
+            --no-input \
+            'PyYAML==6.0.2'
+
+          cat > "$WORK/input/run-w90-step.py" <<'PY'
+          import os
+          import subprocess
+          import sys
+          from pathlib import Path
+          import yaml
+
+          if len(sys.argv) != 2:
+              raise SystemExit("usage: run-w90-step.py <exact-step-name>")
+
+          workflow = Path(os.environ["WORK"]) / "input" / "w90-workflow.yml"
+          doc = yaml.load(workflow.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
+          steps = doc["jobs"]["boot-image"]["steps"]
+
+          name = sys.argv[1]
+          matches = [s for s in steps if s.get("name") == name]
+          if len(matches) != 1:
+              raise SystemExit(f"expected one W90 step {name!r}, got {len(matches)}")
+
+          script = matches[0].get("run")
+          if not script:
+              raise SystemExit(f"W90 step {name!r} has no run block")
+
+          if os.environ.get("W95_ADAPT_IMAGE") == "1":
+              old = os.environ["W90_IMAGE_SHA256"]
+              new = os.environ["IMAGE_SHA256"]
+              count = script.count(old)
+              if count != 1:
+                  raise SystemExit(
+                      f"expected exactly one W90 Image hash in {name!r}, got {count}"
+                  )
+              script = script.replace(old, new)
+              if old in script:
+                  raise SystemExit("old W90 Image hash survived adaptation")
+
+          if os.environ.get("W95_ADAPT_REPORT") == "1":
+              script = script.replace(
+                  "FINAL_RESULT=PASS_GEN1_W90_BOOT_IMG",
+                  "FINAL_RESULT=PASS_GEN1_W95_DIAG_W91_BOOT_IMG",
+              )
+
+          print(f"=== REPLAY_W90_STEP: {name} ===", flush=True)
+          subprocess.run(
+              ["bash", "-euo", "pipefail", "-c", script],
+              check=True,
+              env=os.environ.copy(),
+          )
+          PY
+
+          python3 -m py_compile "$WORK/input/run-w90-step.py"
+
+          echo "W90_REPACK_WORKFLOW_BLOB_AUTH=PASS"
+
+      - name: Import exact W90 historical boot-input contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - "$WORK/input/w90-workflow.yml" "$GITHUB_ENV" <<'PY'
+          import sys
+          from pathlib import Path
+          import yaml
+
+          workflow = Path(sys.argv[1])
+          out = Path(sys.argv[2])
+
+          doc = yaml.load(workflow.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
+          env = doc["jobs"]["boot-image"]["env"]
+
+          keys = [
+              "W21_ARTIFACT_NAME",
+              "W21_FINAL_ZIP_NAME",
+              "W21_FINAL_ZIP_SHA256",
+              "W21_FINAL_ZIP_BYTES",
+              "STOCK_BOOT_SHA256",
+              "STOCK_BOOT_BYTES",
+              "STOCK_RAMDISK_SHA256",
+              "ROLLBACK_GZIP_SHA256",
+              "OLD_CUSTOM_BOOT_SHA256",
+              "OLD_KERNEL_SHA256",
+              "OLD_KERNEL_BYTES",
+          ]
+
+          missing = [k for k in keys if k not in env]
+          if missing:
+              raise SystemExit("missing W90 env keys: " + ", ".join(missing))
+
+          with out.open("a", encoding="utf-8") as f:
+              for key in keys:
+                  value = str(env[key])
+                  if "\n" in value or "\r" in value:
+                      raise SystemExit(f"unsafe multiline W90 env value: {key}")
+                  f.write(f"{key}={value}\n")
+
+          print("W90_HISTORICAL_ENV_IMPORT=PASS")
+          PY
+
+      - name: Replay exact W90 historical calibrated HyperOS boot recovery
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 "$WORK/input/run-w90-step.py" \
+            "Recover exact historical calibrated HyperOS boot inputs"
+
+      - name: Reconstruct W95 diagnostic Boot v3 twice with exact W91 Image
+        shell: bash
+        env:
+          W95_ADAPT_IMAGE: "1"
+        run: |
+          set -euo pipefail
+
+          python3 "$WORK/input/run-w90-step.py" \
+            "Reconstruct calibrated Boot v3 twice with W88-v3 kernel"
+
+          cmp -s "$WORK/build/boot-A.img" "$WORK/build/boot-B.img"
+
+          echo "W95_BOOT_A_B_IDENTICAL=YES"
+          echo "W90_REPACK_METHOD_REUSED=YES"
+          echo "W90_FUNCTIONAL_ADAPTATION=IMAGE_HASH_ONLY"
+
+      - name: Replay W90 independent boot audit with W91 Image contract
+        shell: bash
+        env:
+          W95_ADAPT_IMAGE: "1"
+          W95_ADAPT_REPORT: "1"
+        run: |
+          set -euo pipefail
+
+          python3 "$WORK/input/run-w90-step.py" \
+            "Independently audit final boot.img"
+
+          echo "$IMAGE_SHA256  $WORK/input/new-Image" | sha256sum -c -
+          echo "W95_W90_AUDIT_ADAPTED=PASS"
+
+      - name: Promote diagnostic W95/W91 boot image and final independent contract
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SRC="$WORK/release/boot.img"
+          DST="$WORK/release/$FINAL_BOOT_NAME"
+
+          test -s "$SRC"
+          mv "$SRC" "$DST"
+          rm -f "$WORK/release/boot.img.sha256"
+
+          (
+            cd "$WORK/release"
+            sha256sum "$FINAL_BOOT_NAME" > "$FINAL_BOOT_NAME.sha256"
+            sha256sum -c "$FINAL_BOOT_NAME.sha256"
+          )
+
+          test "$(find "$WORK/release" -maxdepth 1 -type f | wc -l)" -eq 2
+          test "$(stat -c '%s' "$DST")" = "134217728"
+
+          python3 - "$DST" "$WORK/input/new-Image" <<'PY'
+          import hashlib
+          import struct
+          import sys
+          from pathlib import Path
+
+          boot = Path(sys.argv[1]).read_bytes()
+          image = Path(sys.argv[2]).read_bytes()
+
+          EXPECT_IMAGE = "3fb447a5767939102079c993fea2e38d05715bb0bc2e4d6ba1538c7f0e3d7f9d"
+          EXPECT_RAMDISK = "0bc8b54373b5501818e8b252517419786db207771047b6def7ec9bc89beb607a"
+          OLD_W90_BOOT = "98e12c49bd20dcb5f780ac0358b6fadc06c27843999052a2bf0ad1b362c55eee"
+
+          def sha(data):
+              return hashlib.sha256(data).hexdigest()
+
+          def need(cond, msg):
+              if not cond:
+                  raise SystemExit("ERROR: " + msg)
+
+          need(len(boot) == 134217728, "W95 diagnostic boot size")
+          need(boot[:8] == b"ANDROID!", "Android boot magic")
+
+          kernel_size = struct.unpack_from("<I", boot, 8)[0]
+          ramdisk_size = struct.unpack_from("<I", boot, 12)[0]
+          header_size = struct.unpack_from("<I", boot, 20)[0]
+          header_version = struct.unpack_from("<I", boot, 40)[0]
+
+          need(kernel_size == 29843968, "kernel size")
+          need(ramdisk_size == 22061278, "ramdisk size")
+          need(header_size == 1580, "header size")
+          need(header_version == 3, "header version")
+
+          ramdisk_offset = 29851648
+          kernel = boot[4096:4096 + kernel_size]
+          ramdisk = boot[ramdisk_offset:ramdisk_offset + ramdisk_size]
+
+          need(kernel == image, "embedded W91 Image byte identity")
+          need(sha(kernel) == EXPECT_IMAGE, "embedded W91 Image hash")
+          need(sha(ramdisk) == EXPECT_RAMDISK, "stock ramdisk hash")
+          need(sha(boot) != OLD_W90_BOOT, "W95 diagnostic boot must differ from W90")
+
+          footer = boot[-64:]
+          need(footer[:4] == b"AVBf", "AVB footer magic")
+          major, minor = struct.unpack_from(">II", footer, 4)
+          original, vbmeta_offset, vbmeta_size = struct.unpack_from(">QQQ", footer, 12)
+
+          need((major, minor) == (1, 0), "AVB footer version")
+          need(original == 51916800, "AVB original size")
+          need(vbmeta_offset == 51916800, "AVB vbmeta offset")
+          need(vbmeta_size == 896, "AVB vbmeta size")
+
+          vbmeta = boot[vbmeta_offset:vbmeta_offset + vbmeta_size]
+          need(vbmeta[:4] == b"AVB0", "embedded AVB0")
+          need(struct.unpack_from(">I", vbmeta, 28)[0] == 0, "vbmeta algorithm NONE")
+
+          auth_size, aux_size = struct.unpack_from(">QQ", vbmeta, 12)
+          vals = struct.unpack_from(">QQQQQQQQQQQ", vbmeta, 32)
+          desc_off, desc_size = vals[8], vals[9]
+          pos = 256 + auth_size + desc_off
+          end = pos + desc_size
+          found = None
+
+          while pos < end:
+              tag, following = struct.unpack_from(">QQ", vbmeta, pos)
+              raw = vbmeta[pos:pos + 16 + following]
+              need(len(raw) == 16 + following, "descriptor length")
+              if tag == 2:
+                  image_size = struct.unpack_from(">Q", raw, 16)[0]
+                  algo = raw[24:56].split(b"\0", 1)[0].decode()
+                  name_len, salt_len, digest_len, _ = struct.unpack_from(">IIII", raw, 56)
+                  q = 132
+                  name = raw[q:q + name_len].decode()
+                  q += name_len
+                  salt = raw[q:q + salt_len]
+                  q += salt_len
+                  digest = raw[q:q + digest_len]
+                  if name == "boot":
+                      need(found is None, "duplicate boot descriptor")
+                      found = (image_size, algo, salt, digest)
+              pos += 16 + following
+
+          need(found is not None, "boot hash descriptor")
+          image_size, algo, salt, digest = found
+          need(algo == "sha256", "boot hash algorithm")
+          need(image_size == 51916800, "boot descriptor image size")
+          need(hashlib.sha256(salt + boot[:image_size]).digest() == digest,
+               "embedded AVB boot digest")
+
+          print("W95_DIAG_BOOT_CONTRACT=PASS")
+          print("BOOT_SHA256=" + sha(boot))
+          print("BOOT_BYTES=" + str(len(boot)))
+          print("EMBEDDED_W91_IMAGE_SHA256=" + sha(kernel))
+          print("STOCK_RAMDISK_SHA256=" + sha(ramdisk))
+          print("BOOT_HEADER_VERSION=3")
+          print("EMBEDDED_AVB_HASH_VALID=YES")
+          print("W95_DIFFERS_FROM_W90=YES")
+          PY
+
+          BOOT_SHA="$(sha256sum "$DST" | awk '{print $1}')"
+
+          echo "FINAL_RESULT=PASS_GEN1_W95_DIAG_W91_SUSFS_2.2_TRY_UMOUNT_BOOT_IMG"
+          echo "DEVICE_SCOPE=VEUX"
+          echo "KERNEL_VERSION=5.4.274"
+          echo "ANDROID_VERSION=13"
+          echo "ROM_TARGET=HyperOS_OS1.0.12.0.TKCMIXM"
+          echo "RESUKISU_PIN=$RESUKISU_COMMIT"
+          echo "SUSFS_VERSION=2.2"
+          echo "TRY_UMOUNT=YES"
+          echo "MODULE_LOAD_FILTER_INCLUDED=NO_FROM_VERIFIED_W91"
+          echo "W91_RUN_ID=$W91_RUN_ID"
+          echo "W91_ARTIFACT_ID=$W91_ARTIFACT_ID"
+          echo "W91_ARTIFACT_SHA256=$W91_ARTIFACT_SHA256"
+          echo "IMAGE_SHA256=$IMAGE_SHA256"
+          echo "STOCK_RAMDISK_SHA256=$STOCK_RAMDISK_SHA256"
+          echo "BOOT_SHA256=$BOOT_SHA"
+          echo "BOOT_BYTES=$(stat -c '%s' "$DST")"
+          echo "BOOT_A_B_IDENTICAL=YES"
+          echo "W90_REPACK_METHOD_REUSED=YES"
+          echo "KERNEL_BUILD_PERFORMED=NO"
+          echo "FLASHING_PERFORMED=NO"
+          echo "DEVICE_ACCESSED=NO"
+          echo "REAL_DEVICE_BOOT_TEST=NO"
+          echo "DIAGNOSTIC_PURPOSE=ISOLATE_TRY_UMOUNT_VS_SUSFS_2_3"
+
+      - name: Upload diagnostic W91 boot image only
+        uses: actions/upload-artifact@v6
+        with:
+          name: GEN1_W95_DIAG_W91_5.4.274_SUSFS_2.2_TRY_UMOUNT_BOOT_v1-${{ github.run_number }}
+          path: |
+            gen1-w95-diag-w91/release/VEUX_5.4.274_ReSukiSU_419E270B_SUSFS_2.2_TRY_UMOUNT_HyperOS_OS1.0.12.0_TKCMIXM_Android13_DIAG_BOOT.img
+            gen1-w95-diag-w91/release/VEUX_5.4.274_ReSukiSU_419E270B_SUSFS_2.2_TRY_UMOUNT_HyperOS_OS1.0.12.0_TKCMIXM_Android13_DIAG_BOOT.img.sha256
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 0
