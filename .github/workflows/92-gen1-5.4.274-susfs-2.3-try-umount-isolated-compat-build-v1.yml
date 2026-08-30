@@ -1,0 +1,935 @@
+name: 92 - GEN1 5.4.274 SUSFS 2.3 + TRY_UMOUNT Isolated Compatibility Build v1
+permissions:
+  contents: read
+  actions: read
+jobs:
+  susfs-23-compat:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    env:
+      ARCH: arm64
+      W88_PATH: .github/workflows/88-gen1-5.4.274-resukisu-419e270b-update-repro-build-v3.yml
+      RECIPE_PATH: .github/workflows/46C7-final-cumulative-resukisu-susfs-deterministic-cross-run-reference.yml
+      W65_PATH: .github/workflows/65-kernelsu-v0.9.5-susfs-2.2.0-cross-run-reproducibility-v1.yml
+      RECIPE_JOB: full-build
+      RECIPE_STOP_STEP: '27'
+      BASE_REF: faccf4c5edc7be37776216e7d43dd3dca0239331
+      PREVIOUS_REF: 4a3785025a920e4f52584f14c663eea4850dc919
+      TARGET_REF: 419e270b50ad61725185dec74f438b8cb59c6889
+      SUCOMPAT_REFACTOR: 75b99e3e2f312377fc9e5d3720324c0caaf1e610
+      EXECVEAT_SUPPORT: 9671b9d11e459467d41884c98e1366b13aaae2cc
+      OLD_HOOK_COMPAT: cc44ff62d9dc8b84dbd7c3e4d2703f6a6fb844c3
+      SUSFS_SYNC: 03b60f260cce36f23efbd26c9c334edfdc9ce7eb
+      INPUT_HOOK_STABILITY: 4a3785025a920e4f52584f14c663eea4850dc919
+      SELINUX_HIDE_UPDATE: 6f50cba2a3919cfcec9f9061580a04588fb465b7
+      WEBVIEW_ZYGOTE_UPDATE: 419e270b50ad61725185dec74f438b8cb59c6889
+      BUILDER_DIR: ${{ github.workspace }}/builder-repo
+      DRIVER_DIR: ${{ github.workspace }}/w92-driver
+      ARTIFACT_DIR: ${{ github.workspace }}/w92-artifact
+      PATCH_DIR: ${{ github.workspace }}/w92-patches
+      COMPACT_DIR: ${{ github.workspace }}/w92-compact
+      OUT_DIR_NAME: out-w92
+      KBUILD_BUILD_USER: w68
+      KBUILD_BUILD_HOST: veux-w68
+      KBUILD_BUILD_TIMESTAMP: Tue Aug 25 00:00:00 UTC 2026
+      KBUILD_BUILD_VERSION: '1'
+      SOURCE_DATE_EPOCH: '1787616000'
+      TZ: UTC
+      LANG: C.UTF-8
+      LC_ALL: C.UTF-8
+      TRY_UMOUNT_SOURCE_COMMIT: 53aa7a21937c3dde100de6366118b5e49a9861c2
+      TRY_UMOUNT_PATCH_PATH: Patches/Patch/susfs_restore_try_umount.patch
+      TRY_UMOUNT_PATCH_BLOB_SHA1: d149c87cda0a7cb50293f6b69593c77625db2604
+      W88_RUN_ID: '33252124378'
+      W88_ARTIFACT_ID: '9715115041'
+      W88_ARTIFACT_NAME: GEN1_W88_5.4.274_ReSukiSU_419E270B_COMPACT-1
+      W88_ARTIFACT_SHA256: 25ec48457888386430604cab9fb20c91f778ae30672d90d2955bb38ca3fa080c
+      W88_IMAGE_SHA256: d0f7abcc526ec63413236fd440cef2d9fb6cc3819ce656b1b49efde7d65cda04
+      W88_IMAGE_BYTES: '29843968'
+      W88_CONFIG_SHA256: d7cd955abd59da45804acc9c5e450cf8fc953da3e66bbc274212b40ee9a0b372
+      SUSFS23_DIR: ${{ github.workspace }}/susfs23-official
+      SUSFS23_BRANCH: gki-android12-5.10
+      SUSFS22_COMMIT: d4c3914bc2e4b538d562193a65e5a11a0289d6ea
+      SUSFS23_COMMIT: fb16b41a65180979f05eac837681c4dd0addffd1
+      SUSFS23_EXPECTED_COMMITS: '21'
+      W91_IMAGE_SHA256: 3fb447a5767939102079c993fea2e38d05715bb0bc2e4d6ba1538c7f0e3d7f9d
+      W91_CONFIG_SHA256: a27c7cdd86bf7e7eb6a5ef515c28fab8d9a19a26b430694e582b339800db62ee
+      W91_IMAGE_BYTES: '29843968'
+    steps:
+    - name: Install W92 dependencies
+      shell: bash
+      timeout-minutes: 15
+      run: |
+        set -euo pipefail
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends \
+          bc bison build-essential ca-certificates cpio curl flex git jq \
+          libelf-dev libncurses-dev libssl-dev patch python3 python3-pip \
+          rsync xz-utils zstd
+
+        python3 -m pip install \
+          --disable-pip-version-check \
+          --no-input \
+          'PyYAML==6.0.2'
+    - name: Checkout builder repository
+      uses: actions/checkout@v6
+      with:
+        path: builder-repo
+        fetch-depth: 0
+    - name: Checkout ReSukiSU 419e270b target
+      uses: actions/checkout@v6
+      with:
+        repository: ReSukiSU/ReSukiSU
+        ref: ${{ env.TARGET_REF }}
+        path: ReSukiSU-target
+        fetch-depth: 0
+    - name: Initialize W92 and exact W91 source reconstruction
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        rm -rf \
+          "$DRIVER_DIR" \
+          "$ARTIFACT_DIR" \
+          "$PATCH_DIR" \
+          "$COMPACT_DIR" \
+          "$GITHUB_WORKSPACE/w72-build-a"
+
+        mkdir -p \
+          "$DRIVER_DIR" \
+          "$ARTIFACT_DIR" \
+          "$PATCH_DIR" \
+          "$COMPACT_DIR"
+
+        W88="$BUILDER_DIR/$W88_PATH"
+        test -s "$W88"
+        test "$(sha256sum "$W88" | awk '{print $1}')" = \
+          "2863ba87b06cf0865a2398bf1416c8b0d89685834a85f59b91807e355c6d7de3" || {
+            echo "ERROR: W88-v3 workflow content changed; refusing replay" >&2
+            sha256sum "$W88" >&2
+            exit 1
+          }
+
+        cat > "$BUILDER_DIR/.w92-run-w88-step.py" <<'PY'
+        import os
+        import subprocess
+        import sys
+        from pathlib import Path
+        import yaml
+
+        if len(sys.argv) != 2:
+            raise SystemExit("usage: w92-run-w88-step.py <exact-step-name>")
+
+        workflow = Path(os.environ["BUILDER_DIR"]) / os.environ["W88_PATH"]
+        doc = yaml.load(workflow.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
+        steps = doc["jobs"]["integrate-compile"]["steps"]
+
+        name = sys.argv[1]
+        matches = [s for s in steps if s.get("name") == name]
+        if len(matches) != 1:
+            raise SystemExit(f"expected exactly one W88 step {name!r}, got {len(matches)}")
+
+        script = matches[0].get("run")
+        if not script:
+            raise SystemExit(f"W88 step {name!r} has no run block")
+
+        print(f"=== REPLAY_W88_STEP: {name} ===", flush=True)
+        subprocess.run(
+            ["bash", "-euo", "pipefail", "-c", script],
+            check=True,
+            env=os.environ.copy(),
+        )
+        PY
+
+        python3 -m py_compile "$BUILDER_DIR/.w92-run-w88-step.py"
+
+        cat > "$ARTIFACT_DIR/00-plan.txt" <<EOF
+        W92_GEN1_5.4.274_SUSFS_2.3_TRY_UMOUNT_ISOLATED_TEST
+        BASELINE=W91_SOURCE_STATE
+        RESUKISU_PIN=$TARGET_REF
+        BASE_SUSFS_VERSION=2.2.0
+        TARGET_SUSFS_VERSION=2.3.0
+        OFFICIAL_SUSFS_BRANCH=$SUSFS23_BRANCH
+        OFFICIAL_SUSFS_2_2_COMMIT=$SUSFS22_COMMIT
+        OFFICIAL_SUSFS_2_3_COMMIT=$SUSFS23_COMMIT
+        TRY_UMOUNT=RETAINED_FROM_W91
+        NORMAL_ZYGOTE_TRY_UMOUNT=YES
+        ZYGOTE_NEXT_DIRECT_TRY_UMOUNT=NO_INTENTIONALLY
+        KERNELSU_3_3_WHOLESALE_SYNC=NO
+        RESUKISU_419E270B_PRESERVED=YES
+        MODULE_LOAD_FILTER=EXCLUDED
+        BOOT_IMAGE_CREATED=NO
+        FLASHABLE_ZIP_CREATED=NO
+        DEVICE_ACCESSED=NO
+        FLASHING_PERFORMED=NO
+        EOF
+    - name: Replay W88 input authentication
+      shell: bash
+      run: |
+        set -euo pipefail
+        python3 "$BUILDER_DIR/.w92-run-w88-step.py" \
+          "Authenticate W88 inputs"
+    - name: Replay proven W65 staging driver
+      shell: bash
+      run: |
+        set -euo pipefail
+        python3 "$BUILDER_DIR/.w92-run-w88-step.py" \
+          "Reuse proven W65 staging driver"
+    - name: Replay exact 46C7 staging through step 27
+      shell: bash
+      timeout-minutes: 75
+      env:
+        W64_RECIPE_PATH: .github/workflows/46C7-final-cumulative-resukisu-susfs-deterministic-cross-run-reference.yml
+        W64_RECIPE_JOB: full-build
+        W64_RECIPE_STOP_STEP: '27'
+        W64_LANE: linux-5_4_274
+        W64_SOURCE_PROVEN_NOFAULT_FIX: 'no'
+      run: |
+        set -euo pipefail
+        python3 "$BUILDER_DIR/.w92-run-w88-step.py" \
+          "Stage exact 46C7 source through step 27"
+    - name: Replay W88 staged tree location
+      shell: bash
+      run: |
+        set -euo pipefail
+        python3 "$BUILDER_DIR/.w92-run-w88-step.py" \
+          "Locate staged VEUX kernel and ReSukiSU tree"
+    - name: Replay W88 pre-update snapshot
+      shell: bash
+      run: |
+        set -euo pipefail
+        python3 "$BUILDER_DIR/.w92-run-w88-step.py" \
+          "Snapshot pre-update ReSukiSU and SUSFS API"
+    - name: Replay W88 selected patch extraction
+      shell: bash
+      run: |
+        set -euo pipefail
+        python3 "$BUILDER_DIR/.w92-run-w88-step.py" \
+          "Extract selected ReSukiSU kernel patches"
+    - name: Replay W88 selected ReSukiSU chain
+      shell: bash
+      run: |
+        set -euo pipefail
+        python3 "$BUILDER_DIR/.w92-run-w88-step.py" \
+          "Apply selected ReSukiSU kernel chain"
+    - name: Replay W88 cumulative 419e270b kernel uapi delta
+      shell: bash
+      run: |
+        set -euo pipefail
+        python3 "$BUILDER_DIR/.w92-run-w88-step.py" \
+          "Apply cumulative 419e270b kernel uapi delta"
+    - name: Replay W88 input hook stability validation
+      shell: bash
+      run: |
+        set -euo pipefail
+        python3 "$BUILDER_DIR/.w92-run-w88-step.py" \
+          "Validate new input-hook atomic-context stability fix"
+    - name: Replay W88 SUSFS process state backport
+      shell: bash
+      run: |
+        set -euo pipefail
+        python3 "$BUILDER_DIR/.w92-run-w88-step.py" \
+          "Backport latest SUSFS 5.4 process-state API only"
+    - name: Audit TRY_UMOUNT prerequisites and snapshot W88-equivalent tree
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        SUSFS_C="$KERNEL_ROOT/fs/susfs.c"
+        SUSFS_H="$KERNEL_ROOT/include/linux/susfs.h"
+        SUSFS_DEF="$KERNEL_ROOT/include/linux/susfs_def.h"
+        KCONFIG="$KSU_ROOT/kernel/Kconfig"
+        KERNEL_UMOUNT="$KSU_ROOT/kernel/feature/kernel_umount.c"
+        DISPATCH="$KSU_ROOT/kernel/supercall/dispatch.c"
+        SETUID="$KSU_ROOT/kernel/hook/setuid_hook.c"
+
+        for f in \
+          "$SUSFS_C" \
+          "$SUSFS_H" \
+          "$SUSFS_DEF" \
+          "$KCONFIG" \
+          "$KERNEL_UMOUNT" \
+          "$DISPATCH" \
+          "$SETUID"
+        do
+          test -s "$f"
+        done
+
+        grep -Fq '#define TRY_UMOUNT_DEFAULT 0' "$SUSFS_DEF"
+        grep -Fq '#define TRY_UMOUNT_DETACH 1' "$SUSFS_DEF"
+        grep -Fq 'CMD_SUSFS_ADD_TRY_UMOUNT' "$SUSFS_DEF"
+        grep -Fq 'void try_umount(const char *mnt, int flags)' "$KERNEL_UMOUNT"
+
+        find "$KERNEL_ROOT/fs" "$KERNEL_ROOT/include/linux" "$KSU_ROOT/kernel" \
+          -type f -print0 \
+          | sort -z \
+          | xargs -0 sha256sum \
+          > "$ARTIFACT_DIR/17-pre-try-umount-tree.sha256"
+
+        {
+          echo "TRY_UMOUNT_PREREQUISITES=PASS"
+          echo "TRY_UMOUNT_DEFAULT=0"
+          echo "TRY_UMOUNT_DETACH=1"
+          echo "CMD_SUSFS_ADD_TRY_UMOUNT_PRESENT=YES"
+          echo "RESUKISU_TRY_UMOUNT_EXPORT_PRESENT=YES"
+          echo
+          echo "=== existing TRY_UMOUNT references before W91 delta ==="
+          grep -RniE \
+            'CONFIG_KSU_SUSFS_TRY_UMOUNT|susfs_(add_)?try_umount|CMD_SUSFS_ADD_TRY_UMOUNT' \
+            "$KERNEL_ROOT/fs" \
+            "$KERNEL_ROOT/include/linux" \
+            "$KSU_ROOT/kernel" || true
+        } | tee "$ARTIFACT_DIR/17-try-umount-prerequisites.txt"
+    - name: Restore SUSFS TRY_UMOUNT implementation from pinned nGKI reference
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        RESTORE="$PATCH_DIR/susfs_restore_try_umount.patch"
+        RAW_URL="https://raw.githubusercontent.com/cyberc3dr/nGKI_Kernel_Build/${TRY_UMOUNT_SOURCE_COMMIT}/${TRY_UMOUNT_PATCH_PATH}"
+
+        curl --fail --location --retry 4 --retry-all-errors \
+          --connect-timeout 20 \
+          "$RAW_URL" \
+          -o "$RESTORE"
+
+        test -s "$RESTORE"
+
+        python3 - "$RESTORE" "$TRY_UMOUNT_PATCH_BLOB_SHA1" <<'PY'
+        import hashlib
+        import sys
+        from pathlib import Path
+
+        p = Path(sys.argv[1])
+        expected = sys.argv[2]
+        data = p.read_bytes()
+        got = hashlib.sha1(f"blob {len(data)}\0".encode() + data).hexdigest()
+        if got != expected:
+            raise SystemExit(f"Git blob SHA mismatch: {got} != {expected}")
+        print("TRY_UMOUNT_REFERENCE_BLOB_AUTH=PASS")
+        print("TRY_UMOUNT_REFERENCE_SHA256=" + hashlib.sha256(data).hexdigest())
+        PY
+
+        impl="$(grep -c 'void susfs_add_try_umount' "$KERNEL_ROOT/fs/susfs.c" || true)"
+        structs="$(grep -c 'struct st_susfs_try_umount {' "$KERNEL_ROOT/include/linux/susfs.h" || true)"
+        proto="$(grep -c 'void susfs_try_umount(uid_t uid);' "$KERNEL_ROOT/include/linux/susfs.h" || true)"
+
+        if [ "$impl" -eq 0 ] && [ "$structs" -eq 0 ] && [ "$proto" -eq 0 ]; then
+          git -C "$KERNEL_ROOT" apply --check --verbose "$RESTORE"
+          git -C "$KERNEL_ROOT" apply --verbose "$RESTORE"
+          restore_state="APPLIED_PINNED_REFERENCE"
+        elif [ "$impl" -eq 1 ] && [ "$structs" -eq 1 ] && [ "$proto" -eq 1 ]; then
+          restore_state="ALREADY_PRESENT_COMPLETE"
+        else
+          echo "ERROR: partial TRY_UMOUNT implementation already exists" >&2
+          echo "impl=$impl structs=$structs proto=$proto" >&2
+          exit 1
+        fi
+
+        grep -Fq 'void susfs_add_try_umount' "$KERNEL_ROOT/fs/susfs.c"
+        grep -Fq 'void susfs_try_umount(uid_t uid)' "$KERNEL_ROOT/fs/susfs.c"
+        grep -Fq 'struct st_susfs_try_umount {' "$KERNEL_ROOT/include/linux/susfs.h"
+        grep -Fq 'void susfs_add_try_umount(void __user **user_info);' "$KERNEL_ROOT/include/linux/susfs.h"
+        grep -Fq 'void susfs_try_umount(uid_t uid);' "$KERNEL_ROOT/include/linux/susfs.h"
+        grep -Fq 'CONFIG_KSU_SUSFS_TRY_UMOUNT' "$KERNEL_ROOT/fs/susfs.c"
+
+        {
+          echo "TRY_UMOUNT_KERNEL_IMPLEMENTATION=PASS"
+          echo "RESTORE_STATE=$restore_state"
+          echo "REFERENCE_COMMIT=$TRY_UMOUNT_SOURCE_COMMIT"
+          echo "REFERENCE_BLOB_SHA1=$TRY_UMOUNT_PATCH_BLOB_SHA1"
+          echo "REFERENCE_SHA256=$(sha256sum "$RESTORE" | awk '{print $1}')"
+        } | tee "$ARTIFACT_DIR/18-try-umount-restore.txt"
+    - name: Add ReSukiSU TRY_UMOUNT Kconfig dispatch and safe normal zygote call path
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        export W91_KCONFIG="$KSU_ROOT/kernel/Kconfig"
+        export W91_DISPATCH="$KSU_ROOT/kernel/supercall/dispatch.c"
+        export W91_UMOUNT="$KSU_ROOT/kernel/feature/kernel_umount.c"
+        export W91_SETUID="$KSU_ROOT/kernel/hook/setuid_hook.c"
+
+        python3 - <<'PY'
+        import os
+        from pathlib import Path
+
+        def one_replace(path, old, new, label):
+            s = path.read_text(encoding="utf-8")
+            count = s.count(old)
+            if count != 1:
+                raise SystemExit(f"{label}: expected one anchor, got {count}")
+            path.write_text(s.replace(old, new, 1), encoding="utf-8")
+
+        kconfig = Path(os.environ["W91_KCONFIG"])
+        dispatch = Path(os.environ["W91_DISPATCH"])
+        umount = Path(os.environ["W91_UMOUNT"])
+        setuid = Path(os.environ["W91_SETUID"])
+
+        ks = kconfig.read_text(encoding="utf-8")
+        if "config KSU_SUSFS_TRY_UMOUNT" not in ks:
+            anchor = """config KSU_SUSFS_SPOOF_UNAME
+        """
+            block = """config KSU_SUSFS_TRY_UMOUNT
+            bool "Enable SUSFS custom try_umount list"
+            depends on KSU_SUSFS
+            default y
+            help
+                - Allow SUSFS to unmount user-defined mount paths before
+                  ReSukiSU's normal KernelSU umount list.
+                - Effective only on the normal zygote umount path selected
+                  by the existing ReSukiSU policy.
+                - zygote_next is intentionally not unmounted here because
+                  ReSukiSU handles that path through process-state flags.
+
+        config KSU_SUSFS_SPOOF_UNAME
+        """
+            one_replace(kconfig, anchor, block, "Kconfig TRY_UMOUNT insertion")
+
+        ds = dispatch.read_text(encoding="utf-8")
+        if "case CMD_SUSFS_ADD_TRY_UMOUNT" not in ds:
+            anchor = """#ifdef CONFIG_KSU_SUSFS_SPOOF_UNAME
+            case CMD_SUSFS_SET_UNAME: {
+        """
+            block = """#ifdef CONFIG_KSU_SUSFS_TRY_UMOUNT
+            case CMD_SUSFS_ADD_TRY_UMOUNT: {
+                susfs_add_try_umount(arg);
+                return 0;
+            }
+        #endif //#ifdef CONFIG_KSU_SUSFS_TRY_UMOUNT
+        #ifdef CONFIG_KSU_SUSFS_SPOOF_UNAME
+            case CMD_SUSFS_SET_UNAME: {
+        """
+            one_replace(dispatch, anchor, block, "SUSFS dispatch insertion")
+
+        us = umount.read_text(encoding="utf-8")
+        if "extern void susfs_try_umount(uid_t uid);" not in us:
+            anchor = """#ifdef CONFIG_KSU_SUSFS
+        extern struct work_struct susfs_extra_works;
+        #endif
+        """
+            block = """#ifdef CONFIG_KSU_SUSFS
+        extern struct work_struct susfs_extra_works;
+        #ifdef CONFIG_KSU_SUSFS_TRY_UMOUNT
+        extern void susfs_try_umount(uid_t uid);
+        #endif
+        #endif
+        """
+            one_replace(umount, anchor, block, "TRY_UMOUNT extern insertion")
+
+        us = umount.read_text(encoding="utf-8")
+        if "susfs_try_umount(new_uid);" not in us:
+            anchor = """    if (!ksu_uid_should_umount(new_uid) && !is_isolated_process(new_uid)) {
+                return 0;
+            }
+
+            // no need to check zygote here, because we already check it in the setuid call.
+        """
+            block = """    if (!ksu_uid_should_umount(new_uid) && !is_isolated_process(new_uid)) {
+                return 0;
+            }
+
+        #ifdef CONFIG_KSU_SUSFS_TRY_UMOUNT
+            /*
+             * Run SUSFS custom unmounts first.  Keep this in the normal
+             * zygote path only; handle_zygote_next_setresuid() explicitly
+             * avoids direct unmounts because it is in the init namespace.
+             */
+            susfs_try_umount(new_uid);
+        #endif
+
+            // no need to check zygote here, because we already check it in the setuid call.
+        """
+            one_replace(umount, anchor, block, "normal zygote TRY_UMOUNT call insertion")
+
+        ss = setuid.read_text(encoding="utf-8")
+        if "susfs_try_umount" in ss:
+            raise SystemExit(
+                "refusing direct TRY_UMOUNT call in setuid_hook.c / zygote_next path"
+            )
+        PY
+
+        grep -Fq 'config KSU_SUSFS_TRY_UMOUNT' "$KSU_ROOT/kernel/Kconfig"
+        grep -Fq 'default y' "$KSU_ROOT/kernel/Kconfig"
+        grep -Fq 'case CMD_SUSFS_ADD_TRY_UMOUNT' "$KSU_ROOT/kernel/supercall/dispatch.c"
+        grep -Fq 'susfs_add_try_umount(arg);' "$KSU_ROOT/kernel/supercall/dispatch.c"
+        grep -Fq 'extern void susfs_try_umount(uid_t uid);' "$KSU_ROOT/kernel/feature/kernel_umount.c"
+        test "$(grep -c 'susfs_try_umount(new_uid);' "$KSU_ROOT/kernel/feature/kernel_umount.c")" -eq 1
+
+        if grep -Fq 'susfs_try_umount' "$KSU_ROOT/kernel/hook/setuid_hook.c"; then
+          echo "ERROR: direct TRY_UMOUNT leaked into zygote_next setuid hook" >&2
+          exit 1
+        fi
+
+        {
+          echo "TRY_UMOUNT_KCONFIG=PASS"
+          echo "TRY_UMOUNT_USERSPACE_DISPATCH=PASS"
+          echo "TRY_UMOUNT_NORMAL_ZYGOTE_CALL_PATH=PASS"
+          echo "TRY_UMOUNT_ZYGOTE_NEXT_DIRECT_CALL=ABSENT_INTENTIONALLY"
+          echo "NORMAL_ZYGOTE_ORDER=CUSTOM_SUSFS_BEFORE_RESUKISU_DEFAULT_LIST"
+        } | tee "$ARTIFACT_DIR/19-try-umount-integration.txt"
+    - name: Audit W91 delta scope before compile
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        for required in \
+          "$KERNEL_ROOT/fs/susfs.c" \
+          "$KERNEL_ROOT/include/linux/susfs.h" \
+          "$KSU_ROOT/kernel/Kconfig" \
+          "$KSU_ROOT/kernel/supercall/dispatch.c" \
+          "$KSU_ROOT/kernel/feature/kernel_umount.c"
+        do
+          test -s "$required"
+        done
+
+        if find "$KSU_ROOT/kernel" -type f -name '*module_load_filter*' | grep -q .; then
+          echo "ERROR: excluded module_load_filter unexpectedly present" >&2
+          exit 1
+        fi
+
+        grep -Fq 'synchronize_srcu' "$KERNEL_ROOT/fs/susfs.c"
+        grep -Eq 'SUSFS|susfs' "$KERNEL_ROOT/fs/proc/task_mmu.c"
+
+        {
+          echo "W91_DELTA_SCOPE_AUDIT=PASS"
+          echo "EXPECTED_MODIFIED_FILES:"
+          echo "fs/susfs.c"
+          echo "include/linux/susfs.h"
+          echo "KernelSU/kernel/Kconfig"
+          echo "KernelSU/kernel/supercall/dispatch.c"
+          echo "KernelSU/kernel/feature/kernel_umount.c"
+          echo
+          echo "PROTECTED_CONTRACTS:"
+          echo "OPEN_REDIRECT_SRCU=PASS"
+          echo "PROC_MAPS_SUSFS=PASS"
+          echo "MODULE_LOAD_FILTER_INCLUDED=NO"
+          echo "ZYGOTE_NEXT_DIRECT_TRY_UMOUNT=NO"
+        } | tee "$ARTIFACT_DIR/20-w91-delta-scope.txt"
+    - name: Authenticate official SUSFS 2.3 source and 21-commit delta
+      shell: bash
+      timeout-minutes: 15
+      run: |
+        set -euo pipefail
+        rm -rf "$SUSFS23_DIR"
+        mkdir -p "$SUSFS23_DIR"
+        git -C "$SUSFS23_DIR" init -q
+        git -C "$SUSFS23_DIR" remote add origin https://gitlab.com/simonpunk/susfs4ksu.git
+        ok=0
+        for attempt in 1 2 3; do
+          if git -C "$SUSFS23_DIR" fetch --no-tags --depth=100 origin "$SUSFS23_BRANCH"; then
+            ok=1; break
+          fi
+          echo "SUSFS23_FETCH_ATTEMPT_${attempt}=FAILED" >&2
+          sleep $((attempt * 5))
+        done
+        test "$ok" -eq 1
+
+        git -C "$SUSFS23_DIR" cat-file -e "$SUSFS22_COMMIT^{commit}"
+        git -C "$SUSFS23_DIR" cat-file -e "$SUSFS23_COMMIT^{commit}"
+        git -C "$SUSFS23_DIR" merge-base --is-ancestor "$SUSFS22_COMMIT" "$SUSFS23_COMMIT"
+        test "$(git -C "$SUSFS23_DIR" rev-list --count "$SUSFS22_COMMIT..$SUSFS23_COMMIT")" = "$SUSFS23_EXPECTED_COMMITS"
+        git -C "$SUSFS23_DIR" checkout -q --detach "$SUSFS23_COMMIT"
+        test "$(git -C "$SUSFS23_DIR" rev-parse HEAD)" = "$SUSFS23_COMMIT"
+        grep -Fxq '#define SUSFS_VERSION "v2.3.0"' "$SUSFS23_DIR/kernel_patches/include/linux/susfs.h"
+
+        {
+          echo "OFFICIAL_SOURCE=https://gitlab.com/simonpunk/susfs4ksu.git"
+          echo "BRANCH=$SUSFS23_BRANCH"
+          echo "SUSFS_2_2_COMMIT=$SUSFS22_COMMIT"
+          echo "SUSFS_2_3_COMMIT=$SUSFS23_COMMIT"
+          echo "SUSFS_2_2_TO_2_3_COMMIT_COUNT=$(git -C "$SUSFS23_DIR" rev-list --count "$SUSFS22_COMMIT..$SUSFS23_COMMIT")"
+          echo "SUSFS_2_3_AUTHOR=$(git -C "$SUSFS23_DIR" show -s --format='%an <%ae>' "$SUSFS23_COMMIT")"
+          echo "SUSFS_2_3_DATE=$(git -C "$SUSFS23_DIR" show -s --format='%aI' "$SUSFS23_COMMIT")"
+          echo "SUSFS_2_3_SUBJECT=$(git -C "$SUSFS23_DIR" show -s --format='%s' "$SUSFS23_COMMIT")"
+          echo "SUSFS_2_3_VERSION_HEADER=PASS"
+          echo "OFFICIAL_SUSFS_2_3_SOURCE_AUTH=PASS"
+        } | tee "$ARTIFACT_DIR/21-susfs23-source-auth.txt"
+
+        git -C "$SUSFS23_DIR" log --reverse --format='%H|%aI|%s' "$SUSFS22_COMMIT..$SUSFS23_COMMIT" > "$ARTIFACT_DIR/21-susfs23-commits.txt"
+        test "$(wc -l < "$ARTIFACT_DIR/21-susfs23-commits.txt")" = "$SUSFS23_EXPECTED_COMMITS"
+    - name: Classify all SUSFS 2.2 to 2.3 commits against W91 baseline
+      shell: bash
+      run: |
+        set -euo pipefail
+        SUSFS_C="$KERNEL_ROOT/fs/susfs.c"
+        SUSFS_H="$KERNEL_ROOT/include/linux/susfs.h"
+        SUSFS_DEF="$KERNEL_ROOT/include/linux/susfs_def.h"
+        NS="$KERNEL_ROOT/fs/namespace.c"
+        PROC_NS="$KERNEL_ROOT/fs/proc_namespace.c"
+        NAMEI="$KERNEL_ROOT/fs/namei.c"
+        TASK_MMU="$KERNEL_ROOT/fs/proc/task_mmu.c"
+        SUCOMPAT="$KSU_ROOT/kernel/feature/sucompat.c"
+        SETUID="$KSU_ROOT/kernel/hook/setuid_hook.c"
+        INPUT="$KSU_ROOT/kernel/runtime/ksud_integration.c"
+        for f in "$SUSFS_C" "$SUSFS_H" "$SUSFS_DEF" "$NS" "$PROC_NS" "$NAMEI" "$TASK_MMU" "$SUCOMPAT" "$SETUID" "$INPUT"; do test -s "$f"; done
+
+        grep -Fq 'memcpy(buf_ptr, config_string, tmp_size);' "$SUSFS_C"
+        if grep -Fq 'strncpy(' "$SUSFS_C"; then echo "ERROR: stale strncpy() remains in fs/susfs.c" >&2; exit 1; fi
+        grep -Fq 'DEFINE_STATIC_KEY_FALSE(susfs_is_hide_sus_mnts_for_non_su_procs_enabled);' "$SUSFS_C"
+        grep -Fq 'susfs_is_hide_sus_mnts_for_non_su_procs_enabled' "$PROC_NS"
+        grep -Fq 'susfs_show_mountinfo' "$PROC_NS"
+        grep -Fq 'susfs_open_redirect_spoof_do_sys_openat' "$NAMEI"
+        grep -Fq 'susfs_open_redirect_spoof_show_map_vma_srcu' "$TASK_MMU"
+        grep -Fq 'susfs_open_redirect_spoof_show_map_vma_srcu' "$SUSFS_C"
+        grep -Fq 'synchronize_srcu' "$SUSFS_C"
+        grep -Fq 'TIF_PROC_NO_SU' "$SUSFS_DEF"
+        grep -Fq 'TIF_PROC_UMOUNTED_FOR_ZYGOTE_NEXT' "$SUSFS_DEF"
+        grep -Fq 'susfs_set_current_proc_umounted_for_zygote_next();' "$SETUID"
+        grep -Fq 'struct filename **filename' "$SUCOMPAT"
+        grep -Fq 'keep for on_post_fs_data do that' "$INPUT"
+        grep -Fxq '#define SUSFS_VERSION "v2.2.0"' "$SUSFS_H"
+
+        export W92_INVENTORY="$ARTIFACT_DIR/21-susfs23-commits.txt"
+        export W92_CLASSIFICATION="$ARTIFACT_DIR/22-susfs23-classification.txt"
+        python3 - <<'PY'
+        import os
+        from pathlib import Path
+        lines=[x for x in Path(os.environ['W92_INVENTORY']).read_text().splitlines() if x.strip()]
+        if len(lines)!=21: raise SystemExit(f'expected 21 commits, got {len(lines)}')
+        expected={
+          '4d5cf31cba116c92ff1dca0184f1cfa46ad6cb92':'ALREADY_PRESENT_EQUIVALENT_5_4_BACKPORT_REMOVE_STRNCPY',
+          'aee962343bc49469a5427a0e6987e6a70fe88ba3':'ALREADY_PRESENT_EQUIVALENT_5_4_BACKPORT_FEATURE_LIST_MEMCPY',
+          '4003ecf2d01c6d13fa8edf6c4f2607365738dc3d':'APPLY_RESUKISU_UID_EUID_CAPTURE_ORDER',
+          'ed306cc62cb0fa655982000a95b6f4832d21eb56':'ALREADY_PRESENT_EQUIVALENT_5_4_BACKPORT_MOUNT_VISIBILITY',
+          '81f01bc58d055687a6276114c1371b8ac09e8b26':'APPLY_RESUKISU_ROOT_REVOKE_RECHECK',
+          '8c6faae6881c2eb8174842b9b00a9e85b9cfa47f':'PINNED_RESUKISU_NOT_WHOLESALE_IMPORTED',
+          'be08face56c347e7ba9c4fb420c2463598a14f5d':'ALREADY_PRESENT_EQUIVALENT_W88_OPEN_REDIRECT_UAF_SRCU',
+          '86bb893e9a103b97d17045306f35eb239a623f2a':'ALREADY_PRESENT_EQUIVALENT_W88_OPEN_REDIRECT_MAPS_SRCU',
+          'c5723cc09c19786fcb701d25a8097e2edbee412a':'ALREADY_PRESENT_EQUIVALENT_5_4_BACKPORT_OPEN_REDIRECT_REFACTOR',
+          'ee7dc7a03b7c836952cce55c5f3834de62a465d1':'PINNED_RESUKISU_NOT_WHOLESALE_IMPORTED',
+          '3c14ad549f826b1f53878ec8c12253efebeed75a':'ALREADY_PRESENT_5_4_THREE_ARG_SET_NAMEIDATA',
+          '1b493defc6d26684a3bec612da47e03c9d8cfe20':'PINNED_RESUKISU_NOT_WHOLESALE_IMPORTED',
+          'f3087ec1be3bd9ea8d0486af64167a4bc6580b6f':'ALREADY_PRESENT_EQUIVALENT_W88_TIF_PROC_NO_SU',
+          'da34bba1f7803c0f3165661c64bf0d19545dfc07':'ALREADY_PRESENT_EQUIVALENT_RESUKISU_03B60F26_STAT_FACCESSAT',
+          'a029a5189aa63b47f20c901557933d3b8b3a5db1':'PINNED_RESUKISU_NOT_WHOLESALE_IMPORTED',
+          'e5c00dc9ffd6f04ad6025f09d67e7db760b6d55b':'APPLY_5_4_NAMESPACE_LOOKUP_MNT',
+          '44d9fed948b6d21c25ace142081418690f568dd3':'ALREADY_PRESENT_EQUIVALENT_W88_ZYGOTE_NEXT_PROC_UMOUNTED',
+          'a587763bf4c5fa358793f368abff9186c1111b5c':'PINNED_RESUKISU_NOT_WHOLESALE_IMPORTED',
+          '27ee8466fc5f151f987ea8e0ad38ba16f180bacf':'ALREADY_PRESENT_EQUIVALENT_RESUKISU_ATOMIC_CONTEXT',
+          '46e4c5a1a28ad97e0537496b5585bf7a5f2355e4':'PINNED_RESUKISU_NOT_WHOLESALE_IMPORTED',
+          'fb16b41a65180979f05eac837681c4dd0addffd1':'APPLY_VERSION_AFTER_SEMANTIC_GATES',
+        }
+        rows=[]; bad=[]; seen=set()
+        for line in lines:
+            sha,date,subject=line.split('|',2); status=expected.get(sha,'UNCLASSIFIED'); rows.append((sha,date,status,subject)); seen.add(sha)
+            if status=='UNCLASSIFIED': bad.append((sha,subject))
+        missing=sorted(set(expected)-seen); extra=sorted(seen-set(expected))
+        out=['SUSFS_2_2_TO_2_3_INDIVIDUAL_CLASSIFICATION']
+        for i,row in enumerate(rows,1): out.append(f'{i:02d}|'+ '|'.join(row))
+        out += [f'CLASSIFIED_COUNT={len(rows)}',f'UNCLASSIFIED_COUNT={len(bad)}',f'EXPECTED_SHA_COUNT={len(expected)}',f'MISSING_EXPECTED_SHA_COUNT={len(missing)}',f'EXTRA_SHA_COUNT={len(extra)}']
+        Path(os.environ['W92_CLASSIFICATION']).write_text('\n'.join(out)+'\n')
+        if bad or missing or extra:
+            print('UNCLASSIFIED=',bad); print('MISSING=',missing); print('EXTRA=',extra); raise SystemExit('exact SUSFS 2.2 -> 2.3 commit set mismatch')
+        print('SUSFS_2_3_EXACT_COMMIT_SET=PASS')
+        print('SUSFS_2_3_COMMIT_CLASSIFICATION=PASS')
+        PY
+
+        mkdir -p "$ARTIFACT_DIR/w91-before-susfs23"
+        cp "$NS" "$ARTIFACT_DIR/w91-before-susfs23/namespace.c"
+        cp "$SUSFS_H" "$ARTIFACT_DIR/w91-before-susfs23/susfs.h"
+        cp "$SUCOMPAT" "$ARTIFACT_DIR/w91-before-susfs23/sucompat.c"
+        find "$KSU_ROOT/kernel" -type f -print0 | sort -z | xargs -0 sha256sum > "$ARTIFACT_DIR/22-ksu-tree-before.sha256"
+        {
+         echo "W91_PRE_SUSFS23_AUDIT=PASS"
+         echo "COPY_CONFIG_MEMCPY=ALREADY_PRESENT"
+         echo "SUSFS_C_STRNCPY=ABSENT"
+         echo "MOUNT_VISIBILITY_STATIC_KEY=ALREADY_PRESENT"
+         echo "OPEN_REDIRECT_NAMEI_REFACTOR=ALREADY_PRESENT"
+         echo "OPEN_REDIRECT_MAPS_SRCU=ALREADY_PRESENT"
+         echo "OPEN_REDIRECT_UAF_SRCU=ALREADY_PRESENT"
+         echo "TIF_PROC_NO_SU=ALREADY_PRESENT"
+         echo "TIF_PROC_UMOUNTED_FOR_ZYGOTE_NEXT=ALREADY_PRESENT"
+         echo "STAT_FACCESSAT_STRUCT_FILENAME=ALREADY_PRESENT"
+         echo "ATOMIC_CONTEXT_STATIC_KEY_FIX=ALREADY_PRESENT"
+         echo "SUSFS_VERSION_BEFORE=v2.2.0"
+        } | tee "$ARTIFACT_DIR/22-w91-pre-susfs23-audit.txt"
+    - name: Apply missing SUSFS 2.3 semantics to 5.4.274 and ReSukiSU 419e270b
+      shell: bash
+      run: |
+        set -euo pipefail
+        export W92_NS="$KERNEL_ROOT/fs/namespace.c"
+        export W92_SUSFS_H="$KERNEL_ROOT/include/linux/susfs.h"
+        export W92_SUCOMPAT="$KSU_ROOT/kernel/feature/sucompat.c"
+        export W92_SETUID="$KSU_ROOT/kernel/hook/setuid_hook.c"
+        python3 - <<'PY'
+        import os,re
+        from pathlib import Path
+        ns=Path(os.environ['W92_NS']); hdr=Path(os.environ['W92_SUSFS_H']); su=Path(os.environ['W92_SUCOMPAT']); setuid=Path(os.environ['W92_SETUID'])
+        status=[]
+        # zygote_next inherited-init-namespace lookup fix
+        s=ns.read_text()
+        if 'susfs_is_current_proc_umounted_for_zygote_next()' in s:
+            status.append('ZYGOTE_NEXT_LOOKUP_MNT_FIX=ALREADY_PRESENT')
+        else:
+            pat=re.compile(r'(struct\s+mount\s+\*__lookup_mnt\s*\(struct\s+vfsmount\s+\*mnt,\s*struct\s+dentry\s+\*dentry\)\s*\{\s*struct\s+hlist_head\s+\*head\s*=\s*m_hash\(mnt,\s*dentry\);\s*struct\s+mount\s+\*p;\s*)',re.S)
+            m=pat.search(s)
+            if not m: raise SystemExit('cannot locate 5.4 __lookup_mnt anchor')
+            block="""\n#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\n\t/* SUSFS 2.3: zygote_next inherits init mount namespace; never unmount here. */\n\tif (susfs_is_current_proc_umounted_for_zygote_next()) {\n\t\thlist_for_each_entry_rcu(p, head, mnt_hash)\n\t\t\tif (p->mnt_id < DEFAULT_KSU_MNT_ID &&\n\t\t\t    &p->mnt_parent->mnt == mnt &&\n\t\t\t    p->mnt_mountpoint == dentry)\n\t\t\t\treturn p;\n\t\treturn NULL;\n\t}\n#endif // CONFIG_KSU_SUSFS_SUS_MOUNT\n\n"""
+            ns.write_text(s[:m.end()]+block+s[m.end():]); status.append('ZYGOTE_NEXT_LOOKUP_MNT_FIX=APPLIED')
+        # helper to extract a C function body
+        def body_span(text,pattern):
+            m=re.search(pattern,text)
+            if not m: raise SystemExit('function missing: '+pattern)
+            i=m.end(); d=1
+            while i<len(text) and d:
+                d += (text[i]=='{')-(text[i]=='}'); i+=1
+            if d: raise SystemExit('unbalanced function: '+pattern)
+            return m.end(),i-1
+        # uid/euid capture before escape
+        s=su.read_text(); a,b=body_span(s,r'static inline int do_ksu_handle_execveat_sucompat\s*\([^)]*\)\s*\{'); body=s[a:b]
+        cap='pending_sucompat = ksu_sulog_capture_sucompat_manual(filename, *argv, GFP_KERNEL);'; esc='escape_with_root_profile();'
+        if cap not in body or esc not in body: raise SystemExit('uid/euid anchors missing')
+        if body.index(cap)>body.index(esc):
+            old='    escape_with_root_profile();\n\n    '+cap; new='    '+cap+'\n\n    escape_with_root_profile();'
+            if body.count(old)!=1: raise SystemExit('uid/euid exact reorder anchor count != 1')
+            body=body.replace(old,new,1); s=s[:a]+body+s[b:]; su.write_text(s); status.append('UID_EUID_CAPTURE_ORDER_FIX=APPLIED')
+        else: status.append('UID_EUID_CAPTURE_ORDER_FIX=ALREADY_PRESENT')
+        # fresh allowlist recheck after execveat init
+        s=su.read_text(); a,b=body_span(s,r'int ksu_handle_execve\s*\([^)]*\)\s*\{'); body=s[a:b]
+        anchor='    ksu_handle_execveat_init(filename, envp);\n'; marker='SUSFS 2.3: fresh root-access recheck'
+        if marker not in body:
+            if body.count(anchor)!=1: raise SystemExit('root revoke anchor count != 1')
+            check="""\n    /* SUSFS 2.3: fresh root-access recheck after init handling. */\n    if (!ksu_is_allow_uid_for_current(ksu_get_uid_t(current_uid()))) {\n        return 0;\n    }\n"""
+            body=body.replace(anchor,anchor+check,1); s=s[:a]+body+s[b:]; su.write_text(s); status.append('ROOT_REVOKE_RECHECK=APPLIED')
+        else: status.append('ROOT_REVOKE_RECHECK=ALREADY_PRESENT')
+        # version only after semantics
+        s=hdr.read_text()
+        if '#define SUSFS_VERSION "v2.3.0"' not in s:
+            old='#define SUSFS_VERSION "v2.2.0"'
+            if s.count(old)!=1: raise SystemExit('SUSFS version anchor count != 1')
+            hdr.write_text(s.replace(old,'#define SUSFS_VERSION "v2.3.0"',1)); status.append('SUSFS_VERSION_BUMP=APPLIED')
+        else: status.append('SUSFS_VERSION_BUMP=ALREADY_PRESENT')
+        if 'susfs_try_umount' in setuid.read_text(): raise SystemExit('direct TRY_UMOUNT leaked into zygote_next/setuid path')
+        Path(os.environ['ARTIFACT_DIR']+'/23-susfs23-applied-delta.txt').write_text('\n'.join(status)+'\nSUSFS_2_3_5_4_ADAPTATION=PASS\n')
+        PY
+        {
+         diff -u "$ARTIFACT_DIR/w91-before-susfs23/namespace.c" "$KERNEL_ROOT/fs/namespace.c" || true
+         diff -u "$ARTIFACT_DIR/w91-before-susfs23/susfs.h" "$KERNEL_ROOT/include/linux/susfs.h" || true
+         diff -u "$ARTIFACT_DIR/w91-before-susfs23/sucompat.c" "$KSU_ROOT/kernel/feature/sucompat.c" || true
+        } > "$ARTIFACT_DIR/23-susfs23-5.4-adaptation.diff"
+        test -s "$ARTIFACT_DIR/23-susfs23-5.4-adaptation.diff"
+    - name: Validate complete SUSFS 2.3 semantic backport and protected W91 contracts
+      shell: bash
+      run: |
+        set -euo pipefail
+        SUSFS_C="$KERNEL_ROOT/fs/susfs.c"; SUSFS_H="$KERNEL_ROOT/include/linux/susfs.h"; SUSFS_DEF="$KERNEL_ROOT/include/linux/susfs_def.h"
+        NS="$KERNEL_ROOT/fs/namespace.c"; PROC_NS="$KERNEL_ROOT/fs/proc_namespace.c"; NAMEI="$KERNEL_ROOT/fs/namei.c"; TASK_MMU="$KERNEL_ROOT/fs/proc/task_mmu.c"
+        SUCOMPAT="$KSU_ROOT/kernel/feature/sucompat.c"; SETUID="$KSU_ROOT/kernel/hook/setuid_hook.c"; UMOUNT="$KSU_ROOT/kernel/feature/kernel_umount.c"
+        grep -Fxq '#define SUSFS_VERSION "v2.3.0"' "$SUSFS_H"
+        grep -Fq 'susfs_is_current_proc_umounted_for_zygote_next()' "$NS"; grep -Fq 'p->mnt_id < DEFAULT_KSU_MNT_ID' "$NS"; grep -Fq '&p->mnt_parent->mnt == mnt' "$NS"; grep -Fq 'p->mnt_mountpoint == dentry' "$NS"
+        grep -Fq 'memcpy(buf_ptr, config_string, tmp_size);' "$SUSFS_C"; ! grep -Fq 'strncpy(' "$SUSFS_C"
+        grep -Fq 'DEFINE_STATIC_KEY_FALSE(susfs_is_hide_sus_mnts_for_non_su_procs_enabled);' "$SUSFS_C"; grep -Fq 'susfs_show_vfsmnt' "$PROC_NS"; grep -Fq 'susfs_show_mountinfo' "$PROC_NS"; grep -Fq 'susfs_show_vfsstat' "$PROC_NS"
+        grep -Fq 'susfs_open_redirect_spoof_do_sys_openat' "$NAMEI"; grep -Fq 'susfs_open_redirect_spoof_show_map_vma_srcu' "$TASK_MMU"; grep -Fq 'susfs_open_redirect_spoof_show_map_vma_srcu' "$SUSFS_C"; grep -Fq 'synchronize_srcu' "$SUSFS_C"
+        grep -Fq 'TIF_PROC_NO_SU' "$SUSFS_DEF"; grep -Fq 'TIF_PROC_UMOUNTED_FOR_ZYGOTE_NEXT' "$SUSFS_DEF"
+        export W92_SUCOMPAT="$SUCOMPAT"
+        python3 - <<'PY'
+        import os,re
+        from pathlib import Path
+        s=Path(os.environ['W92_SUCOMPAT']).read_text()
+        def body(pattern):
+         m=re.search(pattern,s)
+         if not m: raise SystemExit('function missing '+pattern)
+         i=m.end(); d=1
+         while i<len(s) and d: d+=(s[i]=='{')-(s[i]=='}'); i+=1
+         if d: raise SystemExit('unbalanced')
+         return s[m.end():i-1]
+        b=body(r'static inline int do_ksu_handle_execveat_sucompat\s*\([^)]*\)\s*\{'); cap='pending_sucompat = ksu_sulog_capture_sucompat_manual(filename, *argv, GFP_KERNEL);'; esc='escape_with_root_profile();'
+        if cap not in b or esc not in b or b.index(cap)>=b.index(esc): raise SystemExit('uid/euid capture order incorrect')
+        b=body(r'int ksu_handle_execve\s*\([^)]*\)\s*\{'); init='ksu_handle_execveat_init(filename, envp);'; marker='SUSFS 2.3: fresh root-access recheck'
+        if init not in b or marker not in b or b.index(marker)<b.index(init): raise SystemExit('fresh allowlist recheck missing')
+        print('RESUKISU_SUSFS23_SUCOMPAT_FIXES=PASS')
+        PY
+        grep -Fq 'config KSU_SUSFS_TRY_UMOUNT' "$KSU_ROOT/kernel/Kconfig"; grep -Fq 'case CMD_SUSFS_ADD_TRY_UMOUNT' "$KSU_ROOT/kernel/supercall/dispatch.c"; test "$(grep -c 'susfs_try_umount(new_uid);' "$UMOUNT")" -eq 1
+        if grep -Fq 'susfs_try_umount' "$SETUID"; then echo "ERROR: direct TRY_UMOUNT in zygote_next/setuid path" >&2; exit 1; fi
+        if find "$KSU_ROOT/kernel" -type f -name '*module_load_filter*' | grep -q .; then echo "ERROR: excluded module_load_filter present" >&2; exit 1; fi
+        find "$KSU_ROOT/kernel" -type f -print0 | sort -z | xargs -0 sha256sum > "$ARTIFACT_DIR/24-ksu-tree-after.sha256"
+        python3 - "$ARTIFACT_DIR/22-ksu-tree-before.sha256" "$ARTIFACT_DIR/24-ksu-tree-after.sha256" "$SUCOMPAT" <<'PY'
+        import sys
+        from pathlib import Path
+        def parse(p):
+         d={}
+         for line in Path(p).read_text().splitlines():
+          sha,path=line.split(None,1); d[path.strip()]=sha
+         return d
+        b=parse(sys.argv[1]); a=parse(sys.argv[2]); changed=sorted(k for k in set(b)|set(a) if b.get(k)!=a.get(k)); expected=[str(Path(sys.argv[3]))]
+        if changed!=expected: print('CHANGED_KSU_FILES=',changed); print('EXPECTED=',expected); raise SystemExit('unexpected ReSukiSU kernel delta')
+        print('RESUKISU_KERNEL_DELTA_EXACTLY_SUCOMPAT=PASS')
+        PY
+        {
+         echo "SUSFS_2_3_FINAL_SEMANTIC_AUDIT=PASS"; echo "SUSFS_VERSION=v2.3.0"; echo "OFFICIAL_DELTA_COMMITS=21"
+         echo "ZYGOTE_NEXT_LOOKUP_MNT_FIX=PASS"; echo "ROOT_REVOKE_RECHECK=PASS"; echo "UID_EUID_CAPTURE_ORDER=PASS"
+         echo "COPY_CONFIG_MEMCPY=PASS"; echo "SUSFS_C_STRNCPY=ABSENT"; echo "MOUNT_VISIBILITY_STATIC_KEY=PASS"
+         echo "OPEN_REDIRECT_NAMEI_REFACTOR=PASS"; echo "OPEN_REDIRECT_MAPS_SRCU=PASS"; echo "OPEN_REDIRECT_UAF_SRCU=PASS"
+         echo "TIF_PROC_NO_SU=PASS"; echo "TIF_PROC_UMOUNTED_FOR_ZYGOTE_NEXT=PASS"; echo "TRY_UMOUNT_NORMAL_ZYGOTE=PASS"
+         echo "TRY_UMOUNT_ZYGOTE_NEXT_DIRECT_CALL=ABSENT_INTENTIONALLY"; echo "KERNELSU_3_3_WHOLESALE_SYNC=NO"; echo "RESUKISU_PIN_PRESERVED=$TARGET_REF"; echo "MODULE_LOAD_FILTER_INCLUDED=NO"
+        } | tee "$ARTIFACT_DIR/24-susfs23-final-audit.txt"
+    - name: Replay SUSFS 5.4 caller compatibility audit
+      shell: bash
+      run: |
+        set -euo pipefail
+        python3 "$BUILDER_DIR/.w92-run-w88-step.py" \
+          "Audit SUSFS 2.2 5.4 caller compatibility"
+
+        grep -Fq 'SUSFS_5_4_CALLER_API_READY=YES' \
+          "$ARTIFACT_DIR/08-susfs-5.4-api.txt"
+    - name: Locate proven config and toolchain for W92
+      shell: bash
+      run: |
+        set -euo pipefail
+        python3 "$BUILDER_DIR/.w92-run-w88-step.py" \
+          "Locate proven 46C7 config and toolchain"
+    - name: Resolve W92 config with TRY_UMOUNT
+      shell: bash
+      run: |
+        set -euo pipefail
+        python3 "$BUILDER_DIR/.w92-run-w88-step.py" \
+          "Resolve W72 config"
+
+        grep -Fxq 'CONFIG_KSU_SUSFS_TRY_UMOUNT=y' "$OUT_DIR/.config"
+
+        {
+          echo "CONFIG_KSU_SUSFS_TRY_UMOUNT=y"
+          echo "TRY_UMOUNT_CONFIG_RESOLUTION=PASS"
+          echo "RESOLVED_CONFIG_SHA256=$(sha256sum "$OUT_DIR/.config" | awk '{print $1}')"
+        } | tee "$ARTIFACT_DIR/25-try-umount-config.txt"
+    - name: Build A W92 VEUX 5.4.274 SUSFS 2.3
+      shell: bash
+      timeout-minutes: 90
+      run: |
+        set -euo pipefail
+        python3 "$BUILDER_DIR/.w92-run-w88-step.py" \
+          "Build A VEUX 5.4.274 updated kernel"
+
+        grep -Fq 'susfs_try_umount' "$GITHUB_WORKSPACE/w72-build-a/System.map"
+        grep -Fq 'susfs_add_try_umount' "$GITHUB_WORKSPACE/w72-build-a/System.map"
+
+        echo "TRY_UMOUNT_BUILD_A_SYMBOLS=PASS" \
+          | tee "$ARTIFACT_DIR/26-build-a-try-umount.txt"
+    - name: Clean output tree for independent W92 Build B
+      shell: bash
+      run: |
+        set -euo pipefail
+        python3 "$BUILDER_DIR/.w92-run-w88-step.py" \
+          "Clean output tree for independent Build B"
+    - name: Build B W92 VEUX 5.4.274 SUSFS 2.3
+      shell: bash
+      timeout-minutes: 90
+      run: |
+        set -euo pipefail
+        python3 "$BUILDER_DIR/.w92-run-w88-step.py" \
+          "Build B VEUX 5.4.274 updated kernel"
+
+        grep -Fq 'susfs_try_umount' "$OUT_DIR/System.map"
+        grep -Fq 'susfs_add_try_umount' "$OUT_DIR/System.map"
+
+        echo "TRY_UMOUNT_BUILD_B_SYMBOLS=PASS" \
+          | tee "$ARTIFACT_DIR/27-build-b-try-umount.txt"
+    - name: Prove W92 deterministic A B reproducibility
+      shell: bash
+      run: |
+        set -euo pipefail
+        python3 "$BUILDER_DIR/.w92-run-w88-step.py" \
+          "Prove deterministic A B reproducibility"
+    - name: Revalidate ReSukiSU manual hook contracts after SUSFS 2.3
+      shell: bash
+      run: |
+        set -euo pipefail
+        python3 "$BUILDER_DIR/.w92-run-w88-step.py" \
+          "Validate ReSukiSU manual hook contracts"
+    - name: Revalidate protected SUSFS contracts after SUSFS 2.3
+      shell: bash
+      run: |
+        set -euo pipefail
+        python3 "$BUILDER_DIR/.w92-run-w88-step.py" \
+          "Revalidate protected SUSFS stability contracts"
+    - name: Record W92 reproducible image and compare configuration with W91
+      shell: bash
+      run: |
+        set -euo pipefail
+        A="$GITHUB_WORKSPACE/w72-build-a"; B="$OUT_DIR"
+        for f in "$A/Image" "$A/config" "$A/System.map" "$B/arch/arm64/boot/Image" "$B/.config" "$B/System.map"; do test -s "$f"; done
+        A_IMAGE_SHA="$(sha256sum "$A/Image" | awk '{print $1}')"; B_IMAGE_SHA="$(sha256sum "$B/arch/arm64/boot/Image" | awk '{print $1}')"
+        A_CONFIG_SHA="$(sha256sum "$A/config" | awk '{print $1}')"; B_CONFIG_SHA="$(sha256sum "$B/.config" | awk '{print $1}')"
+        test "$A_IMAGE_SHA" = "$B_IMAGE_SHA"; test "$A_CONFIG_SHA" = "$B_CONFIG_SHA"; test "$A_CONFIG_SHA" = "$W91_CONFIG_SHA256"; test "$A_IMAGE_SHA" != "$W91_IMAGE_SHA256"
+        grep -Fq 'susfs_try_umount' "$A/System.map"; grep -Fq 'susfs_add_try_umount' "$A/System.map"; grep -Fq 'susfs_try_umount' "$B/System.map"; grep -Fq 'susfs_add_try_umount' "$B/System.map"
+        {
+         echo "W92_BUILD_REPRODUCIBILITY=PASS"; echo "W92_IMAGE_SHA256=$A_IMAGE_SHA"; echo "W92_IMAGE_BYTES=$(stat -c '%s' "$A/Image")"; echo "W92_CONFIG_SHA256=$A_CONFIG_SHA"
+         echo "W91_IMAGE_SHA256=$W91_IMAGE_SHA256"; echo "W91_CONFIG_SHA256=$W91_CONFIG_SHA256"; echo "W92_IMAGE_DIFFERS_FROM_W91=YES"; echo "W92_CONFIG_IDENTICAL_TO_W91=YES"
+         echo "IMAGE_AB_IDENTICAL=YES"; echo "CONFIG_AB_IDENTICAL=YES"; echo "TRY_UMOUNT_BUILD_A_SYMBOLS=PASS"; echo "TRY_UMOUNT_BUILD_B_SYMBOLS=PASS"
+        } | tee "$ARTIFACT_DIR/28-w91-vs-w92.txt"
+    - name: Promote compact W92 SUSFS 2.3 isolated outputs
+      shell: bash
+      run: |
+        set -Eeuo pipefail
+        PHASE="INIT"; ERROR_FILE="$GITHUB_WORKSPACE/.w92-v1-promotion-error"; PASS_FILE="$GITHUB_WORKSPACE/.w92-v1-finalization-pass"; rm -f "$ERROR_FILE" "$PASS_FILE"
+        on_error(){ local rc="$?"; printf 'W92_V1_PROMOTION_FAILURE phase=%s line=%s command=%q rc=%s\n' "$PHASE" "${BASH_LINENO[0]:-${LINENO}}" "$BASH_COMMAND" "$rc" | tee "$ERROR_FILE" >&2 || true; exit "$rc"; }; trap on_error ERR
+        A="$GITHUB_WORKSPACE/w72-build-a"; STAGE_DIR="$RUNNER_TEMP/w92-v1-stage"
+        REPORTS=(21-susfs23-source-auth.txt 21-susfs23-commits.txt 22-susfs23-classification.txt 22-w91-pre-susfs23-audit.txt 23-susfs23-applied-delta.txt 23-susfs23-5.4-adaptation.diff 24-susfs23-final-audit.txt 25-try-umount-config.txt 26-build-a-try-umount.txt 27-build-b-try-umount.txt 28-w91-vs-w92.txt)
+        PAYLOAD=(GEN1_W92_Image GEN1_W92_config "${REPORTS[@]}" W92-REPORT.txt W92-FINAL-VERDICT.txt); FINAL_FILES=("${PAYLOAD[@]}" SHA256SUMS.txt)
+        validate_fileset(){ local dir="$1" e a; e="$(mktemp)"; a="$(mktemp)"; printf '%s\n' "${FINAL_FILES[@]}"|sort >"$e"; find "$dir" -maxdepth 1 -type f -printf '%f\n'|sort >"$a"; diff -u "$e" "$a"; rm -f "$e" "$a"; }
+        PHASE="PRECHECK_IMAGE"; test -s "$A/Image"; PHASE="PRECHECK_CONFIG"; test -s "$A/config"; PHASE="VERIFY_CONFIG_W91"; echo "$W91_CONFIG_SHA256  $A/config"|sha256sum -c -; PHASE="VERIFY_IMAGE_CHANGED"; test "$(sha256sum "$A/Image"|awk '{print $1}')" != "$W91_IMAGE_SHA256"
+        for r in "${REPORTS[@]}"; do PHASE="PRECHECK_REPORT:$r"; test -s "$ARTIFACT_DIR/$r"; done
+        PHASE="VERIFY_SOURCE_AUTH"; grep -Fxq 'OFFICIAL_SUSFS_2_3_SOURCE_AUTH=PASS' "$ARTIFACT_DIR/21-susfs23-source-auth.txt"; PHASE="VERIFY_CLASSIFICATION"; grep -Fxq 'UNCLASSIFIED_COUNT=0' "$ARTIFACT_DIR/22-susfs23-classification.txt"; PHASE="VERIFY_FINAL_AUDIT"; grep -Fxq 'SUSFS_2_3_FINAL_SEMANTIC_AUDIT=PASS' "$ARTIFACT_DIR/24-susfs23-final-audit.txt"; PHASE="VERIFY_REPRO"; grep -Fxq 'W92_BUILD_REPRODUCIBILITY=PASS' "$ARTIFACT_DIR/28-w91-vs-w92.txt"
+        PHASE="STAGE"; rm -rf "$STAGE_DIR"; mkdir -p "$STAGE_DIR"; cp "$A/Image" "$STAGE_DIR/GEN1_W92_Image"; cp "$A/config" "$STAGE_DIR/GEN1_W92_config"; for r in "${REPORTS[@]}"; do cp "$ARTIFACT_DIR/$r" "$STAGE_DIR/$r"; done
+        { for r in "${REPORTS[@]}"; do echo "===== $r ====="; cat "$STAGE_DIR/$r"; echo; done; } > "$STAGE_DIR/W92-REPORT.txt"
+        W92_IMAGE_SHA="$(sha256sum "$STAGE_DIR/GEN1_W92_Image"|awk '{print $1}')"; W92_CONFIG_SHA="$(sha256sum "$STAGE_DIR/GEN1_W92_config"|awk '{print $1}')"
+        cat > "$STAGE_DIR/W92-FINAL-VERDICT.txt" <<EOF
+        W92_GEN1_5.4.274_SUSFS_2.3_TRY_UMOUNT=PASS
+        OFFICIAL_SUSFS_2_3_SOURCE_AUTH=PASS
+        SUSFS_2_2_TO_2_3_COMMIT_COUNT=21
+        SUSFS_2_3_COMMIT_CLASSIFICATION=PASS
+        SUSFS_2_3_5_4_SEMANTIC_BACKPORT=PASS
+        RESUKISU_PIN=$TARGET_REF
+        KERNELSU_3_3_WHOLESALE_SYNC=NO
+        ZYGOTE_NEXT_LOOKUP_MNT_FIX=PASS
+        ROOT_REVOKE_RECHECK=PASS
+        UID_EUID_CAPTURE_ORDER_FIX=PASS
+        OPEN_REDIRECT_2_3_EQUIVALENT=PASS
+        MOUNT_VISIBILITY_STATIC_KEY_EQUIVALENT=PASS
+        TRY_UMOUNT=PASS
+        TRY_UMOUNT_ZYGOTE_NEXT_DIRECT_CALL=ABSENT_INTENTIONALLY
+        MODULE_LOAD_FILTER_INCLUDED=NO
+        CONFIG_UNCHANGED_FROM_W91=YES
+        W92_IMAGE_SHA256=$W92_IMAGE_SHA
+        W92_CONFIG_SHA256=$W92_CONFIG_SHA
+        REPRODUCIBILITY=PASS
+        BOOT_IMAGE_CREATED=NO
+        FLASHABLE_ZIP_CREATED=NO
+        NEXT_STAGE=FREEZE_W92_THEN_BUILD_AK3_R2
+        EOF
+        (cd "$STAGE_DIR"; sha256sum "${PAYLOAD[@]}" > SHA256SUMS.txt; sha256sum -c SHA256SUMS.txt)
+        PHASE="VALIDATE_COUNT"; test "$(find "$STAGE_DIR" -maxdepth 1 -type f|wc -l)" -eq "${#FINAL_FILES[@]}"; PHASE="VALIDATE_FILESET"; validate_fileset "$STAGE_DIR"; for f in "${FINAL_FILES[@]}"; do PHASE="NONEMPTY:$f"; test -s "$STAGE_DIR/$f"; done
+        PHASE="FINALIZE"; rm -rf "$COMPACT_DIR"; mkdir -p "$COMPACT_DIR"; cp -a "$STAGE_DIR/." "$COMPACT_DIR/"; validate_fileset "$COMPACT_DIR"; (cd "$COMPACT_DIR"; sha256sum -c SHA256SUMS.txt); echo 'W92_V1_FINALIZATION=PASS' > "$PASS_FILE"; PHASE="COMPLETE"; trap - ERR; echo "W92_V1_PROMOTION=PASS"
+    - name: Final W92 v1 gate
+      shell: bash
+      run: |
+        set -euo pipefail
+        test -s "$GITHUB_WORKSPACE/.w92-v1-finalization-pass"; grep -Fxq 'W92_V1_FINALIZATION=PASS' "$GITHUB_WORKSPACE/.w92-v1-finalization-pass"
+        for f in GEN1_W92_Image GEN1_W92_config W92-FINAL-VERDICT.txt SHA256SUMS.txt; do test -s "$COMPACT_DIR/$f"; done
+        (cd "$COMPACT_DIR"; sha256sum -c SHA256SUMS.txt); echo "$W91_CONFIG_SHA256  $COMPACT_DIR/GEN1_W92_config"|sha256sum -c -; test "$(sha256sum "$COMPACT_DIR/GEN1_W92_Image"|awk '{print $1}')" != "$W91_IMAGE_SHA256"; test ! -e "$COMPACT_DIR/W92-FAILURE-SUMMARY.txt"
+        for line in 'W92_GEN1_5.4.274_SUSFS_2.3_TRY_UMOUNT=PASS' 'OFFICIAL_SUSFS_2_3_SOURCE_AUTH=PASS' 'SUSFS_2_2_TO_2_3_COMMIT_COUNT=21' 'SUSFS_2_3_COMMIT_CLASSIFICATION=PASS' 'SUSFS_2_3_5_4_SEMANTIC_BACKPORT=PASS' 'KERNELSU_3_3_WHOLESALE_SYNC=NO' 'ZYGOTE_NEXT_LOOKUP_MNT_FIX=PASS' 'ROOT_REVOKE_RECHECK=PASS' 'UID_EUID_CAPTURE_ORDER_FIX=PASS' 'TRY_UMOUNT=PASS' 'TRY_UMOUNT_ZYGOTE_NEXT_DIRECT_CALL=ABSENT_INTENTIONALLY' 'MODULE_LOAD_FILTER_INCLUDED=NO' 'CONFIG_UNCHANGED_FROM_W91=YES' 'REPRODUCIBILITY=PASS' 'BOOT_IMAGE_CREATED=NO' 'FLASHABLE_ZIP_CREATED=NO' 'NEXT_STAGE=FREEZE_W92_THEN_BUILD_AK3_R2'; do grep -Fxq "$line" "$COMPACT_DIR/W92-FINAL-VERDICT.txt"; done
+        test "$(wc -l < "$COMPACT_DIR/W92-FINAL-VERDICT.txt")" -eq 22; echo "W92_GEN1_5.4.274_SUSFS_2.3_TRY_UMOUNT=PASS"
+    - name: Preserve W92 v1 failure summary
+      if: failure()
+      shell: bash
+      run: |
+        set -u
+        rm -rf "$COMPACT_DIR"; mkdir -p "$COMPACT_DIR"
+        {
+         echo "W92_RESULT=FAILURE"; echo "WORKFLOW=W92-v1"; echo "TARGET=VEUX_5.4.274"; echo "RESUKISU_PIN=$TARGET_REF"; echo "TARGET_SUSFS=v2.3.0"; echo "TRY_UMOUNT_PRESERVED_FROM_W91=YES"; echo "KERNELSU_3_3_WHOLESALE_SYNC=NO"; echo "W88_W89_W90_W91_BASELINES_UNCHANGED=YES"; echo "BOOT_IMAGE_CREATED=NO"; echo "FLASHING_PERFORMED=NO"
+         if [ -s "$GITHUB_WORKSPACE/.w92-v1-promotion-error" ]; then cat "$GITHUB_WORKSPACE/.w92-v1-promotion-error"; else echo "W92_V1_PROMOTION_FAILURE=NOT_REACHED_OR_NO_PROMOTION_ERROR_FILE"; fi
+        } > "$COMPACT_DIR/W92-FAILURE-SUMMARY.txt"
+        for f in "$ARTIFACT_DIR"/*.txt "$ARTIFACT_DIR"/*.diff; do [ -s "$f" ] && cp "$f" "$COMPACT_DIR/" || true; done
+        test -s "$COMPACT_DIR/W92-FAILURE-SUMMARY.txt"; test ! -e "$COMPACT_DIR/GEN1_W92_Image"; test ! -e "$COMPACT_DIR/GEN1_W92_config"; test ! -e "$COMPACT_DIR/W92-FINAL-VERDICT.txt"; test ! -e "$COMPACT_DIR/SHA256SUMS.txt"
+    - name: Upload compact W92 v1 artifact
+      if: always()
+      uses: actions/upload-artifact@v6
+      with:
+        name: GEN1_W92_5.4.274_SUSFS_2.3_TRY_UMOUNT_ISOLATED_v1-${{ github.run_number }}
+        path: w92-compact/
+        if-no-files-found: error
+        compression-level: 9
+        retention-days: 90
+on:
+  workflow_dispatch: null
