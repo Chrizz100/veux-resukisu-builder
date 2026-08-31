@@ -1,0 +1,496 @@
+name: CLEAN GEN1 P0 - VEUX 5.4.274 Source Baseline Audit v1
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  source-baseline:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    env:
+      ARCH: arm64
+      EXPECTED_VENDOR_SHA: "b2b7a3bbc36d120ee523ebc8d68e0f13a97df632"
+      COMMON_REF: "android11-5.4.274_r00"
+      STOCK_REF: "veux-r-oss"
+      STABILITY_REVERT: "f74e5c1b7c3f3e42f694e5ab524f95f62a0dab80"
+      EXPECTED_CANDIDATE_TREE: "5d25b7e0124d7fb695f3f07b45928fcb5780d0e8"
+      EXPECTED_CUMULATIVE_TREE: "9a1395f5e72d12d0fdb107dc7531c8e2c731693c"
+      LB_CAPACITY_COMMIT: "2c1495be9eabac845acc8da45f070622d6455091"
+      IDLE_SCREEN_COMMIT: "64e34240600a0c90072972a6c3d86f1d6ec85c53"
+      IDLE_EXPOSE_COMMIT: "4ac606c780ae02a075d75a2703be68880761531a"
+      IDLE_NOTIFIER_COMMIT: "8bc9cc6e197c0d1cf166ed94bb53ce41add1c828"
+      IDLE_OPTIMIZE_COMMIT: "1d49e9b3308a7eacd75ed67f4112914e74ee60db"
+      CPUFREQ_MIN_COMMIT: "44242207c9afe2b3e7fb5bdc18da42e918043c63"
+      CPUFREQ_MAX_COMMIT: "3a25ef84be1d26cf0ddd526534358febd04529c5"
+      EXPECTED_CPUFREQ_BEFORE_SHA256: "e1fa642651d4cf66fe59bf0eb615974bb403057dad5daeb3b7a8b1e9c06de646"
+      EXPECTED_CPUFREQ_AFTER_SHA256: "9ac85ecaafbdddfb43d2b361183b455448ce400fad1296ae290510ad33039ceb"
+      EXPECTED_STORE_ONE_BEFORE_SHA256: "5b85f632ef77eeee55d4b404a08e9d96ec87af0201ba1d634150c3ef418f37e3"
+      EXPECTED_STORE_ONE_AFTER_SHA256: "0bbe18c9eee2059f4d2ec636b604f50bda90b131261e857b0dbc717c512ef28e"
+      EXPECTED_CPUFREQ_TARGETED_DIFF_SHA256: "b431c73a2bfee36e093dc87846c628dd598a84499db66fc12a9930ff948e0b43"
+      EXPECTED_IDLE_RESTORE_DIFF_SHA256: "33b144f63893d7a45d6c8e301aacf6ca1faa7a87088c19ab8bfdc1ecb29a0fd5"
+      EXPECTED_LPM_AFTER_SHA256: "6805651af0a60905ce04356df3a538be15e94b6c8599a1d35e414d0a50b67094"
+      EXPECTED_CPUIDLE_CORE_AFTER_SHA256: "e7f7fba62ce2bbe82f23c6bfbf5a103161d1c8013b85f7f48e4c036758f6a603"
+      EXPECTED_CPUIDLE_HEADER_AFTER_SHA256: "9149734aa0eef1bba2e7ae16902dfd3aa203f23fe41657ce7df50ab947620506"
+      EXPECTED_SCHEDUTIL_BEFORE_SHA256: "9d56491a427ee12f1156ae907c5aa647bf1a1b35bf13c725a08e73ef295274b7"
+      EXPECTED_SCHEDUTIL_AFTER_SHA256: "987c9598f16b22a1e7b343475691687d309122de447494cd1a2b5ea8cbbafffc"
+      EXPECTED_CASS_DIFF_SHA256: "67abb81be8c2d7727c3e4c8a92419c9e9a3d97ee3d3e5355d3acabce34adf659"
+      EXPECTED_XIAOMI_PELT_SHA256: "bad23ba491cc5d4669936507b392888765aa65fd8063b2a95a492d6b0dca0cb0"
+      EXPECTED_HZ_KCONFIG_SHA256: "685e9a79f3dbf17e9bd5b402dfd25ad014886fbe1b6975a0913b3621519cd7fe"
+      ARTIFACT_DIR: ${{ github.workspace }}/clean-gen1-p0-audit
+      GIT_AUTHOR_DATE: "2026-08-20T00:00:00Z"
+      GIT_COMMITTER_DATE: "2026-08-20T00:00:00Z"
+      TZ: "UTC"
+      LANG: "C.UTF-8"
+      LC_ALL: "C.UTF-8"
+
+    steps:
+      - name: Initialize P0 audit
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$ARTIFACT_DIR"
+          mkdir -p "$ARTIFACT_DIR"
+          cat > "$ARTIFACT_DIR/00-plan.txt" <<'EOF'
+          CLEAN GEN1 P0 - source-only baseline
+          Exact VEUX vendor source + Android Common 5.4.274 + proven VEUX stability restores.
+          P0 stops before SUSFS and before ReSukiSU integration.
+          Vendor Legacy KernelSU is preserved in this stage.
+          No Image/dtb/vmlinux/boot.img/flash ZIP build and no device access.
+          EOF
+
+      - name: Checkout exact VEUX vendor source
+        uses: actions/checkout@v7
+        with:
+          repository: dereference23/kernel_xiaomi_sm6375
+          ref: "20240619"
+          fetch-depth: 0
+          path: kernel
+          persist-credentials: false
+
+      - name: Authenticate vendor and Legacy KSU boundary
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+          ACTUAL_VENDOR_SHA="$(git rev-parse HEAD)"
+          test "$ACTUAL_VENDOR_SHA" = "$EXPECTED_VENDOR_SHA"
+          test -s drivers/kernelsu/Kconfig
+          test -s drivers/kernelsu/Makefile
+          grep -Fq 'source "drivers/kernelsu/Kconfig"' drivers/Kconfig
+          grep -Eq '^obj-\$\(CONFIG_KSU\)[[:space:]]*\+=[[:space:]]*kernelsu/' drivers/Makefile
+          {
+            echo "VENDOR_SHA=$ACTUAL_VENDOR_SHA"
+            echo "LEGACY_KSU_PRESENT=YES"
+            echo "LEGACY_KSU_REMOVED_IN_P0=NO"
+            echo "RESUKISU_INTEGRATED_IN_P0=NO"
+            echo "SUSFS_INTEGRATED_IN_P0=NO"
+          } | tee "$ARTIFACT_DIR/01-vendor.txt"
+
+      - name: Recreate exact Linux 5.4.274 candidate
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote remove android-common 2>/dev/null || true
+          git remote add android-common https://android.googlesource.com/kernel/common
+          git fetch --no-tags android-common "$COMMON_REF"
+          COMMON_SHA="$(git rev-parse FETCH_HEAD)"
+          git update-ref refs/remotes/android-common/audit-base "$COMMON_SHA"
+          git merge --no-edit "$COMMON_SHA"
+          git cat-file -e "${STABILITY_REVERT}^{commit}"
+          git revert --no-edit "$STABILITY_REVERT"
+          CANDIDATE_SHA="$(git rev-parse HEAD)"
+          CANDIDATE_TREE="$(git rev-parse HEAD^{tree})"
+          KERNEL_VERSION="$(make -s kernelversion)"
+          test "$KERNEL_VERSION" = "5.4.274"
+          test "$CANDIDATE_TREE" = "$EXPECTED_CANDIDATE_TREE"
+          echo "CANDIDATE_TIP=$CANDIDATE_SHA" >> "$GITHUB_ENV"
+          echo "COMMON_SHA=$COMMON_SHA" >> "$GITHUB_ENV"
+          {
+            echo "COMMON_SHA=$COMMON_SHA"
+            echo "CANDIDATE_SHA=$CANDIDATE_SHA"
+            echo "CANDIDATE_TREE=$CANDIDATE_TREE"
+            echo "KERNEL_VERSION=$KERNEL_VERSION"
+          } | tee "$ARTIFACT_DIR/02-candidate.txt"
+
+      - name: Fetch official Xiaomi VEUX reference
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+          git remote remove xiaomi 2>/dev/null || true
+          git remote add xiaomi https://github.com/MiCode/Xiaomi_Kernel_OpenSource.git
+          git fetch --no-tags xiaomi "+refs/heads/${STOCK_REF}:refs/remotes/xiaomi/${STOCK_REF}"
+          echo "STOCK_SHA=$(git rev-parse "xiaomi/${STOCK_REF}")" | tee "$ARTIFACT_DIR/03-xiaomi.txt"
+
+      - name: Restore proven Xiaomi idle sleep policy
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+          for COMMIT in "$IDLE_SCREEN_COMMIT" "$IDLE_EXPOSE_COMMIT" "$IDLE_NOTIFIER_COMMIT" "$IDLE_OPTIMIZE_COMMIT"; do
+            git cat-file -e "${COMMIT}^{commit}"
+            git merge-base --is-ancestor "$COMMIT" "$CANDIDATE_TIP"
+          done
+          git revert --no-edit "$IDLE_OPTIMIZE_COMMIT"
+          git revert --no-edit "$IDLE_NOTIFIER_COMMIT"
+          git revert --no-edit "$IDLE_EXPOSE_COMMIT"
+          git revert --no-edit "$IDLE_SCREEN_COMMIT"
+          RESTORED_TIP="$(git rev-parse HEAD)"
+          git diff --no-ext-diff --no-color "$CANDIDATE_TIP" "$RESTORED_TIP" -- \
+            drivers/cpuidle/cpuidle.c drivers/cpuidle/lpm-levels.c include/linux/cpuidle.h \
+            > "$ARTIFACT_DIR/04-idle.diff"
+          test "$(sha256sum "$ARTIFACT_DIR/04-idle.diff" | awk '{print $1}')" = "$EXPECTED_IDLE_RESTORE_DIFF_SHA256"
+          test "$(sha256sum drivers/cpuidle/lpm-levels.c | awk '{print $1}')" = "$EXPECTED_LPM_AFTER_SHA256"
+          test "$(sha256sum drivers/cpuidle/cpuidle.c | awk '{print $1}')" = "$EXPECTED_CPUIDLE_CORE_AFTER_SHA256"
+          test "$(sha256sum include/linux/cpuidle.h | awk '{print $1}')" = "$EXPECTED_CPUIDLE_HEADER_AFTER_SHA256"
+          echo "IDLE_RESTORE=PASS" | tee "$ARTIFACT_DIR/04-idle-state.txt"
+
+      - name: Restore standard CPUFreq behavior
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+          for COMMIT in "$CPUFREQ_MIN_COMMIT" "$CPUFREQ_MAX_COMMIT"; do
+            git cat-file -e "${COMMIT}^{commit}"
+            git merge-base --is-ancestor "$COMMIT" "$CANDIDATE_TIP"
+          done
+          test "$(git rev-parse "${CPUFREQ_MAX_COMMIT}^")" = "$CPUFREQ_MIN_COMMIT"
+          SOURCE="drivers/cpufreq/cpufreq.c"
+          test "$(sha256sum "$SOURCE" | awk '{print $1}')" = "$EXPECTED_CPUFREQ_BEFORE_SHA256"
+          python3 - <<'PY'
+          import difflib, hashlib, os
+          from pathlib import Path
+          p = Path("drivers/cpufreq/cpufreq.c")
+          text = p.read_text(encoding="utf-8")
+          sm = "#define store_one(file_name, object)"
+          em = "store_one(scaling_max_freq, max);"
+          start = text.find(sm); end = text.find(em, start)
+          if start < 0 or end < 0: raise SystemExit("store_one anchors missing")
+          end += len(em)
+          macro = text[start:end]
+          if end < len(text) and text[end] == "\n": macro += "\n"
+          if hashlib.sha256(macro.encode()).hexdigest() != os.environ["EXPECTED_STORE_ONE_BEFORE_SHA256"]:
+              raise SystemExit("store_one before hash mismatch")
+          lines = macro.splitlines(keepends=True)
+          def one(token):
+              m=[i for i,l in enumerate(lines) if token in l]
+              if len(m)!=1: raise SystemExit(f"anchor mismatch: {token}")
+              return m[0]
+          a=one("if (&policy->object == &policy->min)"); b=one('ret = sscanf(buf, "%lu", &val);')
+          c=one("if (&policy->object == &policy->max)"); d=one("freq_qos_update_request(")
+          if not a < b < c < d: raise SystemExit("store_one ordering mismatch")
+          if "return count;" not in "".join(lines[a:b]): raise SystemExit("min no-op mismatch")
+          mb="".join(lines[c:d])
+          if "if (val < policy->min)" not in mb or "val = policy->min;" not in mb:
+              raise SystemExit("max clamp mismatch")
+          clean="".join(lines[:a]+lines[b:c]+lines[d:])
+          if hashlib.sha256(clean.encode()).hexdigest()!=os.environ["EXPECTED_STORE_ONE_AFTER_SHA256"]:
+              raise SystemExit("store_one after hash mismatch")
+          diff="".join(difflib.unified_diff(macro.splitlines(keepends=True),clean.splitlines(keepends=True),
+                   fromfile="candidate-store-one.c",tofile="candidate-store-one-sanitized.c"))
+          if hashlib.sha256(diff.encode()).hexdigest()!=os.environ["EXPECTED_CPUFREQ_TARGETED_DIFF_SHA256"]:
+              raise SystemExit("CPUFreq diff hash mismatch")
+          corrected=text[:start]+clean+text[start+len(macro):]
+          if hashlib.sha256(corrected.encode()).hexdigest()!=os.environ["EXPECTED_CPUFREQ_AFTER_SHA256"]:
+              raise SystemExit("cpufreq full hash mismatch")
+          p.write_text(corrected,encoding="utf-8")
+          Path(os.environ["ARTIFACT_DIR"],"05-cpufreq.diff").write_text(diff,encoding="utf-8")
+          PY
+          test "$(sha256sum "$SOURCE" | awk '{print $1}')" = "$EXPECTED_CPUFREQ_AFTER_SHA256"
+          git show "xiaomi/${STOCK_REF}:drivers/cpufreq/cpufreq.c" > "$ARTIFACT_DIR/05-xiaomi-cpufreq.c"
+          git show "${COMMON_SHA}:drivers/cpufreq/cpufreq.c" > "$ARTIFACT_DIR/05-common-cpufreq.c"
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          def extract(t):
+              s=t.find("#define store_one(file_name, object)"); e=t.find("store_one(scaling_max_freq, max);",s)
+              if s<0 or e<0: raise SystemExit("store_one extraction failed")
+              e+=len("store_one(scaling_max_freq, max);"); x=t[s:e]
+              if e<len(t) and t[e]=="\n": x+="\n"
+              return x
+          a=extract(Path("drivers/cpufreq/cpufreq.c").read_text())
+          x=extract(Path(os.environ["ARTIFACT_DIR"],"05-xiaomi-cpufreq.c").read_text())
+          c=extract(Path(os.environ["ARTIFACT_DIR"],"05-common-cpufreq.c").read_text())
+          if a!=x or a!=c: raise SystemExit("store_one baseline mismatch")
+          PY
+          echo "CPUFREQ_RESTORE=PASS" | tee "$ARTIFACT_DIR/05-cpufreq-state.txt"
+
+      - name: Restore standard schedutil behavior
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+          SOURCE="kernel/sched/cpufreq_schedutil.c"
+          test "$(sha256sum "$SOURCE" | awk '{print $1}')" = "$EXPECTED_SCHEDUTIL_BEFORE_SHA256"
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path("kernel/sched/cpufreq_schedutil.c")
+          t=p.read_text()
+          decl="\tunsigned int idx, l_freq, h_freq;\n"
+          if t.count(decl)!=1: raise SystemExit("schedutil declaration mismatch")
+          t=t.replace(decl,"",1)
+          old="""\
+          \tl_freq = cpufreq_driver_resolve_freq(policy, freq);
+          \tidx = cpufreq_frequency_table_target(policy, freq, CPUFREQ_RELATION_H);
+          \th_freq = policy->freq_table[idx].frequency;
+          \th_freq = clamp(h_freq, policy->min, policy->max);
+          \tif (l_freq <= h_freq || l_freq == policy->min)
+          \t\treturn l_freq;
+
+          \t/*
+          \t * Use the frequency step below if the calculated frequency is <20%
+          \t * higher than it.
+          \t */
+          \tif (mult_frac(100, freq - h_freq, l_freq - h_freq) < 20)
+          \t\treturn h_freq;
+
+          \treturn l_freq;
+          """
+          new="\treturn cpufreq_driver_resolve_freq(policy, freq);\n"
+          if t.count(old)!=1: raise SystemExit("schedutil lower-step mismatch")
+          t=t.replace(old,new,1)
+          old2="\tif (type == FREQUENCY_UTIL && uclamp_rq_util_with(rq, util, p) < util)\n"
+          new2="\tif (type == FREQUENCY_UTIL)\n"
+          if t.count(old2)!=1: raise SystemExit("schedutil uclamp mismatch")
+          p.write_text(t.replace(old2,new2,1))
+          PY
+          test "$(sha256sum "$SOURCE" | awk '{print $1}')" = "$EXPECTED_SCHEDUTIL_AFTER_SHA256"
+          echo "SCHEDUTIL_RESTORE=PASS" | tee "$ARTIFACT_DIR/06-schedutil-state.txt"
+
+      - name: Restore HZ250 default
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+          DEFCONFIG="arch/arm64/configs/veux_defconfig"
+          test "$(grep -xc 'CONFIG_HZ_100=y' "$DEFCONFIG" || true)" -eq 1
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path("arch/arm64/configs/veux_defconfig")
+          t=p.read_text()
+          if t.count("CONFIG_HZ_100=y\n")!=1: raise SystemExit("HZ100 anchor mismatch")
+          p.write_text(t.replace("CONFIG_HZ_100=y\n","",1))
+          PY
+          ! grep -qE '^CONFIG_HZ_(100|250|300|1000)=y$' "$DEFCONFIG"
+          test "$(sha256sum kernel/Kconfig.hz | awk '{print $1}')" = "$EXPECTED_HZ_KCONFIG_SHA256"
+          grep -qF 'default HZ_250' kernel/Kconfig.hz
+          echo "HZ250_DEFAULT=PASS" | tee "$ARTIFACT_DIR/07-hz-state.txt"
+
+      - name: Restore standard load balance capacity rate limit
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+          git cat-file -e "${LB_CAPACITY_COMMIT}^{commit}"
+          git show --format= --binary "$LB_CAPACITY_COMMIT" > "$ARTIFACT_DIR/08-lb.patch"
+          git apply --reverse --check "$ARTIFACT_DIR/08-lb.patch"
+          git apply --reverse "$ARTIFACT_DIR/08-lb.patch"
+          grep -qF 'time_after_eq(jiffies, sg->sgc->next_update)' kernel/sched/fair.c
+          grep -qF 'next_update;' kernel/sched/sched.h
+          echo "LB_CAPACITY_RESTORE=PASS" | tee "$ARTIFACT_DIR/08-lb-state.txt"
+
+      - name: Apply proven CASS MaxFreq thermal correction
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path("kernel/sched/cass.c")
+          t=p.read_text()
+          replacements=[
+          ("""\
+          \tunsigned long cap;
+          \tunsigned long cap_max;
+          \tunsigned long eff_util;
+          ""","""\
+          \tunsigned long cap;
+          \tunsigned long cap_max;
+          \tunsigned long cap_no_therm;
+          \tunsigned long cap_orig;
+          \tunsigned long eff_util;
+          """),
+          ("\tc->cap = c->cap_max - min(c->hard_util, c->cap_max - 1);\n","""\
+          \tc->cap = c->cap_max - min(c->hard_util, c->cap_max - 1);
+
+          \t/*
+          \t * Keep a non-throttled capacity denominator for relative load
+          \t * balancing, matching the original CASS capacity separation.
+          \t */
+          \tc->cap_no_therm =
+          \t\tc->cap_orig - min(c->hard_util, c->cap_orig - 1);
+          """),
+          ("""\
+          \t\t/* Get the original, maximum _possible_ capacity of this CPU */
+          \t\tcurr->cap_max = arch_scale_cpu_capacity(cpu);
+          ""","""\
+          \t\t/* Get the original, maximum possible capacity of this CPU. */
+          \t\tcurr->cap_orig = arch_scale_cpu_capacity(cpu);
+
+          \t\t/* Account for the current maximum allowed CPU frequency. */
+          \t\tcurr->cap_max =
+          \t\t\tcurr->cap_orig *
+          \t\t\tarch_scale_max_freq_capacity(NULL, cpu) >>
+          \t\t\tSCHED_CAPACITY_SHIFT;
+
+          \t\t/* Keep all later capacity divisions well-defined. */
+          \t\tcurr->cap_max = max(curr->cap_max, 1UL);
+          """),
+          ("""\
+          \t\tcurr->util =
+          \t\t\tcurr->util * SCHED_CAPACITY_SCALE / curr->cap;
+          ""","""\
+          \t\tcurr->util =
+          \t\t\tcurr->util * SCHED_CAPACITY_SCALE /
+          \t\t\tcurr->cap_no_therm;
+          """)]
+          for old,new in replacements:
+              if t.count(old)!=1: raise SystemExit("CASS anchor mismatch")
+              t=t.replace(old,new,1)
+          p.write_text(t)
+          PY
+          git diff --no-ext-diff --no-color -- kernel/sched/cass.c > "$ARTIFACT_DIR/09-cass.diff"
+          test "$(sha256sum "$ARTIFACT_DIR/09-cass.diff" | awk '{print $1}')" = "$EXPECTED_CASS_DIFF_SHA256"
+          echo "CASS_RESTORE=PASS" | tee "$ARTIFACT_DIR/09-cass-state.txt"
+
+      - name: Restore cumulative VEUX defconfig
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path("arch/arm64/configs/veux_defconfig")
+          t=p.read_text()
+          if t.count("CONFIG_SPRD_ROTATION_TASK=y")!=1: raise SystemExit("SPRD rotation anchor mismatch")
+          t=t.replace("CONFIG_SPRD_ROTATION_TASK=y","# CONFIG_SPRD_ROTATION_TASK is not set",1)
+          if "CONFIG_CPUSETS=y" in t: raise SystemExit("CPUSETS unexpectedly present")
+          old="CONFIG_CGROUP_FREEZER=y\nCONFIG_CGROUP_CPUACCT=y\n"
+          new="CONFIG_CGROUP_FREEZER=y\nCONFIG_CPUSETS=y\nCONFIG_CGROUP_CPUACCT=y\n"
+          if t.count(old)!=1: raise SystemExit("CPUSETS anchor mismatch")
+          p.write_text(t.replace(old,new,1))
+          PY
+          grep -qx '# CONFIG_SPRD_ROTATION_TASK is not set' arch/arm64/configs/veux_defconfig
+          grep -qx 'CONFIG_CPUSETS=y' arch/arm64/configs/veux_defconfig
+
+      - name: Restore exact Xiaomi VEUX PELT8
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+          HEADER="kernel/sched/sched-pelt.h"
+          git show "xiaomi/${STOCK_REF}:kernel/sched/sched-pelt.h" > "$HEADER"
+          test "$(sha256sum "$HEADER" | awk '{print $1}')" = "$EXPECTED_XIAOMI_PELT_SHA256"
+          grep -qx '#define LOAD_AVG_PERIOD 8' "$HEADER"
+          grep -qx '#define LOAD_AVG_MAX 12336' "$HEADER"
+          echo "PELT8_RESTORE=PASS" | tee "$ARTIFACT_DIR/10-pelt8-state.txt"
+
+      - name: Verify complete P0 source state and exact tree
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+          CPUFREQ="drivers/cpufreq/cpufreq.c"
+          SUGOV="kernel/sched/cpufreq_schedutil.c"
+          LPM="drivers/cpuidle/lpm-levels.c"
+          CORE="drivers/cpuidle/cpuidle.c"
+          HEADER="include/linux/cpuidle.h"
+          DEFCONFIG="arch/arm64/configs/veux_defconfig"
+          ! grep -qE '^CONFIG_HZ_(100|250|300|1000)=y$' "$DEFCONFIG"
+          grep -qx 'CONFIG_CPUSETS=y' "$DEFCONFIG"
+          grep -qx '# CONFIG_SPRD_ROTATION_TASK is not set' "$DEFCONFIG"
+          grep -qF 'time_after_eq(jiffies, sg->sgc->next_update)' kernel/sched/fair.c
+          grep -qF 'arch_scale_max_freq_capacity(NULL, cpu)' kernel/sched/cass.c
+          grep -qF 'curr->cap_no_therm' kernel/sched/cass.c
+          grep -qx '#define LOAD_AVG_PERIOD 8' kernel/sched/sched-pelt.h
+          ! grep -qF 'mult_frac(100, freq - h_freq, l_freq - h_freq) < 20' "$SUGOV"
+          ! grep -qF 'uclamp_rq_util_with(rq, util, p) < util' "$SUGOV"
+          grep -qF 'return cpufreq_driver_resolve_freq(policy, freq);' "$SUGOV"
+          ! grep -qF 'if (&policy->object == &policy->min)' "$CPUFREQ"
+          ! grep -qF 'if (&policy->object == &policy->max)' "$CPUFREQ"
+          ! grep -qF 'val = policy->min;' "$CPUFREQ"
+          grep -qF 'freq_qos_update_request(policy->object##_freq_req, val);' "$CPUFREQ"
+          grep -qF 'static bool sleep_disabled;' "$LPM"
+          grep -qF 'module_param_named(sleep_disabled, sleep_disabled, bool, 0664);' "$LPM"
+          ! grep -qF 'lpm_sleep_disabled' "$CORE"
+          ! grep -qF 'lpm_sleep_disabled' "$HEADER"
+          ! grep -qF 'update_cpumask(cs, trialcs, "0-7")' kernel/cgroup/cpuset.c
+          grep -qF 'update_cpumask(cs, trialcs, buf)' kernel/cgroup/cpuset.c
+          git diff --check
+          git add -A
+          P0_TREE="$(git write-tree)"
+          if [ "$P0_TREE" != "$EXPECTED_CUMULATIVE_TREE" ]; then
+            echo "ERROR: P0 tree mismatch"
+            echo "Expected: $EXPECTED_CUMULATIVE_TREE"
+            echo "Actual:   $P0_TREE"
+            git diff --cached --stat
+            exit 1
+          fi
+          {
+            echo "P0_SOURCE_CHECK=PASS"
+            echo "P0_TREE=$P0_TREE"
+            echo "P0_TREE_GATE=PASS"
+          } | tee "$ARTIFACT_DIR/11-tree-state.txt"
+
+      - name: Verify clean pre-SUSFS and pre-ReSukiSU boundary
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+          MATCHES="$(grep -RInE \
+            --exclude-dir=.git --exclude-dir=out --exclude-dir=kernelsu \
+            --include='*.c' --include='*.h' --include='Kconfig*' --include='Makefile*' --include='*.mk' \
+            '(^|[^A-Za-z0-9_])(CONFIG_KSU_SUSFS|CONFIG_SUSFS|susfs_[A-Za-z0-9_]+|SUSFS_VERSION|susfs\.h|susfs_def\.h)([^A-Za-z0-9_]|$)' \
+            fs include kernel security mm drivers 2>/dev/null || true)"
+          if [ -n "$MATCHES" ]; then
+            printf '%s\n' "$MATCHES" | tee "$ARTIFACT_DIR/12-pre-susfs-guard.txt"
+            exit 1
+          fi
+          test ! -e KernelSU
+          test -d drivers/kernelsu
+          test ! -L drivers/kernelsu
+          {
+            echo "KERNEL_SIDE_SUSFS_PRESENT=NO"
+            echo "TOP_LEVEL_KERNELSU_PRESENT=NO"
+            echo "LEGACY_DRIVERS_KERNELSU_PRESENT=YES"
+            echo "RESUKISU_INTEGRATED=NO"
+            echo "P0_BOUNDARY_GUARD=PASS"
+          } | tee "$ARTIFACT_DIR/12-boundary-state.txt"
+
+      - name: Write P0 result
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "CLEAN_GEN1_P0_SOURCE_BASELINE=PASS"
+            echo "VENDOR_SHA=$EXPECTED_VENDOR_SHA"
+            echo "KERNEL_VERSION=$(make -s kernelversion)"
+            echo "P0_TREE=$(git write-tree)"
+            echo "LEGACY_KSU_PRESERVED=YES"
+            echo "RESUKISU_INTEGRATED=NO"
+            echo "SUSFS_INTEGRATED=NO"
+            echo "KERNEL_COMPILE_PERFORMED=NO"
+            echo "IMAGE_CREATED=NO"
+            echo "DTB_BUILD_PERFORMED=NO"
+            echo "BOOT_IMAGE_CREATED=NO"
+            echo "FLASHABLE_ZIP_CREATED=NO"
+            echo "DEVICE_ACCESSED=NO"
+            echo "FLASHING_PERFORMED=NO"
+            echo "NEXT_STAGE=CLEAN_GEN1_P1"
+          } | tee "$ARTIFACT_DIR/13-result.txt"
+
+      - name: Upload P0 source audit evidence
+        uses: actions/upload-artifact@v7
+        with:
+          name: clean-gen1-p0-source-baseline-audit-v1
+          path: clean-gen1-p0-audit/
+          if-no-files-found: error
+          retention-days: 14
