@@ -1,0 +1,381 @@
+name: CLEAN GEN1 - Upstream Snapshot Compare Restore v1
+
+on:
+  workflow_dispatch:
+    inputs:
+      resukisu_ref:
+        description: ReSukiSU ref to inspect without promoting it
+        required: true
+        default: main
+        type: string
+      snapshot_label:
+        description: Short label for this candidate snapshot
+        required: true
+        default: candidate
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  upstream-snapshot:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    env:
+      LOCK_PATH: .github/clean-gen1/clean-gen1-upstream-lock.json
+      OUT_DIR: ${{ github.workspace }}/clean-gen1-upstream-audit
+      RESTORE_DIR: ${{ github.workspace }}/clean-gen1-restore-kit
+      RESUKISU_DIR: ${{ github.workspace }}/ReSukiSU-audit
+      SUSFS_DIR: ${{ github.workspace }}/susfs4ksu-audit
+      TZ: UTC
+      LANG: C.UTF-8
+      LC_ALL: C.UTF-8
+
+    steps:
+      - name: Checkout builder repository
+        uses: actions/checkout@v7
+        with:
+          path: builder-repo
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Install snapshot dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends zstd
+
+      - name: Initialize snapshot audit
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$OUT_DIR" "$RESTORE_DIR" "$RESUKISU_DIR" "$SUSFS_DIR"
+          mkdir -p "$OUT_DIR/resukisu" "$OUT_DIR/susfs" "$RESTORE_DIR/audit-evidence"
+
+          LOCK="$GITHUB_WORKSPACE/builder-repo/$LOCK_PATH"
+          test -s "$LOCK"
+          python3 -m json.tool "$LOCK" > /dev/null
+          cp "$LOCK" "$OUT_DIR/00-last-good-lock.json"
+          cp "$LOCK" "$RESTORE_DIR/00-last-good-lock.json"
+
+          {
+            echo "MODE=AUDIT_AND_SNAPSHOT_ONLY"
+            echo "AUTO_PROMOTE_CANDIDATE=NO"
+            echo "KERNEL_BUILD=NO"
+            echo "DEVICE_ACCESS=NO"
+            echo "LAST_GOOD_LOCK=$LOCK_PATH"
+            echo "RESUKISU_REQUESTED_REF=${{ inputs.resukisu_ref }}"
+            echo "SNAPSHOT_LABEL=${{ inputs.snapshot_label }}"
+          } | tee "$OUT_DIR/00-plan.txt"
+
+      - name: Validate immutable P0 identity from lock
+        shell: bash
+        run: |
+          set -euo pipefail
+          LOCK="$GITHUB_WORKSPACE/builder-repo/$LOCK_PATH"
+          python3 - "$LOCK" <<'PY'
+          import json, sys
+          d=json.load(open(sys.argv[1], encoding="utf-8"))
+          assert d["schema"] == 1
+          assert d["p0"]["vendor_sha"] == "b2b7a3bbc36d120ee523ebc8d68e0f13a97df632"
+          assert d["p0"]["kernel_version"] == "5.4.274"
+          assert d["p0"]["p0_tree"] == "9a1395f5e72d12d0fdb107dc7531c8e2c731693c"
+          assert d["policy"]["kernel_build_allowed"] is False
+          assert d["policy"]["auto_promote_candidate"] is False
+          print("LOCK_SCHEMA=PASS")
+          print("P0_IDENTITY=PASS")
+          PY
+
+      - name: Clone ReSukiSU and resolve PRE POST refs
+        shell: bash
+        run: |
+          set -euo pipefail
+          LOCK="$GITHUB_WORKSPACE/builder-repo/$LOCK_PATH"
+          PRE="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["resukisu"]["audit_anchor"])' "$LOCK")"
+
+          git clone --filter=blob:none --no-checkout \
+            https://github.com/ReSukiSU/ReSukiSU.git "$RESUKISU_DIR"
+          git -C "$RESUKISU_DIR" fetch --no-tags origin "$PRE"
+          git -C "$RESUKISU_DIR" fetch --no-tags origin "${{ inputs.resukisu_ref }}"
+          POST="$(git -C "$RESUKISU_DIR" rev-parse FETCH_HEAD)"
+          git -C "$RESUKISU_DIR" cat-file -e "${PRE}^{commit}"
+          git -C "$RESUKISU_DIR" cat-file -e "${POST}^{commit}"
+
+          if ! git -C "$RESUKISU_DIR" merge-base --is-ancestor "$PRE" "$POST"; then
+            echo "ERROR: candidate ReSukiSU ref is not a descendant of last-good audit anchor" >&2
+            exit 1
+          fi
+
+          {
+            echo "RESUKISU_PRE=$PRE"
+            echo "RESUKISU_POST=$POST"
+          } >> "$GITHUB_ENV"
+
+          {
+            echo "PRE=$PRE"
+            echo "POST=$POST"
+            echo "AHEAD_COUNT=$(git -C "$RESUKISU_DIR" rev-list --count "$PRE..$POST")"
+          } | tee "$OUT_DIR/resukisu/01-identity.txt"
+
+      - name: Compare ReSukiSU PRE vs POST by scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          git -C "$RESUKISU_DIR" log --reverse \
+            --date=iso-strict \
+            --format='%H%x09%ad%x09%s' \
+            "$RESUKISU_PRE..$RESUKISU_POST" \
+            > "$OUT_DIR/resukisu/02-commits.tsv"
+
+          for scope in kernel uapi userspace/ksud manager; do
+            safe="${scope//\//-}"
+            git -C "$RESUKISU_DIR" diff --binary \
+              "$RESUKISU_PRE..$RESUKISU_POST" -- "$scope" \
+              > "$OUT_DIR/resukisu/03-${safe}.patch"
+            git -C "$RESUKISU_DIR" diff --name-status \
+              "$RESUKISU_PRE..$RESUKISU_POST" -- "$scope" \
+              > "$OUT_DIR/resukisu/03-${safe}-files.txt"
+          done
+
+          git -C "$RESUKISU_DIR" diff --stat \
+            "$RESUKISU_PRE..$RESUKISU_POST" \
+            > "$OUT_DIR/resukisu/04-total-stat.txt"
+          git -C "$RESUKISU_DIR" diff --name-status \
+            "$RESUKISU_PRE..$RESUKISU_POST" \
+            > "$OUT_DIR/resukisu/04-all-files.txt"
+
+      - name: Classify ReSukiSU candidate impact
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - "$OUT_DIR/resukisu" <<'PY'
+          from pathlib import Path
+          import sys
+          p=Path(sys.argv[1])
+          def nonempty(name):
+              f=p/name
+              return f.exists() and f.stat().st_size > 0
+          flags={
+              "kernel": nonempty("03-kernel-files.txt"),
+              "uapi": nonempty("03-uapi-files.txt"),
+              "ksud": nonempty("03-userspace-ksud-files.txt"),
+              "manager": nonempty("03-manager-files.txt"),
+          }
+          if flags["kernel"] or flags["uapi"]:
+              classification="KERNEL_OR_UAPI_REVIEW_REQUIRED"
+          elif flags["ksud"]:
+              classification="KSUD_ABI_RUNTIME_REVIEW_REQUIRED"
+          elif flags["manager"]:
+              classification="MANAGER_ONLY"
+          else:
+              classification="NO_TRACKED_SCOPE_CHANGE"
+          out=p/"05-classification.txt"
+          out.write_text("\n".join([
+              f"RESUKISU_CLASSIFICATION={classification}",
+              *(f"RESUKISU_{k.upper()}_CHANGED={'YES' if v else 'NO'}" for k,v in flags.items()),
+          ])+"\n", encoding="utf-8")
+          print(out.read_text(), end="")
+          PY
+
+      - name: Enforce ReSukiSU exclusion policy visibility
+        shell: bash
+        run: |
+          set -euo pipefail
+          LOCK="$GITHUB_WORKSPACE/builder-repo/$LOCK_PATH"
+          python3 - "$LOCK" "$OUT_DIR/resukisu/06-exclusion-policy.txt" <<'PY'
+          import json, sys
+          d=json.load(open(sys.argv[1], encoding="utf-8"))
+          excluded=d["policy"]["resukisu_excluded_commits"]
+          with open(sys.argv[2], "w", encoding="utf-8") as f:
+              for x in excluded:
+                  f.write(f"EXCLUDED_RESUKISU_COMMIT={x}\n")
+              f.write("AUTO_INCLUDE_EXCLUDED_COMMITS=NO\n")
+          PY
+          cat "$OUT_DIR/resukisu/06-exclusion-policy.txt"
+
+      - name: Clone official SUSFS
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --filter=blob:none --no-checkout \
+            https://gitlab.com/simonpunk/susfs4ksu.git "$SUSFS_DIR"
+          echo "SUSFS_CLONE=PASS" | tee "$OUT_DIR/susfs/01-clone.txt"
+
+      - name: Compare each SUSFS tracked branch PRE vs POST
+        shell: bash
+        run: |
+          set -euo pipefail
+          LOCK="$GITHUB_WORKSPACE/builder-repo/$LOCK_PATH"
+          python3 - "$LOCK" > "$RUNNER_TEMP/susfs-branches.tsv" <<'PY'
+          import json, sys
+          d=json.load(open(sys.argv[1], encoding="utf-8"))
+          for branch, sha in d["susfs"]["branches"].items():
+              print(f"{branch}\t{sha}")
+          PY
+
+          : > "$OUT_DIR/susfs/02-branch-summary.tsv"
+          while IFS=$'\t' read -r branch pre; do
+            safe="${branch//\//-}"
+            git -C "$SUSFS_DIR" fetch --no-tags origin \
+              "+refs/heads/${branch}:refs/remotes/origin/${branch}"
+            post="$(git -C "$SUSFS_DIR" rev-parse "refs/remotes/origin/${branch}")"
+            git -C "$SUSFS_DIR" fetch --no-tags origin "$pre" || true
+            git -C "$SUSFS_DIR" cat-file -e "${pre}^{commit}"
+            git -C "$SUSFS_DIR" cat-file -e "${post}^{commit}"
+
+            status="DIVERGED"
+            if [ "$pre" = "$post" ]; then
+              status="UNCHANGED"
+            elif git -C "$SUSFS_DIR" merge-base --is-ancestor "$pre" "$post"; then
+              status="AHEAD"
+            fi
+
+            printf '%s\t%s\t%s\t%s\n' "$branch" "$pre" "$post" "$status" \
+              >> "$OUT_DIR/susfs/02-branch-summary.tsv"
+
+            git -C "$SUSFS_DIR" log --reverse --date=iso-strict \
+              --format='%H%x09%ad%x09%s' "$pre..$post" \
+              > "$OUT_DIR/susfs/03-${safe}-commits.tsv" || true
+            git -C "$SUSFS_DIR" diff --binary "$pre..$post" \
+              > "$OUT_DIR/susfs/04-${safe}.patch" || true
+            git -C "$SUSFS_DIR" diff --name-status "$pre..$post" \
+              > "$OUT_DIR/susfs/04-${safe}-files.txt" || true
+          done < "$RUNNER_TEMP/susfs-branches.tsv"
+
+          cat "$OUT_DIR/susfs/02-branch-summary.tsv"
+
+      - name: Create candidate lock without promoting it
+        shell: bash
+        run: |
+          set -euo pipefail
+          LOCK="$GITHUB_WORKSPACE/builder-repo/$LOCK_PATH"
+          python3 - \
+            "$LOCK" \
+            "$OUT_DIR/susfs/02-branch-summary.tsv" \
+            "$RESUKISU_POST" \
+            "$OUT_DIR/07-candidate-lock.json" <<'PY'
+          import json, sys
+          src, table, resu_post, out = sys.argv[1:]
+          d=json.load(open(src, encoding="utf-8"))
+          d["policy"]["status"]="UNAPPROVED_CANDIDATE"
+          d["policy"]["kernel_build_allowed"]=False
+          d["policy"]["auto_promote_candidate"]=False
+          d["resukisu"]["candidate_head"]=resu_post
+          current={}
+          for line in open(table, encoding="utf-8"):
+              branch, pre, post, status=line.rstrip("\n").split("\t")
+              current[branch]={"last_good":pre,"candidate":post,"status":status}
+          d["susfs"]["candidate_heads"]=current
+          with open(out,"w",encoding="utf-8") as f:
+              json.dump(d,f,indent=2,sort_keys=True)
+              f.write("\n")
+          PY
+          cp "$OUT_DIR/07-candidate-lock.json" "$RESTORE_DIR/07-candidate-lock.json"
+
+      - name: Archive exact candidate upstream source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git -C "$RESUKISU_DIR" archive --format=tar "$RESUKISU_POST" \
+            kernel uapi userspace/ksud manager \
+            | zstd -T0 -19 -o "$RESTORE_DIR/resukisu-candidate-scopes.tar.zst"
+
+          while IFS=$'\t' read -r branch pre post status; do
+            safe="${branch//\//-}"
+            git -C "$SUSFS_DIR" archive --format=tar "$post" \
+              | zstd -T0 -19 -o "$RESTORE_DIR/susfs-${safe}-candidate.tar.zst"
+          done < "$OUT_DIR/susfs/02-branch-summary.tsv"
+
+      - name: Preserve accepted CLEAN integration state if present
+        shell: bash
+        run: |
+          set -euo pipefail
+          STATE="$GITHUB_WORKSPACE/builder-repo/.github/clean-gen1/state"
+          if [ -d "$STATE" ]; then
+            tar -C "$GITHUB_WORKSPACE/builder-repo" \
+              -cf - .github/clean-gen1/state \
+              | zstd -T0 -19 -o "$RESTORE_DIR/accepted-clean-integration-state.tar.zst"
+            echo "ACCEPTED_INTEGRATION_STATE_BACKED_UP=YES"
+          else
+            echo "ACCEPTED_INTEGRATION_STATE_BACKED_UP=NO"
+            echo "No accepted integration state directory exists yet." \
+              > "$RESTORE_DIR/accepted-clean-integration-state-NOT-YET.txt"
+          fi
+
+      - name: Create PRE POST manifest and hashes
+        shell: bash
+        run: |
+          set -euo pipefail
+          LOCK="$GITHUB_WORKSPACE/builder-repo/$LOCK_PATH"
+          python3 - \
+            "$LOCK" \
+            "$OUT_DIR/resukisu/05-classification.txt" \
+            "$OUT_DIR/susfs/02-branch-summary.tsv" \
+            "$RESUKISU_PRE" "$RESUKISU_POST" \
+            "$OUT_DIR/08-snapshot-manifest.json" <<'PY'
+          import json, sys
+          lock, cls_file, sus_table, pre, post, out=sys.argv[1:]
+          cls={}
+          for line in open(cls_file,encoding="utf-8"):
+              if "=" in line:
+                  k,v=line.rstrip("\n").split("=",1); cls[k]=v
+          sus=[]
+          for line in open(sus_table,encoding="utf-8"):
+              branch,bpre,bpost,status=line.rstrip("\n").split("\t")
+              sus.append({"branch":branch,"pre":bpre,"post":bpost,"status":status})
+          manifest={
+            "schema":1,
+            "mode":"AUDIT_AND_SNAPSHOT_ONLY",
+            "auto_promoted":False,
+            "kernel_build_performed":False,
+            "resukisu":{"pre":pre,"post":post,"classification":cls},
+            "susfs":sus,
+          }
+          with open(out,"w",encoding="utf-8") as f:
+              json.dump(manifest,f,indent=2,sort_keys=True); f.write("\n")
+          PY
+          cp -a "$OUT_DIR/." "$RESTORE_DIR/audit-evidence/"
+          (
+            cd "$RESTORE_DIR"
+            find . -type f ! -name SHA256SUMS -print0 \
+              | sort -z \
+              | xargs -0 sha256sum \
+              > SHA256SUMS
+          )
+
+      - name: Final no-build safety gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "CLEAN_GEN1_UPSTREAM_SNAPSHOT=PASS"
+            echo "PRE_SNAPSHOT=LAST_GOOD_LOCK"
+            echo "POST_SNAPSHOT=UNAPPROVED_CANDIDATE"
+            echo "RESTORE_KIT=CREATED"
+            echo "AUTO_PROMOTE=NO"
+            echo "KERNEL_BUILD_PERFORMED=NO"
+            echo "IMAGE_CREATED=NO"
+            echo "DTB_BUILD_PERFORMED=NO"
+            echo "BOOT_IMAGE_CREATED=NO"
+            echo "FLASHABLE_ZIP_CREATED=NO"
+            echo "DEVICE_ACCESSED=NO"
+            echo "SAFE_TO_REVIEW_BEFORE_BUILD=YES"
+          } | tee "$RESTORE_DIR/FINAL-STATE.txt"
+
+      - name: Upload PRE POST comparison evidence
+        uses: actions/upload-artifact@v7
+        with:
+          name: clean-gen1-upstream-compare-${{ inputs.snapshot_label }}-${{ github.run_id }}
+          path: clean-gen1-upstream-audit/
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Upload restore kit
+        uses: actions/upload-artifact@v7
+        with:
+          name: clean-gen1-restore-kit-${{ inputs.snapshot_label }}-${{ github.run_id }}
+          path: clean-gen1-restore-kit/
+          if-no-files-found: error
+          retention-days: 90
