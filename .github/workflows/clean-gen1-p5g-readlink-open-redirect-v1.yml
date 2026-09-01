@@ -1,0 +1,762 @@
+name: CLEAN GEN1 P5G - readlink OPEN_REDIRECT v1
+'on':
+  workflow_dispatch: null
+permissions:
+  contents: read
+  actions: read
+jobs:
+  p5g-readlink-open-redirect:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      ARCH: arm64
+      TZ: UTC
+      LANG: C.UTF-8
+      LC_ALL: C.UTF-8
+      VENDOR_REPO: dereference23/kernel_xiaomi_sm6375
+      VENDOR_TAG: '20240619'
+      EXPECTED_VENDOR_SHA: b2b7a3bbc36d120ee523ebc8d68e0f13a97df632
+      P5E_RUN_ID: '33497987886'
+      P5E_ARTIFACT_NAME: clean-gen1-p5e-tmpfile-o-path-open-redirect-v1-33497987886
+      EXPECTED_P5E_COMMIT: c4fa4cc16958274498ba03c9fe1ae2c65ac85b16
+      EXPECTED_P5E_TREE: b373e7c07682016a7bf08bc920dbc8834a0e08f5
+      EXPECTED_RESUKISU_HEAD: 42034caa96466e8473fe7553eba8a1888c7f460f
+      EXPECTED_RESUKISU_TREE: d818d965b855d417edfe9eb38b152ff83e75e0fb
+      RESUKISU_SNAPSHOT_HEAD: 0b5efe9e0102c43ca5c41174d500f5a7080cd0c7
+      SUSFS_REPO: https://gitlab.com/simonpunk/susfs4ksu.git
+      SUSFS_54_HEAD: 76affd70abf61d77feb0a132f61365d6848505df
+      SUSFS_510_HEAD: ec785f47d49f7b3871ca9356f450411020af7017
+      SUSFS_515_HEAD: bca0d2333c1a7d717e7278b019d7af7ba1d16005
+      SUSFS_61_HEAD: 4fc9c1898ea66f51847cdbc0d1473ea4ef525a70
+      ARTIFACT_DIR: ${{ github.workspace }}/clean-gen1-p5g
+      P5E_ARTIFACT_DIR: ${{ github.workspace }}/p5e-artifact
+      BASELINE_BUILD_DIR: ${{ github.workspace }}/out-p5g-baseline
+      NORMAL_BUILD_DIR: ${{ github.workspace }}/out-p5g-normal
+      REDIRECT_BUILD_DIR: ${{ github.workspace }}/out-p5g-redirect
+    steps:
+    - name: Initialize P5G
+      shell: bash
+      run: |2
+
+        set -euo pipefail
+        rm -rf "$ARTIFACT_DIR" "$P5E_ARTIFACT_DIR" \
+               "$BASELINE_BUILD_DIR" "$NORMAL_BUILD_DIR" "$REDIRECT_BUILD_DIR" \
+               "$GITHUB_WORKSPACE/p5g-outer-replay" "$GITHUB_WORKSPACE/p5g-resukisu-replay"
+        mkdir -p "$ARTIFACT_DIR"
+
+        cat > "$ARTIFACT_DIR/00-plan.txt" <<'EOF'
+        CLEAN GEN1 P5G - readlink OPEN_REDIRECT integration
+
+        Accepted P5E is the input Last Good. P5F was audit-only and remains source-neutral.
+
+        P5G changes exactly:
+          fs/namei.c
+          fs/proc/base.c
+          fs/susfs.c
+          include/linux/susfs.h
+
+        Requirements:
+        - cover both vfs_readlink custom ->readlink and default ->get_link branches;
+        - no-match (-ENOENT) falls back to stock behavior;
+        - helper errors propagate;
+        - successful helper returns copied byte count, not zero;
+        - standard readlink truncation to buflen, not -ENAMETOOLONG;
+        - proc readlink hook before d_path;
+        - delayed_call cleanup remains unchanged on stock get_link path;
+        - shared susfs.h declarations, no handwritten externs;
+        - non-readlink OPEN_REDIRECT helper bodies remain byte-identical;
+        - CONFIG_KSU_SUSFS remains disabled in real VEUX defconfig.
+
+        No full kernel build, Image, dtb, boot image, flash ZIP or device work.
+        EOF
+    - name: Install P5G dependencies
+      shell: bash
+      run: |2
+
+        set -euo pipefail
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends \
+          bc bison binutils-aarch64-linux-gnu build-essential ca-certificates flex \
+          gcc-aarch64-linux-gnu git jq libelf-dev libssl-dev python3 zstd
+    - name: Checkout exact VEUX vendor source
+      uses: actions/checkout@v6
+      with:
+        repository: dereference23/kernel_xiaomi_sm6375
+        ref: '20240619'
+        path: kernel
+        fetch-depth: 1
+    - name: Download accepted P5E artifact
+      uses: actions/download-artifact@v7
+      with:
+        name: ${{ env.P5E_ARTIFACT_NAME }}
+        path: p5e-artifact
+        github-token: ${{ github.token }}
+        run-id: ${{ env.P5E_RUN_ID }}
+    - name: Authenticate accepted P5E checkpoint
+      shell: bash
+      run: |2
+
+        set -euo pipefail
+        (
+          cd "$P5E_ARTIFACT_DIR/restore-kit"
+          sha256sum -c SHA256SUMS
+        ) > "$ARTIFACT_DIR/01-p5e-restore-sha256.txt"
+
+        jq -e \
+          --arg commit "$EXPECTED_P5E_COMMIT" \
+          --arg tree "$EXPECTED_P5E_TREE" \
+          --arg rhead "$EXPECTED_RESUKISU_HEAD" \
+          --arg rtree "$EXPECTED_RESUKISU_TREE" \
+          '.stage=="CLEAN_GEN1_P5E" and
+           .p5e_commit==$commit and
+           .p5e_tree==$tree and
+           .resukisu_head==$rhead and
+           .resukisu_tree==$rtree and
+           .normal_path_open_redirect_integrated==true and
+           .tmpfile_open_redirect_integrated==true and
+           .o_path_open_redirect_integrated==true and
+           .susfs_runtime_enabled==false and
+           .full_kernel_build_performed==false' \
+          "$P5E_ARTIFACT_DIR/restore-kit/manifest.json" \
+          > "$ARTIFACT_DIR/01-p5e-manifest-auth.json"
+
+        grep -Fxq 'CLEAN_GEN1_P5E_TMPFILE_O_PATH_OPEN_REDIRECT=PASS' \
+          "$P5E_ARTIFACT_DIR/17-result.txt"
+
+        {
+          echo "P5E_RESTORE_ARTIFACT=PASS"
+          echo "P5E_CHECKPOINT_AUTH=PASS"
+          echo "P5G_MUTATION_ALLOWED=YES"
+        } | tee "$ARTIFACT_DIR/01-p5e-auth.txt"
+    - name: Refuse stale reviewed upstream before P5G
+      shell: bash
+      run: |2
+
+        set -euo pipefail
+        test "$(git ls-remote https://github.com/ReSukiSU/ReSukiSU.git refs/heads/main | awk '{print $1}')" = "$RESUKISU_SNAPSHOT_HEAD"
+        test "$(git ls-remote "$SUSFS_REPO" refs/heads/kernel-5.4 | awk '{print $1}')" = "$SUSFS_54_HEAD"
+        test "$(git ls-remote "$SUSFS_REPO" refs/heads/gki-android12-5.10 | awk '{print $1}')" = "$SUSFS_510_HEAD"
+        test "$(git ls-remote "$SUSFS_REPO" refs/heads/gki-android13-5.15 | awk '{print $1}')" = "$SUSFS_515_HEAD"
+        test "$(git ls-remote "$SUSFS_REPO" refs/heads/gki-android14-6.1 | awk '{print $1}')" = "$SUSFS_61_HEAD"
+
+        {
+          echo "UPSTREAM_REVIEW_SNAPSHOT_CURRENT=YES"
+          echo "P5G_ALLOWED=YES"
+        } | tee "$ARTIFACT_DIR/02-upstream-state.txt"
+    - name: Restore exact accepted P5E outer tree
+      working-directory: kernel
+      shell: bash
+      run: |2
+
+        set -euo pipefail
+        test "$(git rev-parse HEAD)" = "$EXPECTED_VENDOR_SHA"
+
+        PATCH="$P5E_ARTIFACT_DIR/restore-kit/vendor-20240619-to-p5e-outer.patch"
+        git apply --check --binary "$PATCH"
+        git apply --index --binary "$PATCH"
+        test "$(git write-tree)" = "$EXPECTED_P5E_TREE"
+
+        GIT_AUTHOR_NAME="CLEAN-GEN1 Restore" \
+        GIT_AUTHOR_EMAIL="clean-gen1@invalid.local" \
+        GIT_AUTHOR_DATE="2026-09-01T00:00:00Z" \
+        GIT_COMMITTER_NAME="CLEAN-GEN1 Restore" \
+        GIT_COMMITTER_EMAIL="clean-gen1@invalid.local" \
+        GIT_COMMITTER_DATE="2026-09-01T00:00:00Z" \
+          git commit -m "CLEAN GEN1 restore accepted P5E outer tree"
+
+        test "$(git rev-parse HEAD^{tree})" = "$EXPECTED_P5E_TREE"
+        echo "P5E_RESTORED_COMMIT=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+        echo "P5E_OUTER_RESTORE_REPLAY=PASS" | tee "$ARTIFACT_DIR/03-p5e-outer-restore.txt"
+    - name: Restore exact accepted P5E ReSukiSU
+      working-directory: kernel
+      shell: bash
+      run: |2
+
+        set -euo pipefail
+        rm -rf KernelSU
+        git init KernelSU >/dev/null
+        git -C KernelSU fetch \
+          "$P5E_ARTIFACT_DIR/restore-kit/resukisu-p5e-full.bundle" \
+          refs/heads/clean-gen1-p5e-resukisu:refs/heads/clean-gen1-p5e-resukisu
+        git -C KernelSU checkout --detach refs/heads/clean-gen1-p5e-resukisu >/dev/null
+
+        test "$(git -C KernelSU rev-parse HEAD)" = "$EXPECTED_RESUKISU_HEAD"
+        test "$(git -C KernelSU rev-parse HEAD^{tree})" = "$EXPECTED_RESUKISU_TREE"
+
+        mkdir -p .git/info
+        touch .git/info/exclude
+        grep -Fxq '/KernelSU/' .git/info/exclude || echo '/KernelSU/' >> .git/info/exclude
+
+        test -L drivers/kernelsu
+        test "$(readlink drivers/kernelsu)" = "../KernelSU/kernel"
+        test -z "$(git status --porcelain)"
+        echo "P5E_RESUKISU_RESTORE_REPLAY=PASS" | tee "$ARTIFACT_DIR/04-p5e-resukisu-restore.txt"
+    - name: Audit P5G pre-readlink shapes and protect non-readlink helpers
+      working-directory: kernel
+      shell: bash
+      run: |
+        set -euo pipefail
+        python3 - <<'PY' > "$ARTIFACT_DIR/06-pre-readlink-audit.txt"
+        from pathlib import Path
+        import hashlib, json, os
+
+        targets = {
+            "namei": Path("fs/namei.c").read_text(encoding="utf-8"),
+            "base": Path("fs/proc/base.c").read_text(encoding="utf-8"),
+            "susfs": Path("fs/susfs.c").read_text(encoding="utf-8"),
+            "hdr": Path("include/linux/susfs.h").read_text(encoding="utf-8"),
+        }
+
+        def extract(text, signature):
+            start = text.find(signature)
+            if start < 0:
+                raise SystemExit("missing: " + signature)
+            brace = text.find("{", start)
+            depth = 0
+            for i in range(brace, len(text)):
+                if text[i] == "{":
+                    depth += 1
+                elif text[i] == "}":
+                    depth -= 1
+                    if depth == 0:
+                        return text[start:i+1]
+            raise SystemExit("unterminated: " + signature)
+
+        vfs = extract(targets["namei"], "int vfs_readlink(struct dentry *dentry")
+        proc = extract(targets["base"], "static int do_proc_readlink(struct path *path")
+        open_helper = extract(targets["susfs"], "struct filename *susfs_open_redirect_spoof_do_sys_openat(")
+        statfs_helper = extract(targets["susfs"], "int susfs_open_redirect_spoof_vfs_statfs(")
+        fdinfo_helper = extract(targets["susfs"], "int susfs_open_redirect_spoof_seq_show(")
+        maps_helper = extract(targets["susfs"], "int susfs_open_redirect_spoof_show_map_vma_srcu(")
+
+        checks = {
+            "VFS_CUSTOM_BRANCH_PRESENT": "inode->i_op->readlink" in vfs,
+            "VFS_DEFAULT_GET_LINK_PRESENT": "inode->i_op->get_link" in vfs,
+            "VFS_DELAYED_CALL_PRESENT": "do_delayed_call(&done);" in vfs,
+            "PROC_D_PATH_PRESENT": "d_path(path, tmp, PAGE_SIZE)" in proc,
+            "PROC_TMP_PAGE_FREE_PRESENT": "free_page((unsigned long)tmp);" in proc,
+            "READLINK_HOOKS_ABSENT_BEFORE_P5G":
+                "susfs_open_redirect_spoof_vfs_readlink" not in vfs and
+                "susfs_open_redirect_spoof_do_proc_readlink" not in proc,
+            "READLINK_DECLARATIONS_ABSENT_BEFORE_P5G":
+                "susfs_open_redirect_spoof_vfs_readlink" not in targets["hdr"] and
+                "susfs_open_redirect_spoof_do_proc_readlink" not in targets["hdr"],
+        }
+        for k,v in checks.items():
+            print(f"{k}={'PASS' if v else 'FAIL'}")
+        if not all(checks.values()):
+            raise SystemExit("P5G pre-audit failed")
+
+        protected = {
+            "open_helper": hashlib.sha256(open_helper.encode()).hexdigest(),
+            "statfs_helper": hashlib.sha256(statfs_helper.encode()).hexdigest(),
+            "fdinfo_helper": hashlib.sha256(fdinfo_helper.encode()).hexdigest(),
+            "maps_helper": hashlib.sha256(maps_helper.encode()).hexdigest(),
+        }
+        Path(os.environ["ARTIFACT_DIR"], "06-protected-open-redirect-helpers.json").write_text(
+            json.dumps(protected, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+
+        print("P5G_PRE_READLINK_SHAPES=PASS")
+        print("P5G_NON_READLINK_HELPERS_PROTECTED=YES")
+        PY
+        grep -Fq 'P5G_PRE_READLINK_SHAPES=PASS' "$ARTIFACT_DIR/06-pre-readlink-audit.txt"
+    - name: Target-compile accepted P5E readlink baseline
+      working-directory: kernel
+      shell: bash
+      run: |2
+
+        set -euo pipefail
+        rm -rf "$BASELINE_BUILD_DIR"
+        make O="$BASELINE_BUILD_DIR" ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- veux_defconfig
+        make O="$BASELINE_BUILD_DIR" \
+          ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
+          CONFIG_KSU_SUSFS=y CONFIG_KSU_SUSFS_OPEN_REDIRECT=y \
+          KCFLAGS='-DCONFIG_KSU_SUSFS -DCONFIG_KSU_SUSFS_OPEN_REDIRECT' \
+          -j2 fs/namei.o fs/proc/base.o fs/susfs.o \
+          2>&1 | tee "$ARTIFACT_DIR/07-p5e-readlink-baseline-build.log"
+
+        for obj in fs/namei.o fs/proc/base.o fs/susfs.o
+        do
+          test -s "$BASELINE_BUILD_DIR/$obj"
+        done
+
+        echo "P5G_P5E_READLINK_BASELINE_COMPILE=PASS" \
+          | tee "$ARTIFACT_DIR/07-p5e-readlink-baseline-build.txt"
+    - name: Integrate readlink OPEN_REDIRECT with corrected byte-count contract
+      working-directory: kernel
+      shell: bash
+      run: "set -euo pipefail\npython3 - <<'PY'\nfrom pathlib import Path\n\ndef extract_function(text, signature):\n    start = text.find(signature)\n    if start < 0:\n        raise SystemExit(\"missing function: \" + signature)\n    brace = text.find(\"{\", start)\n    if brace < 0:\n        raise SystemExit(\"missing opening brace: \" + signature)\n    depth = 0\n    for i in range(brace, len(text)):\n        if text[i] == \"{\":\n            depth += 1\n        elif text[i] == \"}\":\n            depth -= 1\n            if depth == 0:\n                return start, i + 1, text[start:i+1]\n    raise SystemExit(\"unterminated function: \" + signature)\n\nhp = Path(\"include/linux/susfs.h\")\nh = hp.read_text(encoding=\"utf-8\")\n\nold_decl = \"\"\"\\\n#ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT\nvoid susfs_add_open_redirect(void __user **user_info);\nstruct filename *susfs_open_redirect_spoof_do_sys_openat(struct inode *inode);\n#endif\n\"\"\"\n\nnew_decl = \"\"\"\\\n#ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT\n\
+        void susfs_add_open_redirect(void __user **user_info);\nstruct filename *susfs_open_redirect_spoof_do_sys_openat(struct inode *inode);\nint susfs_open_redirect_spoof_vfs_readlink(struct inode *inode,\n\t\t\t\t\t   char __user *buffer, int buflen);\nint susfs_open_redirect_spoof_do_proc_readlink(struct inode *inode,\n\t\t\t\t\t       char *tmp_buf, int buflen);\n#endif\n\"\"\"\n\nif h.count(old_decl) != 1:\n    raise SystemExit(f\"susfs.h OPEN_REDIRECT declaration anchor mismatch: {h.count(old_decl)}\")\nh = h.replace(old_decl, new_decl, 1)\nhp.write_text(h, encoding=\"utf-8\")\n\nsp = Path(\"fs/susfs.c\")\ns = sp.read_text(encoding=\"utf-8\")\n\nvfs_start, vfs_end, _ = extract_function(\n    s, \"int susfs_open_redirect_spoof_vfs_readlink(\"\n)\nproc_start, proc_end, _ = extract_function(\n    s, \"int susfs_open_redirect_spoof_do_proc_readlink(\"\n)\n\nnew_vfs_helper = \"\"\"\\\nint susfs_open_redirect_spoof_vfs_readlink(struct inode *inode,\n\t\t\t\t\t   char __user *buffer, int\
+        \ buflen)\n{\n\tstruct st_susfs_open_redirect_hlist *entry = NULL;\n\tint srcu_idx = srcu_read_lock(&susfs_srcu_open_redirect);\n\tint ret = -ENOENT;\n\n\thash_for_each_possible_rcu(OPEN_REDIRECT_HLIST, entry, node, inode->i_ino) {\n\t\tif (entry->reversed_lookup_only &&\n\t\t    entry->target_dev == inode->i_sb->s_dev) {\n\t\t\tsize_t len;\n\n\t\t\tif (buflen < 0) {\n\t\t\t\tret = -EINVAL;\n\t\t\t\tgoto out;\n\t\t\t}\n\n\t\t\tlen = min_t(size_t, strlen(entry->info.redirected_pathname),\n\t\t\t\t    (size_t)buflen);\n\t\t\tSUSFS_LOGI(\"spoof path '%s' to '%s', len: %zu\\\\n\",\n\t\t\t\t   entry->info.target_pathname,\n\t\t\t\t   entry->info.redirected_pathname, len);\n\t\t\tif (copy_to_user(buffer, entry->info.redirected_pathname, len)) {\n\t\t\t\tSUSFS_LOGE(\"copy_to_user() failed\\\\n\");\n\t\t\t\tret = -EFAULT;\n\t\t\t\tgoto out;\n\t\t\t}\n\t\t\tret = (int)len;\n\t\t\tgoto out;\n\t\t}\n\t}\n\nout:\n\tsrcu_read_unlock(&susfs_srcu_open_redirect, srcu_idx);\n\treturn ret;\n}\n\"\"\
+        \"\n\nnew_proc_helper = \"\"\"\\\nint susfs_open_redirect_spoof_do_proc_readlink(struct inode *inode,\n\t\t\t\t\t       char *tmp_buf, int buflen)\n{\n\tstruct st_susfs_open_redirect_hlist *entry = NULL;\n\tint srcu_idx = srcu_read_lock(&susfs_srcu_open_redirect);\n\tint ret = -ENOENT;\n\n\thash_for_each_possible_rcu(OPEN_REDIRECT_HLIST, entry, node, inode->i_ino) {\n\t\tif (entry->reversed_lookup_only &&\n\t\t    entry->target_dev == inode->i_sb->s_dev) {\n\t\t\tsize_t len;\n\n\t\t\tif (buflen < 0) {\n\t\t\t\tret = -EINVAL;\n\t\t\t\tgoto out;\n\t\t\t}\n\n\t\t\tlen = min_t(size_t, strlen(entry->info.redirected_pathname),\n\t\t\t\t    (size_t)buflen);\n\t\t\tSUSFS_LOGI(\"spoof proc readlink path '%s' to '%s', len: %zu\\\\n\",\n\t\t\t\t   entry->info.target_pathname,\n\t\t\t\t   entry->info.redirected_pathname, len);\n\t\t\tmemcpy(tmp_buf, entry->info.redirected_pathname, len);\n\t\t\tret = (int)len;\n\t\t\tgoto out;\n\t\t}\n\t}\n\nout:\n\tsrcu_read_unlock(&susfs_srcu_open_redirect,\
+        \ srcu_idx);\n\treturn ret;\n}\n\"\"\"\n\ns = s[:proc_start] + new_proc_helper + s[proc_end:]\nvfs_start, vfs_end, _ = extract_function(\n    s, \"int susfs_open_redirect_spoof_vfs_readlink(\"\n)\ns = s[:vfs_start] + new_vfs_helper + s[vfs_end:]\n\nvfs_helper_now = extract_function(\n    s, \"int susfs_open_redirect_spoof_vfs_readlink(\"\n)[2]\nproc_helper_now = extract_function(\n    s, \"int susfs_open_redirect_spoof_do_proc_readlink(\"\n)[2]\n\nfor body, label in ((vfs_helper_now, \"vfs\"), (proc_helper_now, \"proc\")):\n    if \"ret = (int)len;\" not in body:\n        raise SystemExit(label + \" helper does not return byte count\")\n    if \"min_t(size_t, strlen(entry->info.redirected_pathname),\" not in body:\n        raise SystemExit(label + \" helper does not truncate to buflen\")\n    if \"-ENAMETOOLONG\" in body:\n        raise SystemExit(label + \" helper still returns ENAMETOOLONG\")\n\nsp.write_text(s, encoding=\"utf-8\")\n\nnp = Path(\"fs/namei.c\")\nn = np.read_text(encoding=\"\
+        utf-8\")\n\n_, _, old_vfs = extract_function(\n    n, \"int vfs_readlink(struct dentry *dentry, char __user *buffer, int buflen)\"\n)\n\nexpected_vfs = \"\"\"\\\nint vfs_readlink(struct dentry *dentry, char __user *buffer, int buflen)\n{\n\tstruct inode *inode = d_inode(dentry);\n\tDEFINE_DELAYED_CALL(done);\n\tconst char *link;\n\tint res;\n\n\tif (unlikely(!(inode->i_opflags & IOP_DEFAULT_READLINK))) {\n\t\tif (unlikely(inode->i_op->readlink))\n\t\t\treturn inode->i_op->readlink(dentry, buffer, buflen);\n\n\t\tif (!d_is_symlink(dentry))\n\t\t\treturn -EINVAL;\n\n\t\tspin_lock(&inode->i_lock);\n\t\tinode->i_opflags |= IOP_DEFAULT_READLINK;\n\t\tspin_unlock(&inode->i_lock);\n\t}\n\n\tlink = READ_ONCE(inode->i_link);\n\tif (!link) {\n\t\tlink = inode->i_op->get_link(dentry, inode, &done);\n\t\tif (IS_ERR(link))\n\t\t\treturn PTR_ERR(link);\n\t}\n\tres = readlink_copy(buffer, buflen, link);\n\tdo_delayed_call(&done);\n\treturn res;\n}\n\"\"\".rstrip(\"\\n\")\n\nif old_vfs != expected_vfs:\n\
+        \    raise SystemExit(\"vfs_readlink exact P5E/5.4 anchor mismatch\")\n\nnew_vfs = \"\"\"\\\nint vfs_readlink(struct dentry *dentry, char __user *buffer, int buflen)\n{\n\tstruct inode *inode = d_inode(dentry);\n\tDEFINE_DELAYED_CALL(done);\n\tconst char *link;\n\tint res;\n\n\tif (unlikely(!(inode->i_opflags & IOP_DEFAULT_READLINK))) {\n\t\tif (unlikely(inode->i_op->readlink)) {\n#ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT\n\t\t\tif (SUSFS_IS_INODE_OPEN_REDIRECT(inode)) {\n\t\t\t\tres = susfs_open_redirect_spoof_vfs_readlink(\n\t\t\t\t\t\tinode, buffer, buflen);\n\t\t\t\tif (res != -ENOENT)\n\t\t\t\t\treturn res;\n\t\t\t}\n#endif\n\t\t\treturn inode->i_op->readlink(dentry, buffer, buflen);\n\t\t}\n\n\t\tif (!d_is_symlink(dentry))\n\t\t\treturn -EINVAL;\n\n\t\tspin_lock(&inode->i_lock);\n\t\tinode->i_opflags |= IOP_DEFAULT_READLINK;\n\t\tspin_unlock(&inode->i_lock);\n\t}\n\n#ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT\n\tif (SUSFS_IS_INODE_OPEN_REDIRECT(inode)) {\n\t\tres = susfs_open_redirect_spoof_vfs_readlink(inode,\
+        \ buffer, buflen);\n\t\tif (res != -ENOENT)\n\t\t\treturn res;\n\t}\n#endif\n\n\tlink = READ_ONCE(inode->i_link);\n\tif (!link) {\n\t\tlink = inode->i_op->get_link(dentry, inode, &done);\n\t\tif (IS_ERR(link))\n\t\t\treturn PTR_ERR(link);\n\t}\n\tres = readlink_copy(buffer, buflen, link);\n\tdo_delayed_call(&done);\n\treturn res;\n}\n\"\"\"\n\nvstart, vend, _ = extract_function(\n    n, \"int vfs_readlink(struct dentry *dentry, char __user *buffer, int buflen)\"\n)\nn = n[:vstart] + new_vfs.rstrip(\"\\n\") + n[vend:]\nnp.write_text(n, encoding=\"utf-8\")\n\nbp = Path(\"fs/proc/base.c\")\nb = bp.read_text(encoding=\"utf-8\")\n\ninclude_anchor = \"\"\"\\\n#include <linux/cpufreq_times.h>\n#include <trace/events/oom.h>\n\"\"\"\ninclude_repl = \"\"\"\\\n#include <linux/cpufreq_times.h>\n#ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT\n#include <linux/susfs.h>\n#endif\n#include <trace/events/oom.h>\n\"\"\"\nif b.count(include_anchor) != 1:\n    raise SystemExit(f\"proc/base include anchor mismatch:\
+        \ {b.count(include_anchor)}\")\nb = b.replace(include_anchor, include_repl, 1)\n\n_, _, proc_func = extract_function(\n    b, \"static int do_proc_readlink(struct path *path, char __user *buffer, int buflen)\"\n)\n\nold_proc_head = \"\"\"\\\n{\n\tchar *tmp = (char *)__get_free_page(GFP_KERNEL);\n\tchar *pathname;\n\tint len;\n\n\tif (!tmp)\n\t\treturn -ENOMEM;\n\n\tpathname = d_path(path, tmp, PAGE_SIZE);\n\"\"\"\nnew_proc_head = \"\"\"\\\n{\n\tchar *tmp = (char *)__get_free_page(GFP_KERNEL);\n\tchar *pathname;\n\tint len;\n\n\tif (!tmp)\n\t\treturn -ENOMEM;\n\n#ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT\n\tif (SUSFS_IS_INODE_OPEN_REDIRECT(d_backing_inode(path->dentry))) {\n\t\tlen = susfs_open_redirect_spoof_do_proc_readlink(\n\t\t\t\td_backing_inode(path->dentry), tmp, buflen);\n\t\tif (len != -ENOENT) {\n\t\t\tif (len >= 0 && copy_to_user(buffer, tmp, len))\n\t\t\t\tlen = -EFAULT;\n\t\t\tgoto out;\n\t\t}\n\t}\n#endif\n\n\tpathname = d_path(path, tmp, PAGE_SIZE);\n\"\"\"\nif proc_func.count(old_proc_head)\
+        \ != 1:\n    raise SystemExit(f\"do_proc_readlink head anchor mismatch: {proc_func.count(old_proc_head)}\")\nproc_new = proc_func.replace(old_proc_head, new_proc_head, 1)\n\npstart, pend, _ = extract_function(\n    b, \"static int do_proc_readlink(struct path *path, char __user *buffer, int buflen)\"\n)\nb = b[:pstart] + proc_new + b[pend:]\nbp.write_text(b, encoding=\"utf-8\")\n\nn = np.read_text(encoding=\"utf-8\")\nb = bp.read_text(encoding=\"utf-8\")\nh = hp.read_text(encoding=\"utf-8\")\n\nif n.count(\"susfs_open_redirect_spoof_vfs_readlink(\") != 2:\n    raise SystemExit(\"vfs_readlink call count must be exactly 2\")\nif b.count(\"susfs_open_redirect_spoof_do_proc_readlink(\") != 1:\n    raise SystemExit(\"proc readlink call count must be exactly 1\")\nif h.count(\"susfs_open_redirect_spoof_vfs_readlink(\") != 1:\n    raise SystemExit(\"vfs readlink header declaration count mismatch\")\nif h.count(\"susfs_open_redirect_spoof_do_proc_readlink(\") != 1:\n    raise SystemExit(\"\
+        proc readlink header declaration count mismatch\")\nPY\ngit diff --check\ngit diff -- fs/namei.c fs/proc/base.c fs/susfs.c include/linux/susfs.h > \"$ARTIFACT_DIR/08-p5g-readlink.diff\"\ntest -s \"$ARTIFACT_DIR/08-p5g-readlink.diff\"\n"
+    - name: Audit P5G readlink lifetime and return semantics
+      working-directory: kernel
+      shell: bash
+      run: |
+        set -euo pipefail
+        python3 - <<'PY' > "$ARTIFACT_DIR/09-p5g-readlink-audit.txt"
+        from pathlib import Path
+        import hashlib, json, os
+
+        namei = Path("fs/namei.c").read_text(encoding="utf-8")
+        base = Path("fs/proc/base.c").read_text(encoding="utf-8")
+        susfs = Path("fs/susfs.c").read_text(encoding="utf-8")
+        hdr = Path("include/linux/susfs.h").read_text(encoding="utf-8")
+
+        def extract(text, signature):
+            start = text.find(signature)
+            if start < 0:
+                raise SystemExit("missing: " + signature)
+            brace = text.find("{", start)
+            depth = 0
+            for i in range(brace, len(text)):
+                if text[i] == "{":
+                    depth += 1
+                elif text[i] == "}":
+                    depth -= 1
+                    if depth == 0:
+                        return text[start:i+1]
+            raise SystemExit("unterminated: " + signature)
+
+        vfs = extract(namei, "int vfs_readlink(struct dentry *dentry")
+        proc = extract(base, "static int do_proc_readlink(struct path *path")
+        vfs_helper = extract(susfs, "int susfs_open_redirect_spoof_vfs_readlink(")
+        proc_helper = extract(susfs, "int susfs_open_redirect_spoof_do_proc_readlink(")
+
+        protected_before = json.loads(
+            Path(os.environ["ARTIFACT_DIR"], "06-protected-open-redirect-helpers.json").read_text()
+        )
+        protected_after = {
+            "open_helper": hashlib.sha256(
+                extract(susfs, "struct filename *susfs_open_redirect_spoof_do_sys_openat(").encode()
+            ).hexdigest(),
+            "statfs_helper": hashlib.sha256(
+                extract(susfs, "int susfs_open_redirect_spoof_vfs_statfs(").encode()
+            ).hexdigest(),
+            "fdinfo_helper": hashlib.sha256(
+                extract(susfs, "int susfs_open_redirect_spoof_seq_show(").encode()
+            ).hexdigest(),
+            "maps_helper": hashlib.sha256(
+                extract(susfs, "int susfs_open_redirect_spoof_show_map_vma_srcu(").encode()
+            ).hexdigest(),
+        }
+
+        checks = {
+            "CUSTOM_READLINK_HOOK_BEFORE_FS_CALLBACK":
+                vfs.find("susfs_open_redirect_spoof_vfs_readlink(") <
+                vfs.find("return inode->i_op->readlink(dentry, buffer, buflen);"),
+            "DEFAULT_READLINK_HOOK_BEFORE_GET_LINK":
+                vfs.rfind("susfs_open_redirect_spoof_vfs_readlink(") <
+                vfs.find("link = READ_ONCE(inode->i_link);"),
+            "NO_MATCH_FALLS_BACK":
+                vfs.count("if (res != -ENOENT)") == 2,
+            "DELAYED_CALL_CLEANUP_PRESERVED":
+                "do_delayed_call(&done);" in vfs,
+            "PROC_HOOK_BEFORE_D_PATH":
+                proc.find("susfs_open_redirect_spoof_do_proc_readlink(") <
+                proc.find("d_path(path, tmp, PAGE_SIZE)"),
+            "PROC_NO_MATCH_FALLS_BACK":
+                "if (len != -ENOENT)" in proc,
+            "PROC_COPY_EXACT_HELPER_LENGTH":
+                "copy_to_user(buffer, tmp, len)" in proc,
+            "VFS_HELPER_RETURNS_BYTE_COUNT":
+                "ret = (int)len;" in vfs_helper,
+            "VFS_HELPER_TRUNCATES_TO_BUFLEN":
+                "min_t(size_t, strlen(entry->info.redirected_pathname)," in vfs_helper,
+            "VFS_HELPER_NO_ENAMETOOLONG":
+                "-ENAMETOOLONG" not in vfs_helper,
+            "PROC_HELPER_RETURNS_BYTE_COUNT":
+                "ret = (int)len;" in proc_helper,
+            "PROC_HELPER_TRUNCATES_TO_BUFLEN":
+                "min_t(size_t, strlen(entry->info.redirected_pathname)," in proc_helper,
+            "PROC_HELPER_NO_ENAMETOOLONG":
+                "-ENAMETOOLONG" not in proc_helper,
+            "SHARED_HEADER_VFS_DECL":
+                "int susfs_open_redirect_spoof_vfs_readlink(struct inode *inode," in hdr,
+            "SHARED_HEADER_PROC_DECL":
+                "int susfs_open_redirect_spoof_do_proc_readlink(struct inode *inode," in hdr,
+            "NO_HANDWRITTEN_EXTERN_NAMEI":
+                "extern int susfs_open_redirect_spoof_vfs_readlink" not in namei,
+            "NO_HANDWRITTEN_EXTERN_BASE":
+                "extern int susfs_open_redirect_spoof_do_proc_readlink" not in base,
+            "NON_READLINK_HELPERS_BYTE_IDENTICAL":
+                protected_before == protected_after,
+        }
+        for k,v in checks.items():
+            print(f"{k}={'PASS' if v else 'FAIL'}")
+        failed = [k for k,v in checks.items() if not v]
+        if failed:
+            raise SystemExit("P5G post-audit failed: " + ", ".join(failed))
+
+        print("P5G_VFS_READLINK_INTEGRATION=PASS")
+        print("P5G_PROC_READLINK_INTEGRATION=PASS")
+        print("P5G_READLINK_BYTE_COUNT_CONTRACT=PASS")
+        print("P5G_STANDARD_TRUNCATION_SEMANTICS=PASS")
+        print("P5G_NON_READLINK_HELPERS_PRESERVED=PASS")
+        PY
+        grep -Fq 'P5G_VFS_READLINK_INTEGRATION=PASS' "$ARTIFACT_DIR/09-p5g-readlink-audit.txt"
+        grep -Fq 'P5G_PROC_READLINK_INTEGRATION=PASS' "$ARTIFACT_DIR/09-p5g-readlink-audit.txt"
+        grep -Fq 'P5G_READLINK_BYTE_COUNT_CONTRACT=PASS' "$ARTIFACT_DIR/09-p5g-readlink-audit.txt"
+        grep -Fq 'P5G_STANDARD_TRUNCATION_SEMANTICS=PASS' "$ARTIFACT_DIR/09-p5g-readlink-audit.txt"
+    - name: Prove P5G changed-file scope
+      working-directory: kernel
+      shell: bash
+      run: |2
+
+        set -euo pipefail
+        mapfile -t changed < <(git status --porcelain | awk '{print $2}' | sort)
+        printf '%s\n' "${changed[@]}" | tee "$ARTIFACT_DIR/10-changed-files.txt"
+
+        test "${#changed[@]}" -eq 4
+        printf '%s\n' "${changed[@]}" | grep -Fxq 'fs/namei.c'
+        printf '%s\n' "${changed[@]}" | grep -Fxq 'fs/proc/base.c'
+        printf '%s\n' "${changed[@]}" | grep -Fxq 'fs/susfs.c'
+        printf '%s\n' "${changed[@]}" | grep -Fxq 'include/linux/susfs.h'
+
+        test "$(git -C KernelSU rev-parse HEAD)" = "$EXPECTED_RESUKISU_HEAD"
+        test "$(git -C KernelSU rev-parse HEAD^{tree})" = "$EXPECTED_RESUKISU_TREE"
+        test -z "$(git -C KernelSU status --porcelain)"
+        grep -Fxq '# CONFIG_KSU_SUSFS is not set' arch/arm64/configs/veux_defconfig
+        test ! -e KernelSU/kernel/feature/module_load_filter.c
+
+        {
+          echo "P5G_CHANGED_FILES=fs/namei.c,fs/proc/base.c,fs/susfs.c,include/linux/susfs.h"
+          echo "P5G_CHANGE_SCOPE=PASS"
+          echo "SUSFS_RUNTIME_ENABLED=NO"
+        } | tee "$ARTIFACT_DIR/10-scope.txt"
+    - name: Target-compile normal and forced P5G readlink objects
+      working-directory: kernel
+      shell: bash
+      run: |2
+
+        set -euo pipefail
+
+        rm -rf "$NORMAL_BUILD_DIR"
+        make O="$NORMAL_BUILD_DIR" ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- veux_defconfig
+        make O="$NORMAL_BUILD_DIR" \
+          ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
+          -j2 fs/namei.o fs/proc/base.o \
+          2>&1 | tee "$ARTIFACT_DIR/11-normal-readlink-objects.log"
+
+        test -s "$NORMAL_BUILD_DIR/fs/namei.o"
+        test -s "$NORMAL_BUILD_DIR/fs/proc/base.o"
+        ! aarch64-linux-gnu-nm "$NORMAL_BUILD_DIR/fs/namei.o" \
+          | grep -q 'susfs_open_redirect_spoof_vfs_readlink'
+        ! aarch64-linux-gnu-nm "$NORMAL_BUILD_DIR/fs/proc/base.o" \
+          | grep -q 'susfs_open_redirect_spoof_do_proc_readlink'
+
+        rm -rf "$REDIRECT_BUILD_DIR"
+        make O="$REDIRECT_BUILD_DIR" ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- veux_defconfig
+        make O="$REDIRECT_BUILD_DIR" \
+          ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
+          CONFIG_KSU_SUSFS=y CONFIG_KSU_SUSFS_OPEN_REDIRECT=y \
+          KCFLAGS='-DCONFIG_KSU_SUSFS -DCONFIG_KSU_SUSFS_OPEN_REDIRECT' \
+          -j2 fs/namei.o fs/proc/base.o fs/susfs.o \
+          2>&1 | tee "$ARTIFACT_DIR/11-forced-readlink-objects.log"
+
+        for obj in fs/namei.o fs/proc/base.o fs/susfs.o
+        do
+          test -s "$REDIRECT_BUILD_DIR/$obj"
+        done
+
+        aarch64-linux-gnu-nm "$REDIRECT_BUILD_DIR/fs/namei.o" \
+          > "$ARTIFACT_DIR/11-namei-nm.txt"
+        aarch64-linux-gnu-nm "$REDIRECT_BUILD_DIR/fs/proc/base.o" \
+          > "$ARTIFACT_DIR/11-proc-base-nm.txt"
+        aarch64-linux-gnu-nm "$REDIRECT_BUILD_DIR/fs/susfs.o" \
+          > "$ARTIFACT_DIR/11-susfs-nm.txt"
+
+        grep -Eq '[[:space:]]U[[:space:]]+susfs_open_redirect_spoof_vfs_readlink$' \
+          "$ARTIFACT_DIR/11-namei-nm.txt"
+        grep -Eq '[[:space:]]U[[:space:]]+susfs_open_redirect_spoof_do_proc_readlink$' \
+          "$ARTIFACT_DIR/11-proc-base-nm.txt"
+        grep -Eq '[[:space:]][Tt][[:space:]]+susfs_open_redirect_spoof_vfs_readlink$' \
+          "$ARTIFACT_DIR/11-susfs-nm.txt"
+        grep -Eq '[[:space:]][Tt][[:space:]]+susfs_open_redirect_spoof_do_proc_readlink$' \
+          "$ARTIFACT_DIR/11-susfs-nm.txt"
+
+        {
+          echo "P5G_NORMAL_READLINK_OBJECT_COMPILE=PASS"
+          echo "P5G_FORCED_NAMEI_OBJECT_COMPILE=PASS"
+          echo "P5G_FORCED_PROC_BASE_OBJECT_COMPILE=PASS"
+          echo "P5G_FORCED_SUSFS_OBJECT_COMPILE=PASS"
+          echo "P5G_READLINK_SYMBOL_CONTRACT=PASS"
+          echo "FULL_KERNEL_BUILD_PERFORMED=NO"
+        } | tee "$ARTIFACT_DIR/11-object-builds.txt"
+    - name: Freeze deterministic P5G checkpoint
+      working-directory: kernel
+      shell: bash
+      run: |2
+
+        set -euo pipefail
+        git diff --check
+        git add fs/namei.c fs/proc/base.c fs/susfs.c include/linux/susfs.h
+
+        mapfile -t staged < <(git diff --cached --name-only | sort)
+        test "${#staged[@]}" -eq 4
+        printf '%s\n' "${staged[@]}" | grep -Fxq 'fs/namei.c'
+        printf '%s\n' "${staged[@]}" | grep -Fxq 'fs/proc/base.c'
+        printf '%s\n' "${staged[@]}" | grep -Fxq 'fs/susfs.c'
+        printf '%s\n' "${staged[@]}" | grep -Fxq 'include/linux/susfs.h'
+
+        GIT_AUTHOR_NAME="CLEAN-GEN1 Builder" \
+        GIT_AUTHOR_EMAIL="clean-gen1@invalid.local" \
+        GIT_AUTHOR_DATE="2026-09-01T00:00:00Z" \
+        GIT_COMMITTER_NAME="CLEAN-GEN1 Builder" \
+        GIT_COMMITTER_EMAIL="clean-gen1@invalid.local" \
+        GIT_COMMITTER_DATE="2026-09-01T00:00:00Z" \
+          git commit -m "CLEAN GEN1 P5G integrate OPEN_REDIRECT readlink safely"
+
+        P5G_COMMIT="$(git rev-parse HEAD)"
+        P5G_TREE="$(git rev-parse HEAD^{tree})"
+        test -z "$(git status --porcelain)"
+        test -z "$(git -C KernelSU status --porcelain)"
+
+        echo "P5G_COMMIT=$P5G_COMMIT" >> "$GITHUB_ENV"
+        echo "P5G_TREE=$P5G_TREE" >> "$GITHUB_ENV"
+
+        {
+          echo "P5G_CHECKPOINT_COMMIT=$P5G_COMMIT"
+          echo "P5G_OUTER_TREE=$P5G_TREE"
+          echo "P5G_RESUKISU_HEAD=$(git -C KernelSU rev-parse HEAD)"
+          echo "P5G_RESUKISU_TREE=$(git -C KernelSU rev-parse HEAD^{tree})"
+          echo "P5G_SOURCE_CHECKPOINT=PASS"
+        } | tee "$ARTIFACT_DIR/12-p5g-checkpoint.txt"
+    - name: Create P5G restore kit
+      working-directory: kernel
+      shell: bash
+      run: |
+        set -euo pipefail
+        kit="$ARTIFACT_DIR/restore-kit"
+        rm -rf "$kit"
+        mkdir -p "$kit"
+
+        git diff --binary "$P5E_RESTORED_COMMIT" "$P5G_COMMIT" \
+          > "$kit/p5e-to-p5g-outer.patch"
+        git diff --binary "$EXPECTED_VENDOR_SHA" "$P5G_COMMIT" \
+          > "$kit/vendor-20240619-to-p5g-outer.patch"
+
+        cp "$ARTIFACT_DIR/08-p5g-readlink.diff" "$kit/P5G-READLINK-DIFF.patch"
+        cp "$ARTIFACT_DIR/09-p5g-readlink-audit.txt" "$kit/P5G-READLINK-AUDIT.txt"
+
+        git -C KernelSU branch -f clean-gen1-p5g-resukisu "$EXPECTED_RESUKISU_HEAD"
+        git -C KernelSU bundle create "$kit/resukisu-p5g-full.bundle" \
+          refs/heads/clean-gen1-p5g-resukisu
+        git -C KernelSU bundle verify "$kit/resukisu-p5g-full.bundle" \
+          > "$kit/resukisu-p5g-bundle-verify.txt" 2>&1
+        tar -C KernelSU --exclude=.git -cf - . \
+          | zstd -19 -T0 -o "$kit/resukisu-p5g-source.tar.zst"
+
+        python3 - <<'PY'
+        from pathlib import Path
+        import json, os
+
+        kit = Path(os.environ["ARTIFACT_DIR"]) / "restore-kit"
+        manifest = {
+            "stage": "CLEAN_GEN1_P5G",
+            "kernel_version": "5.4.274",
+            "vendor_sha": os.environ["EXPECTED_VENDOR_SHA"],
+            "p5e_tree": os.environ["EXPECTED_P5E_TREE"],
+            "p5g_commit": os.environ["P5G_COMMIT"],
+            "p5g_tree": os.environ["P5G_TREE"],
+            "resukisu_head": os.environ["EXPECTED_RESUKISU_HEAD"],
+            "resukisu_tree": os.environ["EXPECTED_RESUKISU_TREE"],
+            "changed_files": [
+                "fs/namei.c",
+                "fs/proc/base.c",
+                "fs/susfs.c",
+                "include/linux/susfs.h",
+            ],
+            "normal_path_open_redirect_integrated": True,
+            "tmpfile_open_redirect_integrated": True,
+            "o_path_open_redirect_integrated": True,
+            "vfs_readlink_open_redirect_integrated": True,
+            "proc_readlink_open_redirect_integrated": True,
+            "readlink_helper_returns_byte_count": True,
+            "readlink_standard_truncation_semantics": True,
+            "readlink_no_match_falls_back": True,
+            "statfs_open_redirect_integrated": False,
+            "fdinfo_open_redirect_integrated": False,
+            "proc_maps_open_redirect_integrated": False,
+            "susfs_runtime_enabled": False,
+            "open_redirect_runtime_enabled": False,
+            "full_kernel_build_performed": False,
+        }
+        (kit / "manifest.json").write_text(
+            json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        PY
+
+        cat > "$kit/RESTORE-INSTRUCTIONS.txt" <<EOF
+        CLEAN GEN1 P5G deterministic restore
+
+        Apply vendor-20240619-to-p5g-outer.patch on:
+          $VENDOR_REPO @ $EXPECTED_VENDOR_SHA
+
+        Expected outer tree:
+          $P5G_TREE
+
+        Expected ReSukiSU:
+          head $EXPECTED_RESUKISU_HEAD
+          tree $EXPECTED_RESUKISU_TREE
+
+        P5G integrates OPEN_REDIRECT for vfs_readlink and proc readlink.
+        Readlink helpers return copied byte count and truncate to buflen.
+        No-match (-ENOENT) falls back to stock behavior.
+
+        CONFIG_KSU_SUSFS remains disabled in the real VEUX defconfig.
+        No full kernel build has been performed.
+        EOF
+
+        (
+          cd "$kit"
+          find . -maxdepth 1 -type f ! -name SHA256SUMS -printf '%f\n' \
+            | sort | xargs sha256sum > SHA256SUMS
+          sha256sum -c SHA256SUMS
+        ) | tee "$ARTIFACT_DIR/13-restore-kit-sha256.txt"
+    - name: Replay P5G outer and ReSukiSU restore
+      working-directory: kernel
+      shell: bash
+      run: |2
+
+        set -euo pipefail
+        outer="$GITHUB_WORKSPACE/p5g-outer-replay"
+        rm -rf "$outer"
+        git worktree add --detach "$outer" "$EXPECTED_VENDOR_SHA" >/dev/null
+        (
+          cd "$outer"
+          git apply --check --binary \
+            "$ARTIFACT_DIR/restore-kit/vendor-20240619-to-p5g-outer.patch"
+          git apply --index --binary \
+            "$ARTIFACT_DIR/restore-kit/vendor-20240619-to-p5g-outer.patch"
+          test "$(git write-tree)" = "$P5G_TREE"
+        )
+        git worktree remove --force "$outer"
+
+        resu="$GITHUB_WORKSPACE/p5g-resukisu-replay"
+        rm -rf "$resu"
+        git init "$resu" >/dev/null
+        git -C "$resu" fetch \
+          "$ARTIFACT_DIR/restore-kit/resukisu-p5g-full.bundle" \
+          refs/heads/clean-gen1-p5g-resukisu:refs/heads/clean-gen1-p5g-resukisu
+        git -C "$resu" checkout --detach refs/heads/clean-gen1-p5g-resukisu >/dev/null
+        test "$(git -C "$resu" rev-parse HEAD)" = "$EXPECTED_RESUKISU_HEAD"
+        test "$(git -C "$resu" rev-parse HEAD^{tree})" = "$EXPECTED_RESUKISU_TREE"
+        rm -rf "$resu"
+
+        {
+          echo "P5G_OUTER_RESTORE_REPLAY=PASS"
+          echo "P5G_RESUKISU_BUNDLE_REPLAY=PASS"
+        } | tee "$ARTIFACT_DIR/14-restore-replays.txt"
+    - name: Final P5G safety gate
+      working-directory: kernel
+      shell: bash
+      run: |2
+
+        set -euo pipefail
+        test "$(make -s kernelversion)" = "5.4.274"
+        test "$(git rev-parse HEAD)" = "$P5G_COMMIT"
+        test "$(git rev-parse HEAD^{tree})" = "$P5G_TREE"
+        test "$(git -C KernelSU rev-parse HEAD)" = "$EXPECTED_RESUKISU_HEAD"
+        test "$(git -C KernelSU rev-parse HEAD^{tree})" = "$EXPECTED_RESUKISU_TREE"
+        test -z "$(git status --porcelain)"
+        test -z "$(git -C KernelSU status --porcelain)"
+
+        grep -Fq 'P5G_PRE_READLINK_SHAPES=PASS' "$ARTIFACT_DIR/06-pre-readlink-audit.txt"
+        grep -Fq 'P5G_P5E_READLINK_BASELINE_COMPILE=PASS' "$ARTIFACT_DIR/07-p5e-readlink-baseline-build.txt"
+        grep -Fq 'P5G_VFS_READLINK_INTEGRATION=PASS' "$ARTIFACT_DIR/09-p5g-readlink-audit.txt"
+        grep -Fq 'P5G_PROC_READLINK_INTEGRATION=PASS' "$ARTIFACT_DIR/09-p5g-readlink-audit.txt"
+        grep -Fq 'P5G_READLINK_BYTE_COUNT_CONTRACT=PASS' "$ARTIFACT_DIR/09-p5g-readlink-audit.txt"
+        grep -Fq 'P5G_STANDARD_TRUNCATION_SEMANTICS=PASS' "$ARTIFACT_DIR/09-p5g-readlink-audit.txt"
+        grep -Fq 'P5G_CHANGE_SCOPE=PASS' "$ARTIFACT_DIR/10-scope.txt"
+        grep -Fq 'P5G_READLINK_SYMBOL_CONTRACT=PASS' "$ARTIFACT_DIR/11-object-builds.txt"
+        grep -Fq 'P5G_OUTER_RESTORE_REPLAY=PASS' "$ARTIFACT_DIR/14-restore-replays.txt"
+        grep -Fq 'P5G_RESUKISU_BUNDLE_REPLAY=PASS' "$ARTIFACT_DIR/14-restore-replays.txt"
+
+        grep -Fxq '# CONFIG_KSU_SUSFS is not set' arch/arm64/configs/veux_defconfig
+        test ! -e KernelSU/kernel/feature/module_load_filter.c
+
+        (
+          cd "$ARTIFACT_DIR/restore-kit"
+          sha256sum -c SHA256SUMS
+        ) > "$ARTIFACT_DIR/15-final-restore-sha256.txt"
+
+        {
+          echo "CLEAN_GEN1_P5G_READLINK_OPEN_REDIRECT=PASS"
+          echo "KERNEL_VERSION=5.4.274"
+          echo "P5E_INPUT_TREE=$EXPECTED_P5E_TREE"
+          echo "P5G_CHECKPOINT_COMMIT=$P5G_COMMIT"
+          echo "P5G_OUTER_TREE=$P5G_TREE"
+          echo "P5G_RESUKISU_HEAD=$EXPECTED_RESUKISU_HEAD"
+          echo "P5G_RESUKISU_TREE=$EXPECTED_RESUKISU_TREE"
+          echo "VFS_READLINK_OPEN_REDIRECT_INTEGRATED=YES"
+          echo "VFS_READLINK_CUSTOM_CALLBACK_BRANCH=YES"
+          echo "VFS_READLINK_DEFAULT_GET_LINK_BRANCH=YES"
+          echo "PROC_READLINK_OPEN_REDIRECT_INTEGRATED=YES"
+          echo "READLINK_HELPER_SUCCESS_RETURNS_BYTE_COUNT=YES"
+          echo "READLINK_TRUNCATES_TO_BUFLEN=YES"
+          echo "READLINK_NO_MATCH_FALLS_BACK=YES"
+          echo "READLINK_HELPER_ERRORS_PROPAGATE=YES"
+          echo "DELAYED_CALL_STOCK_PATH_PRESERVED=YES"
+          echo "SHARED_SUSFS_HEADER_DECLARATIONS=YES"
+          echo "HANDWRITTEN_READLINK_EXTERNS=NO"
+          echo "NON_READLINK_OPEN_REDIRECT_HELPERS_PRESERVED=YES"
+          echo "VFS_STATFS_HOOK_REMAINING=YES"
+          echo "FDINFO_SEQ_SHOW_HOOK_REMAINING=YES"
+          echo "PROC_MAPS_HOOK_REMAINING=YES"
+          echo "P5G_CHANGED_FILES=fs/namei.c,fs/proc/base.c,fs/susfs.c,include/linux/susfs.h"
+          echo "SUSFS_RUNTIME_ENABLED=NO"
+          echo "MODULE_LOAD_FILTER_INCLUDED=NO"
+          echo "P5G_OUTER_RESTORE_REPLAY=PASS"
+          echo "P5G_RESUKISU_BUNDLE_REPLAY=PASS"
+          echo "FULL_KERNEL_BUILD_PERFORMED=NO"
+          echo "IMAGE_CREATED=NO"
+          echo "DTB_BUILD_PERFORMED=NO"
+          echo "BOOT_IMAGE_CREATED=NO"
+          echo "FLASHABLE_ZIP_CREATED=NO"
+          echo "DEVICE_ACCESSED=NO"
+          echo "FLASHING_PERFORMED=NO"
+          echo "NEXT_STAGE=CLEAN_GEN1_P5H_STATFS_FDINFO_OPEN_REDIRECT_INTEGRATION"
+        } | tee "$ARTIFACT_DIR/16-result.txt"
+    - name: Preserve P5G failure evidence
+      if: always()
+      shell: bash
+      run: |2
+
+        set +e
+        mkdir -p "$ARTIFACT_DIR"
+        {
+          echo "JOB_STATUS=${{ job.status }}"
+          if [ -d "$GITHUB_WORKSPACE/kernel/.git" ]; then
+            echo "OUTER_HEAD=$(git -C "$GITHUB_WORKSPACE/kernel" rev-parse HEAD 2>/dev/null || true)"
+            echo "OUTER_TREE=$(git -C "$GITHUB_WORKSPACE/kernel" rev-parse HEAD^{tree} 2>/dev/null || true)"
+            echo "OUTER_STATUS_BEGIN"
+            git -C "$GITHUB_WORKSPACE/kernel" status --porcelain 2>/dev/null || true
+            echo "OUTER_STATUS_END"
+          fi
+          if [ -d "$GITHUB_WORKSPACE/kernel/KernelSU/.git" ]; then
+            echo "RESUKISU_HEAD=$(git -C "$GITHUB_WORKSPACE/kernel/KernelSU" rev-parse HEAD 2>/dev/null || true)"
+            echo "RESUKISU_TREE=$(git -C "$GITHUB_WORKSPACE/kernel/KernelSU" rev-parse HEAD^{tree} 2>/dev/null || true)"
+          fi
+        } > "$ARTIFACT_DIR/99-job-end-state.txt"
+        find "$ARTIFACT_DIR" -maxdepth 2 -type f -printf '%P\n' \
+          | sort > "$ARTIFACT_DIR/99-artifact-file-list.txt"
+        exit 0
+    - name: Upload P5G checkpoint and evidence
+      if: always()
+      uses: actions/upload-artifact@v7
+      with:
+        name: clean-gen1-p5g-readlink-open-redirect-v1-${{ github.run_id }}
+        path: clean-gen1-p5g/
+        if-no-files-found: error
+        retention-days: 90
