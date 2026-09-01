@@ -1,0 +1,1109 @@
+name: CLEAN GEN1 P7-A - frozen userspace device A/B preparation v2
+'on':
+  workflow_dispatch: {}
+permissions:
+  contents: read
+  actions: read
+jobs:
+  p7a-frozen-userspace-ab-prep:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      P6_RUN_ID: '33531532990'
+      P6_ARTIFACT_ID: '9811202222'
+      P6_ARTIFACT_NAME: clean-gen1-p6-native-susfs-deterministic-image-dtb-v8-33531532990
+      P6_ARTIFACT_SHA256: be72bbc4f62460bb0c75fb1fe8b0afac0bb8d82acfba17155c75b66c21f78579
+      P6_PARENT_INPUT_COMMIT: f353a9475e40ca866d570c1d0ef55e24cf6556e4
+      P6_PARENT_INPUT_TREE: a947c1f2891c796a08373fc755e29b23139dc761
+      P6_SOURCE_COMMIT: 42297e5b104cfbac9329785fcd1ccd14299976bd
+      P6_SOURCE_TREE: 5d66e04e9e25eaa2a60b053332e7f7ec5be8f0e4
+      P6_RESUKISU_HEAD: 42034caa96466e8473fe7553eba8a1888c7f460f
+      P6_RESUKISU_TREE: d818d965b855d417edfe9eb38b152ff83e75e0fb
+      P6_KSU_VERSION: '35102'
+      P6_IMAGE_SHA256: ac7c4884cac9f385ab8049e53f196581b784623a40afe1e1339ec738e9d155cf
+      P6_IMAGE_SIZE: '29843968'
+      P6_VEUX_DTB_SHA256: 42728a6f3d48ae35ac6be4b14ea51bc8a323e77baec2ee544827487378f99d37
+      P6_VEUX_DTB_SIZE: '275689'
+      P6_CONFIG_SHA256: d7cd955abd59da45804acc9c5e450cf8fc953da3e66bbc274212b40ee9a0b372
+      W88_CONTROL_IMAGE_SHA256: d0f7abcc526ec63413236fd440cef2d9fb6cc3819ce656b1b49efde7d65cda04
+      W88_CONTROL_IMAGE_SIZE: '29843968'
+      FROZEN_RELEASE_TAG: v4.2.0-rc1
+      FROZEN_RELEASE_ID: '369601561'
+      FROZEN_APK_ASSET_ID: '512255066'
+      FROZEN_APK_NAME: ReSukiSU_v4.2.0-rc1_35061-arm64-v8a-release.apk
+      FROZEN_APK_SHA256: 544cf6cb105acacf219b3db71e43b9818e3f335153763e56aa0356bd09d1b450
+      FROZEN_KSUD_ASSET_ID: '512255064'
+      FROZEN_KSUD_NAME: ksud-aarch64-linux-android
+      FROZEN_KSUD_SHA256: 9847c5660ab96c9a2c212fa3fa4adb3bb636c56f33be80458c3ce1c04404ec81
+      FROZEN_MANAGER_VERSION_CODE: '35061'
+      KIT_DIR: ${{ github.workspace }}/p7a-kit
+      P6_DIR: ${{ github.workspace }}/p6-artifact
+      P7A_V1_RUN_ID: '33538625624'
+      P7A_V1_ARTIFACT_ID: '9812664921'
+      P7A_V1_ARTIFACT_SHA256: 10c846614ead636ebbe776451e59496ccf34bcd3c13a43d9c1a3d5567f66db26
+    steps:
+    - name: Initialize P7-A
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        rm -rf "$KIT_DIR" "$P6_DIR"
+        mkdir -p \
+          "$KIT_DIR/candidate" \
+          "$KIT_DIR/frozen-userspace" \
+          "$KIT_DIR/control" \
+          "$KIT_DIR/device-evidence" \
+          "$KIT_DIR/provenance"
+
+        cat > "$KIT_DIR/provenance/00-stage-scope.txt" <<EOF
+        CLEAN_GEN1_P7A_SCOPE=FROZEN_USERSPACE_DEVICE_AB_PREPARATION
+        KERNEL_VERSION=5.4.274
+        DEVICE=VEUX_ONLY
+        P6_INPUT_RUN_ID=$P6_RUN_ID
+        P6_INPUT_ARTIFACT_ID=$P6_ARTIFACT_ID
+        P6_INPUT_ARTIFACT=$P6_ARTIFACT_NAME
+        P6_INPUT_ARTIFACT_SHA256=$P6_ARTIFACT_SHA256
+        P6_SOURCE_COMMIT=$P6_SOURCE_COMMIT
+        P6_SOURCE_TREE=$P6_SOURCE_TREE
+        P6_KSU_VERSION=$P6_KSU_VERSION
+        A_CONTROL=W88_V3_HISTORICAL_STABLE
+        B_CANDIDATE=P6_V8_NATIVE_SUSFS
+        FROZEN_USERSPACE_RELEASE=$FROZEN_RELEASE_TAG
+        FROZEN_MANAGER_VERSION_CODE=$FROZEN_MANAGER_VERSION_CODE
+        FROZEN_USERSPACE_PURPOSE=DIAGNOSTIC_CONSTANT_ACROSS_A_AND_B
+        FROZEN_USERSPACE_IS_EXACT_W88_USERSPACE=NO
+        FROZEN_USERSPACE_IS_EXACT_W97_USERSPACE=NO
+        FROZEN_MANAGER_VERSION_MATCHES_P6_KSU_VERSION=NO
+        P7B_CURRENT_MANAGER_COMPATIBILITY_STILL_REQUIRED=YES
+        KERNEL_BUILD_PERFORMED=NO
+        BOOT_IMAGE_CREATED=NO
+        FLASHABLE_ZIP_CREATED=NO
+        DEVICE_ACCESSED=NO
+        FLASHING_PERFORMED=NO
+        EOF
+    - name: Verify accepted P6-v8 GitHub artifact metadata
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        set -euo pipefail
+
+        mkdir -p "$KIT_DIR/provenance"
+
+        curl --fail --location --silent --show-error \
+          -H "Accept: application/vnd.github+json" \
+          -H "Authorization: Bearer $GH_TOKEN" \
+          -H "X-GitHub-Api-Version: 2022-11-28" \
+          "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/$P6_ARTIFACT_ID" \
+          -o "$KIT_DIR/provenance/p6-artifact-api.json"
+
+        python3 - <<'PY'
+        import json, os
+        from pathlib import Path
+
+        p = Path(os.environ["KIT_DIR"]) / "provenance" / "p6-artifact-api.json"
+        d = json.loads(p.read_text(encoding="utf-8"))
+
+        if str(d.get("id")) != os.environ["P6_ARTIFACT_ID"]:
+            raise SystemExit("P6 artifact id mismatch")
+        if d.get("name") != os.environ["P6_ARTIFACT_NAME"]:
+            raise SystemExit("P6 artifact name mismatch")
+        if d.get("digest") != "sha256:" + os.environ["P6_ARTIFACT_SHA256"]:
+            raise SystemExit("P6 artifact digest mismatch")
+        run = d.get("workflow_run") or {}
+        if str(run.get("id")) != os.environ["P6_RUN_ID"]:
+            raise SystemExit("P6 workflow run id mismatch")
+        if d.get("expired"):
+            raise SystemExit("P6 artifact unexpectedly expired")
+
+        print("P7A_P6_GITHUB_ARTIFACT_METADATA=PASS")
+        print("P7A_P6_GITHUB_ARTIFACT_DIGEST=" + d["digest"])
+        PY
+    - name: Download accepted P6-v8 artifact
+      uses: actions/download-artifact@v8
+      with:
+        name: ${{ env.P6_ARTIFACT_NAME }}
+        path: ${{ env.P6_DIR }}
+        run-id: ${{ env.P6_RUN_ID }}
+        github-token: ${{ github.token }}
+        repository: ${{ github.repository }}
+    - name: Verify accepted P6-v8 candidate exactly
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        test -s "$P6_DIR/17-result.txt"
+        test -s "$P6_DIR/99-job-end-state.txt"
+        test -s "$P6_DIR/13-reproducibility.txt"
+        test -s "$P6_DIR/build-a/Image"
+        test -s "$P6_DIR/build-a/veux.dtb"
+        test -s "$P6_DIR/build-a/veux-5.4.274.base.config"
+
+        grep -Fxq 'CLEAN_GEN1_P6_DETERMINISTIC_IMAGE_DTB_BUILD=PASS' "$P6_DIR/17-result.txt"
+        grep -Fxq 'KERNEL_VERSION=5.4.274' "$P6_DIR/17-result.txt"
+        grep -Fxq "P6_SOURCE_COMMIT=$P6_SOURCE_COMMIT" "$P6_DIR/17-result.txt"
+        grep -Fxq "P6_SOURCE_TREE=$P6_SOURCE_TREE" "$P6_DIR/17-result.txt"
+        grep -Fxq 'P6_EFFECTIVE_HOOK_MODE=NATIVE_KSU_SUSFS' "$P6_DIR/17-result.txt"
+        grep -Fxq 'P6_KCONFIG_KSU_MANUAL_HOOK=NO' "$P6_DIR/17-result.txt"
+        grep -Fxq 'P6_KCONFIG_KSU_SUSFS=YES' "$P6_DIR/17-result.txt"
+        grep -Fxq 'P6_SPLIT_BRAIN_KSU_INIT_RC_HOOK=ABSENT' "$P6_DIR/17-result.txt"
+        grep -Fxq 'P6_IMAGE_REPRODUCIBLE=YES' "$P6_DIR/17-result.txt"
+        grep -Fxq 'P6_ALL_DTBS_REPRODUCIBLE=YES' "$P6_DIR/17-result.txt"
+        grep -Fxq 'MODULE_LOAD_FILTER_INCLUDED=NO' "$P6_DIR/17-result.txt"
+        grep -Fxq 'JOB_STATUS=success' "$P6_DIR/99-job-end-state.txt"
+        grep -Fxq 'P6_BUILD_B_VALIDATION=PASS' "$P6_DIR/13-reproducibility.txt"
+
+        test "$(stat -c '%s' "$P6_DIR/build-a/Image")" = "$P6_IMAGE_SIZE"
+        test "$(sha256sum "$P6_DIR/build-a/Image" | awk '{print $1}')" = "$P6_IMAGE_SHA256"
+        test "$(stat -c '%s' "$P6_DIR/build-a/veux.dtb")" = "$P6_VEUX_DTB_SIZE"
+        test "$(sha256sum "$P6_DIR/build-a/veux.dtb" | awk '{print $1}')" = "$P6_VEUX_DTB_SHA256"
+        test "$(sha256sum "$P6_DIR/build-a/veux-5.4.274.base.config" | awk '{print $1}')" = "$P6_CONFIG_SHA256"
+
+        cp "$P6_DIR/build-a/Image" "$KIT_DIR/candidate/P6-v8-VEUX-5.4.274-Image"
+        cp "$P6_DIR/build-a/veux.dtb" "$KIT_DIR/candidate/P6-v8-VEUX-5.4.274-veux.dtb"
+        cp "$P6_DIR/build-a/veux-5.4.274.base.config" \
+           "$KIT_DIR/candidate/P6-v8-VEUX-5.4.274.config"
+        cp "$P6_DIR/17-result.txt" "$KIT_DIR/provenance/P6-v8-result.txt"
+        cp "$P6_DIR/13-reproducibility.txt" "$KIT_DIR/provenance/P6-v8-reproducibility.txt"
+
+        {
+          echo "P7A_P6_INPUT_VERIFIED=PASS"
+          echo "P7A_P6_IMAGE_SHA256=$P6_IMAGE_SHA256"
+          echo "P7A_P6_IMAGE_SIZE=$P6_IMAGE_SIZE"
+          echo "P7A_P6_VEUX_DTB_SHA256=$P6_VEUX_DTB_SHA256"
+          echo "P7A_P6_VEUX_DTB_SIZE=$P6_VEUX_DTB_SIZE"
+          echo "P7A_P6_CONFIG_SHA256=$P6_CONFIG_SHA256"
+          echo "P7A_P6_NATIVE_SUSFS=YES"
+          echo "P7A_P6_REPRODUCIBLE=YES"
+        } | tee "$KIT_DIR/provenance/01-p6-input-verification.txt"
+    - name: Verify frozen ReSukiSU release metadata
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        RELEASE_JSON="$KIT_DIR/provenance/resukisu-$FROZEN_RELEASE_TAG-release.json"
+
+        curl --fail --location --silent --show-error \
+          --retry 5 --retry-delay 2 \
+          "https://api.github.com/repos/ReSukiSU/ReSukiSU/releases/tags/$FROZEN_RELEASE_TAG" \
+          -o "$RELEASE_JSON"
+
+        python3 - <<'PY'
+        import json
+        import os
+        from pathlib import Path
+
+        p = Path(os.environ["KIT_DIR"]) / "provenance" / (
+            "resukisu-" + os.environ["FROZEN_RELEASE_TAG"] + "-release.json"
+        )
+        data = json.loads(p.read_text(encoding="utf-8"))
+
+        if str(data.get("id")) != os.environ["FROZEN_RELEASE_ID"]:
+            raise SystemExit("frozen release id mismatch")
+        if data.get("tag_name") != os.environ["FROZEN_RELEASE_TAG"]:
+            raise SystemExit("frozen release tag mismatch")
+
+        assets = {a["name"]: a for a in data.get("assets", [])}
+
+        apk = assets.get(os.environ["FROZEN_APK_NAME"])
+        if not apk:
+            raise SystemExit("frozen Manager APK asset missing")
+        if str(apk.get("id")) != os.environ["FROZEN_APK_ASSET_ID"]:
+            raise SystemExit("frozen Manager APK asset id mismatch")
+        if apk.get("digest") != "sha256:" + os.environ["FROZEN_APK_SHA256"]:
+            raise SystemExit("frozen Manager APK API digest mismatch")
+
+        ksud = assets.get(os.environ["FROZEN_KSUD_NAME"])
+        if not ksud:
+            raise SystemExit("frozen ksud asset missing")
+        if str(ksud.get("id")) != os.environ["FROZEN_KSUD_ASSET_ID"]:
+            raise SystemExit("frozen ksud asset id mismatch")
+        if ksud.get("digest") != "sha256:" + os.environ["FROZEN_KSUD_SHA256"]:
+            raise SystemExit("frozen ksud API digest mismatch")
+
+        out = {
+            "release_id": data["id"],
+            "tag": data["tag_name"],
+            "published_at": data.get("published_at"),
+            "prerelease": data.get("prerelease"),
+            "immutable": data.get("immutable"),
+            "manager": {
+                "asset_id": apk["id"],
+                "name": apk["name"],
+                "size": apk["size"],
+                "digest": apk["digest"],
+                "browser_download_url": apk["browser_download_url"],
+            },
+            "ksud_companion": {
+                "asset_id": ksud["id"],
+                "name": ksud["name"],
+                "size": ksud["size"],
+                "digest": ksud["digest"],
+                "browser_download_url": ksud["browser_download_url"],
+            },
+        }
+        (Path(os.environ["KIT_DIR"]) / "provenance" / "frozen-release-selection.json").write_text(
+            json.dumps(out, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        PY
+
+        {
+          echo "P7A_FROZEN_RELEASE_METADATA=PASS"
+          echo "P7A_FROZEN_RELEASE_TAG=$FROZEN_RELEASE_TAG"
+          echo "P7A_FROZEN_RELEASE_ID=$FROZEN_RELEASE_ID"
+          echo "P7A_FROZEN_APK_ASSET_ID=$FROZEN_APK_ASSET_ID"
+          echo "P7A_FROZEN_KSUD_ASSET_ID=$FROZEN_KSUD_ASSET_ID"
+          echo "P7A_RELEASE_ASSET_HASHES_PINNED=YES"
+        } | tee "$KIT_DIR/provenance/02-frozen-release-metadata.txt"
+    - name: Download and verify frozen Manager and ksud companion
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        APK="$KIT_DIR/frozen-userspace/$FROZEN_APK_NAME"
+        KSUD="$KIT_DIR/frozen-userspace/$FROZEN_KSUD_NAME"
+
+        curl --fail --location --silent --show-error \
+          --retry 5 --retry-delay 2 \
+          "https://github.com/ReSukiSU/ReSukiSU/releases/download/$FROZEN_RELEASE_TAG/$FROZEN_APK_NAME" \
+          -o "$APK"
+
+        curl --fail --location --silent --show-error \
+          --retry 5 --retry-delay 2 \
+          "https://github.com/ReSukiSU/ReSukiSU/releases/download/$FROZEN_RELEASE_TAG/$FROZEN_KSUD_NAME" \
+          -o "$KSUD"
+
+        test "$(sha256sum "$APK" | awk '{print $1}')" = "$FROZEN_APK_SHA256"
+        test "$(sha256sum "$KSUD" | awk '{print $1}')" = "$FROZEN_KSUD_SHA256"
+        test -s "$APK"
+        test -s "$KSUD"
+
+        python3 - <<'PY'
+        import hashlib
+        import json
+        import os
+        import zipfile
+        from pathlib import Path
+
+        root = Path(os.environ["KIT_DIR"]) / "frozen-userspace"
+        apk = root / os.environ["FROZEN_APK_NAME"]
+        ksud = root / os.environ["FROZEN_KSUD_NAME"]
+
+        with zipfile.ZipFile(apk) as zf:
+            bad = zf.testzip()
+            if bad is not None:
+                raise SystemExit("APK ZIP integrity failure: " + bad)
+            candidates = [
+                n for n in zf.namelist()
+                if n == "lib/arm64-v8a/libksud.so"
+                or n.endswith("/lib/arm64-v8a/libksud.so")
+            ]
+            if len(candidates) != 1:
+                raise SystemExit(
+                    f"expected exactly one embedded arm64 libksud.so, got {candidates}"
+                )
+            embedded_name = candidates[0]
+            embedded = zf.read(embedded_name)
+
+        if not embedded.startswith(b"\x7fELF"):
+            raise SystemExit("embedded libksud.so is not ELF")
+        if not ksud.read_bytes().startswith(b"\x7fELF"):
+            raise SystemExit("standalone ksud companion is not ELF")
+
+        embedded_path = root / "embedded-libksud-arm64-v8a.so"
+        embedded_path.write_bytes(embedded)
+
+        def sha256_bytes(b):
+            return hashlib.sha256(b).hexdigest()
+
+        def sha256_file(p):
+            h = hashlib.sha256()
+            with p.open("rb") as f:
+                for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                    h.update(chunk)
+            return h.hexdigest()
+
+        manifest = {
+            "release_tag": os.environ["FROZEN_RELEASE_TAG"],
+            "manager_version_code_from_filename": int(os.environ["FROZEN_MANAGER_VERSION_CODE"]),
+            "manager_apk": {
+                "name": apk.name,
+                "size": apk.stat().st_size,
+                "sha256": sha256_file(apk),
+                "expected_sha256": os.environ["FROZEN_APK_SHA256"],
+            },
+            "embedded_ksud": {
+                "apk_entry": embedded_name,
+                "extracted_name": embedded_path.name,
+                "size": len(embedded),
+                "sha256": sha256_bytes(embedded),
+                "elf": True,
+            },
+            "standalone_ksud_companion": {
+                "name": ksud.name,
+                "size": ksud.stat().st_size,
+                "sha256": sha256_file(ksud),
+                "expected_sha256": os.environ["FROZEN_KSUD_SHA256"],
+                "elf": True,
+            },
+            "embedded_equals_standalone": sha256_bytes(embedded) == sha256_file(ksud),
+            "note": (
+                "The APK byte hash is the authoritative P7-A userspace freeze. "
+                "Embedded ksud is separately extracted and hashed. Equality with the "
+                "standalone release asset is recorded, not assumed, because release "
+                "repacking may strip native binaries."
+            ),
+        }
+        (root / "FROZEN_USERSPACE_MANIFEST.json").write_text(
+            json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+
+        print("P7A_FROZEN_APK_SHA256=" + manifest["manager_apk"]["sha256"])
+        print("P7A_EMBEDDED_KSUD_SHA256=" + manifest["embedded_ksud"]["sha256"])
+        print("P7A_STANDALONE_KSUD_SHA256=" + manifest["standalone_ksud_companion"]["sha256"])
+        print(
+            "P7A_EMBEDDED_EQUALS_STANDALONE="
+            + ("YES" if manifest["embedded_equals_standalone"] else "NO")
+        )
+        PY
+
+        sha256sum \
+          "$APK" \
+          "$KSUD" \
+          "$KIT_DIR/frozen-userspace/embedded-libksud-arm64-v8a.so" \
+          | tee "$KIT_DIR/provenance/03-frozen-userspace-sha256.txt"
+
+        {
+          echo "P7A_FROZEN_USERSPACE_BYTES=PASS"
+          echo "P7A_FROZEN_APK_SHA256=$FROZEN_APK_SHA256"
+          echo "P7A_FROZEN_KSUD_COMPANION_SHA256=$FROZEN_KSUD_SHA256"
+          echo "P7A_EMBEDDED_KSUD_EXTRACTED=YES"
+          echo "P7A_EMBEDDED_KSUD_ELF=YES"
+          echo "P7A_FROZEN_USERSPACE_CONSTANT_FOR_A_AND_B=YES"
+        } | tee "$KIT_DIR/provenance/03-frozen-userspace-verification.txt"
+    - name: Create W88 control identity gate
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        cat > "$KIT_DIR/control/W88-v3-CONTROL-IDENTITY.txt" <<EOF
+        CONTROL_LABEL=W88-v3
+        CONTROL_ROLE=P7A_ARM_A_HISTORICAL_STABLE
+        CONTROL_KERNEL=Linux_5.4.274
+        CONTROL_DEVICE=VEUX_ONLY
+        CONTROL_IMAGE_SIZE=$W88_CONTROL_IMAGE_SIZE
+        CONTROL_IMAGE_SHA256=$W88_CONTROL_IMAGE_SHA256
+        CONTROL_BINARY_BUNDLED=NO
+        CONTROL_MUST_BE_VERIFIED_BEFORE_DEVICE_AB=YES
+        CONTROL_W88_USERSPACE_REUSED=NO
+        CONTROL_P7A_FROZEN_USERSPACE_USED=YES
+        EOF
+
+        cat > "$KIT_DIR/control/verify-w88-control.py" <<'PY'
+        #!/usr/bin/env python3
+        import hashlib
+        import pathlib
+        import sys
+        import zipfile
+
+        EXPECTED_SHA = "d0f7abcc526ec63413236fd440cef2d9fb6cc3819ce656b1b49efde7d65cda04"
+        EXPECTED_SIZE = 29843968
+
+        if len(sys.argv) != 2:
+            raise SystemExit(
+                "usage: verify-w88-control.py <raw-Image-or-zip-containing-Image>"
+            )
+
+        src = pathlib.Path(sys.argv[1])
+        if not src.is_file():
+            raise SystemExit(f"not a file: {src}")
+
+        if zipfile.is_zipfile(src):
+            with zipfile.ZipFile(src) as zf:
+                image_entries = [
+                    n for n in zf.namelist()
+                    if pathlib.PurePosixPath(n).name == "Image"
+                ]
+                if len(image_entries) != 1:
+                    raise SystemExit(
+                        "expected exactly one ZIP member with basename Image; got "
+                        + repr(image_entries)
+                    )
+                data = zf.read(image_entries[0])
+                source_desc = f"{src}:{image_entries[0]}"
+        else:
+            data = src.read_bytes()
+            source_desc = str(src)
+
+        sha = hashlib.sha256(data).hexdigest()
+        size = len(data)
+
+        print(f"SOURCE={source_desc}")
+        print(f"IMAGE_SIZE={size}")
+        print(f"IMAGE_SHA256={sha}")
+
+        if size != EXPECTED_SIZE:
+            raise SystemExit(
+                f"W88-v3 control size mismatch: expected {EXPECTED_SIZE}, got {size}"
+            )
+        if sha != EXPECTED_SHA:
+            raise SystemExit(
+                f"W88-v3 control SHA mismatch: expected {EXPECTED_SHA}, got {sha}"
+            )
+
+        print("W88_V3_CONTROL_IDENTITY=PASS")
+        PY
+        chmod +x "$KIT_DIR/control/verify-w88-control.py"
+
+        python3 -m py_compile "$KIT_DIR/control/verify-w88-control.py"
+        rm -rf "$KIT_DIR/control/__pycache__"
+
+        {
+          echo "P7A_W88_CONTROL_IDENTITY_DEFINED=PASS"
+          echo "P7A_W88_CONTROL_IMAGE_SHA256=$W88_CONTROL_IMAGE_SHA256"
+          echo "P7A_W88_CONTROL_IMAGE_SIZE=$W88_CONTROL_IMAGE_SIZE"
+          echo "P7A_W88_CONTROL_BINARY_BUNDLED=NO"
+          echo "P7A_CONTROL_VERIFIER_CREATED=YES"
+        } | tee "$KIT_DIR/provenance/04-control-identity.txt"
+    - name: Create controlled device A/B protocol and evidence tools
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        python3 - <<'PY'
+        import json
+        import os
+        from pathlib import Path
+
+        kit = Path(os.environ["KIT_DIR"])
+
+        protocol = f"""# CLEAN GEN1 P7-A — Frozen-userspace device A/B protocol
+
+        ## Purpose
+
+        This is a diagnostic kernel A/B, not a release or flashing workflow.
+        The only intended variable between Arm A and Arm B is the kernel payload.
+
+        - Arm A control: W88-v3, Image SHA-256
+          `{os.environ["W88_CONTROL_IMAGE_SHA256"]}`
+        - Arm B candidate: P6-v8, Image SHA-256
+          `{os.environ["P6_IMAGE_SHA256"]}`
+        - Frozen Manager for both arms:
+          `{os.environ["FROZEN_APK_NAME"]}`
+          SHA-256 `{os.environ["FROZEN_APK_SHA256"]}`
+        - P6 kernel KSU_VERSION: `{os.environ["P6_KSU_VERSION"]}`
+        - Frozen Manager version code: `{os.environ["FROZEN_MANAGER_VERSION_CODE"]}`
+
+        The frozen Manager is deliberately a diagnostic constant, not a claim
+        that it was the userspace used by W88-v3 or W97, and not a claim that its
+        version code exactly matches the P6 kernel. Current-Manager compatibility
+        belongs to P7-B.
+
+        ## Hard controls
+
+        1. Verify the W88-v3 control before Arm A with:
+           `python3 control/verify-w88-control.py <W88 raw Image or ZIP containing Image>`
+        2. Verify `P7A_SHA256SUMS` before using the kit.
+        3. Install the frozen Manager APK once before Arm A and keep that same APK,
+           app data, modules, SELinux state, bootloader state and Android build
+           unchanged through Arm B.
+        4. Do not update Manager/ksud between arms.
+        5. Use the same already-proven device boot/flash method for both kernels.
+           This kit intentionally does not automate flashing and does not build a
+           boot image.
+        6. After each kernel change, perform a cold reboot before observations.
+        7. If an unexpected device reboot occurs, collect pstore/boot-reason/logcat
+           evidence before clearing logs or changing configuration.
+
+        ## Observation sequence per arm
+
+        1. Confirm Android has completed boot.
+        2. Run `device-evidence/collect-p7a-device-evidence.sh <A-W88|B-P6> pre`.
+        3. Note uptime.
+        4. Manually open the frozen ReSukiSU Manager.
+        5. If no reboot occurs, close and reopen it five times total, without
+           changing settings.
+        6. If a reboot occurs, do not label it a kernel panic without a runtime
+           trace. Record it as an unexpected device reboot.
+        7. Run `device-evidence/collect-p7a-device-evidence.sh <A-W88|B-P6> post`.
+        8. Fill the corresponding JSON observation file.
+
+        ## Decision matrix
+
+        - A: no unexpected reboot; B: no unexpected reboot
+          -> P6 passes the frozen-userspace Manager-open regression check; proceed
+             to P7-B current-Manager compatibility.
+        - A: no unexpected reboot; B: unexpected reboot
+          -> kernel-specific regression is strongly supported under fixed userspace;
+             P7-B is blocked until runtime evidence is inspected.
+        - A: unexpected reboot; B: unexpected reboot
+          -> frozen userspace/shared environment is a confounder; kernel-specific
+             causality remains UNBEWIESEN.
+        - A: unexpected reboot; B: no unexpected reboot
+          -> P6 behaves better under this frozen userspace, but W88-v3 is not a
+             clean stable control for this Manager and the historical comparison is
+             confounded.
+
+        Run `python3 device-evidence/classify-p7a.py` after both observation JSON
+        files have been completed.
+        """
+        protocol = "\n".join(line[4:] if line.startswith("    ") else line
+                             for line in protocol.splitlines()) + "\n"
+        (kit / "P7A-DEVICE-AB-PROTOCOL.md").write_text(protocol, encoding="utf-8")
+
+        template = {
+            "schema": 1,
+            "arm": None,
+            "kernel_label": None,
+            "image_sha256": None,
+            "frozen_manager_sha256": os.environ["FROZEN_APK_SHA256"],
+            "frozen_manager_version_code": int(os.environ["FROZEN_MANAGER_VERSION_CODE"]),
+            "manager_open_attempts": 5,
+            "unexpected_device_reboots": None,
+            "runtime_trace_proves_kernel_panic": False,
+            "boot_completed": None,
+            "notes": "",
+        }
+        a = dict(template)
+        a.update({
+            "arm": "A",
+            "kernel_label": "W88-v3",
+            "image_sha256": os.environ["W88_CONTROL_IMAGE_SHA256"],
+        })
+        b = dict(template)
+        b.update({
+            "arm": "B",
+            "kernel_label": "P6-v8",
+            "image_sha256": os.environ["P6_IMAGE_SHA256"],
+        })
+
+        ev = kit / "device-evidence"
+        (ev / "A-W88-observation.json").write_text(
+            json.dumps(a, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
+        (ev / "B-P6-observation.json").write_text(
+            json.dumps(b, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
+        PY
+
+        cat > "$KIT_DIR/device-evidence/collect-p7a-device-evidence.sh" <<'SH'
+        #!/usr/bin/env bash
+        set -euo pipefail
+
+        if [ "$#" -ne 2 ]; then
+          echo "usage: $0 <A-W88|B-P6> <pre|post>" >&2
+          exit 2
+        fi
+
+        ARM="$1"
+        PHASE="$2"
+
+        case "$ARM" in
+          A-W88|B-P6) ;;
+          *) echo "invalid arm: $ARM" >&2; exit 2 ;;
+        esac
+
+        case "$PHASE" in
+          pre|post) ;;
+          *) echo "invalid phase: $PHASE" >&2; exit 2 ;;
+        esac
+
+        command -v adb >/dev/null 2>&1 || {
+          echo "adb not found on host" >&2
+          exit 2
+        }
+
+        adb get-state >/dev/null
+        STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
+        OUT="p7a-runtime-${ARM}-${PHASE}-${STAMP}"
+        mkdir -p "$OUT"
+
+        {
+          echo "ARM=$ARM"
+          echo "PHASE=$PHASE"
+          echo "UTC=$STAMP"
+          echo "COLLECTOR_WRITES_DEVICE=NO"
+        } > "$OUT/00-meta.txt"
+
+        adb shell uname -a > "$OUT/01-uname.txt" 2>&1 || true
+        adb shell cat /proc/version > "$OUT/02-proc-version.txt" 2>&1 || true
+        adb shell cat /proc/uptime > "$OUT/03-uptime.txt" 2>&1 || true
+        adb shell getprop > "$OUT/04-getprop.txt" 2>&1 || true
+        adb shell getprop sys.boot.reason > "$OUT/05-sys-boot-reason.txt" 2>&1 || true
+        adb shell getprop ro.boot.bootreason > "$OUT/06-ro-boot-bootreason.txt" 2>&1 || true
+        adb logcat -b all -d -v threadtime > "$OUT/07-logcat-all.txt" 2>&1 || true
+
+        adb shell 'su -c "dmesg" 2>/dev/null || dmesg 2>/dev/null || true' \
+          > "$OUT/08-dmesg.txt" 2>&1 || true
+
+        adb shell 'su -c "ls -la /sys/fs/pstore && for f in /sys/fs/pstore/*; do echo ===$f===; cat \"$f\"; done" 2>/dev/null || true' \
+          > "$OUT/09-pstore.txt" 2>&1 || true
+
+        adb shell 'su -c "if [ -r /proc/last_kmsg ]; then cat /proc/last_kmsg; fi" 2>/dev/null || true' \
+          > "$OUT/10-last-kmsg.txt" 2>&1 || true
+
+        sha256sum "$OUT"/* > "$OUT/SHA256SUMS"
+        tar -czf "${OUT}.tar.gz" "$OUT"
+        sha256sum "${OUT}.tar.gz" > "${OUT}.tar.gz.sha256"
+
+        echo "P7A_DEVICE_EVIDENCE_CREATED=${OUT}.tar.gz"
+        echo "No device write/flash command was executed by this collector."
+        SH
+        chmod +x "$KIT_DIR/device-evidence/collect-p7a-device-evidence.sh"
+        bash -n "$KIT_DIR/device-evidence/collect-p7a-device-evidence.sh"
+
+        cat > "$KIT_DIR/device-evidence/classify-p7a.py" <<'PY'
+        #!/usr/bin/env python3
+        import json
+        from pathlib import Path
+
+        A = json.loads(Path("device-evidence/A-W88-observation.json").read_text())
+        B = json.loads(Path("device-evidence/B-P6-observation.json").read_text())
+
+        EXPECTED = {
+            "A": "d0f7abcc526ec63413236fd440cef2d9fb6cc3819ce656b1b49efde7d65cda04",
+            "B": "ac7c4884cac9f385ab8049e53f196581b784623a40afe1e1339ec738e9d155cf",
+        }
+        MANAGER = "544cf6cb105acacf219b3db71e43b9818e3f335153763e56aa0356bd09d1b450"
+
+        for label, row in (("A", A), ("B", B)):
+            if row.get("arm") != label:
+                raise SystemExit(f"{label}: arm identity mismatch")
+            if row.get("image_sha256") != EXPECTED[label]:
+                raise SystemExit(f"{label}: image SHA identity mismatch")
+            if row.get("frozen_manager_sha256") != MANAGER:
+                raise SystemExit(f"{label}: frozen Manager SHA identity mismatch")
+            if row.get("boot_completed") is not True:
+                raise SystemExit(f"{label}: boot_completed must be true before classification")
+            r = row.get("unexpected_device_reboots")
+            if not isinstance(r, int) or isinstance(r, bool) or r < 0:
+                raise SystemExit(
+                    f"{label}: unexpected_device_reboots must be a non-negative integer"
+                )
+
+        a_reboot = A["unexpected_device_reboots"] > 0
+        b_reboot = B["unexpected_device_reboots"] > 0
+
+        if not a_reboot and not b_reboot:
+            code = "PASS_FROZEN_USERSPACE_MANAGER_OPEN"
+            conclusion = (
+                "P6 passes the frozen-userspace Manager-open regression check. "
+                "Proceed to P7-B current-Manager compatibility."
+            )
+        elif not a_reboot and b_reboot:
+            code = "P6_KERNEL_REGRESSION_STRONGLY_SUPPORTED"
+            conclusion = (
+                "Only P6 reproduced an unexpected device reboot under fixed userspace. "
+                "Inspect runtime evidence before P7-B."
+            )
+        elif a_reboot and b_reboot:
+            code = "INCONCLUSIVE_SHARED_USERSPACE_OR_ENVIRONMENT_CONFOUNDER"
+            conclusion = (
+                "Both arms reproduced an unexpected device reboot. "
+                "Kernel-specific causality remains UNBEWIESEN."
+            )
+        else:
+            code = "P6_BETTER_BUT_W88_CONTROL_CONFOUNDED"
+            conclusion = (
+                "Only W88 reproduced an unexpected device reboot under this frozen "
+                "userspace. P6 is positive, but W88 is not a clean stable control "
+                "for this Manager."
+            )
+
+        print("P7A_CLASSIFICATION=" + code)
+        print("P7A_CONCLUSION=" + conclusion)
+
+        if A.get("runtime_trace_proves_kernel_panic") or B.get("runtime_trace_proves_kernel_panic"):
+            print("P7A_RUNTIME_TRACE_KERNEL_PANIC_CLAIM=PRESENT")
+        else:
+            print("P7A_RUNTIME_TRACE_KERNEL_PANIC_CLAIM=ABSENT")
+        PY
+        chmod +x "$KIT_DIR/device-evidence/classify-p7a.py"
+        python3 -m py_compile "$KIT_DIR/device-evidence/classify-p7a.py"
+        rm -rf "$KIT_DIR/device-evidence/__pycache__"
+
+        {
+          echo "P7A_DEVICE_PROTOCOL_CREATED=PASS"
+          echo "P7A_OBSERVATION_ARMS=2"
+          echo "P7A_MANAGER_OPEN_ATTEMPTS_PER_ARM=5"
+          echo "P7A_UNEXPECTED_REBOOT_TERM=DEVICE_REBOOT"
+          echo "P7A_KERNEL_PANIC_TERM_REQUIRES_RUNTIME_TRACE=YES"
+          echo "P7A_DEVICE_EVIDENCE_COLLECTOR_CREATED=YES"
+          echo "P7A_DEVICE_EVIDENCE_COLLECTOR_FLASHES=NO"
+          echo "P7A_CLASSIFIER_CREATED=YES"
+        } | tee "$KIT_DIR/provenance/05-device-protocol.txt"
+    - name: Record P7-A v1 integrity-closure correction
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        cat > "$KIT_DIR/provenance/06-v1-correction.txt" <<EOF
+        P7A_V1_RUN_ID=$P7A_V1_RUN_ID
+        P7A_V1_ARTIFACT_ID=$P7A_V1_ARTIFACT_ID
+        P7A_V1_ARTIFACT_SHA256=$P7A_V1_ARTIFACT_SHA256
+        P7A_V1_WORKFLOW_CONCLUSION=success
+        P7A_V1_PAYLOAD_BINARY_IDENTITIES=PASS
+        P7A_V1_CHECKSUM_ENTRIES=28
+        P7A_V1_FINAL_FILES_EXCLUDED_FROM_CHECKSUM=3
+        P7A_V1_CHECKSUM_MISSING_1=99-result.txt
+        P7A_V1_CHECKSUM_MISSING_2=provenance/06-kit-manifest.txt
+        P7A_V1_CHECKSUM_MISSING_3=provenance/07-validation.txt
+        P7A_V1_INTEGRITY_CLOSURE=INCOMPLETE
+        P7A_V1_ACCEPT_AS_FINAL_PREP_LAST_GOOD=NO
+        P7A_V2_CORRECTION=CREATE_ALL_FINAL_FILES_BEFORE_FINAL_INVENTORY_AND_SHA256
+        P7A_V2_ACTIONS_DOWNLOAD=actions/download-artifact@v8
+        P7A_V2_ACTIONS_UPLOAD=actions/upload-artifact@v7
+        EOF
+    - name: Create P7-A manifest
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        python3 - <<'PY'
+        import json
+        import os
+        from pathlib import Path
+
+        kit = Path(os.environ["KIT_DIR"])
+
+        manifest = {
+            "stage": "CLEAN_GEN1_P7A_FROZEN_USERSPACE_DEVICE_AB_PREPARATION",
+            "revision": 2,
+            "status": "PREPARATION_ONLY",
+            "device": "VEUX",
+            "kernel_version": "5.4.274",
+            "v1_correction": {
+                "run_id": int(os.environ["P7A_V1_RUN_ID"]),
+                "artifact_id": int(os.environ["P7A_V1_ARTIFACT_ID"]),
+                "artifact_sha256": os.environ["P7A_V1_ARTIFACT_SHA256"],
+                "payload_binary_identities_passed": True,
+                "integrity_closure_complete": False,
+                "final_files_omitted_from_v1_checksum": [
+                    "99-result.txt",
+                    "provenance/06-kit-manifest.txt",
+                    "provenance/07-validation.txt",
+                ],
+            },
+            "control": {
+                "label": "W88-v3",
+                "image_size": int(os.environ["W88_CONTROL_IMAGE_SIZE"]),
+                "image_sha256": os.environ["W88_CONTROL_IMAGE_SHA256"],
+                "binary_bundled": False,
+                "identity_verification_required": True,
+            },
+            "candidate": {
+                "label": "P6-v8",
+                "source_commit": os.environ["P6_SOURCE_COMMIT"],
+                "source_tree": os.environ["P6_SOURCE_TREE"],
+                "resukisu_head": os.environ["P6_RESUKISU_HEAD"],
+                "resukisu_tree": os.environ["P6_RESUKISU_TREE"],
+                "ksu_version": int(os.environ["P6_KSU_VERSION"]),
+                "image_size": int(os.environ["P6_IMAGE_SIZE"]),
+                "image_sha256": os.environ["P6_IMAGE_SHA256"],
+                "veux_dtb_size": int(os.environ["P6_VEUX_DTB_SIZE"]),
+                "veux_dtb_sha256": os.environ["P6_VEUX_DTB_SHA256"],
+                "config_sha256": os.environ["P6_CONFIG_SHA256"],
+                "reproducible": True,
+                "native_susfs": True,
+            },
+            "frozen_userspace": {
+                "release_tag": os.environ["FROZEN_RELEASE_TAG"],
+                "manager_version_code": int(os.environ["FROZEN_MANAGER_VERSION_CODE"]),
+                "manager_apk_name": os.environ["FROZEN_APK_NAME"],
+                "manager_apk_sha256": os.environ["FROZEN_APK_SHA256"],
+                "ksud_companion_name": os.environ["FROZEN_KSUD_NAME"],
+                "ksud_companion_sha256": os.environ["FROZEN_KSUD_SHA256"],
+                "same_for_control_and_candidate": True,
+                "claimed_as_historical_w88_userspace": False,
+                "claimed_as_historical_w97_userspace": False,
+                "kernel_version_code_exact_match": False,
+                "current_manager_test_deferred_to_p7b": True,
+            },
+            "safety": {
+                "kernel_build": False,
+                "boot_image_created": False,
+                "flashable_zip_created": False,
+                "device_accessed_by_ci": False,
+                "flashing_performed_by_ci": False,
+            },
+            "next_gate": "P7A_REAL_DEVICE_AB_EVIDENCE",
+        }
+
+        (kit / "P7A_MANIFEST.json").write_text(
+            json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        PY
+
+        {
+          echo "P7A_MANIFEST_CREATED=PASS"
+          echo "P7A_MANIFEST_REVISION=2"
+          echo "P7A_V1_INTEGRITY_CLOSURE=INCOMPLETE"
+          echo "P7A_V2_INTEGRITY_CLOSURE_TARGET=COMPLETE"
+        } | tee "$KIT_DIR/provenance/07-kit-manifest.txt"
+    - name: Validate P7-A payload before final freeze
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        cd "$KIT_DIR"
+
+        test "$(stat -c '%s' candidate/P6-v8-VEUX-5.4.274-Image)" = "$P6_IMAGE_SIZE"
+        test "$(sha256sum candidate/P6-v8-VEUX-5.4.274-Image | awk '{print $1}')" = "$P6_IMAGE_SHA256"
+        test "$(stat -c '%s' candidate/P6-v8-VEUX-5.4.274-veux.dtb)" = "$P6_VEUX_DTB_SIZE"
+        test "$(sha256sum candidate/P6-v8-VEUX-5.4.274-veux.dtb | awk '{print $1}')" = "$P6_VEUX_DTB_SHA256"
+        test "$(sha256sum candidate/P6-v8-VEUX-5.4.274.config | awk '{print $1}')" = "$P6_CONFIG_SHA256"
+
+        test "$(sha256sum frozen-userspace/"$FROZEN_APK_NAME" | awk '{print $1}')" = "$FROZEN_APK_SHA256"
+        test "$(sha256sum frozen-userspace/"$FROZEN_KSUD_NAME" | awk '{print $1}')" = "$FROZEN_KSUD_SHA256"
+
+        grep -Fxq "CONTROL_IMAGE_SHA256=$W88_CONTROL_IMAGE_SHA256" \
+          control/W88-v3-CONTROL-IDENTITY.txt
+        grep -Fxq 'CONTROL_BINARY_BUNDLED=NO' control/W88-v3-CONTROL-IDENTITY.txt
+        grep -Fq 'P7A_REAL_DEVICE_AB_EVIDENCE' P7A_MANIFEST.json
+        grep -Fq 'PREPARATION_ONLY' P7A_MANIFEST.json
+        grep -Fq 'Current-Manager compatibility' P7A-DEVICE-AB-PROTOCOL.md
+
+        python3 - <<'PY'
+        from pathlib import Path
+        for p in (
+            Path("control/verify-w88-control.py"),
+            Path("device-evidence/classify-p7a.py"),
+        ):
+            compile(p.read_text(encoding="utf-8"), str(p), "exec")
+        PY
+
+        bash -n device-evidence/collect-p7a-device-evidence.sh
+
+        test ! -e control/Image
+        test ! -e boot.img
+        test ! -e candidate/boot.img
+
+        if find . -type f \( -name '*AnyKernel*.zip' -o -name '*flash*.zip' -o -name 'boot.img' \) \
+            | grep -q .; then
+          echo "unexpected flashable/boot artifact in P7-A kit" >&2
+          exit 1
+        fi
+
+        {
+          echo "CLEAN_GEN1_P7A_PRE_FREEZE_VALIDATION=PASS"
+          echo "P7A_CONTROL_BINARY_BUNDLED=NO"
+          echo "P7A_CANDIDATE_RAW_IMAGE_BUNDLED=YES"
+          echo "P7A_FROZEN_MANAGER_BUNDLED=YES"
+          echo "P7A_EMBEDDED_KSUD_HASHED=YES"
+          echo "P7A_REAL_DEVICE_TEST_PERFORMED=NO"
+          echo "P7A_CI_DEVICE_ACCESS=NO"
+          echo "P7A_CI_FLASHING=NO"
+          echo "P7A_BOOT_IMAGE_CREATED=NO"
+          echo "P7A_FLASHABLE_ZIP_CREATED=NO"
+        } | tee provenance/08-pre-freeze-validation.txt
+    - name: Create final P7-A v2 result before integrity freeze
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        grep -Fxq 'P7A_P6_INPUT_VERIFIED=PASS' \
+          "$KIT_DIR/provenance/01-p6-input-verification.txt"
+        grep -Fxq 'P7A_FROZEN_RELEASE_METADATA=PASS' \
+          "$KIT_DIR/provenance/02-frozen-release-metadata.txt"
+        grep -Fxq 'P7A_FROZEN_USERSPACE_BYTES=PASS' \
+          "$KIT_DIR/provenance/03-frozen-userspace-verification.txt"
+        grep -Fxq 'P7A_W88_CONTROL_IDENTITY_DEFINED=PASS' \
+          "$KIT_DIR/provenance/04-control-identity.txt"
+        grep -Fxq 'P7A_DEVICE_PROTOCOL_CREATED=PASS' \
+          "$KIT_DIR/provenance/05-device-protocol.txt"
+        grep -Fxq 'P7A_V1_INTEGRITY_CLOSURE=INCOMPLETE' \
+          "$KIT_DIR/provenance/06-v1-correction.txt"
+        grep -Fxq 'P7A_MANIFEST_CREATED=PASS' \
+          "$KIT_DIR/provenance/07-kit-manifest.txt"
+        grep -Fxq 'CLEAN_GEN1_P7A_PRE_FREEZE_VALIDATION=PASS' \
+          "$KIT_DIR/provenance/08-pre-freeze-validation.txt"
+
+        cat > "$KIT_DIR/99-result.txt" <<EOF
+        CLEAN_GEN1_P7A_FROZEN_USERSPACE_DEVICE_AB_PREPARATION=PASS
+        P7A_REVISION=2
+        KERNEL_VERSION=5.4.274
+        DEVICE=VEUX_ONLY
+        P7A_V1_RUN_ID=$P7A_V1_RUN_ID
+        P7A_V1_ARTIFACT_ID=$P7A_V1_ARTIFACT_ID
+        P7A_V1_ARTIFACT_SHA256=$P7A_V1_ARTIFACT_SHA256
+        P7A_V1_INTEGRITY_CLOSURE=INCOMPLETE
+        P7A_V1_ACCEPT_AS_FINAL_PREP_LAST_GOOD=NO
+        P7A_P6_RUN_ID=$P6_RUN_ID
+        P7A_P6_ARTIFACT_ID=$P6_ARTIFACT_ID
+        P7A_P6_ARTIFACT_SHA256=$P6_ARTIFACT_SHA256
+        P7A_P6_SOURCE_COMMIT=$P6_SOURCE_COMMIT
+        P7A_P6_SOURCE_TREE=$P6_SOURCE_TREE
+        P7A_P6_IMAGE_SHA256=$P6_IMAGE_SHA256
+        P7A_P6_IMAGE_SIZE=$P6_IMAGE_SIZE
+        P7A_P6_VEUX_DTB_SHA256=$P6_VEUX_DTB_SHA256
+        P7A_W88_CONTROL_IMAGE_SHA256=$W88_CONTROL_IMAGE_SHA256
+        P7A_W88_CONTROL_IMAGE_SIZE=$W88_CONTROL_IMAGE_SIZE
+        P7A_W88_CONTROL_BINARY_BUNDLED=NO
+        P7A_FROZEN_RELEASE_TAG=$FROZEN_RELEASE_TAG
+        P7A_FROZEN_MANAGER_VERSION_CODE=$FROZEN_MANAGER_VERSION_CODE
+        P7A_FROZEN_MANAGER_APK=$FROZEN_APK_NAME
+        P7A_FROZEN_MANAGER_APK_SHA256=$FROZEN_APK_SHA256
+        P7A_FROZEN_KSUD_COMPANION_SHA256=$FROZEN_KSUD_SHA256
+        P7A_FROZEN_USERSPACE_CONSTANT_FOR_A_AND_B=YES
+        P7A_FROZEN_USERSPACE_IS_HISTORICAL_W88_USERSPACE=NO
+        P7A_FROZEN_USERSPACE_IS_HISTORICAL_W97_USERSPACE=NO
+        P7A_FROZEN_MANAGER_VERSION_MATCHES_P6_KSU_VERSION=NO
+        P7A_CURRENT_MANAGER_TEST_DEFERRED_TO_P7B=YES
+        P7A_REAL_DEVICE_TEST_PERFORMED=NO
+        P7A_DEVICE_REBOOT_RESULT=UNTESTED
+        P7A_KERNEL_PANIC_RESULT=UNPROVEN
+        P7A_CI_DEVICE_ACCESS=NO
+        P7A_CI_FLASHING=NO
+        P7A_KERNEL_BUILD_PERFORMED=NO
+        P7A_BOOT_IMAGE_CREATED=NO
+        P7A_FLASHABLE_ZIP_CREATED=NO
+        MODULE_LOAD_FILTER_INCLUDED=NO
+        P7A_FINAL_INTEGRITY_FREEZE_PENDING=YES
+        P7A_NEXT_GATE=P7A_REAL_DEVICE_AB_EVIDENCE_WITH_FROZEN_USERSPACE
+        P7B_BLOCKED_UNTIL_P7A_DEVICE_EVIDENCE=YES
+        EOF
+    - name: Freeze complete final inventory and SHA256 closure
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        python3 - <<'PY'
+        import hashlib
+        import json
+        import os
+        from pathlib import Path
+
+        kit = Path(os.environ["KIT_DIR"])
+
+        def sha256(path):
+            h = hashlib.sha256()
+            with path.open("rb") as f:
+                for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                    h.update(chunk)
+            return h.hexdigest()
+
+        rows = []
+        for p in sorted(kit.rglob("*")):
+            if not p.is_file():
+                continue
+            rel = p.relative_to(kit).as_posix()
+            if rel in {"P7A_FILE_INVENTORY.json", "P7A_SHA256SUMS"}:
+                continue
+            rows.append({
+                "path": rel,
+                "size": p.stat().st_size,
+                "sha256": sha256(p),
+            })
+
+        (kit / "P7A_FILE_INVENTORY.json").write_text(
+            json.dumps(rows, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        PY
+
+        (
+          cd "$KIT_DIR"
+          find . -type f \
+            ! -name 'P7A_SHA256SUMS' \
+            -print0 \
+            | sort -z \
+            | xargs -0 sha256sum \
+            > P7A_SHA256SUMS
+        )
+
+        test -s "$KIT_DIR/P7A_FILE_INVENTORY.json"
+        test -s "$KIT_DIR/P7A_SHA256SUMS"
+    - name: Validate immutable final integrity closure
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        cd "$KIT_DIR"
+
+        sha256sum -c P7A_SHA256SUMS
+
+        python3 - <<'PY'
+        import hashlib
+        import json
+        from pathlib import Path
+
+        root = Path(".")
+        checksum_file = root / "P7A_SHA256SUMS"
+        inventory_file = root / "P7A_FILE_INVENTORY.json"
+
+        checksum_paths = set()
+        for line in checksum_file.read_text(encoding="utf-8").splitlines():
+            _, rel = line.split("  ", 1)
+            rel = rel[2:] if rel.startswith("./") else rel
+            checksum_paths.add(rel)
+
+        actual_non_checksum = {
+            p.as_posix()[2:] if p.as_posix().startswith("./") else p.as_posix()
+            for p in root.rglob("*")
+            if p.is_file() and p.name != "P7A_SHA256SUMS"
+        }
+
+        if checksum_paths != actual_non_checksum:
+            missing = sorted(actual_non_checksum - checksum_paths)
+            extra = sorted(checksum_paths - actual_non_checksum)
+            raise SystemExit(
+                f"final checksum closure mismatch missing={missing} extra={extra}"
+            )
+
+        rows = json.loads(inventory_file.read_text(encoding="utf-8"))
+        inv_paths = {r["path"] for r in rows}
+        expected_inv = actual_non_checksum - {"P7A_FILE_INVENTORY.json"}
+        if inv_paths != expected_inv:
+            missing = sorted(expected_inv - inv_paths)
+            extra = sorted(inv_paths - expected_inv)
+            raise SystemExit(
+                f"final inventory closure mismatch missing={missing} extra={extra}"
+            )
+
+        for row in rows:
+            p = root / row["path"]
+            data = p.read_bytes()
+            got = hashlib.sha256(data).hexdigest()
+            if len(data) != row["size"]:
+                raise SystemExit("inventory size mismatch: " + row["path"])
+            if got != row["sha256"]:
+                raise SystemExit("inventory sha mismatch: " + row["path"])
+
+        required = {
+            "99-result.txt",
+            "provenance/06-v1-correction.txt",
+            "provenance/07-kit-manifest.txt",
+            "provenance/08-pre-freeze-validation.txt",
+            "P7A_MANIFEST.json",
+            "P7A_FILE_INVENTORY.json",
+        }
+        if not required <= checksum_paths:
+            raise SystemExit(
+                "required final files missing from checksum closure: "
+                + repr(sorted(required - checksum_paths))
+            )
+
+        print("P7A_V2_FINAL_CHECKSUM_CLOSURE=PASS")
+        print("P7A_V2_FINAL_INVENTORY_CLOSURE=PASS")
+        print("P7A_V2_FINAL_CHECKSUM_FILE_COUNT=" + str(len(checksum_paths)))
+        print("P7A_V2_FINAL_INVENTORY_FILE_COUNT=" + str(len(inv_paths)))
+        PY
+
+        grep -Fxq 'P7A_V1_INTEGRITY_CLOSURE=INCOMPLETE' 99-result.txt
+        grep -Fxq 'P7A_V1_ACCEPT_AS_FINAL_PREP_LAST_GOOD=NO' 99-result.txt
+        grep -Fxq 'P7A_FINAL_INTEGRITY_FREEZE_PENDING=YES' 99-result.txt
+        grep -Fxq 'P7A_REAL_DEVICE_TEST_PERFORMED=NO' 99-result.txt
+        grep -Fxq 'P7B_BLOCKED_UNTIL_P7A_DEVICE_EVIDENCE=YES' 99-result.txt
+
+        echo "CLEAN_GEN1_P7A_V2_FINAL_INTEGRITY_CLOSURE=PASS"
+    - name: Upload P7-A v2 frozen-userspace A-B preparation kit
+      if: always()
+      uses: actions/upload-artifact@v7
+      with:
+        name: clean-gen1-p7a-frozen-userspace-device-ab-preparation-v2-${{ github.run_id }}
+        path: ${{ env.KIT_DIR }}
+        if-no-files-found: error
+        retention-days: 90
