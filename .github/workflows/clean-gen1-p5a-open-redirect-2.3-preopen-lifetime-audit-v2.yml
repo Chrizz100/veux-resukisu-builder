@@ -1,0 +1,745 @@
+name: CLEAN GEN1 P5A - OPEN_REDIRECT 2.3 pre-open lifetime audit v2
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  p5a-open-redirect-audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+
+    env:
+      ARCH: arm64
+      TZ: UTC
+      LANG: C.UTF-8
+      LC_ALL: C.UTF-8
+
+      VENDOR_REPO: dereference23/kernel_xiaomi_sm6375
+      VENDOR_TAG: "20240619"
+      EXPECTED_VENDOR_SHA: "b2b7a3bbc36d120ee523ebc8d68e0f13a97df632"
+
+      P4_RUN_ID: "33465800698"
+      P4_ARTIFACT_NAME: clean-gen1-p4-safe-stat-faccessat-filename-bridge-v2-33465800698
+      EXPECTED_P4_COMMIT: "40c1111b0904939a1e5e8676db431d2404c22720"
+      EXPECTED_P4_TREE: "49cbcba1725aadea523f4b139710e5d834af9788"
+      EXPECTED_P4_RESUKISU_HEAD: "42034caa96466e8473fe7553eba8a1888c7f460f"
+      EXPECTED_P4_RESUKISU_TREE: "d818d965b855d417edfe9eb38b152ff83e75e0fb"
+
+      RESUKISU_SNAPSHOT_HEAD: "0b5efe9e0102c43ca5c41174d500f5a7080cd0c7"
+      SUSFS_REPO: https://gitlab.com/simonpunk/susfs4ksu.git
+      SUSFS_54_HEAD: "76affd70abf61d77feb0a132f61365d6848505df"
+      SUSFS_510_HEAD: "ec785f47d49f7b3871ca9356f450411020af7017"
+      SUSFS_515_HEAD: "bca0d2333c1a7d717e7278b019d7af7ba1d16005"
+      SUSFS_61_HEAD: "4fc9c1898ea66f51847cdbc0d1473ea4ef525a70"
+
+      REFERENCE_REPO: JackA1ltman/NonGKI_Kernel_Build_2nd
+      REFERENCE_SHA: "459189e06a610d7256ac7b78a37b438239b041ad"
+      REFERENCE_PATCH: Patches/Patch/susfs_patch_to_5.4.patch
+
+      ARTIFACT_DIR: ${{ github.workspace }}/clean-gen1-p5a-audit
+      P4_ARTIFACT_DIR: ${{ github.workspace }}/p4-artifact
+
+    steps:
+      - name: Initialize P5A audit
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$ARTIFACT_DIR" "$P4_ARTIFACT_DIR" \
+                 "$GITHUB_WORKSPACE/reference-5.4"
+          mkdir -p "$ARTIFACT_DIR"
+
+          cat > "$ARTIFACT_DIR/00-plan.txt" <<'EOF'
+          CLEAN GEN1 P5A - OPEN_REDIRECT 2.3 pre-open lifetime audit
+
+          This stage is intentionally audit-only.
+
+          Mandatory questions before any 5.4 namei mutation:
+          1. Can accepted P4 be restored exactly?
+          2. Did reviewed ReSukiSU/SUSFS upstream heads move?
+          3. What does exact Linux 5.4.274 do_last() do before returning success?
+          4. Is FMODE_OPENED already set before a post-do_last redirect attempt?
+          5. Would reusing the same struct file for a second do_last() violate
+             BUG_ON(file->f_mode & FMODE_OPENED) or equivalent invariants?
+          6. Does the selected SUSFS 2.3 helper return a standalone getname_kernel()
+             filename and release SRCU before returning it?
+          7. Does OPEN_REDIRECT replacement use synchronize_srcu(), not synchronize_rcu()?
+          8. Does the available Non-GKI 5.4 reference place redirect after do_last()?
+          9. If yes, is that reference safe to port directly to this exact 5.4.274 tree?
+          10. If direct port is unsafe/unproven, identify a pre-open adaptation boundary
+              without modifying source.
+
+          No source mutation, no config enable, no compile, no Image/dtb/boot/ZIP/device.
+          EOF
+
+      - name: Install P5A dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ca-certificates git jq patch python3 zstd
+          git --version
+          python3 --version
+
+      - name: Checkout exact VEUX vendor source
+        uses: actions/checkout@v6
+        with:
+          repository: dereference23/kernel_xiaomi_sm6375
+          ref: "20240619"
+          path: kernel
+          fetch-depth: 0
+
+      - name: Download accepted P4 restore artifact
+        uses: actions/download-artifact@v7
+        with:
+          name: ${{ env.P4_ARTIFACT_NAME }}
+          path: p4-artifact
+          github-token: ${{ github.token }}
+          run-id: ${{ env.P4_RUN_ID }}
+
+      - name: Authenticate accepted P4 artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test -s "$P4_ARTIFACT_DIR/restore-kit/SHA256SUMS"
+          (
+            cd "$P4_ARTIFACT_DIR/restore-kit"
+            sha256sum -c SHA256SUMS
+          ) | tee "$ARTIFACT_DIR/01-p4-restore-sha256.txt"
+
+          jq -e \
+            --arg vendor "$EXPECTED_VENDOR_SHA" \
+            --arg p4commit "$EXPECTED_P4_COMMIT" \
+            --arg p4tree "$EXPECTED_P4_TREE" \
+            --arg rhead "$EXPECTED_P4_RESUKISU_HEAD" \
+            --arg rtree "$EXPECTED_P4_RESUKISU_TREE" \
+            '.stage=="P4" and
+             .vendor_sha==$vendor and
+             .p4_commit==$p4commit and
+             .p4_tree==$p4tree and
+             .resukisu_head==$rhead and
+             .resukisu_tree==$rtree and
+             .stat_faccessat_bridge_integrated==true and
+             .raw_user_pointer_reinterpret_cast==false and
+             .susfs_source_foundation_present==true and
+             .susfs_runtime_enabled==false and
+             .open_redirect_hooks_integrated==false and
+             .module_load_filter==false and
+             .kernel_build_performed==false' \
+            "$P4_ARTIFACT_DIR/restore-kit/manifest.json" \
+            > "$ARTIFACT_DIR/01-p4-manifest-auth.json"
+
+          test -s "$P4_ARTIFACT_DIR/restore-kit/vendor-20240619-to-p4-outer.patch"
+          test -s "$P4_ARTIFACT_DIR/restore-kit/resukisu-p4-full.bundle"
+
+          {
+            echo "P4_RESTORE_ARTIFACT=PASS"
+            echo "P4_COMMIT=$EXPECTED_P4_COMMIT"
+            echo "P4_TREE=$EXPECTED_P4_TREE"
+            echo "P4_RESUKISU_HEAD=$EXPECTED_P4_RESUKISU_HEAD"
+            echo "P4_RESUKISU_TREE=$EXPECTED_P4_RESUKISU_TREE"
+          } | tee "$ARTIFACT_DIR/01-p4-auth.txt"
+
+      - name: Refuse stale reviewed upstream before P5A
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          current_resu="$(git ls-remote https://github.com/ReSukiSU/ReSukiSU.git refs/heads/main | awk '{print $1}')"
+          current_54="$(git ls-remote "$SUSFS_REPO" refs/heads/kernel-5.4 | awk '{print $1}')"
+          current_510="$(git ls-remote "$SUSFS_REPO" refs/heads/gki-android12-5.10 | awk '{print $1}')"
+          current_515="$(git ls-remote "$SUSFS_REPO" refs/heads/gki-android13-5.15 | awk '{print $1}')"
+          current_61="$(git ls-remote "$SUSFS_REPO" refs/heads/gki-android14-6.1 | awk '{print $1}')"
+
+          {
+            printf 'ReSukiSU-main\t%s\t%s\n' "$RESUKISU_SNAPSHOT_HEAD" "$current_resu"
+            printf 'SUSFS-kernel-5.4\t%s\t%s\n' "$SUSFS_54_HEAD" "$current_54"
+            printf 'SUSFS-5.10\t%s\t%s\n' "$SUSFS_510_HEAD" "$current_510"
+            printf 'SUSFS-5.15\t%s\t%s\n' "$SUSFS_515_HEAD" "$current_515"
+            printf 'SUSFS-6.1\t%s\t%s\n' "$SUSFS_61_HEAD" "$current_61"
+          } | tee "$ARTIFACT_DIR/02-upstream-drift.tsv"
+
+          drift=0
+          [ "$current_resu" = "$RESUKISU_SNAPSHOT_HEAD" ] || drift=1
+          [ "$current_54" = "$SUSFS_54_HEAD" ] || drift=1
+          [ "$current_510" = "$SUSFS_510_HEAD" ] || drift=1
+          [ "$current_515" = "$SUSFS_515_HEAD" ] || drift=1
+          [ "$current_61" = "$SUSFS_61_HEAD" ] || drift=1
+
+          if [ "$drift" -ne 0 ]; then
+            {
+              echo "UPSTREAM_REVIEW_SNAPSHOT_CURRENT=NO"
+              echo "P5A_ALLOWED=NO"
+              echo "ACTION=RUN_UPSTREAM_SNAPSHOT_COMPARE_REVIEW"
+            } | tee "$ARTIFACT_DIR/02-upstream-state.txt"
+            echo "ERROR: reviewed upstream snapshot moved; refusing P5A." >&2
+            exit 1
+          fi
+
+          {
+            echo "UPSTREAM_REVIEW_SNAPSHOT_CURRENT=YES"
+            echo "P5A_ALLOWED=YES"
+          } | tee "$ARTIFACT_DIR/02-upstream-state.txt"
+
+      - name: Restore exact accepted P4 outer tree
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test "$(git rev-parse HEAD)" = "$EXPECTED_VENDOR_SHA"
+          test -z "$(git status --porcelain)"
+
+          PATCH="$P4_ARTIFACT_DIR/restore-kit/vendor-20240619-to-p4-outer.patch"
+          git apply --check --binary "$PATCH"
+          git apply --index --binary "$PATCH"
+
+          test "$(git write-tree)" = "$EXPECTED_P4_TREE"
+
+          GIT_AUTHOR_NAME="CLEAN-GEN1 Restore" \
+          GIT_AUTHOR_EMAIL="clean-gen1@invalid.local" \
+          GIT_AUTHOR_DATE="2026-09-01T00:00:00Z" \
+          GIT_COMMITTER_NAME="CLEAN-GEN1 Restore" \
+          GIT_COMMITTER_EMAIL="clean-gen1@invalid.local" \
+          GIT_COMMITTER_DATE="2026-09-01T00:00:00Z" \
+            git commit -m "CLEAN GEN1 restore accepted P4 outer tree"
+
+          test "$(git rev-parse HEAD^{tree})" = "$EXPECTED_P4_TREE"
+          echo "P4_RESTORED_OUTER_COMMIT=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+
+          {
+            echo "P4_RESTORED_OUTER_TREE=$(git rev-parse HEAD^{tree})"
+            echo "P4_OUTER_RESTORE_REPLAY=PASS"
+          } | tee "$ARTIFACT_DIR/03-p4-outer-restore.txt"
+
+      - name: Restore exact accepted P4 ReSukiSU
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -rf KernelSU
+          git init KernelSU >/dev/null
+          git -C KernelSU fetch \
+            "$P4_ARTIFACT_DIR/restore-kit/resukisu-p4-full.bundle" \
+            refs/heads/clean-gen1-p4-resukisu:refs/heads/clean-gen1-p4-resukisu
+          git -C KernelSU checkout --detach refs/heads/clean-gen1-p4-resukisu >/dev/null
+
+          test "$(git -C KernelSU rev-parse HEAD)" = "$EXPECTED_P4_RESUKISU_HEAD"
+          test "$(git -C KernelSU rev-parse HEAD^{tree})" = "$EXPECTED_P4_RESUKISU_TREE"
+          test -z "$(git -C KernelSU status --porcelain)"
+
+          mkdir -p .git/info
+          touch .git/info/exclude
+          grep -Fxq '/KernelSU/' .git/info/exclude || echo '/KernelSU/' >> .git/info/exclude
+
+          test -L drivers/kernelsu
+          test "$(readlink drivers/kernelsu)" = "../KernelSU/kernel"
+          test -z "$(git status --porcelain)"
+
+          {
+            echo "P4_RESUKISU_RESTORE_REPLAY=PASS"
+            echo "OUTER_STATUS=CLEAN"
+            echo "RESUKISU_STATUS=CLEAN"
+          } | tee "$ARTIFACT_DIR/04-p4-resukisu-restore.txt"
+
+      - name: Prove exact P4 boundary before OPEN_REDIRECT audit
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test "$(git rev-parse HEAD^{tree})" = "$EXPECTED_P4_TREE"
+          test "$(git -C KernelSU rev-parse HEAD)" = "$EXPECTED_P4_RESUKISU_HEAD"
+          test "$(git -C KernelSU rev-parse HEAD^{tree})" = "$EXPECTED_P4_RESUKISU_TREE"
+
+          grep -Fxq '# CONFIG_KSU_SUSFS is not set' arch/arm64/configs/veux_defconfig
+          grep -Fq 'ksu_filename->refcnt++;' fs/stat.c
+          grep -Fq 'ksu_filename->refcnt++;' fs/open.c
+
+          test -f fs/susfs.c
+          test -f include/linux/susfs.h
+          test -f include/linux/susfs_def.h
+
+          ! grep -Fq 'susfs_open_redirect_spoof_do_sys_openat' fs/namei.c
+          ! grep -Fq 'CONFIG_KSU_SUSFS_OPEN_REDIRECT' fs/namei.c
+
+          test ! -e KernelSU/kernel/feature/module_load_filter.c
+          ! grep -Fq 'feature/module_load_filter.o' KernelSU/kernel/Kbuild
+
+          sha256sum fs/namei.c fs/susfs.c include/linux/susfs.h \
+            > "$ARTIFACT_DIR/05-p4-open-redirect-boundary.sha256"
+
+          {
+            echo "P4_BOUNDARY=PASS"
+            echo "STAT_FACCESSAT_BRIDGE_INTEGRATED=YES"
+            echo "SUSFS_RUNTIME_ENABLED=NO"
+            echo "OPEN_REDIRECT_NAMEI_INTEGRATED=NO"
+          } | tee "$ARTIFACT_DIR/05-p4-boundary.txt"
+
+      - name: Checkout pinned Non-GKI 5.4 OPEN_REDIRECT reference
+        uses: actions/checkout@v6
+        with:
+          repository: JackA1ltman/NonGKI_Kernel_Build_2nd
+          ref: 459189e06a610d7256ac7b78a37b438239b041ad
+          path: reference-5.4
+          fetch-depth: 1
+
+      - name: Authenticate and extract reference OPEN_REDIRECT design
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test "$(git -C "$GITHUB_WORKSPACE/reference-5.4" rev-parse HEAD)" = "$REFERENCE_SHA"
+          REF="$GITHUB_WORKSPACE/reference-5.4/$REFERENCE_PATCH"
+          test -s "$REF"
+
+          sha256sum "$REF" | tee "$ARTIFACT_DIR/06-reference-patch.sha256"
+
+          python3 - <<'PY' > "$ARTIFACT_DIR/06-reference-open-redirect-summary.txt"
+          from pathlib import Path
+          import os
+
+          p = Path(os.environ["GITHUB_WORKSPACE"]) / "reference-5.4" / os.environ["REFERENCE_PATCH"]
+          text = p.read_text(encoding="utf-8", errors="replace")
+
+          required = [
+              "static int do_tmpfile(struct nameidata *nd",
+              "static int do_o_path(struct nameidata *nd",
+              "static struct file *path_openat(struct nameidata *nd",
+              "fake_filename = susfs_open_redirect_spoof_do_sys_openat",
+              "restore_nameidata();",
+              "set_nameidata(nd, old_dfd, fake_filename);",
+              "terminate_walk(nd);",
+              "putname(fake_filename);",
+          ]
+
+          for token in required:
+              ok = token in text
+              print(f"REFERENCE_HAS_{token.split('(')[0].strip().replace(' ','_').upper()}={'YES' if ok else 'NO'}")
+              if not ok:
+                  raise SystemExit("missing reference token: " + token)
+
+          print("REFERENCE_PLACES_NORMAL_REDIRECT_AFTER_DO_LAST_LOOP=YES")
+          print("REFERENCE_5_4_OPEN_REDIRECT_PATTERN=PASS")
+          PY
+
+          grep -Fq 'REFERENCE_5_4_OPEN_REDIRECT_PATTERN=PASS' \
+            "$ARTIFACT_DIR/06-reference-open-redirect-summary.txt"
+
+      - name: Audit selected SUSFS 2.3 OPEN_REDIRECT SRCU and filename ownership
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY' > "$ARTIFACT_DIR/07-susfs-open-redirect-core-audit.txt"
+          from pathlib import Path
+
+          text = Path("fs/susfs.c").read_text(encoding="utf-8")
+
+          def extract(text, signature):
+              start = text.find(signature)
+              if start < 0:
+                  raise SystemExit("missing function: " + signature)
+              brace = text.find("{", start)
+              depth = 0
+              for i in range(brace, len(text)):
+                  if text[i] == "{":
+                      depth += 1
+                  elif text[i] == "}":
+                      depth -= 1
+                      if depth == 0:
+                          return text[start:i+1]
+              raise SystemExit("unterminated function: " + signature)
+
+          add = extract(text, "void susfs_add_open_redirect(void __user **user_info)")
+          spoof = extract(text, "struct filename *susfs_open_redirect_spoof_do_sys_openat(struct inode *inode)")
+
+          checks = {
+              "OPEN_REDIRECT_USES_SRCU_READ_LOCK":
+                  "srcu_read_lock(&susfs_srcu_open_redirect)" in spoof,
+              "OPEN_REDIRECT_GETNAME_KERNEL_OWNS_RETURNED_FILENAME":
+                  "new_filename = getname_kernel(entry->info.redirected_pathname);" in spoof,
+              "OPEN_REDIRECT_UNLOCKS_SRCU_BEFORE_RETURNED_FILENAME":
+                  "srcu_read_unlock(&susfs_srcu_open_redirect, srcu_idx);" in spoof and
+                  "return new_filename;" in spoof,
+              "OPEN_REDIRECT_REPLACEMENT_USES_HASH_DEL_RCU":
+                  "hash_del_rcu(&tmp_entry_target->node);" in add,
+              "OPEN_REDIRECT_REPLACEMENT_USES_SYNCHRONIZE_SRCU":
+                  "synchronize_srcu(&susfs_srcu_open_redirect);" in add,
+              "OPEN_REDIRECT_NO_SYNCHRONIZE_RCU":
+                  "synchronize_rcu(" not in add,
+              "OPEN_REDIRECT_TARGET_ALLOC_CHECKED":
+                  "new_entry_target = kzalloc" in add and
+                  "if (!new_entry_target)" in add,
+              "OPEN_REDIRECT_REVERSE_ALLOC_CHECKED":
+                  "new_entry_redirected = kzalloc" in add and
+                  "if (!new_entry_redirected)" in add,
+          }
+
+          for label, ok in checks.items():
+              print(f"{label}={'PASS' if ok else 'FAIL'}")
+          failed = [k for k,v in checks.items() if not v]
+          if failed:
+              raise SystemExit("OPEN_REDIRECT core audit failed: " + ", ".join(failed))
+
+          print("RETURNED_REDIRECT_FILENAME_LIFETIME=INDEPENDENT_OF_SRCU_ENTRY_AFTER_GETNAME_KERNEL")
+          print("P5A_SUSFS_OPEN_REDIRECT_CORE_AUDIT=PASS")
+          PY
+
+          grep -Fq 'P5A_SUSFS_OPEN_REDIRECT_CORE_AUDIT=PASS' \
+            "$ARTIFACT_DIR/07-susfs-open-redirect-core-audit.txt"
+
+      - name: Audit exact 5.4 nameidata primitives and open pipeline
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY' > "$ARTIFACT_DIR/08-namei-open-pipeline-audit.txt"
+          from pathlib import Path
+
+          text = Path("fs/namei.c").read_text(encoding="utf-8")
+
+          def extract(text, signature):
+              start = text.find(signature)
+              if start < 0:
+                  raise SystemExit("missing function: " + signature)
+              brace = text.find("{", start)
+              if brace < 0:
+                  raise SystemExit("missing opening brace: " + signature)
+              depth = 0
+              for i in range(brace, len(text)):
+                  if text[i] == "{":
+                      depth += 1
+                  elif text[i] == "}":
+                      depth -= 1
+                      if depth == 0:
+                          return text[start:i+1]
+              raise SystemExit("unterminated function: " + signature)
+
+          set_nd = extract(text, "static void set_nameidata(struct nameidata *p, int dfd, struct filename *name)")
+          restore_nd = extract(text, "static void restore_nameidata(void)")
+          do_tmpfile = extract(text, "static int do_tmpfile(struct nameidata *nd")
+          do_o_path = extract(text, "static int do_o_path(struct nameidata *nd")
+          path_openat = extract(text, "static struct file *path_openat(struct nameidata *nd")
+          do_filp_open = extract(text, "struct file *do_filp_open(int dfd, struct filename *pathname")
+          do_last = extract(text, "static int do_last(struct nameidata *nd")
+
+          checks = {
+              "SET_NAMEIDATA_THREE_ARG_5_4_CONTRACT":
+                  "p->dfd = dfd;" in set_nd and "p->name = name;" in set_nd,
+              "RESTORE_NAMEIDATA_RESTORES_SAVED":
+                  "struct nameidata *now = current->nameidata, *old = now->saved;" in restore_nd and
+                  "current->nameidata = old;" in restore_nd,
+              "DO_TMPFILE_LOOKS_UP_BEFORE_TMPFILE_CREATE":
+                  "path_lookupat(nd, flags | LOOKUP_DIRECTORY, &path)" in do_tmpfile and
+                  "vfs_tmpfile(" in do_tmpfile,
+              "DO_O_PATH_LOOKS_UP_BEFORE_VFS_OPEN":
+                  "path_lookupat(nd, flags, &path)" in do_o_path and
+                  "vfs_open(&path, file)" in do_o_path,
+              "PATH_OPENAT_CALLS_DO_LAST_IN_NORMAL_LOOP":
+                  "do_last(nd, file, op)" in path_openat,
+              "PATH_OPENAT_TERMINATES_WALK":
+                  "terminate_walk(nd);" in path_openat,
+              "DO_FILP_OPEN_RETRIES_ECHILD":
+                  "ERR_PTR(-ECHILD)" in do_filp_open,
+              "DO_FILP_OPEN_RETRIES_ESTALE":
+                  "ERR_PTR(-ESTALE)" in do_filp_open,
+              "DO_FILP_OPEN_RESTORES_NAMEIDATA":
+                  "restore_nameidata();" in do_filp_open,
+              "DO_LAST_HAS_FMODE_OPENED_INVARIANT":
+                  "FMODE_OPENED" in do_last,
+          }
+
+          for label, ok in checks.items():
+              print(f"{label}={'PASS' if ok else 'FAIL'}")
+          failed = [k for k,v in checks.items() if not v]
+          if failed:
+              raise SystemExit("namei pipeline audit failed: " + ", ".join(failed))
+
+          print("RESTORE_NAMEIDATA_IMPLEMENTATION=NOW_SAVED_TO_LOCAL_OLD_THEN_CURRENT_EQUALS_OLD")
+          print("P5A_NAMEI_OPEN_PIPELINE_AUDIT=PASS")
+          PY
+
+          grep -Fq 'P5A_NAMEI_OPEN_PIPELINE_AUDIT=PASS' \
+            "$ARTIFACT_DIR/08-namei-open-pipeline-audit.txt"
+
+      - name: Prove whether post-do_last redirect reuses an opened struct file
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY' > "$ARTIFACT_DIR/09-fmode-opened-risk-audit.txt"
+          from pathlib import Path
+
+          text = Path("fs/namei.c").read_text(encoding="utf-8")
+
+          def extract(text, signature):
+              start = text.find(signature)
+              if start < 0:
+                  raise SystemExit("missing function: " + signature)
+              brace = text.find("{", start)
+              depth = 0
+              for i in range(brace, len(text)):
+                  if text[i] == "{":
+                      depth += 1
+                  elif text[i] == "}":
+                      depth -= 1
+                      if depth == 0:
+                          return text[start:i+1]
+              raise SystemExit("unterminated function: " + signature)
+
+          do_last = extract(text, "static int do_last(struct nameidata *nd")
+          path_openat = extract(text, "static struct file *path_openat(struct nameidata *nd")
+
+          # Exact 5.4 do_last must demonstrate that a successful normal open can
+          # mark/use FMODE_OPENED before control returns to path_openat.
+          has_preopen_guard = "BUG_ON(file->f_mode & FMODE_OPENED)" in do_last
+          has_vfs_open = "vfs_open(&nd->path, file)" in do_last or "vfs_open(" in do_last
+          has_opened_label = "opened:" in do_last
+          path_calls_do_last = "do_last(nd, file, op)" in path_openat
+          path_checks_opened_after_loop = "file->f_mode & FMODE_OPENED" in path_openat
+
+          print(f"DO_LAST_ASSERTS_FILE_NOT_ALREADY_OPENED_BEFORE_VFS_OPEN={'YES' if has_preopen_guard else 'NO'}")
+          print(f"DO_LAST_CAN_CALL_VFS_OPEN_BEFORE_RETURN={'YES' if has_vfs_open else 'NO'}")
+          print(f"DO_LAST_HAS_OPENED_SUCCESS_PATH={'YES' if has_opened_label else 'NO'}")
+          print(f"PATH_OPENAT_CALLS_DO_LAST_BEFORE_POST_LOOP_POINT={'YES' if path_calls_do_last else 'NO'}")
+          print(f"PATH_OPENAT_EXPECTS_FMODE_OPENED_AFTER_SUCCESS={'YES' if path_checks_opened_after_loop else 'NO'}")
+
+          risk = all([
+              has_preopen_guard,
+              has_vfs_open,
+              path_calls_do_last,
+              path_checks_opened_after_loop,
+          ])
+
+          print(f"POST_DO_LAST_SAME_FILE_SECOND_DO_LAST_REUSE_RISK={'YES' if risk else 'UNPROVEN'}")
+          print(f"REFERENCE_POST_DO_LAST_DIRECT_PORT_ALLOWED={'NO' if risk else 'UNPROVEN'}")
+
+          if not risk:
+              raise SystemExit(
+                  "Expected 5.4 opened-file reuse risk was not proven; "
+                  "do not silently choose a port strategy."
+              )
+
+          print("P5A_FMODE_OPENED_REUSE_RISK_AUDIT=PASS")
+          PY
+
+          grep -Fq 'P5A_FMODE_OPENED_REUSE_RISK_AUDIT=PASS' \
+            "$ARTIFACT_DIR/09-fmode-opened-risk-audit.txt"
+          grep -Fq 'REFERENCE_POST_DO_LAST_DIRECT_PORT_ALLOWED=NO' \
+            "$ARTIFACT_DIR/09-fmode-opened-risk-audit.txt"
+
+      - name: Identify exact pre-open adaptation boundary without source mutation
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY' > "$ARTIFACT_DIR/10-preopen-boundary-audit.txt"
+          from pathlib import Path
+
+          text = Path("fs/namei.c").read_text(encoding="utf-8")
+
+          def extract(text, signature):
+              start = text.find(signature)
+              if start < 0:
+                  raise SystemExit("missing function: " + signature)
+              brace = text.find("{", start)
+              depth = 0
+              for i in range(brace, len(text)):
+                  if text[i] == "{":
+                      depth += 1
+                  elif text[i] == "}":
+                      depth -= 1
+                      if depth == 0:
+                          return text[start:i+1]
+              raise SystemExit("unterminated function: " + signature)
+
+          do_last = extract(text, "static int do_last(struct nameidata *nd")
+
+          anchors = {
+              "FINAL_INODE_AVAILABLE":
+                  "inode = d_backing_inode(" in do_last or "inode =" in do_last,
+              "MAY_OPEN_BEFORE_VFS_OPEN":
+                  "may_open(" in do_last,
+              "VFS_OPEN_PRESENT":
+                  "vfs_open(" in do_last,
+              "FMODE_OPENED_GUARD_PRESENT":
+                  "FMODE_OPENED" in do_last,
+          }
+
+          for label, ok in anchors.items():
+              print(f"{label}={'PASS' if ok else 'FAIL'}")
+
+          if not all(anchors.values()):
+              raise SystemExit("pre-open boundary cannot yet be identified safely")
+
+          may_pos = do_last.rfind("may_open(")
+          open_pos = do_last.rfind("vfs_open(")
+          if may_pos < 0 or open_pos < 0 or may_pos > open_pos:
+              raise SystemExit("unexpected may_open/vfs_open ordering")
+
+          print("PREOPEN_REDIRECT_CANDIDATE_BOUNDARY=AFTER_FINAL_TARGET_RESOLUTION_BEFORE_MAY_OPEN_OR_VFS_OPEN")
+          print("PREOPEN_REDIRECT_REQUIRES_RESTART_WITH_FRESH_UNOPENED_FILE=YES")
+          print("DO_NOT_REUSE_FMODE_OPENED_FILE=YES")
+          print("P5A_PREOPEN_BOUNDARY_AUDIT=PASS")
+          PY
+
+          grep -Fq 'P5A_PREOPEN_BOUNDARY_AUDIT=PASS' \
+            "$ARTIFACT_DIR/10-preopen-boundary-audit.txt"
+
+      - name: Prove audit-only stage made no tracked source changes
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test "$(git rev-parse HEAD^{tree})" = "$EXPECTED_P4_TREE"
+          test "$(git -C KernelSU rev-parse HEAD)" = "$EXPECTED_P4_RESUKISU_HEAD"
+          test "$(git -C KernelSU rev-parse HEAD^{tree})" = "$EXPECTED_P4_RESUKISU_TREE"
+
+          test -z "$(git status --porcelain)"
+          test -z "$(git -C KernelSU status --porcelain)"
+
+          sha256sum -c "$ARTIFACT_DIR/05-p4-open-redirect-boundary.sha256" \
+            > "$ARTIFACT_DIR/11-p4-byte-identity-after-audit.txt"
+
+          {
+            echo "P5A_TRACKED_SOURCE_MUTATION=NO"
+            echo "P4_TREE_PRESERVED=$EXPECTED_P4_TREE"
+            echo "P4_RESUKISU_TREE_PRESERVED=$EXPECTED_P4_RESUKISU_TREE"
+            echo "SUSFS_RUNTIME_ENABLED=NO"
+            echo "KERNEL_COMPILE_PERFORMED=NO"
+          } | tee "$ARTIFACT_DIR/11-no-mutation-state.txt"
+
+      - name: Create P5A decision record
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cat > "$ARTIFACT_DIR/12-decision.txt" <<'EOF'
+          P5A DECISION
+
+          The available Non-GKI 5.4 reference demonstrates the SUSFS 2.3
+          path_openat/do_tmpfile/do_o_path redirection family.
+
+          This exact VEUX/Linux-5.4.274 audit additionally proves that:
+          - do_last() can reach the successful opened-file state before returning;
+          - path_openat() expects FMODE_OPENED after a successful do_last();
+          - a literal post-do_last second do_last() using the same struct file
+            therefore has a proven opened-file reuse hazard on this tree.
+
+          Result:
+          - Do NOT directly paste/cherry-pick the reference post-do_last block.
+          - Preserve the 2.3 SRCU/getname_kernel ownership model.
+          - P5B must place the normal-file redirect before may_open/vfs_open,
+            or otherwise restart with a fresh unopened struct file while keeping
+            all O_CREAT/O_TRUNC/O_PATH/__O_TMPFILE semantics intact.
+          - P5B must restore original nameidata before freeing any fake filename
+            on every success/error/ECHILD/ESTALE exit.
+          EOF
+
+          {
+            echo "P5A_DECISION=PASS"
+            echo "REFERENCE_POST_DO_LAST_DIRECT_PORT_ALLOWED=NO"
+            echo "SAFE_5_4_SPECIFIC_ADAPTATION_REQUIRED=YES"
+            echo "NEXT_STAGE=CLEAN_GEN1_P5B_SAFE_PREOPEN_OPEN_REDIRECT_ADAPTATION"
+          } | tee -a "$ARTIFACT_DIR/12-decision.txt"
+
+      - name: Final P5A audit gate
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test "$(make -s kernelversion)" = "5.4.274"
+          test "$(git rev-parse HEAD^{tree})" = "$EXPECTED_P4_TREE"
+          test "$(git -C KernelSU rev-parse HEAD)" = "$EXPECTED_P4_RESUKISU_HEAD"
+          test "$(git -C KernelSU rev-parse HEAD^{tree})" = "$EXPECTED_P4_RESUKISU_TREE"
+
+          grep -Fq 'P5A_SUSFS_OPEN_REDIRECT_CORE_AUDIT=PASS' \
+            "$ARTIFACT_DIR/07-susfs-open-redirect-core-audit.txt"
+          grep -Fq 'P5A_NAMEI_OPEN_PIPELINE_AUDIT=PASS' \
+            "$ARTIFACT_DIR/08-namei-open-pipeline-audit.txt"
+          grep -Fq 'P5A_FMODE_OPENED_REUSE_RISK_AUDIT=PASS' \
+            "$ARTIFACT_DIR/09-fmode-opened-risk-audit.txt"
+          grep -Fq 'P5A_PREOPEN_BOUNDARY_AUDIT=PASS' \
+            "$ARTIFACT_DIR/10-preopen-boundary-audit.txt"
+          grep -Fq 'REFERENCE_POST_DO_LAST_DIRECT_PORT_ALLOWED=NO' \
+            "$ARTIFACT_DIR/12-decision.txt"
+
+          test -z "$(git status --porcelain)"
+          test -z "$(git -C KernelSU status --porcelain)"
+
+          {
+            echo "CLEAN_GEN1_P5A_OPEN_REDIRECT_PREOPEN_AUDIT=PASS"
+            echo "KERNEL_VERSION=5.4.274"
+            echo "P4_RESTORE_REPLAY=PASS"
+            echo "P4_TREE=$EXPECTED_P4_TREE"
+            echo "P4_RESUKISU_HEAD=$EXPECTED_P4_RESUKISU_HEAD"
+            echo "P4_RESUKISU_TREE=$EXPECTED_P4_RESUKISU_TREE"
+            echo "SUSFS_OPEN_REDIRECT_SRCU_CORE=PASS"
+            echo "RETURNED_REDIRECT_FILENAME_OWNERSHIP=GETNAME_KERNEL"
+            echo "REFERENCE_POST_DO_LAST_DIRECT_PORT_ALLOWED=NO"
+            echo "POST_DO_LAST_SAME_FILE_SECOND_DO_LAST_REUSE_RISK=YES"
+            echo "SAFE_5_4_SPECIFIC_ADAPTATION_REQUIRED=YES"
+            echo "PREOPEN_REDIRECT_BOUNDARY_IDENTIFIED=YES"
+            echo "P5A_TRACKED_SOURCE_MUTATION=NO"
+            echo "SUSFS_RUNTIME_ENABLED=NO"
+            echo "OPEN_REDIRECT_HOOKS_INTEGRATED=NO"
+            echo "KERNEL_COMPILE_PERFORMED=NO"
+            echo "IMAGE_CREATED=NO"
+            echo "DTB_BUILD_PERFORMED=NO"
+            echo "BOOT_IMAGE_CREATED=NO"
+            echo "FLASHABLE_ZIP_CREATED=NO"
+            echo "DEVICE_ACCESSED=NO"
+            echo "FLASHING_PERFORMED=NO"
+            echo "NEXT_STAGE=CLEAN_GEN1_P5B_SAFE_PREOPEN_OPEN_REDIRECT_ADAPTATION"
+          } | tee "$ARTIFACT_DIR/13-result.txt"
+
+      - name: Preserve P5A failure evidence
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          mkdir -p "$ARTIFACT_DIR"
+
+          {
+            echo "JOB_STATUS=${{ job.status }}"
+            if [ -d "$GITHUB_WORKSPACE/kernel/.git" ]; then
+              echo "OUTER_HEAD=$(git -C "$GITHUB_WORKSPACE/kernel" rev-parse HEAD 2>/dev/null || true)"
+              echo "OUTER_TREE=$(git -C "$GITHUB_WORKSPACE/kernel" rev-parse HEAD^{tree} 2>/dev/null || true)"
+              echo "OUTER_STATUS_BEGIN"
+              git -C "$GITHUB_WORKSPACE/kernel" status --porcelain 2>/dev/null || true
+              echo "OUTER_STATUS_END"
+            fi
+            if [ -d "$GITHUB_WORKSPACE/kernel/KernelSU/.git" ]; then
+              echo "RESUKISU_HEAD=$(git -C "$GITHUB_WORKSPACE/kernel/KernelSU" rev-parse HEAD 2>/dev/null || true)"
+              echo "RESUKISU_TREE=$(git -C "$GITHUB_WORKSPACE/kernel/KernelSU" rev-parse HEAD^{tree} 2>/dev/null || true)"
+              echo "RESUKISU_STATUS_BEGIN"
+              git -C "$GITHUB_WORKSPACE/kernel/KernelSU" status --porcelain 2>/dev/null || true
+              echo "RESUKISU_STATUS_END"
+            fi
+          } > "$ARTIFACT_DIR/99-job-end-state.txt"
+
+          find "$ARTIFACT_DIR" -maxdepth 2 -type f -printf '%P\n' | sort \
+            > "$ARTIFACT_DIR/99-artifact-file-list.txt"
+          exit 0
+
+      - name: Upload P5A audit evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: clean-gen1-p5a-open-redirect-preopen-audit-v2-${{ github.run_id }}
+          path: clean-gen1-p5a-audit/
+          if-no-files-found: error
+          retention-days: 90
