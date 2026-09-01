@@ -1,0 +1,891 @@
+name: CLEAN GEN1 P7-A - boot pair + ReSukiSU compatibility contract v2
+'on':
+  workflow_dispatch: {}
+permissions:
+  contents: read
+  actions: read
+jobs:
+  p7a-boot-pair:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      W88_RUN_ID: '33252124378'
+      W88_HEAD_SHA: 13ca2de251f8a64ca0658ebf9f38f174d26fa307
+      W88_ARTIFACT_ID: '9715115041'
+      W88_ARTIFACT_NAME: GEN1_W88_5.4.274_ReSukiSU_419E270B_COMPACT-1
+      W88_ARTIFACT_SHA256: 25ec48457888386430604cab9fb20c91f778ae30672d90d2955bb38ca3fa080c
+      W88_IMAGE_SHA256: d0f7abcc526ec63413236fd440cef2d9fb6cc3819ce656b1b49efde7d65cda04
+      W88_IMAGE_BYTES: '29843968'
+      P6_RUN_ID: '33531532990'
+      P6_ARTIFACT_ID: '9811202222'
+      P6_ARTIFACT_NAME: clean-gen1-p6-native-susfs-deterministic-image-dtb-v8-33531532990
+      P6_ARTIFACT_SHA256: be72bbc4f62460bb0c75fb1fe8b0afac0bb8d82acfba17155c75b66c21f78579
+      P6_IMAGE_SHA256: ac7c4884cac9f385ab8049e53f196581b784623a40afe1e1339ec738e9d155cf
+      P6_IMAGE_BYTES: '29843968'
+      W21_ARTIFACT_NAME: veux-5.4.274-resukisu-susfs-2.2-workflow21-exact-w19-final-flashable-1
+      W21_FINAL_ZIP_NAME: VEUX_5.4.274_ReSukiSU_SUSFS_2.2_EXACT_W19_BOOT_FLASHABLE.zip
+      W21_FINAL_ZIP_SHA256: b6f9c22582cf90aca3bd40d946f44f465f3b4324d377cabdd9a23668113fe4f2
+      W21_FINAL_ZIP_BYTES: '75516120'
+      STOCK_BOOT_SHA256: ac6522e4eed55782dd2ae61362e9d345d01a1f229c87333818511d5537fa79c5
+      STOCK_BOOT_BYTES: '134217728'
+      STOCK_RAMDISK_SHA256: 0bc8b54373b5501818e8b252517419786db207771047b6def7ec9bc89beb607a
+      ROLLBACK_GZIP_SHA256: 9a1532ccfc57b465256bba97863f927b80823fa8812a4d13e4f4c8bf9af0c78b
+      OLD_CUSTOM_BOOT_SHA256: 2baffafce260348c247674c5e8176408d45dc75b35ccbf7ca5834cbb4679398e
+      OLD_KERNEL_SHA256: e036175ada602df3bcb443da7c390e8cd4b0e900c26fbfa313725db02855ec96
+      OLD_KERNEL_BYTES: '29839872'
+      WORK: ${{ github.workspace }}/p7a-boot-pair
+      OUT: ${{ github.workspace }}/p7a-boot-pair/release
+    steps:
+    - name: Initialize P7-A boot-pair workspace
+      shell: bash
+      run: |
+        set -euo pipefail
+        rm -rf "$WORK"
+        mkdir -p "$WORK"/{input,w88,p6,w21,oldpkg,build,release,evidence}
+
+        cat > "$WORK/evidence/00-plan.txt" <<EOF
+        CLEAN_GEN1_STAGE=P7A_BOOT_PAIR_RESUKISU_COMPATIBILITY_CONTRACT
+        DEVICE=VEUX_ONLY
+        KERNEL_VERSION=5.4.274
+        ROM=HyperOS_OS1.0.12.0.TKCMIXM
+        ANDROID=13
+        CONTROL=W88_V3
+        CANDIDATE=P6_V8_NATIVE_SUSFS
+        SAME_STOCK_BOOT_TEMPLATE=YES
+        SAME_STOCK_RAMDISK=YES
+        ONLY_INTENDED_BOOT_PAYLOAD_DIFFERENCE=KERNEL
+        EMBEDDED_AVB_RECALCULATED=YES
+        BOOT_IMAGES_CREATED=YES
+        DEVICE_ACCESSED=NO
+        FLASHING_PERFORMED=NO
+        MANAGER_APK_EMBEDDED_IN_KERNEL=NO
+        MANAGER_APK_EMBEDDED_IN_BOOT_IMAGE=NO
+        MANAGER_CI_ARTIFACT_DOWNLOADED=NO
+        MANAGER_VERSION_PINNED_TO_KERNEL=NO
+        MANAGER_COMMIT_PINNED_TO_KERNEL=NO
+        MANAGER_APK_HASH_PINNED_TO_KERNEL=NO
+        RESUKISU_COMPATIBILITY_MODEL=KERNEL_UAPI_ABI_PLUS_OFFICIAL_SIGNER_TRUST
+        EOF
+    - name: Authenticate exact W88-v3 and P6-v8 artifacts
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        python3 - <<'PY'
+        import json
+        import os
+        import urllib.request
+        from pathlib import Path
+
+        out = Path(os.environ["WORK"]) / "evidence"
+
+        checks = [
+            {
+                "label": "W88",
+                "artifact_id": os.environ["W88_ARTIFACT_ID"],
+                "name": os.environ["W88_ARTIFACT_NAME"],
+                "digest": "sha256:" + os.environ["W88_ARTIFACT_SHA256"],
+                "run_id": os.environ["W88_RUN_ID"],
+                "head_sha": os.environ["W88_HEAD_SHA"],
+            },
+            {
+                "label": "P6",
+                "artifact_id": os.environ["P6_ARTIFACT_ID"],
+                "name": os.environ["P6_ARTIFACT_NAME"],
+                "digest": "sha256:" + os.environ["P6_ARTIFACT_SHA256"],
+                "run_id": os.environ["P6_RUN_ID"],
+                "head_sha": None,
+            },
+        ]
+
+        for item in checks:
+            url = (
+                "https://api.github.com/repos/"
+                + os.environ["GITHUB_REPOSITORY"]
+                + "/actions/artifacts/"
+                + item["artifact_id"]
+            )
+            req = urllib.request.Request(
+                url,
+                headers={
+                    "Accept": "application/vnd.github+json",
+                    "Authorization": "Bearer " + os.environ["GITHUB_TOKEN"],
+                    "X-GitHub-Api-Version": "2022-11-28",
+                },
+            )
+            with urllib.request.urlopen(req) as r:
+                data = json.load(r)
+
+            if str(data["id"]) != item["artifact_id"]:
+                raise SystemExit(item["label"] + " artifact id mismatch")
+            if data["name"] != item["name"]:
+                raise SystemExit(item["label"] + " artifact name mismatch")
+            if data.get("expired"):
+                raise SystemExit(item["label"] + " artifact expired")
+            if data.get("digest") != item["digest"]:
+                raise SystemExit(item["label"] + " artifact digest mismatch")
+            run = data.get("workflow_run") or {}
+            if str(run.get("id")) != item["run_id"]:
+                raise SystemExit(item["label"] + " run id mismatch")
+            if item["head_sha"] and run.get("head_sha") != item["head_sha"]:
+                raise SystemExit(item["label"] + " head sha mismatch")
+
+            (out / f"01-{item['label'].lower()}-artifact.json").write_text(
+                json.dumps(data, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+
+        print("P7A_BOOT_PAIR_INPUT_ARTIFACT_AUTH=PASS")
+        PY
+      env:
+        GITHUB_TOKEN: ${{ github.token }}
+    - name: Download exact W88-v3 artifact
+      uses: actions/download-artifact@v8
+      with:
+        name: ${{ env.W88_ARTIFACT_NAME }}
+        path: ${{ env.WORK }}/w88
+        run-id: ${{ env.W88_RUN_ID }}
+        github-token: ${{ github.token }}
+        repository: ${{ github.repository }}
+    - name: Download exact P6-v8 artifact
+      uses: actions/download-artifact@v8
+      with:
+        name: ${{ env.P6_ARTIFACT_NAME }}
+        path: ${{ env.WORK }}/p6
+        run-id: ${{ env.P6_RUN_ID }}
+        github-token: ${{ github.token }}
+        repository: ${{ github.repository }}
+    - name: Verify exact W88 and P6 kernel payloads
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        test -s "$WORK/w88/GEN1_W88_Image"
+        test "$(stat -c '%s' "$WORK/w88/GEN1_W88_Image")" = "$W88_IMAGE_BYTES"
+        test "$(sha256sum "$WORK/w88/GEN1_W88_Image" | awk '{print $1}')" = "$W88_IMAGE_SHA256"
+
+        test -s "$WORK/p6/build-a/Image"
+        test "$(stat -c '%s' "$WORK/p6/build-a/Image")" = "$P6_IMAGE_BYTES"
+        test "$(sha256sum "$WORK/p6/build-a/Image" | awk '{print $1}')" = "$P6_IMAGE_SHA256"
+
+        grep -Fxq 'CLEAN_GEN1_P6_DETERMINISTIC_IMAGE_DTB_BUILD=PASS' \
+          "$WORK/p6/17-result.txt"
+        grep -Fxq 'P6_EFFECTIVE_HOOK_MODE=NATIVE_KSU_SUSFS' \
+          "$WORK/p6/17-result.txt"
+        grep -Fxq 'P6_IMAGE_REPRODUCIBLE=YES' \
+          "$WORK/p6/17-result.txt"
+        grep -Fxq 'MODULE_LOAD_FILTER_INCLUDED=NO' \
+          "$WORK/p6/17-result.txt"
+
+        cp "$WORK/w88/GEN1_W88_Image" "$WORK/input/W88-Image"
+        cp "$WORK/p6/build-a/Image" "$WORK/input/P6-Image"
+
+        {
+          echo "W88_IMAGE_SHA256=$W88_IMAGE_SHA256"
+          echo "P6_IMAGE_SHA256=$P6_IMAGE_SHA256"
+          echo "W88_IMAGE_BYTES=$W88_IMAGE_BYTES"
+          echo "P6_IMAGE_BYTES=$P6_IMAGE_BYTES"
+          echo "KERNEL_PAYLOAD_GATE=PASS"
+        } | tee "$WORK/evidence/02-kernel-payloads.txt"
+    - name: Recover exact historical calibrated HyperOS boot inputs
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        export GH_TOKEN="${{ github.token }}"
+        ALL="$WORK/input/repository-artifacts.ndjson"
+        : > "$ALL"
+
+        page=1
+        while :; do
+          PAGE="$WORK/input/artifacts-${page}.json"
+
+          gh api \
+            -H "Accept: application/vnd.github+json" \
+            "/repos/${GITHUB_REPOSITORY}/actions/artifacts?per_page=100&page=${page}" \
+            > "$PAGE"
+
+          COUNT="$(jq '.artifacts | length' "$PAGE")"
+          jq -c '.artifacts[]' "$PAGE" >> "$ALL"
+
+          [ "$COUNT" -lt 100 ] && break
+          page=$((page + 1))
+          [ "$page" -le 40 ] || {
+            echo "ERROR: artifact pagination safety limit reached" >&2
+            exit 1
+          }
+        done
+
+        SELECTED="$(
+          jq -s --arg NAME "$W21_ARTIFACT_NAME" '
+            [.[] | select(.name == $NAME and .expired == false)]
+            | sort_by(.created_at)
+            | .[-1]
+          ' "$ALL"
+        )"
+
+        test "$(jq -r 'type' <<< "$SELECTED")" = "object"
+        W21_ID="$(jq -r '.id' <<< "$SELECTED")"
+        test -n "$W21_ID"
+        test "$W21_ID" != "null"
+
+        jq . <<< "$SELECTED" > "$WORK/evidence/03-w21-artifact.json"
+
+        gh api \
+          -H "Accept: application/vnd.github+json" \
+          "/repos/${GITHUB_REPOSITORY}/actions/artifacts/${W21_ID}/zip" \
+          > "$WORK/input/w21-outer.zip"
+
+        unzip -t "$WORK/input/w21-outer.zip" >/dev/null
+        unzip -q "$WORK/input/w21-outer.zip" -d "$WORK/w21"
+
+        mapfile -t matches < <(
+          find "$WORK/w21" -type f -name "$W21_FINAL_ZIP_NAME" -print
+        )
+        test "${#matches[@]}" -eq 1
+        FINAL_OLD="${matches[0]}"
+
+        test "$(stat -c '%s' "$FINAL_OLD")" = "$W21_FINAL_ZIP_BYTES"
+        test "$(sha256sum "$FINAL_OLD" | awk '{print $1}')" = "$W21_FINAL_ZIP_SHA256"
+
+        unzip -t "$FINAL_OLD" >/dev/null
+        unzip -q "$FINAL_OLD" -d "$WORK/oldpkg"
+
+        test -s "$WORK/oldpkg/boot.img"
+        test -s "$WORK/oldpkg/rollback_stock_boot.img.gz"
+
+        test "$(sha256sum "$WORK/oldpkg/boot.img" | awk '{print $1}')" = \
+          "$OLD_CUSTOM_BOOT_SHA256"
+        test "$(sha256sum "$WORK/oldpkg/rollback_stock_boot.img.gz" | awk '{print $1}')" = \
+          "$ROLLBACK_GZIP_SHA256"
+
+        gzip -t "$WORK/oldpkg/rollback_stock_boot.img.gz"
+        gzip -dc "$WORK/oldpkg/rollback_stock_boot.img.gz" > "$WORK/input/stock_boot.img"
+
+        test "$(stat -c '%s' "$WORK/input/stock_boot.img")" = "$STOCK_BOOT_BYTES"
+        test "$(sha256sum "$WORK/input/stock_boot.img" | awk '{print $1}')" = \
+          "$STOCK_BOOT_SHA256"
+
+        {
+          echo "W21_ARTIFACT_ID=$W21_ID"
+          echo "STOCK_BOOT_SHA256=$STOCK_BOOT_SHA256"
+          echo "STOCK_BOOT_BYTES=$STOCK_BOOT_BYTES"
+          echo "OLD_CUSTOM_BOOT_SHA256=$OLD_CUSTOM_BOOT_SHA256"
+          echo "STOCK_BOOT_INPUT_GATE=PASS"
+        } | tee "$WORK/evidence/03-stock-boot-gate.txt"
+    - name: Build calibrated W88 and P6 Boot v3 images
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        python3 - \
+          "$WORK/input/stock_boot.img" \
+          "$WORK/oldpkg/boot.img" \
+          "$WORK/input/W88-Image" \
+          "$WORK/input/P6-Image" \
+          "$WORK/release/P7A-W88-v3-control-boot.img" \
+          "$WORK/release/P7A-P6-v8-candidate-boot.img" \
+          "$WORK/evidence/04-boot-pair-build.json" \
+          "$WORK/evidence/04-boot-pair-build.txt" <<'PY'
+        import hashlib
+        import json
+        import struct
+        import sys
+        from pathlib import Path
+
+        stock_path = Path(sys.argv[1])
+        old_boot_path = Path(sys.argv[2])
+        w88_path = Path(sys.argv[3])
+        p6_path = Path(sys.argv[4])
+        w88_out = Path(sys.argv[5])
+        p6_out = Path(sys.argv[6])
+        json_out = Path(sys.argv[7])
+        text_out = Path(sys.argv[8])
+
+        STOCK_SHA = "ac6522e4eed55782dd2ae61362e9d345d01a1f229c87333818511d5537fa79c5"
+        OLD_BOOT_SHA = "2baffafce260348c247674c5e8176408d45dc75b35ccbf7ca5834cbb4679398e"
+        OLD_KERNEL_SHA = "e036175ada602df3bcb443da7c390e8cd4b0e900c26fbfa313725db02855ec96"
+        W88_SHA = "d0f7abcc526ec63413236fd440cef2d9fb6cc3819ce656b1b49efde7d65cda04"
+        P6_SHA = "ac7c4884cac9f385ab8049e53f196581b784623a40afe1e1339ec738e9d155cf"
+        RAMDISK_SHA = "0bc8b54373b5501818e8b252517419786db207771047b6def7ec9bc89beb607a"
+
+        BOOT_BYTES = 134217728
+        OLD_KERNEL_BYTES = 29839872
+        NEW_KERNEL_BYTES = 29843968
+        PAGE = 4096
+
+        def sha(data):
+            return hashlib.sha256(data).hexdigest()
+
+        def align(value):
+            return (value + PAGE - 1) // PAGE * PAGE
+
+        def need(condition, message):
+            if not condition:
+                raise SystemExit("ERROR: " + message)
+
+        def arm64_header(image):
+            need(len(image) >= 64, "ARM64 Image too small")
+            text_offset, image_size, flags = struct.unpack_from("<QQQ", image, 8)
+            magic, res5 = struct.unpack_from("<II", image, 56)
+            return {
+                "text_offset": text_offset,
+                "image_size": image_size,
+                "flags": flags,
+                "magic": magic,
+                "res5": res5,
+            }
+
+        def parse_footer(data):
+            raw = data[-64:]
+            need(raw[:4] == b"AVBf", "AVB footer magic")
+            major, minor = struct.unpack_from(">II", raw, 4)
+            original, offset, size = struct.unpack_from(">QQQ", raw, 12)
+            need(offset + size <= len(data) - 64, "AVB footer geometry")
+            return {
+                "major": major,
+                "minor": minor,
+                "original": original,
+                "offset": offset,
+                "size": size,
+                "raw": raw,
+                "vbmeta": data[offset:offset + size],
+            }
+
+        def parse_vbmeta(vb):
+            need(vb[:4] == b"AVB0", "AVB0 magic")
+            auth_size, aux_size = struct.unpack_from(">QQ", vb, 12)
+            algorithm_type = struct.unpack_from(">I", vb, 28)[0]
+            values = struct.unpack_from(">QQQQQQQQQQQ", vb, 32)
+            descriptors_offset = values[8]
+            descriptors_size = values[9]
+            aux_start = 256 + auth_size
+            pos = aux_start + descriptors_offset
+            end = pos + descriptors_size
+            need(end <= aux_start + aux_size, "AVB descriptor geometry")
+
+            descriptors = []
+            while pos < end:
+                tag, following = struct.unpack_from(">QQ", vb, pos)
+                raw = vb[pos:pos + 16 + following]
+                need(len(raw) == 16 + following, "truncated AVB descriptor")
+                item = {"tag": tag, "offset": pos, "raw": raw}
+                if tag == 2:
+                    image_size = struct.unpack_from(">Q", raw, 16)[0]
+                    algorithm = raw[24:56].split(b"\0", 1)[0].decode(
+                        "ascii", "replace"
+                    )
+                    name_len, salt_len, digest_len, flags = struct.unpack_from(
+                        ">IIII", raw, 56
+                    )
+                    q = 132
+                    partition = raw[q:q + name_len].decode("ascii", "replace")
+                    q += name_len
+                    salt = raw[q:q + salt_len]
+                    q += salt_len
+                    digest = raw[q:q + digest_len]
+                    item.update({
+                        "type": "hash",
+                        "image_size": image_size,
+                        "hash_algorithm": algorithm,
+                        "partition": partition,
+                        "salt": salt,
+                        "digest": digest,
+                        "digest_offset": pos + q,
+                        "digest_len": digest_len,
+                        "image_size_offset": pos + 16,
+                        "flags": flags,
+                    })
+                else:
+                    item["type"] = "other"
+                descriptors.append(item)
+                pos += 16 + following
+
+            need(pos == end, "AVB descriptor parse end")
+            return {
+                "algorithm_type": algorithm_type,
+                "descriptors": descriptors,
+            }
+
+        def boot_hash_descriptor(info):
+            found = [
+                d for d in info["descriptors"]
+                if d.get("type") == "hash"
+                and d.get("partition") == "boot"
+            ]
+            need(len(found) == 1, "exactly one boot hash descriptor")
+            return found[0]
+
+        def verify_descriptor(data, desc):
+            need(desc["hash_algorithm"] == "sha256", "AVB hash algorithm")
+            calc = hashlib.sha256(
+                desc["salt"] + data[:desc["image_size"]]
+            ).digest()
+            return calc == desc["digest"], calc
+
+        stock = stock_path.read_bytes()
+        old_boot = old_boot_path.read_bytes()
+        w88 = w88_path.read_bytes()
+        p6 = p6_path.read_bytes()
+
+        need(len(stock) == BOOT_BYTES, "stock boot size")
+        need(sha(stock) == STOCK_SHA, "stock boot hash")
+        need(len(old_boot) == BOOT_BYTES, "historical custom boot size")
+        need(sha(old_boot) == OLD_BOOT_SHA, "historical custom boot hash")
+        need(len(w88) == NEW_KERNEL_BYTES, "W88 Image size")
+        need(sha(w88) == W88_SHA, "W88 Image hash")
+        need(len(p6) == NEW_KERNEL_BYTES, "P6 Image size")
+        need(sha(p6) == P6_SHA, "P6 Image hash")
+
+        need(stock[:8] == b"ANDROID!", "stock Android boot magic")
+        need(old_boot[:8] == b"ANDROID!", "historical Android boot magic")
+
+        stock_kernel_size, ramdisk_size, _, header_size = struct.unpack_from(
+            "<4I", stock, 8
+        )
+        header_version = struct.unpack_from("<I", stock, 40)[0]
+
+        need(stock_kernel_size == 45480448, "stock kernel size")
+        need(ramdisk_size == 22061278, "stock ramdisk size")
+        need(header_size == 1580, "Boot v3 header size")
+        need(header_version == 3, "Boot v3 header version")
+
+        stock_ramdisk_offset = PAGE + align(stock_kernel_size)
+        ramdisk = stock[
+            stock_ramdisk_offset:
+            stock_ramdisk_offset + ramdisk_size
+        ]
+        need(sha(ramdisk) == RAMDISK_SHA, "stock ramdisk hash")
+
+        stock_footer = parse_footer(stock)
+        need(
+            (stock_footer["major"], stock_footer["minor"]) == (1, 0),
+            "stock AVB footer version",
+        )
+        need(stock_footer["size"] == 896, "stock embedded vbmeta size")
+
+        stock_vbmeta = parse_vbmeta(stock_footer["vbmeta"])
+        need(stock_vbmeta["algorithm_type"] == 0, "embedded vbmeta algorithm NONE")
+        stock_desc = boot_hash_descriptor(stock_vbmeta)
+        stock_ok, _ = verify_descriptor(stock, stock_desc)
+        need(stock_ok, "stock embedded boot hash descriptor")
+
+        old_kernel_size = struct.unpack_from("<I", old_boot, 8)[0]
+        old_kernel = old_boot[PAGE:PAGE + old_kernel_size]
+        need(old_kernel_size == OLD_KERNEL_BYTES, "historical kernel size")
+        need(sha(old_kernel) == OLD_KERNEL_SHA, "historical kernel hash")
+
+        def build_custom(image):
+            ramdisk_offset = PAGE + align(len(image))
+            payload_end = ramdisk_offset + align(len(ramdisk))
+
+            output = bytearray(len(stock))
+            header = bytearray(stock[:PAGE])
+            struct.pack_into("<I", header, 8, len(image))
+
+            output[:PAGE] = header
+            output[PAGE:PAGE + len(image)] = image
+            output[
+                ramdisk_offset:
+                ramdisk_offset + len(ramdisk)
+            ] = ramdisk
+
+            vbmeta = bytearray(stock_footer["vbmeta"])
+            struct.pack_into(
+                ">Q",
+                vbmeta,
+                stock_desc["image_size_offset"],
+                payload_end,
+            )
+
+            digest = hashlib.sha256(
+                stock_desc["salt"] + bytes(output[:payload_end])
+            ).digest()
+            d0 = stock_desc["digest_offset"]
+            d1 = d0 + stock_desc["digest_len"]
+            vbmeta[d0:d1] = digest
+
+            output[payload_end:payload_end + len(vbmeta)] = vbmeta
+
+            footer = bytearray(stock_footer["raw"])
+            struct.pack_into(">Q", footer, 12, payload_end)
+            struct.pack_into(">Q", footer, 20, payload_end)
+            output[-64:] = footer
+
+            result = bytes(output)
+            parsed_footer = parse_footer(result)
+            parsed_vbmeta = parse_vbmeta(parsed_footer["vbmeta"])
+            parsed_desc = boot_hash_descriptor(parsed_vbmeta)
+            valid, calculated = verify_descriptor(result, parsed_desc)
+            need(valid, "rebuilt embedded boot descriptor")
+            need(calculated == digest, "rebuilt AVB digest")
+
+            return {
+                "bytes": result,
+                "ramdisk_offset": ramdisk_offset,
+                "payload_end": payload_end,
+                "digest": digest.hex(),
+            }
+
+        # Hard calibration: first reproduce the historical known-good container
+        # byte-for-byte. This is the safety gate that validates the algorithm.
+        calibrated = build_custom(old_kernel)
+        need(
+            calibrated["bytes"] == old_boot,
+            "historical W19/W21 calibration byte identity",
+        )
+        need(
+            sha(calibrated["bytes"]) == OLD_BOOT_SHA,
+            "historical calibration hash",
+        )
+
+        w88_built = build_custom(w88)
+        p6_built = build_custom(p6)
+
+        need(len(w88_built["bytes"]) == BOOT_BYTES, "W88 boot final size")
+        need(len(p6_built["bytes"]) == BOOT_BYTES, "P6 boot final size")
+        need(
+            w88_built["ramdisk_offset"] == p6_built["ramdisk_offset"] == 29851648,
+            "new ramdisk offset",
+        )
+        need(
+            w88_built["payload_end"] == p6_built["payload_end"] == 51916800,
+            "new payload end",
+        )
+
+        def audit_built(label, built, image, expected_sha):
+            data = built["bytes"]
+            kernel_size = struct.unpack_from("<I", data, 8)[0]
+            kernel = data[PAGE:PAGE + kernel_size]
+            rd = data[
+                built["ramdisk_offset"]:
+                built["ramdisk_offset"] + ramdisk_size
+            ]
+            need(kernel == image, label + " embedded kernel byte identity")
+            need(sha(kernel) == expected_sha, label + " kernel hash")
+            need(rd == ramdisk, label + " stock ramdisk byte identity")
+            need(sha(rd) == RAMDISK_SHA, label + " stock ramdisk hash")
+
+            arm = arm64_header(image)
+            need(arm["text_offset"] == 0x80000, label + " ARM64 text_offset")
+            need(arm["image_size"] == 38825984, label + " ARM64 image_size")
+            need(arm["flags"] == 0xA, label + " ARM64 flags")
+            need(arm["magic"] == 0x644D5241, label + " ARM64 magic")
+            need(arm["res5"] == 0x40, label + " ARM64 res5")
+
+            footer = parse_footer(data)
+            need(footer["original"] == 51916800, label + " AVB original size")
+            need(footer["offset"] == 51916800, label + " AVB vbmeta offset")
+            need(footer["size"] == 896, label + " AVB vbmeta size")
+
+            return {
+                "boot_sha256": sha(data),
+                "boot_bytes": len(data),
+                "kernel_sha256": sha(kernel),
+                "kernel_bytes": len(kernel),
+                "ramdisk_sha256": sha(rd),
+                "ramdisk_bytes": len(rd),
+                "ramdisk_offset": built["ramdisk_offset"],
+                "payload_end": built["payload_end"],
+                "embedded_avb_digest": built["digest"],
+                "arm64": arm,
+            }
+
+        w88_report = audit_built("W88", w88_built, w88, W88_SHA)
+        p6_report = audit_built("P6", p6_built, p6, P6_SHA)
+
+        # Because both input Images have identical length, header/container geometry
+        # and stock ramdisk bytes must remain identical. Only kernel bytes and the
+        # derived AVB hash/digest are allowed to differ.
+        need(
+            w88_report["ramdisk_sha256"] == p6_report["ramdisk_sha256"] == RAMDISK_SHA,
+            "cross-arm stock ramdisk identity",
+        )
+        need(
+            w88_report["ramdisk_offset"] == p6_report["ramdisk_offset"],
+            "cross-arm ramdisk offset identity",
+        )
+        need(
+            w88_report["payload_end"] == p6_report["payload_end"],
+            "cross-arm payload geometry identity",
+        )
+
+        w88_out.write_bytes(w88_built["bytes"])
+        p6_out.write_bytes(p6_built["bytes"])
+
+        report = {
+            "result": "PASS_P7A_W88_P6_CALIBRATED_BOOT_PAIR",
+            "historical_calibration_byte_identical": True,
+            "stock_boot_sha256": STOCK_SHA,
+            "stock_ramdisk_sha256": RAMDISK_SHA,
+            "control": w88_report,
+            "candidate": p6_report,
+            "same_stock_ramdisk": True,
+            "same_boot_geometry": True,
+            "intended_variable": "kernel_payload",
+            "derived_variable": "embedded_avb_boot_hash",
+        }
+        json_out.write_text(
+            json.dumps(report, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+
+        lines = [
+            "P7A_CALIBRATED_BOOT_PAIR=PASS",
+            "HISTORICAL_W19_W21_CALIBRATION=PASS",
+            "HISTORICAL_CALIBRATION_BYTE_IDENTICAL=YES",
+            "SAME_STOCK_BOOT_TEMPLATE=YES",
+            "SAME_STOCK_RAMDISK=YES",
+            "SAME_BOOT_GEOMETRY=YES",
+            "BOOT_HEADER_VERSION=3",
+            "BOOT_HEADER_SIZE=1580",
+            "BOOT_BYTES=134217728",
+            f"W88_BOOT_SHA256={w88_report['boot_sha256']}",
+            f"W88_KERNEL_SHA256={w88_report['kernel_sha256']}",
+            f"P6_BOOT_SHA256={p6_report['boot_sha256']}",
+            f"P6_KERNEL_SHA256={p6_report['kernel_sha256']}",
+            f"STOCK_RAMDISK_SHA256={RAMDISK_SHA}",
+            "W88_EMBEDDED_AVB_VERIFIES=YES",
+            "P6_EMBEDDED_AVB_VERIFIES=YES",
+            "INTENDED_AB_VARIABLE=KERNEL_PAYLOAD",
+            "DERIVED_AB_VARIABLE=EMBEDDED_AVB_BOOT_HASH",
+        ]
+        text_out.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        print("\n".join(lines))
+        PY
+    - name: Independently audit both Boot v3 outputs
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        python3 - <<'PY'
+        import hashlib
+        import struct
+        import os
+        from pathlib import Path
+
+        root = Path(os.environ["OUT"])
+        expected = {
+            "P7A-W88-v3-control-boot.img":
+                "d0f7abcc526ec63413236fd440cef2d9fb6cc3819ce656b1b49efde7d65cda04",
+            "P7A-P6-v8-candidate-boot.img":
+                "ac7c4884cac9f385ab8049e53f196581b784623a40afe1e1339ec738e9d155cf",
+        }
+        RAMDISK_SHA = "0bc8b54373b5501818e8b252517419786db207771047b6def7ec9bc89beb607a"
+
+        def sha(b):
+            return hashlib.sha256(b).hexdigest()
+
+        def need(c, m):
+            if not c:
+                raise SystemExit("ERROR: " + m)
+
+        for name, kernel_sha in expected.items():
+            data = (root / name).read_bytes()
+            need(len(data) == 134217728, name + " size")
+            need(data[:8] == b"ANDROID!", name + " Android magic")
+
+            kernel_size = struct.unpack_from("<I", data, 8)[0]
+            ramdisk_size = struct.unpack_from("<I", data, 12)[0]
+            header_size = struct.unpack_from("<I", data, 20)[0]
+            header_version = struct.unpack_from("<I", data, 40)[0]
+
+            need(kernel_size == 29843968, name + " kernel size")
+            need(ramdisk_size == 22061278, name + " ramdisk size")
+            need(header_size == 1580, name + " header size")
+            need(header_version == 3, name + " header version")
+
+            kernel = data[4096:4096 + kernel_size]
+            ramdisk_offset = 29851648
+            ramdisk = data[ramdisk_offset:ramdisk_offset + ramdisk_size]
+
+            need(sha(kernel) == kernel_sha, name + " embedded kernel hash")
+            need(sha(ramdisk) == RAMDISK_SHA, name + " stock ramdisk hash")
+
+            footer = data[-64:]
+            need(footer[:4] == b"AVBf", name + " AVB footer")
+            major, minor = struct.unpack_from(">II", footer, 4)
+            original, vbmeta_offset, vbmeta_size = struct.unpack_from(
+                ">QQQ", footer, 12
+            )
+            need((major, minor) == (1, 0), name + " AVB version")
+            need(original == 51916800, name + " AVB original size")
+            need(vbmeta_offset == 51916800, name + " vbmeta offset")
+            need(vbmeta_size == 896, name + " vbmeta size")
+
+            vbmeta = data[vbmeta_offset:vbmeta_offset + vbmeta_size]
+            need(vbmeta[:4] == b"AVB0", name + " AVB0")
+            need(struct.unpack_from(">I", vbmeta, 28)[0] == 0, name + " vbmeta algo")
+
+            auth_size, aux_size = struct.unpack_from(">QQ", vbmeta, 12)
+            vals = struct.unpack_from(">QQQQQQQQQQQ", vbmeta, 32)
+            desc_off, desc_size = vals[8], vals[9]
+            pos = 256 + auth_size + desc_off
+            end = pos + desc_size
+            match = None
+
+            while pos < end:
+                tag, following = struct.unpack_from(">QQ", vbmeta, pos)
+                raw = vbmeta[pos:pos + 16 + following]
+                need(len(raw) == 16 + following, name + " descriptor length")
+
+                if tag == 2:
+                    image_size = struct.unpack_from(">Q", raw, 16)[0]
+                    algo = raw[24:56].split(b"\0", 1)[0].decode()
+                    name_len, salt_len, digest_len, _ = struct.unpack_from(
+                        ">IIII", raw, 56
+                    )
+                    q = 132
+                    part = raw[q:q + name_len].decode()
+                    q += name_len
+                    salt = raw[q:q + salt_len]
+                    q += salt_len
+                    digest = raw[q:q + digest_len]
+                    if part == "boot":
+                        need(match is None, name + " duplicate boot descriptor")
+                        match = (image_size, algo, salt, digest)
+
+                pos += 16 + following
+
+            need(match is not None, name + " boot hash descriptor")
+            image_size, algo, salt, digest = match
+            need(image_size == 51916800, name + " descriptor image size")
+            need(algo == "sha256", name + " descriptor algorithm")
+            calculated = hashlib.sha256(salt + data[:image_size]).digest()
+            need(calculated == digest, name + " embedded AVB digest")
+
+            print(name + "=PASS")
+            print(name + "_SHA256=" + sha(data))
+
+        print("P7A_BOOT_PAIR_INDEPENDENT_AUDIT=PASS")
+        PY
+
+        sha256sum \
+          "$OUT/P7A-W88-v3-control-boot.img" \
+          "$OUT/P7A-P6-v8-candidate-boot.img" \
+          > "$WORK/evidence/05-boot-pair-sha256.txt"
+    - name: Create corrected real-device test protocol
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        cat > "$OUT/P7A-REAL-DEVICE-PROTOCOL.txt" <<'EOF'
+        CLEAN GEN1 P7-A REAL DEVICE A/B
+
+        BOOT ARM A:
+          P7A-W88-v3-control-boot.img
+
+        BOOT ARM B:
+          P7A-P6-v8-candidate-boot.img
+
+        Both boot images:
+        - are Android Boot v3 containers for VEUX / HyperOS OS1.0.12.0.TKCMIXM,
+        - use the same verified stock boot template,
+        - contain the same exact stock ramdisk bytes,
+        - differ intentionally in the embedded kernel,
+        - consequently have different recalculated embedded AVB boot hashes.
+
+        ReSukiSU / Manager separation:
+        - The ReSukiSU Manager APK is NOT part of the kernel.
+        - The Manager APK is NOT part of either boot image.
+        - No Manager CI run, APK build, APK SHA-256, versionCode or Manager
+          commit is pinned into this kernel/boot workflow.
+        - The kernel compatibility target is ReSukiSU's kernel-side
+          UAPI/ABI and official Manager signing trust, not one daily APK.
+        - For a controlled A/B test, simply keep the externally installed
+          Manager unchanged while switching Arm A -> Arm B so the kernel is
+          the only intended test variable.
+        - Afterward, newer official Manager CI builds may be tested externally
+          without rebuilding the kernel unless ReSukiSU changes the actual
+          kernel/UAPI/ABI contract or rotates its signing identity.
+
+        BOOT METHOD:
+        - If the device/bootloader supports temporary `fastboot boot <boot.img>`,
+          that is the preferred reversible A/B method.
+        - If temporary boot is not supported, do not guess. Use the already
+          proven VEUX boot-only flashing route with rollback available, and
+          keep the same method for both arms.
+
+        RESULT LANGUAGE:
+        - A spontaneous restart is recorded as "unexpected device reboot".
+        - Call it a kernel panic only when runtime evidence proves a panic.
+        EOF
+
+        sed -i 's/^            //' "$OUT/P7A-REAL-DEVICE-PROTOCOL.txt"
+    - name: Create boot-pair manifest and final integrity closure
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        W88_BOOT="$OUT/P7A-W88-v3-control-boot.img"
+        P6_BOOT="$OUT/P7A-P6-v8-candidate-boot.img"
+
+        W88_BOOT_SHA="$(sha256sum "$W88_BOOT" | awk '{print $1}')"
+        P6_BOOT_SHA="$(sha256sum "$P6_BOOT" | awk '{print $1}')"
+
+        printf '%s  %s\n' "$W88_BOOT_SHA" "$(basename "$W88_BOOT")" \
+          > "$OUT/P7A-W88-v3-control-boot.img.sha256"
+        printf '%s  %s\n' "$P6_BOOT_SHA" "$(basename "$P6_BOOT")" \
+          > "$OUT/P7A-P6-v8-candidate-boot.img.sha256"
+
+        cat > "$OUT/P7A-BOOT-PAIR-MANIFEST.txt" <<EOF
+        CLEAN_GEN1_P7A_BOOT_PAIR=PASS
+        DEVICE=VEUX_ONLY
+        KERNEL_VERSION=5.4.274
+        ROM=HyperOS_OS1.0.12.0.TKCMIXM
+        ANDROID=13
+        BOOT_HEADER_VERSION=3
+        BOOT_BYTES=$STOCK_BOOT_BYTES
+        STOCK_BOOT_SHA256=$STOCK_BOOT_SHA256
+        STOCK_RAMDISK_SHA256=$STOCK_RAMDISK_SHA256
+        W88_IMAGE_SHA256=$W88_IMAGE_SHA256
+        W88_BOOT_SHA256=$W88_BOOT_SHA
+        P6_IMAGE_SHA256=$P6_IMAGE_SHA256
+        P6_BOOT_SHA256=$P6_BOOT_SHA
+        SAME_STOCK_BOOT_TEMPLATE=YES
+        SAME_STOCK_RAMDISK=YES
+        SAME_BOOT_GEOMETRY=YES
+        W88_EMBEDDED_AVB_VERIFIES=YES
+        P6_EMBEDDED_AVB_VERIFIES=YES
+        HISTORICAL_W19_W21_CALIBRATION=PASS
+        HISTORICAL_CALIBRATION_BYTE_IDENTICAL=YES
+        DEVICE_ACCESSED=NO
+        FLASHING_PERFORMED=NO
+        REAL_DEVICE_BOOT_TESTED=NO
+        MANAGER_APK_EMBEDDED_IN_KERNEL=NO
+        MANAGER_APK_EMBEDDED_IN_BOOT_IMAGE=NO
+        MANAGER_CI_ARTIFACT_DOWNLOADED=NO
+        MANAGER_VERSION_PINNED_TO_KERNEL=NO
+        MANAGER_COMMIT_PINNED_TO_KERNEL=NO
+        MANAGER_APK_HASH_PINNED_TO_KERNEL=NO
+        RESUKISU_COMPATIBILITY_MODEL=KERNEL_UAPI_ABI_PLUS_OFFICIAL_SIGNER_TRUST
+        EOF
+
+        cp "$WORK/evidence/04-boot-pair-build.txt" \
+          "$OUT/BOOT-PAIR-BUILD-VERDICT.txt"
+
+        (
+          cd "$OUT"
+          find . -maxdepth 1 -type f ! -name SHA256SUMS.txt -print0 \
+            | sort -z | xargs -0 sha256sum > SHA256SUMS.txt
+          sha256sum -c SHA256SUMS.txt
+        )
+
+        {
+          echo "CLEAN_GEN1_P7A_BOOT_PAIR_FINAL_GATE=PASS"
+          echo "W88_BOOT_SHA256=$W88_BOOT_SHA"
+          echo "P6_BOOT_SHA256=$P6_BOOT_SHA"
+          echo "MANAGER_KERNEL_COUPLING=NO"
+          echo "MANAGER_APK_PINNING=NO"
+          echo "P7A_READY_FOR_REAL_DEVICE_AB=YES"
+          echo "NEXT_DEVICE_TEST_VARIABLE=KERNEL_ONLY"
+        } | tee "$WORK/evidence/07-final.txt"
+    - name: Upload P7-A boot pair
+      if: always()
+      uses: actions/upload-artifact@v7
+      with:
+        name: clean-gen1-p7a-boot-pair-resukisu-contract-v2-${{ github.run_id }}
+        path: ${{ env.WORK }}/release
+        if-no-files-found: error
+        retention-days: 90
+        compression-level: 0
