@@ -1,0 +1,789 @@
+name: CLEAN GEN1 P5B - 5.4 OPEN_REDIRECT lookup-open split audit v1
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  p5b-lookup-open-split-audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+
+    env:
+      ARCH: arm64
+      TZ: UTC
+      LANG: C.UTF-8
+      LC_ALL: C.UTF-8
+
+      VENDOR_REPO: dereference23/kernel_xiaomi_sm6375
+      VENDOR_TAG: "20240619"
+      EXPECTED_VENDOR_SHA: "b2b7a3bbc36d120ee523ebc8d68e0f13a97df632"
+
+      P4_RUN_ID: "33465800698"
+      P4_ARTIFACT_NAME: clean-gen1-p4-safe-stat-faccessat-filename-bridge-v2-33465800698
+      EXPECTED_P4_TREE: "49cbcba1725aadea523f4b139710e5d834af9788"
+      EXPECTED_P4_RESUKISU_HEAD: "42034caa96466e8473fe7553eba8a1888c7f460f"
+      EXPECTED_P4_RESUKISU_TREE: "d818d965b855d417edfe9eb38b152ff83e75e0fb"
+
+      P5A_RUN_ID: "33468759231"
+      P5A_ARTIFACT_NAME: clean-gen1-p5a-open-redirect-preopen-audit-v2-33468759231
+
+      RESUKISU_SNAPSHOT_HEAD: "0b5efe9e0102c43ca5c41174d500f5a7080cd0c7"
+      SUSFS_REPO: https://gitlab.com/simonpunk/susfs4ksu.git
+      SUSFS_54_HEAD: "76affd70abf61d77feb0a132f61365d6848505df"
+      SUSFS_510_HEAD: "ec785f47d49f7b3871ca9356f450411020af7017"
+      SUSFS_515_HEAD: "bca0d2333c1a7d717e7278b019d7af7ba1d16005"
+      SUSFS_61_HEAD: "4fc9c1898ea66f51847cdbc0d1473ea4ef525a70"
+
+      ARTIFACT_DIR: ${{ github.workspace }}/clean-gen1-p5b-audit
+      P4_ARTIFACT_DIR: ${{ github.workspace }}/p4-artifact
+      P5A_ARTIFACT_DIR: ${{ github.workspace }}/p5a-artifact
+      SUSFS_UPSTREAM_DIR: ${{ github.workspace }}/susfs-upstream
+
+    steps:
+      - name: Initialize P5B audit
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$ARTIFACT_DIR" "$P4_ARTIFACT_DIR" "$P5A_ARTIFACT_DIR" \
+                 "$SUSFS_UPSTREAM_DIR"
+          mkdir -p "$ARTIFACT_DIR"
+
+          cat > "$ARTIFACT_DIR/00-plan.txt" <<'EOF'
+          CLEAN GEN1 P5B - Linux 5.4.274 OPEN_REDIRECT lookup/open split audit
+
+          This is deliberately audit-only.
+
+          P5A already proved:
+          - post-do_last reuse of the same opened struct file is unsafe;
+          - direct copy of the available 5.4 post-do_last reference is forbidden;
+          - redirect must occur before permission/open/truncate side effects.
+
+          P5B must now prove the exact 5.4 control-flow contract:
+          1. Restore accepted P4 exactly and authenticate P5A PASS.
+          2. Refuse work if reviewed upstream heads moved.
+          3. Authenticate official SUSFS 2.3 semantic source at reviewed 5.10 head.
+          4. Prove official 2.3 intent is lookup -> redirect decision -> open.
+          5. Classify do_tmpfile and do_o_path as direct lookup-before-open paths.
+          6. Classify normal do_last fast-positive, slow-positive and atomic_open paths.
+          7. Prove whether atomic_open can invoke filesystem open logic before the
+             generic finish_open_created boundary.
+          8. Prove O_TRUNC can mutate the original target before any post-do_last hook.
+          9. Determine whether a single injection point can faithfully implement
+             OPEN_REDIRECT on 5.4.274.
+          10. If not, define the minimum structural lookup/open split required for P5C.
+
+          No source mutation. CONFIG_KSU_SUSFS remains disabled.
+          No compile, Image, dtb, boot image, flash ZIP or device work.
+          EOF
+
+      - name: Install P5B dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ca-certificates git jq patch python3 zstd
+          git --version
+          python3 --version
+
+      - name: Checkout exact VEUX vendor source
+        uses: actions/checkout@v6
+        with:
+          repository: dereference23/kernel_xiaomi_sm6375
+          ref: "20240619"
+          path: kernel
+          fetch-depth: 1
+
+      - name: Download accepted P4 restore artifact
+        uses: actions/download-artifact@v7
+        with:
+          name: ${{ env.P4_ARTIFACT_NAME }}
+          path: p4-artifact
+          github-token: ${{ github.token }}
+          run-id: ${{ env.P4_RUN_ID }}
+
+      - name: Download accepted P5A decision artifact
+        uses: actions/download-artifact@v7
+        with:
+          name: ${{ env.P5A_ARTIFACT_NAME }}
+          path: p5a-artifact
+          github-token: ${{ github.token }}
+          run-id: ${{ env.P5A_RUN_ID }}
+
+      - name: Authenticate P4 restore kit and P5A decision
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test -s "$P4_ARTIFACT_DIR/restore-kit/SHA256SUMS"
+          (
+            cd "$P4_ARTIFACT_DIR/restore-kit"
+            sha256sum -c SHA256SUMS
+          ) > "$ARTIFACT_DIR/01-p4-restore-sha256.txt"
+
+          test -s "$P5A_ARTIFACT_DIR/13-result.txt"
+          test -s "$P5A_ARTIFACT_DIR/12-decision.txt"
+          test -s "$P5A_ARTIFACT_DIR/09-fmode-opened-risk-audit.txt"
+          test -s "$P5A_ARTIFACT_DIR/10-preopen-boundary-audit.txt"
+
+          grep -Fxq 'CLEAN_GEN1_P5A_OPEN_REDIRECT_PREOPEN_AUDIT=PASS' \
+            "$P5A_ARTIFACT_DIR/13-result.txt"
+          grep -Fxq 'P4_TREE=49cbcba1725aadea523f4b139710e5d834af9788' \
+            "$P5A_ARTIFACT_DIR/13-result.txt"
+          grep -Fxq 'REFERENCE_POST_DO_LAST_DIRECT_PORT_ALLOWED=NO' \
+            "$P5A_ARTIFACT_DIR/13-result.txt"
+          grep -Fxq 'POST_DO_LAST_SAME_FILE_SECOND_DO_LAST_REUSE_RISK=YES' \
+            "$P5A_ARTIFACT_DIR/13-result.txt"
+          grep -Fxq 'PREOPEN_REDIRECT_BOUNDARY_IDENTIFIED=YES' \
+            "$P5A_ARTIFACT_DIR/13-result.txt"
+          grep -Fxq 'P5A_TRACKED_SOURCE_MUTATION=NO' \
+            "$P5A_ARTIFACT_DIR/13-result.txt"
+          grep -Fxq 'P5A_DECISION=PASS' "$P5A_ARTIFACT_DIR/12-decision.txt"
+
+          {
+            echo "P4_RESTORE_KIT_AUTH=PASS"
+            echo "P5A_DECISION_AUTH=PASS"
+            echo "POST_DO_LAST_DIRECT_PORT_ALLOWED=NO"
+            echo "P5B_STARTING_TREE=$EXPECTED_P4_TREE"
+          } | tee "$ARTIFACT_DIR/01-auth-state.txt"
+
+      - name: Refuse stale reviewed upstream before P5B
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          current_resu="$(git ls-remote https://github.com/ReSukiSU/ReSukiSU.git refs/heads/main | awk '{print $1}')"
+          current_54="$(git ls-remote "$SUSFS_REPO" refs/heads/kernel-5.4 | awk '{print $1}')"
+          current_510="$(git ls-remote "$SUSFS_REPO" refs/heads/gki-android12-5.10 | awk '{print $1}')"
+          current_515="$(git ls-remote "$SUSFS_REPO" refs/heads/gki-android13-5.15 | awk '{print $1}')"
+          current_61="$(git ls-remote "$SUSFS_REPO" refs/heads/gki-android14-6.1 | awk '{print $1}')"
+
+          {
+            printf 'ReSukiSU-main\t%s\t%s\n' "$RESUKISU_SNAPSHOT_HEAD" "$current_resu"
+            printf 'SUSFS-kernel-5.4\t%s\t%s\n' "$SUSFS_54_HEAD" "$current_54"
+            printf 'SUSFS-5.10\t%s\t%s\n' "$SUSFS_510_HEAD" "$current_510"
+            printf 'SUSFS-5.15\t%s\t%s\n' "$SUSFS_515_HEAD" "$current_515"
+            printf 'SUSFS-6.1\t%s\t%s\n' "$SUSFS_61_HEAD" "$current_61"
+          } | tee "$ARTIFACT_DIR/02-upstream-drift.tsv"
+
+          drift=0
+          [ "$current_resu" = "$RESUKISU_SNAPSHOT_HEAD" ] || drift=1
+          [ "$current_54" = "$SUSFS_54_HEAD" ] || drift=1
+          [ "$current_510" = "$SUSFS_510_HEAD" ] || drift=1
+          [ "$current_515" = "$SUSFS_515_HEAD" ] || drift=1
+          [ "$current_61" = "$SUSFS_61_HEAD" ] || drift=1
+
+          if [ "$drift" -ne 0 ]; then
+            {
+              echo "UPSTREAM_REVIEW_SNAPSHOT_CURRENT=NO"
+              echo "P5B_ALLOWED=NO"
+              echo "ACTION=RUN_UPSTREAM_SNAPSHOT_COMPARE_REVIEW"
+            } | tee "$ARTIFACT_DIR/02-upstream-state.txt"
+            exit 1
+          fi
+
+          {
+            echo "UPSTREAM_REVIEW_SNAPSHOT_CURRENT=YES"
+            echo "P5B_ALLOWED=YES"
+          } | tee "$ARTIFACT_DIR/02-upstream-state.txt"
+
+      - name: Restore exact accepted P4 outer tree
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test "$(git rev-parse HEAD)" = "$EXPECTED_VENDOR_SHA"
+          test -z "$(git status --porcelain)"
+
+          PATCH="$P4_ARTIFACT_DIR/restore-kit/vendor-20240619-to-p4-outer.patch"
+          git apply --check --binary "$PATCH"
+          git apply --index --binary "$PATCH"
+          test "$(git write-tree)" = "$EXPECTED_P4_TREE"
+
+          GIT_AUTHOR_NAME="CLEAN-GEN1 Restore" \
+          GIT_AUTHOR_EMAIL="clean-gen1@invalid.local" \
+          GIT_AUTHOR_DATE="2026-09-01T00:00:00Z" \
+          GIT_COMMITTER_NAME="CLEAN-GEN1 Restore" \
+          GIT_COMMITTER_EMAIL="clean-gen1@invalid.local" \
+          GIT_COMMITTER_DATE="2026-09-01T00:00:00Z" \
+            git commit -m "CLEAN GEN1 restore accepted P4 outer tree"
+
+          test "$(git rev-parse HEAD^{tree})" = "$EXPECTED_P4_TREE"
+          echo "P4_RESTORED_OUTER_COMMIT=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+
+          {
+            echo "P4_OUTER_RESTORE_REPLAY=PASS"
+            echo "P4_RESTORED_TREE=$(git rev-parse HEAD^{tree})"
+          } | tee "$ARTIFACT_DIR/03-p4-outer-restore.txt"
+
+      - name: Restore exact accepted P4 ReSukiSU
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -rf KernelSU
+          git init KernelSU >/dev/null
+          git -C KernelSU fetch \
+            "$P4_ARTIFACT_DIR/restore-kit/resukisu-p4-full.bundle" \
+            refs/heads/clean-gen1-p4-resukisu:refs/heads/clean-gen1-p4-resukisu
+          git -C KernelSU checkout --detach refs/heads/clean-gen1-p4-resukisu >/dev/null
+
+          test "$(git -C KernelSU rev-parse HEAD)" = "$EXPECTED_P4_RESUKISU_HEAD"
+          test "$(git -C KernelSU rev-parse HEAD^{tree})" = "$EXPECTED_P4_RESUKISU_TREE"
+          test -z "$(git -C KernelSU status --porcelain)"
+
+          mkdir -p .git/info
+          touch .git/info/exclude
+          grep -Fxq '/KernelSU/' .git/info/exclude || echo '/KernelSU/' >> .git/info/exclude
+
+          test -L drivers/kernelsu
+          test "$(readlink drivers/kernelsu)" = "../KernelSU/kernel"
+          test -z "$(git status --porcelain)"
+
+          {
+            echo "P4_RESUKISU_RESTORE_REPLAY=PASS"
+            echo "OUTER_STATUS=CLEAN"
+            echo "RESUKISU_STATUS=CLEAN"
+          } | tee "$ARTIFACT_DIR/04-p4-resukisu-restore.txt"
+
+      - name: Prove accepted P4 boundary remains dormant
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test "$(git rev-parse HEAD^{tree})" = "$EXPECTED_P4_TREE"
+          test "$(git -C KernelSU rev-parse HEAD)" = "$EXPECTED_P4_RESUKISU_HEAD"
+          test "$(git -C KernelSU rev-parse HEAD^{tree})" = "$EXPECTED_P4_RESUKISU_TREE"
+
+          grep -Fxq '# CONFIG_KSU_SUSFS is not set' arch/arm64/configs/veux_defconfig
+          grep -Fq 'ksu_filename->refcnt++;' fs/stat.c
+          grep -Fq 'ksu_filename->refcnt++;' fs/open.c
+          test -f fs/susfs.c
+          test -f include/linux/susfs.h
+          test -f include/linux/susfs_def.h
+          ! grep -Fq 'susfs_open_redirect_spoof_do_sys_openat' fs/namei.c
+          ! grep -Fq 'CONFIG_KSU_SUSFS_OPEN_REDIRECT' fs/namei.c
+          test ! -e KernelSU/kernel/feature/module_load_filter.c
+
+          sha256sum fs/namei.c fs/susfs.c include/linux/susfs.h \
+            > "$ARTIFACT_DIR/05-p4-boundary.sha256"
+
+          {
+            echo "P4_BOUNDARY=PASS"
+            echo "SUSFS_RUNTIME_ENABLED=NO"
+            echo "OPEN_REDIRECT_HOOKS_INTEGRATED=NO"
+          } | tee "$ARTIFACT_DIR/05-p4-boundary.txt"
+
+      - name: Checkout reviewed official SUSFS 5.10 semantic source
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -rf "$SUSFS_UPSTREAM_DIR"
+          git init "$SUSFS_UPSTREAM_DIR" >/dev/null
+          git -C "$SUSFS_UPSTREAM_DIR" remote add origin "$SUSFS_REPO"
+          git -C "$SUSFS_UPSTREAM_DIR" fetch --depth=1 origin "$SUSFS_510_HEAD"
+          git -C "$SUSFS_UPSTREAM_DIR" checkout --detach FETCH_HEAD >/dev/null
+
+          test "$(git -C "$SUSFS_UPSTREAM_DIR" rev-parse HEAD)" = "$SUSFS_510_HEAD"
+          test -z "$(git -C "$SUSFS_UPSTREAM_DIR" status --porcelain)"
+
+          {
+            echo "OFFICIAL_SUSFS_510_HEAD=$(git -C "$SUSFS_UPSTREAM_DIR" rev-parse HEAD)"
+            echo "OFFICIAL_SUSFS_SEMANTIC_SOURCE=PASS"
+          } | tee "$ARTIFACT_DIR/06-susfs-upstream-auth.txt"
+
+      - name: Prove official SUSFS 2.3 lookup-before-open architecture
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY' > "$ARTIFACT_DIR/07-official-23-architecture.txt"
+          from pathlib import Path
+          import os
+
+          root = Path(os.environ["SUSFS_UPSTREAM_DIR"])
+          candidates = []
+          for p in root.rglob("*"):
+              if not p.is_file():
+                  continue
+              try:
+                  text = p.read_text(encoding="utf-8")
+              except Exception:
+                  continue
+              if ("susfs_open_redirect_spoof_do_sys_openat" in text and
+                  "path_openat" in text and
+                  "do_tmpfile" in text and
+                  "do_o_path" in text):
+                  candidates.append((p, text))
+
+          if not candidates:
+              raise SystemExit("official SUSFS hook patch containing OPEN_REDIRECT architecture not found")
+
+          chosen = None
+          for p, text in candidates:
+              if ("open_last_lookups" in text and "do_open(nd, file, op)" in text):
+                  chosen = (p, text)
+                  break
+
+          if chosen is None:
+              raise SystemExit(
+                  "reviewed SUSFS 5.10 tree does not expose expected lookup/open split; "
+                  "stop rather than infer semantics"
+              )
+
+          p, text = chosen
+          required = {
+              "PATH_OPENAT_HOOK_PRESENT":
+                  "susfs_open_redirect_spoof_do_sys_openat" in text,
+              "DO_TMPFILE_HOOK_PRESENT":
+                  "static int do_tmpfile" in text,
+              "DO_O_PATH_HOOK_PRESENT":
+                  "static int do_o_path" in text,
+              "LOOKUP_PHASE_PRESENT":
+                  "open_last_lookups" in text,
+              "OPEN_PHASE_PRESENT":
+                  "do_open(nd, file, op)" in text,
+              "REDIRECT_BEFORE_DO_OPEN":
+                  text.find("susfs_open_redirect_spoof_do_sys_openat") <
+                  text.rfind("do_open(nd, file, op)"),
+              "FAKE_FILENAME_PUT_PRESENT":
+                  "putname(fake_filename)" in text,
+              "NAMEIDATA_RESTART_PRESENT":
+                  "restore_nameidata()" in text and "set_nameidata(" in text,
+          }
+
+          for label, ok in required.items():
+              print(f"{label}={'PASS' if ok else 'FAIL'}")
+          failed = [k for k,v in required.items() if not v]
+          if failed:
+              raise SystemExit("official 2.3 architecture audit failed: " + ", ".join(failed))
+
+          print(f"OFFICIAL_HOOK_PATCH={p.relative_to(root)}")
+          print("OFFICIAL_23_MODEL=LOOKUP_THEN_REDIRECT_DECISION_THEN_OPEN")
+          print("OFFICIAL_23_O_TRUNC_INTENT=REDIRECTED_PATH_RECEIVES_OPEN_SIDE_EFFECTS")
+          print("P5B_OFFICIAL_23_ARCHITECTURE=PASS")
+          PY
+
+          grep -Fq 'P5B_OFFICIAL_23_ARCHITECTURE=PASS' \
+            "$ARTIFACT_DIR/07-official-23-architecture.txt"
+
+      - name: Audit direct 5.4 lookup-before-open paths
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY' > "$ARTIFACT_DIR/08-direct-paths-audit.txt"
+          from pathlib import Path
+
+          text = Path("fs/namei.c").read_text(encoding="utf-8")
+
+          def extract(signature):
+              start = text.find(signature)
+              if start < 0:
+                  raise SystemExit("missing function: " + signature)
+              brace = text.find("{", start)
+              depth = 0
+              for i in range(brace, len(text)):
+                  if text[i] == "{":
+                      depth += 1
+                  elif text[i] == "}":
+                      depth -= 1
+                      if depth == 0:
+                          return text[start:i+1]
+              raise SystemExit("unterminated function: " + signature)
+
+          tmp = extract("static int do_tmpfile(struct nameidata *nd")
+          opath = extract("static int do_o_path(struct nameidata *nd")
+
+          tmp_lookup = tmp.find("path_lookupat(")
+          tmp_side_effect = min(
+              pos for pos in (
+                  tmp.find("mnt_want_write("),
+                  tmp.find("vfs_tmpfile("),
+                  tmp.find("finish_open("),
+              ) if pos >= 0
+          )
+
+          opath_lookup = opath.find("path_lookupat(")
+          opath_open = opath.find("vfs_open(")
+
+          checks = {
+              "TMPFILE_LOOKUP_PRECEDES_WRITE_CREATE_OPEN":
+                  tmp_lookup >= 0 and tmp_lookup < tmp_side_effect,
+              "O_PATH_LOOKUP_PRECEDES_VFS_OPEN":
+                  opath_lookup >= 0 and opath_open >= 0 and opath_lookup < opath_open,
+              "TMPFILE_HAS_PATH_OBJECT_BEFORE_SIDE_EFFECT":
+                  "struct path path;" in tmp,
+              "O_PATH_HAS_PATH_OBJECT_BEFORE_SIDE_EFFECT":
+                  "struct path path;" in opath,
+          }
+
+          for label, ok in checks.items():
+              print(f"{label}={'PASS' if ok else 'FAIL'}")
+          if not all(checks.values()):
+              raise SystemExit("direct path lookup/open separation not proven")
+
+          print("DO_TMPFILE_DIRECT_PREOPEN_ADAPTATION=FEASIBLE")
+          print("DO_O_PATH_DIRECT_PREOPEN_ADAPTATION=FEASIBLE")
+          print("P5B_DIRECT_5_4_PATHS=PASS")
+          PY
+
+          grep -Fq 'P5B_DIRECT_5_4_PATHS=PASS' \
+            "$ARTIFACT_DIR/08-direct-paths-audit.txt"
+
+      - name: Audit 5.4 normal do_last fast slow and atomic-open branches
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY' > "$ARTIFACT_DIR/09-do-last-branch-audit.txt"
+          from pathlib import Path
+
+          text = Path("fs/namei.c").read_text(encoding="utf-8")
+
+          def extract(signature):
+              start = text.find(signature)
+              if start < 0:
+                  raise SystemExit("missing function: " + signature)
+              brace = text.find("{", start)
+              depth = 0
+              for i in range(brace, len(text)):
+                  if text[i] == "{":
+                      depth += 1
+                  elif text[i] == "}":
+                      depth -= 1
+                      if depth == 0:
+                          return text[start:i+1]
+              raise SystemExit("unterminated function: " + signature)
+
+          do_last = extract("static int do_last(struct nameidata *nd")
+          lookup_open = extract("static int lookup_open(struct nameidata *nd")
+          atomic_open = extract("static int atomic_open(struct nameidata *nd")
+
+          checks = {
+              "FAST_LOOKUP_CAN_RESOLVE_FINAL_INODE":
+                  "lookup_fast(nd, &path, &inode, &seq)" in do_last,
+              "FAST_PATH_REACHES_FINISH_LOOKUP":
+                  "goto finish_lookup;" in do_last,
+              "SLOW_PATH_CALLS_LOOKUP_OPEN":
+                  "lookup_open(nd, &path, file, op, got_write)" in do_last,
+              "SLOW_POSITIVE_DENTRY_RETURNS_PATH_WITHOUT_OPEN":
+                  "if (dentry->d_inode)" in lookup_open and
+                  "goto out_no_open;" in lookup_open and
+                  "path->dentry = dentry;" in lookup_open,
+              "NEGATIVE_DENTRY_CAN_CALL_ATOMIC_OPEN":
+                  "if (dir_inode->i_op->atomic_open)" in lookup_open and
+                  "atomic_open(nd, dentry, path, file, op, open_flag" in lookup_open,
+              "ATOMIC_OPEN_CALLS_FILESYSTEM_CALLBACK":
+                  "dir->i_op->atomic_open(" in atomic_open,
+              "ATOMIC_OPEN_CAN_RETURN_FMODE_OPENED":
+                  "file->f_mode & FMODE_OPENED" in atomic_open,
+              "ATOMIC_OPEN_CAN_RUN_MAY_OPEN":
+                  "may_open(&file->f_path" in atomic_open,
+              "GENERIC_FINAL_BOUNDARY_HAS_MAY_OPEN":
+                  "finish_open_created:" in do_last and
+                  "may_open(&nd->path, acc_mode, open_flag)" in do_last,
+              "GENERIC_FINAL_BOUNDARY_HAS_VFS_OPEN":
+                  "vfs_open(&nd->path, file)" in do_last,
+          }
+
+          for label, ok in checks.items():
+              print(f"{label}={'PASS' if ok else 'FAIL'}")
+          failed = [k for k,v in checks.items() if not v]
+          if failed:
+              raise SystemExit("do_last branch audit failed: " + ", ".join(failed))
+
+          print("FAST_POSITIVE_PREOPEN_TARGET_KNOWN=YES")
+          print("SLOW_POSITIVE_PREOPEN_TARGET_KNOWN=YES")
+          print("NEGATIVE_DENTRY_ATOMIC_OPEN_TARGET_NOT_KNOWN_BY_INODE_BEFORE_CALLBACK=YES")
+          print("ATOMIC_OPEN_PREOPEN_REDIRECT_GAP=PROVEN")
+          print("SINGLE_GENERIC_FINISH_OPEN_HOOK_COVERS_ALL_PATHS=NO")
+          print("P5B_DO_LAST_BRANCH_AUDIT=PASS")
+          PY
+
+          grep -Fq 'P5B_DO_LAST_BRANCH_AUDIT=PASS' \
+            "$ARTIFACT_DIR/09-do-last-branch-audit.txt"
+
+      - name: Prove post-open O_TRUNC target side-effect hazard
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY' > "$ARTIFACT_DIR/10-o-trunc-side-effect-audit.txt"
+          from pathlib import Path
+
+          text = Path("fs/namei.c").read_text(encoding="utf-8")
+
+          def extract(signature):
+              start = text.find(signature)
+              if start < 0:
+                  raise SystemExit("missing function: " + signature)
+              brace = text.find("{", start)
+              depth = 0
+              for i in range(brace, len(text)):
+                  if text[i] == "{":
+                      depth += 1
+                  elif text[i] == "}":
+                      depth -= 1
+                      if depth == 0:
+                          return text[start:i+1]
+              raise SystemExit("unterminated function: " + signature)
+
+          do_last = extract("static int do_last(struct nameidata *nd")
+          truncate = extract("static int handle_truncate(struct file *filp)")
+
+          positions = {
+              "may_open": do_last.find("may_open(&nd->path, acc_mode, open_flag)"),
+              "vfs_open": do_last.find("vfs_open(&nd->path, file)"),
+              "opened_label": do_last.find("opened:"),
+              "handle_truncate": do_last.find("handle_truncate(file)"),
+          }
+
+          checks = {
+              "WILL_TRUNCATE_DERIVED_FROM_O_TRUNC":
+                  "bool will_truncate = (open_flag & O_TRUNC) != 0;" in do_last,
+              "HANDLE_TRUNCATE_AFTER_OPENED_PATH":
+                  all(v >= 0 for v in positions.values()) and
+                  positions["handle_truncate"] > positions["vfs_open"],
+              "HANDLE_TRUNCATE_MUTATES_PATH":
+                  "do_truncate(" in truncate,
+              "HANDLE_TRUNCATE_USES_OPENED_FILE_PATH":
+                  "const struct path *path = &filp->f_path;" in truncate,
+          }
+
+          for label, ok in checks.items():
+              print(f"{label}={'PASS' if ok else 'FAIL'}")
+          if not all(checks.values()):
+              raise SystemExit("O_TRUNC side-effect ordering not proven")
+
+          print("POST_DO_LAST_REDIRECT_CAN_OCCUR_AFTER_ORIGINAL_TARGET_TRUNCATION=YES")
+          print("O_TRUNC_REQUIRES_REDIRECT_DECISION_BEFORE_ORIGINAL_OPEN_SIDE_EFFECTS=YES")
+          print("P5B_O_TRUNC_HAZARD_AUDIT=PASS")
+          PY
+
+          grep -Fq 'P5B_O_TRUNC_HAZARD_AUDIT=PASS' \
+            "$ARTIFACT_DIR/10-o-trunc-side-effect-audit.txt"
+
+      - name: Audit why a single 5.4 hook point is insufficient
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY' > "$ARTIFACT_DIR/11-single-hook-completeness.txt"
+          from pathlib import Path
+
+          do_last = Path("fs/namei.c").read_text(encoding="utf-8")
+
+          required_evidence = {
+              "P5A_FORBIDS_POST_DO_LAST":
+                  "REFERENCE_POST_DO_LAST_DIRECT_PORT_ALLOWED=NO" in
+                  Path("../p5a-artifact/13-result.txt").read_text(encoding="utf-8"),
+              "ATOMIC_OPEN_EXISTS":
+                  "dir_inode->i_op->atomic_open" in do_last,
+              "ATOMIC_OPEN_CALLBACK_EXISTS":
+                  "dir->i_op->atomic_open(" in do_last,
+              "GENERIC_MAY_OPEN_EXISTS":
+                  "may_open(&nd->path, acc_mode, open_flag)" in do_last,
+              "GENERIC_VFS_OPEN_EXISTS":
+                  "vfs_open(&nd->path, file)" in do_last,
+              "TMPFILE_SEPARATE_PATH":
+                  "static int do_tmpfile(" in do_last,
+              "O_PATH_SEPARATE_PATH":
+                  "static int do_o_path(" in do_last,
+          }
+
+          for label, ok in required_evidence.items():
+              print(f"{label}={'PASS' if ok else 'FAIL'}")
+          if not all(required_evidence.values()):
+              raise SystemExit("single-hook completeness evidence incomplete")
+
+          print("ONE_POST_DO_LAST_HOOK=UNSAFE")
+          print("ONE_GENERIC_FINISH_OPEN_HOOK=INCOMPLETE_DUE_TO_ATOMIC_OPEN")
+          print("TMPFILE_AND_O_PATH_REQUIRE_THEIR_OWN_LOOKUP_BEFORE_OPEN_HANDLING=YES")
+          print("SINGLE_INSERTION_POINT_CAN_IMPLEMENT_FULL_OPEN_REDIRECT_2_3=NO")
+          print("P5B_SINGLE_HOOK_COMPLETENESS=PASS")
+          PY
+
+          grep -Fq 'P5B_SINGLE_HOOK_COMPLETENESS=PASS' \
+            "$ARTIFACT_DIR/11-single-hook-completeness.txt"
+
+      - name: Define minimum P5C structural contract
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cat > "$ARTIFACT_DIR/12-p5c-contract.txt" <<'EOF'
+          CLEAN GEN1 P5C REQUIRED CONTRACT
+
+          The accepted P5A/P5B evidence forbids a post-open retry model.
+
+          Directly adaptable 5.4 paths:
+          - do_tmpfile(): redirect after path_lookupat(), before mnt_want_write(),
+            vfs_tmpfile(), may_open() and finish_open().
+          - do_o_path(): redirect after path_lookupat(), before vfs_open().
+
+          Normal path_openat/do_last requires a structural lookup/open split.
+
+          Required normal-path properties:
+          1. Resolve the final target before any permission/open/truncate side effect
+             relevant to the original target.
+          2. If target inode is OPEN_REDIRECT, obtain the independent
+             getname_kernel() fake filename and restart lookup on that filename.
+          3. Only after redirect decision may the selected path enter may_open(),
+             vfs_open(), handle_truncate() or filesystem open callbacks.
+          4. The already-opened struct file must never be reused for a second do_last().
+          5. Negative-dentry/O_CREAT/atomic_open must not bypass the redirect decision.
+             P5C must either provide a lookup-only resolution phase analogous to
+             newer open_last_lookups()/do_open(), or prove an equally safe 5.4-specific
+             method before retaining atomic_open.
+          6. O_TRUNC must remain intact and apply only to the final selected
+             redirected path when redirection is active.
+          7. Every fake filename reference returned by getname_kernel() receives
+             exactly one matching putname().
+          8. nameidata nesting must be balanced on success, error, -ECHILD and -ESTALE.
+          9. path references must be balanced; no path_put/dput after transfer or free.
+          10. P5C structural refactor remains CONFIG_KSU_SUSFS=n and must preserve
+              ordinary 5.4 behavior when OPEN_REDIRECT is not active.
+          11. P5C must not integrate proc/maps, namespace/mount or other SUSFS features.
+          12. No module-load-filter code is permitted.
+
+          P5C must be a narrowly-scoped source refactor/checkpoint, not a full
+          SUSFS enablement and not yet a full kernel build.
+          EOF
+
+          {
+            echo "P5C_REQUIRED_ARCHITECTURE=5_4_LOOKUP_OPEN_SPLIT"
+            echo "P5C_ATOMIC_OPEN_MUST_BE_HANDLED_BEFORE_ACCEPTANCE=YES"
+            echo "P5C_O_TRUNC_ORIGINAL_TARGET_SIDE_EFFECT_ALLOWED=NO"
+            echo "P5C_POST_OPEN_RETRY_MODEL_ALLOWED=NO"
+            echo "P5C_CONTRACT=PASS"
+          } | tee -a "$ARTIFACT_DIR/12-p5c-contract.txt"
+
+      - name: Prove P5B made no tracked source changes
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test "$(git rev-parse HEAD^{tree})" = "$EXPECTED_P4_TREE"
+          test "$(git -C KernelSU rev-parse HEAD)" = "$EXPECTED_P4_RESUKISU_HEAD"
+          test "$(git -C KernelSU rev-parse HEAD^{tree})" = "$EXPECTED_P4_RESUKISU_TREE"
+          test -z "$(git status --porcelain)"
+          test -z "$(git -C KernelSU status --porcelain)"
+
+          sha256sum -c "$ARTIFACT_DIR/05-p4-boundary.sha256" \
+            > "$ARTIFACT_DIR/13-p4-byte-identity-after-p5b.txt"
+
+          {
+            echo "P5B_TRACKED_SOURCE_MUTATION=NO"
+            echo "P4_TREE_PRESERVED=$EXPECTED_P4_TREE"
+            echo "P4_RESUKISU_TREE_PRESERVED=$EXPECTED_P4_RESUKISU_TREE"
+            echo "SUSFS_RUNTIME_ENABLED=NO"
+            echo "KERNEL_COMPILE_PERFORMED=NO"
+          } | tee "$ARTIFACT_DIR/13-no-mutation-state.txt"
+
+      - name: Final P5B decision gate
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test "$(make -s kernelversion)" = "5.4.274"
+          test "$(git rev-parse HEAD^{tree})" = "$EXPECTED_P4_TREE"
+          test "$(git -C KernelSU rev-parse HEAD)" = "$EXPECTED_P4_RESUKISU_HEAD"
+          test "$(git -C KernelSU rev-parse HEAD^{tree})" = "$EXPECTED_P4_RESUKISU_TREE"
+
+          grep -Fq 'P5B_OFFICIAL_23_ARCHITECTURE=PASS' \
+            "$ARTIFACT_DIR/07-official-23-architecture.txt"
+          grep -Fq 'P5B_DIRECT_5_4_PATHS=PASS' \
+            "$ARTIFACT_DIR/08-direct-paths-audit.txt"
+          grep -Fq 'ATOMIC_OPEN_PREOPEN_REDIRECT_GAP=PROVEN' \
+            "$ARTIFACT_DIR/09-do-last-branch-audit.txt"
+          grep -Fq 'P5B_O_TRUNC_HAZARD_AUDIT=PASS' \
+            "$ARTIFACT_DIR/10-o-trunc-side-effect-audit.txt"
+          grep -Fq 'SINGLE_INSERTION_POINT_CAN_IMPLEMENT_FULL_OPEN_REDIRECT_2_3=NO' \
+            "$ARTIFACT_DIR/11-single-hook-completeness.txt"
+          grep -Fq 'P5C_CONTRACT=PASS' "$ARTIFACT_DIR/12-p5c-contract.txt"
+
+          test -z "$(git status --porcelain)"
+          test -z "$(git -C KernelSU status --porcelain)"
+
+          {
+            echo "CLEAN_GEN1_P5B_54_LOOKUP_OPEN_SPLIT_AUDIT=PASS"
+            echo "KERNEL_VERSION=5.4.274"
+            echo "P4_RESTORE_REPLAY=PASS"
+            echo "P5A_DECISION_AUTH=PASS"
+            echo "P4_TREE=$EXPECTED_P4_TREE"
+            echo "P4_RESUKISU_HEAD=$EXPECTED_P4_RESUKISU_HEAD"
+            echo "P4_RESUKISU_TREE=$EXPECTED_P4_RESUKISU_TREE"
+            echo "OFFICIAL_SUSFS_23_MODEL=LOOKUP_THEN_REDIRECT_THEN_OPEN"
+            echo "DO_TMPFILE_DIRECT_PREOPEN_ADAPTATION=FEASIBLE"
+            echo "DO_O_PATH_DIRECT_PREOPEN_ADAPTATION=FEASIBLE"
+            echo "FAST_POSITIVE_PREOPEN_TARGET_KNOWN=YES"
+            echo "SLOW_POSITIVE_PREOPEN_TARGET_KNOWN=YES"
+            echo "ATOMIC_OPEN_PREOPEN_REDIRECT_GAP=PROVEN"
+            echo "POST_DO_LAST_REDIRECT_CAN_OCCUR_AFTER_ORIGINAL_TARGET_TRUNCATION=YES"
+            echo "SINGLE_INSERTION_POINT_COMPLETE=NO"
+            echo "REQUIRED_ARCHITECTURE=5_4_LOOKUP_OPEN_SPLIT"
+            echo "P5B_TRACKED_SOURCE_MUTATION=NO"
+            echo "SUSFS_RUNTIME_ENABLED=NO"
+            echo "OPEN_REDIRECT_HOOKS_INTEGRATED=NO"
+            echo "KERNEL_COMPILE_PERFORMED=NO"
+            echo "IMAGE_CREATED=NO"
+            echo "DTB_BUILD_PERFORMED=NO"
+            echo "BOOT_IMAGE_CREATED=NO"
+            echo "FLASHABLE_ZIP_CREATED=NO"
+            echo "DEVICE_ACCESSED=NO"
+            echo "FLASHING_PERFORMED=NO"
+            echo "NEXT_STAGE=CLEAN_GEN1_P5C_54_LOOKUP_OPEN_SPLIT_SOURCE_REFACTOR"
+          } | tee "$ARTIFACT_DIR/14-result.txt"
+
+      - name: Preserve P5B failure evidence
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          mkdir -p "$ARTIFACT_DIR"
+
+          {
+            echo "JOB_STATUS=${{ job.status }}"
+            if [ -d "$GITHUB_WORKSPACE/kernel/.git" ]; then
+              echo "OUTER_HEAD=$(git -C "$GITHUB_WORKSPACE/kernel" rev-parse HEAD 2>/dev/null || true)"
+              echo "OUTER_TREE=$(git -C "$GITHUB_WORKSPACE/kernel" rev-parse HEAD^{tree} 2>/dev/null || true)"
+              echo "OUTER_STATUS_BEGIN"
+              git -C "$GITHUB_WORKSPACE/kernel" status --porcelain 2>/dev/null || true
+              echo "OUTER_STATUS_END"
+            fi
+            if [ -d "$GITHUB_WORKSPACE/kernel/KernelSU/.git" ]; then
+              echo "RESUKISU_HEAD=$(git -C "$GITHUB_WORKSPACE/kernel/KernelSU" rev-parse HEAD 2>/dev/null || true)"
+              echo "RESUKISU_TREE=$(git -C "$GITHUB_WORKSPACE/kernel/KernelSU" rev-parse HEAD^{tree} 2>/dev/null || true)"
+              echo "RESUKISU_STATUS_BEGIN"
+              git -C "$GITHUB_WORKSPACE/kernel/KernelSU" status --porcelain 2>/dev/null || true
+              echo "RESUKISU_STATUS_END"
+            fi
+          } > "$ARTIFACT_DIR/99-job-end-state.txt"
+
+          find "$ARTIFACT_DIR" -maxdepth 2 -type f -printf '%P\n' | sort \
+            > "$ARTIFACT_DIR/99-artifact-file-list.txt"
+          exit 0
+
+      - name: Upload P5B audit evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: clean-gen1-p5b-54-lookup-open-split-audit-v1-${{ github.run_id }}
+          path: clean-gen1-p5b-audit/
+          if-no-files-found: error
+          retention-days: 90
