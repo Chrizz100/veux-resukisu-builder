@@ -1,0 +1,1030 @@
+name: CLEAN GEN1 P3 - SUSFS 2.3 Dormant Core Process State SRCU Foundation v4
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  p3-source-foundation:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+
+    env:
+      ARCH: arm64
+      TZ: UTC
+      LANG: C.UTF-8
+      LC_ALL: C.UTF-8
+
+      VENDOR_REPO: dereference23/kernel_xiaomi_sm6375
+      VENDOR_TAG: "20240619"
+      EXPECTED_VENDOR_SHA: "b2b7a3bbc36d120ee523ebc8d68e0f13a97df632"
+
+      P1_RUN_ID: "33417664451"
+      P1_ARTIFACT_NAME: clean-gen1-p1-selected-resukisu-source-v1-33417664451
+      EXPECTED_P1_RESUKISU_HEAD: "e289178918a7dc3a8d1e7a603d8f48e06cda7c6d"
+
+      P2_RUN_ID: "33421346029"
+      P2_ARTIFACT_NAME: clean-gen1-p2-authoritative-contracts-v2-33421346029
+      EXPECTED_P2_OUTER_TREE: "a181a59400e3624343154e73fcfce7e2290bc7e1"
+      EXPECTED_P2_RESUKISU_HEAD: "42034caa96466e8473fe7553eba8a1888c7f460f"
+      EXPECTED_P2_RESUKISU_TREE: "d818d965b855d417edfe9eb38b152ff83e75e0fb"
+
+      RESUKISU_BASE: "faccf4c5edc7be37776216e7d43dd3dca0239331"
+      RESUKISU_SNAPSHOT_HEAD: "0b5efe9e0102c43ca5c41174d500f5a7080cd0c7"
+
+      SUSFS_REPO: https://gitlab.com/simonpunk/susfs4ksu.git
+      SUSFS_54_HEAD: "76affd70abf61d77feb0a132f61365d6848505df"
+      SUSFS_510_HEAD: "ec785f47d49f7b3871ca9356f450411020af7017"
+      SUSFS_515_HEAD: "bca0d2333c1a7d717e7278b019d7af7ba1d16005"
+      SUSFS_61_HEAD: "4fc9c1898ea66f51847cdbc0d1473ea4ef525a70"
+      SUSFS_P3_SOURCE_HEAD: "ec785f47d49f7b3871ca9356f450411020af7017"
+      SUSFS_VERSION: "v2.3.0"
+
+      ARTIFACT_DIR: ${{ github.workspace }}/clean-gen1-p3-audit
+      P1_ARTIFACT_DIR: ${{ github.workspace }}/p1-artifact
+      P2_ARTIFACT_DIR: ${{ github.workspace }}/p2-artifact
+      SUSFS_UPSTREAM_DIR: ${{ github.workspace }}/susfs-upstream
+
+    steps:
+      - name: Initialize P3 audit
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$ARTIFACT_DIR" "$P1_ARTIFACT_DIR" "$P2_ARTIFACT_DIR" \
+                 "$SUSFS_UPSTREAM_DIR" "$GITHUB_WORKSPACE/p3-outer-restore-check" \
+                 "$GITHUB_WORKSPACE/p3-resukisu-bundle-check"
+          mkdir -p "$ARTIFACT_DIR"
+          cat > "$ARTIFACT_DIR/00-plan.txt" <<'EOF'
+          CLEAN GEN1 P3
+          1. Restore accepted P2 from its stored P1/P2 artifacts.
+          2. Prove exact P2 outer and ReSukiSU trees before mutation.
+          3. Refuse work if reviewed ReSukiSU/SUSFS upstream heads moved.
+          4. Import only dormant SUSFS 2.3 source foundation:
+             fs/susfs.c, include/linux/susfs.h, include/linux/susfs_def.h,
+             and fs/Makefile build wiring.
+          5. Keep CONFIG_KSU_SUSFS disabled.
+          6. Do not modify stat/faccessat/namei/proc/maps/open-redirect hook sites.
+          7. Fix known source-level KSTAT flag typo and enabled-features NULL dereference.
+          8. Verify TIF 33/34/35 collision freedom and SRCU domain semantics.
+          9. Create and replay-verify a complete P3 restore kit.
+          10. No kernel/Image/dtb/boot/ZIP/device work.
+          EOF
+
+      - name: Install P3 dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ca-certificates git jq patch python3 rsync zstd
+          git --version
+          zstd --version | head -1
+
+      - name: Checkout exact VEUX vendor source
+        uses: actions/checkout@v6
+        with:
+          repository: dereference23/kernel_xiaomi_sm6375
+          ref: "20240619"
+          path: kernel
+          fetch-depth: 0
+
+      - name: Download accepted P1 restore artifact
+        uses: actions/download-artifact@v7
+        with:
+          name: ${{ env.P1_ARTIFACT_NAME }}
+          path: p1-artifact
+          github-token: ${{ github.token }}
+          run-id: ${{ env.P1_RUN_ID }}
+
+      - name: Download accepted P2 restore artifact
+        uses: actions/download-artifact@v7
+        with:
+          name: ${{ env.P2_ARTIFACT_NAME }}
+          path: p2-artifact
+          github-token: ${{ github.token }}
+          run-id: ${{ env.P2_RUN_ID }}
+
+      - name: Authenticate P1 and P2 restore artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test -s "$P1_ARTIFACT_DIR/restore-kit/SHA256SUMS"
+          test -s "$P2_ARTIFACT_DIR/restore-kit/SHA256SUMS"
+
+          (
+            cd "$P1_ARTIFACT_DIR/restore-kit"
+            sha256sum -c SHA256SUMS
+          ) | tee "$ARTIFACT_DIR/01-p1-restore-sha256.txt"
+
+          (
+            cd "$P2_ARTIFACT_DIR/restore-kit"
+            sha256sum -c SHA256SUMS
+          ) | tee "$ARTIFACT_DIR/01-p2-restore-sha256.txt"
+
+          jq -e \
+            --arg vendor "$EXPECTED_VENDOR_SHA" \
+            --arg p2tree "$EXPECTED_P2_OUTER_TREE" \
+            --arg rhead "$EXPECTED_P2_RESUKISU_HEAD" \
+            --arg rtree "$EXPECTED_P2_RESUKISU_TREE" \
+            '.stage=="P2" and
+             .vendor_sha==$vendor and
+             .p2_tree==$p2tree and
+             .p2_resukisu_head==$rhead and
+             .p2_resukisu_tree==$rtree and
+             .module_load_filter==false and
+             .susfs_integrated==false and
+             .kernel_build_performed==false' \
+            "$P2_ARTIFACT_DIR/restore-kit/manifest.json" \
+            > "$ARTIFACT_DIR/01-p2-manifest-auth.json"
+
+          test -s "$P1_ARTIFACT_DIR/restore-kit/resukisu-selected-after-faccf4c5.bundle"
+          test -s "$P2_ARTIFACT_DIR/restore-kit/resukisu-p1-to-p2.patch"
+          test -s "$P2_ARTIFACT_DIR/restore-kit/vendor-20240619-to-p2-outer.patch"
+
+          {
+            echo "P1_RESTORE_ARTIFACT=PASS"
+            echo "P2_RESTORE_ARTIFACT=PASS"
+            echo "P2_EXPECTED_OUTER_TREE=$EXPECTED_P2_OUTER_TREE"
+            echo "P2_EXPECTED_RESUKISU_HEAD=$EXPECTED_P2_RESUKISU_HEAD"
+            echo "P2_EXPECTED_RESUKISU_TREE=$EXPECTED_P2_RESUKISU_TREE"
+          } | tee "$ARTIFACT_DIR/01-restore-artifact-auth.txt"
+
+      - name: Verify exact vendor identity before restore
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_VENDOR_SHA"
+          test -z "$(git status --porcelain)"
+          test "$(git describe --tags --exact-match HEAD)" = "$VENDOR_TAG"
+          {
+            echo "VENDOR_HEAD=$(git rev-parse HEAD)"
+            echo "VENDOR_TREE=$(git rev-parse HEAD^{tree})"
+            echo "VENDOR_IDENTITY=PASS"
+          } | tee "$ARTIFACT_DIR/02-vendor-identity.txt"
+
+      - name: Refuse stale reviewed upstream before P3 restore mutation
+        shell: bash
+        run: |
+          set -euo pipefail
+          current_resu="$(git ls-remote https://github.com/ReSukiSU/ReSukiSU.git refs/heads/main | awk '{print $1}')"
+          current_54="$(git ls-remote "$SUSFS_REPO" refs/heads/kernel-5.4 | awk '{print $1}')"
+          current_510="$(git ls-remote "$SUSFS_REPO" refs/heads/gki-android12-5.10 | awk '{print $1}')"
+          current_515="$(git ls-remote "$SUSFS_REPO" refs/heads/gki-android13-5.15 | awk '{print $1}')"
+          current_61="$(git ls-remote "$SUSFS_REPO" refs/heads/gki-android14-6.1 | awk '{print $1}')"
+
+          {
+            printf 'ReSukiSU-main\t%s\t%s\n' "$RESUKISU_SNAPSHOT_HEAD" "$current_resu"
+            printf 'SUSFS-kernel-5.4\t%s\t%s\n' "$SUSFS_54_HEAD" "$current_54"
+            printf 'SUSFS-5.10\t%s\t%s\n' "$SUSFS_510_HEAD" "$current_510"
+            printf 'SUSFS-5.15\t%s\t%s\n' "$SUSFS_515_HEAD" "$current_515"
+            printf 'SUSFS-6.1\t%s\t%s\n' "$SUSFS_61_HEAD" "$current_61"
+          } | tee "$ARTIFACT_DIR/03-upstream-drift.tsv"
+
+          drift=0
+          [ "$current_resu" = "$RESUKISU_SNAPSHOT_HEAD" ] || drift=1
+          [ "$current_54" = "$SUSFS_54_HEAD" ] || drift=1
+          [ "$current_510" = "$SUSFS_510_HEAD" ] || drift=1
+          [ "$current_515" = "$SUSFS_515_HEAD" ] || drift=1
+          [ "$current_61" = "$SUSFS_61_HEAD" ] || drift=1
+
+          if [ "$drift" -ne 0 ]; then
+            {
+              echo "UPSTREAM_REVIEW_SNAPSHOT_CURRENT=NO"
+              echo "P3_ALLOWED=NO"
+              echo "ACTION=RUN_SNAPSHOT_COMPARE_REVIEW_FIRST"
+            } | tee "$ARTIFACT_DIR/03-upstream-drift-state.txt"
+            echo "ERROR: reviewed upstream snapshot is stale; refusing P3." >&2
+            exit 1
+          fi
+
+          {
+            echo "UPSTREAM_REVIEW_SNAPSHOT_CURRENT=YES"
+            echo "P3_ALLOWED=YES"
+          } | tee "$ARTIFACT_DIR/03-upstream-drift-state.txt"
+
+      - name: Restore exact P2 outer tree from vendor backup
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+          PATCH="$P2_ARTIFACT_DIR/restore-kit/vendor-20240619-to-p2-outer.patch"
+
+          git apply --check --binary "$PATCH"
+          git apply --index --binary "$PATCH"
+
+          restored_tree="$(git write-tree)"
+          test "$restored_tree" = "$EXPECTED_P2_OUTER_TREE"
+
+          GIT_AUTHOR_NAME="CLEAN-GEN1 Restore" \
+          GIT_AUTHOR_EMAIL="clean-gen1@invalid.local" \
+          GIT_AUTHOR_DATE="2026-08-31T00:00:00Z" \
+          GIT_COMMITTER_NAME="CLEAN-GEN1 Restore" \
+          GIT_COMMITTER_EMAIL="clean-gen1@invalid.local" \
+          GIT_COMMITTER_DATE="2026-08-31T00:00:00Z" \
+            git commit -m "CLEAN GEN1 restore accepted P2 outer tree"
+
+          P2_RESTORED_OUTER_COMMIT="$(git rev-parse HEAD)"
+          test "$(git rev-parse HEAD^{tree})" = "$EXPECTED_P2_OUTER_TREE"
+          echo "P2_RESTORED_OUTER_COMMIT=$P2_RESTORED_OUTER_COMMIT" >> "$GITHUB_ENV"
+
+          {
+            echo "P2_RESTORE_OUTER_TREE=$restored_tree"
+            echo "P2_RESTORE_OUTER_TREE_EXPECTED=$EXPECTED_P2_OUTER_TREE"
+            echo "P2_OUTER_RESTORE_REPLAY=PASS"
+          } | tee "$ARTIFACT_DIR/04-p2-outer-restore.txt"
+
+      - name: Restore exact P2 ReSukiSU Git history from backup delta
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf KernelSU
+
+          git clone --no-checkout https://github.com/ReSukiSU/ReSukiSU.git KernelSU
+          grep -Fxq '/KernelSU/' .git/info/exclude 2>/dev/null || echo '/KernelSU/' >> .git/info/exclude
+          git -C KernelSU checkout --detach "$RESUKISU_BASE"
+
+          git -C KernelSU fetch \
+            "$P1_ARTIFACT_DIR/restore-kit/resukisu-selected-after-faccf4c5.bundle" \
+            refs/heads/clean-gen1-selected-419:refs/heads/clean-gen1-p1-restored
+          git -C KernelSU checkout clean-gen1-p1-restored
+          test "$(git -C KernelSU rev-parse HEAD)" = "$EXPECTED_P1_RESUKISU_HEAD"
+
+          P2_PATCH="$P2_ARTIFACT_DIR/restore-kit/resukisu-p1-to-p2.patch"
+          git -C KernelSU apply --check "$P2_PATCH"
+          git -C KernelSU apply "$P2_PATCH"
+          git -C KernelSU add kernel/Kbuild kernel/feature/sucompat.h \
+            kernel/runtime/ksud_integration.c kernel/supercall/supercall.c
+          git -C KernelSU diff --cached --check
+
+          GIT_AUTHOR_NAME="CLEAN-GEN1 Builder" \
+          GIT_AUTHOR_EMAIL="clean-gen1@invalid.local" \
+          GIT_AUTHOR_DATE="2026-08-31T00:00:00Z" \
+          GIT_COMMITTER_NAME="CLEAN-GEN1 Builder" \
+          GIT_COMMITTER_EMAIL="clean-gen1@invalid.local" \
+          GIT_COMMITTER_DATE="2026-08-31T00:00:00Z" \
+            git -C KernelSU commit -m "CLEAN GEN1 P2 authoritative outer hook contracts"
+
+          test "$(git -C KernelSU rev-parse HEAD)" = "$EXPECTED_P2_RESUKISU_HEAD"
+          test "$(git -C KernelSU rev-parse HEAD^{tree})" = "$EXPECTED_P2_RESUKISU_TREE"
+          test -z "$(git -C KernelSU status --porcelain)"
+
+          test -L drivers/kernelsu
+          test "$(readlink drivers/kernelsu)" = "../KernelSU/kernel"
+          test -d KernelSU/.git
+
+          {
+            echo "P2_RESTORED_RESUKISU_HEAD=$(git -C KernelSU rev-parse HEAD)"
+            echo "P2_RESTORED_RESUKISU_TREE=$(git -C KernelSU rev-parse HEAD^{tree})"
+            echo "P2_RESUKISU_HISTORY_RESTORE=PASS"
+          } | tee "$ARTIFACT_DIR/05-p2-resukisu-restore.txt"
+
+      - name: Prove full P2 restore replay before P3
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD^{tree})" = "$EXPECTED_P2_OUTER_TREE"
+          test "$(git -C KernelSU rev-parse HEAD)" = "$EXPECTED_P2_RESUKISU_HEAD"
+          test "$(git -C KernelSU rev-parse HEAD^{tree})" = "$EXPECTED_P2_RESUKISU_TREE"
+          test -f include/linux/ksu_hook_contract.h
+          test ! -e fs/susfs.c
+          test ! -e include/linux/susfs.h
+          test ! -e include/linux/susfs_def.h
+          test ! -e KernelSU/kernel/feature/module_load_filter.c
+          ! grep -Fq 'feature/module_load_filter.o' KernelSU/kernel/Kbuild
+          grep -Fxq '# CONFIG_KSU_SUSFS is not set' arch/arm64/configs/veux_defconfig
+
+          {
+            echo "P2_BACKUP_REPLAY=PASS"
+            echo "P2_OUTER_TREE=$EXPECTED_P2_OUTER_TREE"
+            echo "P2_RESUKISU_HEAD=$EXPECTED_P2_RESUKISU_HEAD"
+            echo "P2_RESUKISU_TREE=$EXPECTED_P2_RESUKISU_TREE"
+            echo "P3_MUTATION_ALLOWED=YES"
+          } | tee "$ARTIFACT_DIR/06-p2-full-restore-gate.txt"
+
+      - name: Checkout exact reviewed SUSFS 2.3 source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone "$SUSFS_REPO" "$SUSFS_UPSTREAM_DIR"
+          git -C "$SUSFS_UPSTREAM_DIR" checkout --detach "$SUSFS_P3_SOURCE_HEAD"
+          test "$(git -C "$SUSFS_UPSTREAM_DIR" rev-parse HEAD)" = "$SUSFS_P3_SOURCE_HEAD"
+
+          for f in \
+            kernel_patches/fs/susfs.c \
+            kernel_patches/include/linux/susfs.h \
+            kernel_patches/include/linux/susfs_def.h
+          do
+            test -s "$SUSFS_UPSTREAM_DIR/$f"
+          done
+
+          grep -Fq '#define SUSFS_VERSION "v2.3.0"' \
+            "$SUSFS_UPSTREAM_DIR/kernel_patches/include/linux/susfs.h"
+
+          {
+            echo "SUSFS_REPO=$SUSFS_REPO"
+            echo "SUSFS_SOURCE_BRANCH=gki-android12-5.10"
+            echo "SUSFS_SOURCE_HEAD=$(git -C "$SUSFS_UPSTREAM_DIR" rev-parse HEAD)"
+            echo "SUSFS_SOURCE_VERSION=$SUSFS_VERSION"
+          } | tee "$ARTIFACT_DIR/07-susfs-source-identity.txt"
+
+          sha256sum \
+            "$SUSFS_UPSTREAM_DIR/kernel_patches/fs/susfs.c" \
+            "$SUSFS_UPSTREAM_DIR/kernel_patches/include/linux/susfs.h" \
+            "$SUSFS_UPSTREAM_DIR/kernel_patches/include/linux/susfs_def.h" \
+            > "$ARTIFACT_DIR/07-susfs-upstream-source.sha256"
+
+      - name: Import dormant SUSFS 2.3 core and process-state source foundation
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          install -m 0644 \
+            "$SUSFS_UPSTREAM_DIR/kernel_patches/fs/susfs.c" \
+            fs/susfs.c
+          install -m 0644 \
+            "$SUSFS_UPSTREAM_DIR/kernel_patches/include/linux/susfs.h" \
+            include/linux/susfs.h
+          install -m 0644 \
+            "$SUSFS_UPSTREAM_DIR/kernel_patches/include/linux/susfs_def.h" \
+            include/linux/susfs_def.h
+
+          if grep -Fq 'obj-$(CONFIG_KSU_SUSFS) += susfs.o' fs/Makefile; then
+            echo "ERROR: unexpected SUSFS build wiring already present at P2" >&2
+            exit 1
+          fi
+          printf '\n# CLEAN-GEN1 P3 dormant SUSFS foundation\nobj-$(CONFIG_KSU_SUSFS) += susfs.o\n' \
+            >> fs/Makefile
+
+          {
+            echo "SUSFS_CORE_SOURCE_IMPORTED=YES"
+            echo "SUSFS_PROCESS_STATE_HEADER_IMPORTED=YES"
+            echo "SUSFS_BUILD_WIRING_PRESENT=YES"
+            echo "CONFIG_KSU_SUSFS_ENABLED=NO"
+          } | tee "$ARTIFACT_DIR/08-susfs-foundation-import.txt"
+
+      - name: Apply mandatory P3 source safety adaptations
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          h = Path("include/linux/susfs.h")
+          text = h.read_text(encoding="utf-8")
+          old = "#define KSTAT_SPOOF_CTIME_TV_SEC (1 < 8)"
+          new = "#define KSTAT_SPOOF_CTIME_TV_SEC (1 << 8)"
+          if text.count(old) != 1:
+              raise SystemExit("KSTAT CTIME flag typo anchor mismatch")
+          h.write_text(text.replace(old, new, 1), encoding="utf-8")
+
+          c = Path("fs/susfs.c")
+          text = c.read_text(encoding="utf-8")
+          old = "\tif (!info) {\n\t\tinfo->err = -ENOMEM;\n\t\tgoto out_copy_to_user;\n\t}\n"
+          new = (
+              "\tif (!info) {\n"
+              "\t\tstruct st_susfs_enabled_features fallback = { .err = -ENOMEM };\n"
+              "\t\tcopy_to_user((struct st_susfs_enabled_features __user*)*user_info,\n"
+              "\t\t\t\t &fallback, sizeof(fallback));\n"
+              "\t\treturn;\n"
+              "\t}\n"
+          )
+          if text.count(old) != 1:
+              raise SystemExit("enabled-features allocation guard anchor mismatch")
+          text = text.replace(old, new, 1)
+
+          # 5.4 compatibility: use normal DEFINE_SRCU if DEFINE_STATIC_SRCU does not exist.
+          srcu = Path("include/linux/srcu.h").read_text(encoding="utf-8", errors="ignore")
+          if "DEFINE_STATIC_SRCU" not in srcu:
+              old_srcu = "DEFINE_STATIC_SRCU(susfs_srcu_sus_path_loop);"
+              new_srcu = "DEFINE_SRCU(susfs_srcu_sus_path_loop);"
+              if old_srcu not in text:
+                  raise SystemExit("DEFINE_STATIC_SRCU compatibility anchor missing")
+              text = text.replace(old_srcu, new_srcu, 1)
+
+          c.write_text(text, encoding="utf-8")
+          PY
+
+          grep -Fq '#define KSTAT_SPOOF_CTIME_TV_SEC (1 << 8)' include/linux/susfs.h
+          ! grep -Fq '#define KSTAT_SPOOF_CTIME_TV_SEC (1 < 8)' include/linux/susfs.h
+          ! grep -A7 -F 'if (!info) {' fs/susfs.c | head -8 | grep -Fq 'info->err = -ENOMEM'
+          grep -Fq 'struct st_susfs_enabled_features fallback = { .err = -ENOMEM };' fs/susfs.c
+
+          {
+            echo "KSTAT_CTIME_FLAG_FIX=PASS"
+            echo "ENABLED_FEATURES_KZALLOC_NULL_DEREF_FIX=PASS"
+            if grep -Fq 'DEFINE_STATIC_SRCU(susfs_srcu_sus_path_loop);' fs/susfs.c; then
+              echo "SUS_PATH_LOOP_SRCU_DECL=DEFINE_STATIC_SRCU"
+            else
+              grep -Fq 'DEFINE_SRCU(susfs_srcu_sus_path_loop);' fs/susfs.c
+              echo "SUS_PATH_LOOP_SRCU_DECL=DEFINE_SRCU_5_4_COMPAT"
+            fi
+          } | tee "$ARTIFACT_DIR/09-p3-safety-adaptations.txt"
+
+      - name: Audit ARM64 process-state TIF bit collision freedom
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY' > "$ARTIFACT_DIR/10-arm64-tif-audit.txt"
+          import re
+          from pathlib import Path
+
+          reserved = {33: "TIF_PROC_UMOUNTED", 34: "TIF_PROC_NO_SU",
+                      35: "TIF_PROC_UMOUNTED_FOR_ZYGOTE_NEXT"}
+          hits = []
+          roots = [Path("arch/arm64/include"), Path("include")]
+          pat = re.compile(r'^\s*#\s*define\s+(TIF_[A-Za-z0-9_]+)\s+([0-9]+)\b')
+
+          for root in roots:
+              if not root.exists():
+                  continue
+              for p in root.rglob("*.h"):
+                  if p.as_posix() == "include/linux/susfs_def.h":
+                      continue
+                  for n,line in enumerate(p.read_text(encoding="utf-8", errors="ignore").splitlines(),1):
+                      m=pat.match(line)
+                      if m and int(m.group(2)) in reserved:
+                          hits.append((p.as_posix(), n, m.group(1), int(m.group(2))))
+
+          if hits:
+              print("TIF_COLLISION=FAIL")
+              for h in hits:
+                  print("%s:%d %s=%d" % h)
+              raise SystemExit(1)
+
+          s=Path("include/linux/susfs_def.h").read_text(encoding="utf-8")
+          for bit,name in reserved.items():
+              expected=f"#define {name} {bit}"
+              if expected not in s:
+                  raise SystemExit(f"missing {expected}")
+              print(f"{name}={bit}=FREE")
+          print("ARM64_TIF_33_34_35_COLLISION_AUDIT=PASS")
+          PY
+
+          grep -Fq 'ARM64_TIF_33_34_35_COLLISION_AUDIT=PASS' \
+            "$ARTIFACT_DIR/10-arm64-tif-audit.txt"
+
+      - name: Audit dormant SRCU domains and OPEN_REDIRECT boundary
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY' > "$ARTIFACT_DIR/11-srcu-audit.txt"
+          from pathlib import Path
+
+          text=Path("fs/susfs.c").read_text(encoding="utf-8")
+
+          if "susfs_srcu_sus_path_loop" not in text:
+              raise SystemExit("missing sus_path_loop SRCU domain")
+          if "DEFINE_SRCU(susfs_srcu_open_redirect);" not in text:
+              raise SystemExit("missing open_redirect SRCU domain")
+          if "synchronize_srcu(&susfs_srcu_open_redirect);" not in text:
+              raise SystemExit("missing open_redirect synchronize_srcu")
+          if 'callers must hold and release the "susfs_srcu_open_redirect" lock themselves.' not in text:
+              raise SystemExit("missing maps caller-held SRCU lifetime contract")
+
+          begin=text.index("#ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT")
+          end=text.index("#endif // #ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT", begin)
+          block=text[begin:end]
+          if "synchronize_rcu(" in block:
+              raise SystemExit("RCU/SRCU domain mixing detected in OPEN_REDIRECT block")
+
+          print("SUS_PATH_LOOP_SRCU_DOMAIN=PASS")
+          print("OPEN_REDIRECT_SRCU_DOMAIN=PASS")
+          print("OPEN_REDIRECT_WRITER_SYNCHRONIZE_SRCU=PASS")
+          print("OPEN_REDIRECT_MAPS_CALLER_HELD_SRCU_CONTRACT=PASS")
+          print("OPEN_REDIRECT_SYNCHRONIZE_RCU_IN_SRCU_BLOCK=NO")
+          print("P3_OPEN_REDIRECT_STATUS=SOURCE_PRESENT_DORMANT_NOT_HOOKED")
+          PY
+
+      - name: Prove P3 does not touch stat faccessat namei proc maps hooks
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Include both tracked modifications and newly imported untracked files.
+          # `git diff --name-only` alone cannot see fresh SUSFS files before `git add`.
+          mapfile -t changed < <(
+            {
+              git diff --name-only "$P2_RESTORED_OUTER_COMMIT" --
+              git ls-files --others --exclude-standard
+            } | sed '/^$/d' | sort -u
+          )
+          printf '%s\n' "${changed[@]}" | tee "$ARTIFACT_DIR/12-p3-changed-files.txt"
+
+          expected=(
+            "fs/Makefile"
+            "fs/susfs.c"
+            "include/linux/susfs.h"
+            "include/linux/susfs_def.h"
+          )
+
+          test "${#changed[@]}" -eq "${#expected[@]}"
+          for f in "${expected[@]}"; do
+            printf '%s\n' "${changed[@]}" | grep -Fxq "$f"
+          done
+
+          for forbidden in \
+            fs/stat.c \
+            fs/open.c \
+            fs/namei.c \
+            fs/namespace.c \
+            fs/proc/task_mmu.c \
+            fs/proc/base.c \
+            fs/proc/fd.c \
+            fs/proc_namespace.c \
+            kernel/reboot.c
+          do
+            ! printf '%s\n' "${changed[@]}" | grep -Fxq "$forbidden"
+          done
+
+          grep -Fxq '# CONFIG_KSU_SUSFS is not set' arch/arm64/configs/veux_defconfig
+          ! grep -RIn 'CONFIG_KSU_SUSFS=y' arch/arm64/configs/veux_defconfig
+
+          {
+            echo "P3_CHANGE_SCOPE=PASS"
+            echo "CHANGE_INVENTORY_TRACKED_PLUS_UNTRACKED=YES"
+            echo "STAT_FACCESSAT_CHANGED=NO"
+            echo "NAMEI_CHANGED=NO"
+            echo "PROC_MAPS_CHANGED=NO"
+            echo "OPEN_REDIRECT_HOOKS_INTEGRATED=NO"
+            echo "CONFIG_KSU_SUSFS_ENABLED=NO"
+            echo "NEXT_STAT_FILENAME_BRIDGE_STAGE=P4"
+            echo "NEXT_OPEN_REDIRECT_HOOK_STAGE=P5"
+          } | tee "$ARTIFACT_DIR/12-p3-boundary.txt"
+
+      - name: Resolve dormant P3 Kconfig state without compiling kernel
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf out-p3-config
+          make -s O=out-p3-config ARCH=arm64 veux_defconfig
+          CONFIG=out-p3-config/.config
+
+          grep -Fxq 'CONFIG_KSU=y' "$CONFIG"
+          grep -Fxq 'CONFIG_KSU_MANUAL_HOOK=y' "$CONFIG"
+          grep -Fxq '# CONFIG_KSU_SUSFS is not set' "$CONFIG"
+          grep -Fxq '# CONFIG_KSU_TRACEPOINT_HOOK is not set' "$CONFIG"
+          test -f fs/susfs.c
+          test -f include/linux/susfs.h
+          test -f include/linux/susfs_def.h
+          grep -Fq 'obj-$(CONFIG_KSU_SUSFS) += susfs.o' fs/Makefile
+
+          cp "$CONFIG" "$ARTIFACT_DIR/13-resolved-p3.config"
+          rm -rf out-p3-config
+
+          {
+            echo "P3_KCONFIG_RESOLUTION=PASS"
+            echo "SUSFS_SOURCE_FOUNDATION_PRESENT=YES"
+            echo "SUSFS_RUNTIME_ENABLED=NO"
+            echo "KERNEL_COMPILE_PERFORMED=NO"
+          } | tee "$ARTIFACT_DIR/13-kconfig-state.txt"
+
+      - name: Normalize imported SUSFS whitespace and EOF deterministically
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY' > "$ARTIFACT_DIR/13b-susfs-whitespace-normalization.txt"
+          from pathlib import Path
+
+          files = [
+              Path("fs/susfs.c"),
+              Path("include/linux/susfs.h"),
+              Path("include/linux/susfs_def.h"),
+          ]
+
+          total_changed_lines = 0
+          total_removed_eof_blank_lines = 0
+          total_files_changed = 0
+
+          for p in files:
+              original = p.read_text(encoding="utf-8")
+              original_lines = original.splitlines()
+
+              normalized_lines = [line.rstrip(" \t") for line in original_lines]
+              changed_lines = sum(
+                  1 for old, new in zip(original_lines, normalized_lines)
+                  if old != new
+              )
+
+              removed_eof_blank_lines = 0
+              while normalized_lines and normalized_lines[-1] == "":
+                  normalized_lines.pop()
+                  removed_eof_blank_lines += 1
+
+              normalized = "\n".join(normalized_lines)
+              if normalized_lines:
+                  normalized += "\n"
+
+              if original != normalized:
+                  p.write_text(normalized, encoding="utf-8")
+                  total_files_changed += 1
+
+              total_changed_lines += changed_lines
+              total_removed_eof_blank_lines += removed_eof_blank_lines
+
+              print(
+                  f"{p}: NORMALIZED={'YES' if original != normalized else 'NO'} "
+                  f"TRAILING_WHITESPACE_LINES={changed_lines} "
+                  f"REMOVED_EOF_BLANK_LINES={removed_eof_blank_lines}"
+              )
+
+          print(f"NORMALIZED_FILE_COUNT={total_files_changed}")
+          print(f"NORMALIZED_TRAILING_WHITESPACE_LINE_COUNT={total_changed_lines}")
+          print(f"REMOVED_EOF_BLANK_LINE_COUNT={total_removed_eof_blank_lines}")
+          print("NORMALIZATION_SCOPE=TRAILING_SPACE_TAB_PLUS_TRAILING_EOF_BLANK_LINES_ONLY")
+          print("FINAL_NEWLINE_POLICY=EXACTLY_ONE_LF")
+          print("SUSFS_WHITESPACE_EOF_NORMALIZATION=PASS")
+          PY
+
+          grep -Fq 'SUSFS_WHITESPACE_EOF_NORMALIZATION=PASS' \
+            "$ARTIFACT_DIR/13b-susfs-whitespace-normalization.txt"
+
+          grep -Fq '#define SUSFS_VERSION "v2.3.0"' include/linux/susfs.h
+          grep -Fq '#define KSTAT_SPOOF_CTIME_TV_SEC (1 << 8)' include/linux/susfs.h
+          grep -Fq 'struct st_susfs_enabled_features fallback = { .err = -ENOMEM };' fs/susfs.c
+          grep -Eq 'DEFINE_(STATIC_)?SRCU\(susfs_srcu_open_redirect\);' fs/susfs.c
+          grep -Fq 'synchronize_srcu(&susfs_srcu_open_redirect);' fs/susfs.c
+
+          git add fs/Makefile fs/susfs.c include/linux/susfs.h include/linux/susfs_def.h
+
+          if ! git diff --cached --check \
+              > "$ARTIFACT_DIR/13b-p3-diff-check.txt" 2>&1; then
+            cat "$ARTIFACT_DIR/13b-p3-diff-check.txt" >&2
+            exit 1
+          fi
+
+          git diff --cached --numstat \
+            > "$ARTIFACT_DIR/13b-p3-normalized-numstat.txt"
+
+          echo "P3_STAGED_SOURCE_WHITESPACE_CLEAN=PASS" \
+            | tee "$ARTIFACT_DIR/13b-p3-whitespace-gate.txt"
+
+      - name: Gate clean transition from P3 foundation to checkpoint
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mapfile -t staged < <(git diff --cached --name-only | sort)
+          expected=(
+            "fs/Makefile"
+            "fs/susfs.c"
+            "include/linux/susfs.h"
+            "include/linux/susfs_def.h"
+          )
+
+          test "${#staged[@]}" -eq "${#expected[@]}"
+          for f in "${expected[@]}"; do
+            printf '%s\n' "${staged[@]}" | grep -Fxq "$f"
+          done
+
+          test -z "$(git diff --name-only)"
+          test -z "$(git ls-files --others --exclude-standard)"
+
+          test "$(git -C KernelSU rev-parse HEAD)" = "$EXPECTED_P2_RESUKISU_HEAD"
+          test "$(git -C KernelSU rev-parse HEAD^{tree})" = "$EXPECTED_P2_RESUKISU_TREE"
+          test -z "$(git -C KernelSU status --porcelain)"
+
+          grep -Fxq '# CONFIG_KSU_SUSFS is not set' arch/arm64/configs/veux_defconfig
+          ! grep -RIn 'CONFIG_KSU_SUSFS=y' arch/arm64/configs/veux_defconfig
+          test ! -e KernelSU/kernel/feature/module_load_filter.c
+          ! grep -Fq 'feature/module_load_filter.o' KernelSU/kernel/Kbuild
+
+          if ! git diff --cached --check \
+              > "$ARTIFACT_DIR/13c-transition-diff-check.txt" 2>&1; then
+            cat "$ARTIFACT_DIR/13c-transition-diff-check.txt" >&2
+            exit 1
+          fi
+
+          P3_PRECOMMIT_TREE="$(git write-tree)"
+          test -n "$P3_PRECOMMIT_TREE"
+          echo "P3_PRECOMMIT_TREE=$P3_PRECOMMIT_TREE" >> "$GITHUB_ENV"
+
+          {
+            echo "P3_TRANSITION_GATE=PASS"
+            echo "STAGED_FILE_COUNT=${#staged[@]}"
+            printf 'STAGED_FILE=%s\n' "${staged[@]}"
+            echo "UNSTAGED_FILES=NONE"
+            echo "UNTRACKED_FILES=NONE"
+            echo "RESUKISU_UNCHANGED_FROM_P2=YES"
+            echo "SUSFS_RUNTIME_ENABLED=NO"
+            echo "MODULE_LOAD_FILTER_INCLUDED=NO"
+            echo "P3_PRECOMMIT_TREE=$P3_PRECOMMIT_TREE"
+          } | tee "$ARTIFACT_DIR/13c-transition-gate.txt"
+
+      - name: Freeze P3 dormant SUSFS foundation checkpoint
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test "$(git write-tree)" = "$P3_PRECOMMIT_TREE"
+          test -n "$(git diff --cached --name-only)"
+
+          GIT_AUTHOR_NAME="CLEAN-GEN1 Builder" \
+          GIT_AUTHOR_EMAIL="clean-gen1@invalid.local" \
+          GIT_AUTHOR_DATE="2026-08-31T00:00:00Z" \
+          GIT_COMMITTER_NAME="CLEAN-GEN1 Builder" \
+          GIT_COMMITTER_EMAIL="clean-gen1@invalid.local" \
+          GIT_COMMITTER_DATE="2026-08-31T00:00:00Z" \
+            git commit -m "CLEAN GEN1 P3 dormant SUSFS 2.3 foundation"
+
+          P3_COMMIT="$(git rev-parse HEAD)"
+          P3_TREE="$(git rev-parse HEAD^{tree})"
+          test "$P3_TREE" = "$P3_PRECOMMIT_TREE"
+          P3_RESUKISU_HEAD="$(git -C KernelSU rev-parse HEAD)"
+          P3_RESUKISU_TREE="$(git -C KernelSU rev-parse HEAD^{tree})"
+
+          test "$P3_RESUKISU_HEAD" = "$EXPECTED_P2_RESUKISU_HEAD"
+          test "$P3_RESUKISU_TREE" = "$EXPECTED_P2_RESUKISU_TREE"
+          test -z "$(git status --porcelain)"
+          test -z "$(git -C KernelSU status --porcelain)"
+
+          {
+            echo "P3_CHECKPOINT_COMMIT=$P3_COMMIT"
+            echo "P3_PRECOMMIT_TREE=$P3_PRECOMMIT_TREE"
+            echo "P3_OUTER_TREE=$P3_TREE"
+            echo "PRECOMMIT_TO_COMMIT_TREE_IDENTITY=PASS"
+            echo "P3_RESUKISU_HEAD=$P3_RESUKISU_HEAD"
+            echo "P3_RESUKISU_TREE=$P3_RESUKISU_TREE"
+          } | tee "$ARTIFACT_DIR/14-p3-checkpoint.txt"
+
+          echo "P3_CHECKPOINT_COMMIT=$P3_COMMIT" >> "$GITHUB_ENV"
+          echo "P3_OUTER_TREE=$P3_TREE" >> "$GITHUB_ENV"
+          echo "P3_RESUKISU_HEAD=$P3_RESUKISU_HEAD" >> "$GITHUB_ENV"
+          echo "P3_RESUKISU_TREE=$P3_RESUKISU_TREE" >> "$GITHUB_ENV"
+
+      - name: Create complete P3 restore kit
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+          RESTORE="$ARTIFACT_DIR/restore-kit"
+          mkdir -p "$RESTORE"
+
+          test "$(git rev-parse HEAD)" = "$P3_CHECKPOINT_COMMIT"
+          test "$(git rev-parse HEAD^{tree})" = "$P3_OUTER_TREE"
+          test "$P3_OUTER_TREE" = "$P3_PRECOMMIT_TREE"
+          test -z "$(git status --porcelain)"
+          test -z "$(git -C KernelSU status --porcelain)"
+
+          git diff --binary "$P2_RESTORED_OUTER_COMMIT" "$P3_CHECKPOINT_COMMIT" \
+            > "$RESTORE/p2-to-p3-outer.patch"
+          test -s "$RESTORE/p2-to-p3-outer.patch"
+
+          git diff --binary "$EXPECTED_VENDOR_SHA" "$P3_CHECKPOINT_COMMIT" \
+            > "$RESTORE/vendor-20240619-to-p3-outer.patch"
+          test -s "$RESTORE/vendor-20240619-to-p3-outer.patch"
+
+          git -C KernelSU branch -f clean-gen1-p3-resukisu "$P3_RESUKISU_HEAD"
+          git -C KernelSU bundle create \
+            "$RESTORE/resukisu-p3-full.bundle" \
+            refs/heads/clean-gen1-p3-resukisu
+          test -s "$RESTORE/resukisu-p3-full.bundle"
+          if ! git -C KernelSU bundle verify "$RESTORE/resukisu-p3-full.bundle" \
+              > "$RESTORE/resukisu-p3-bundle-verify.txt" 2>&1; then
+            cat "$RESTORE/resukisu-p3-bundle-verify.txt" >&2
+            exit 1
+          fi
+
+          git -C KernelSU archive --format=tar "$P3_RESUKISU_HEAD" \
+            | zstd -T0 -19 -o "$RESTORE/resukisu-p3-source.tar.zst"
+
+          mkdir -p "$RESTORE/susfs-p3-foundation"
+          cp fs/susfs.c "$RESTORE/susfs-p3-foundation/"
+          cp include/linux/susfs.h "$RESTORE/susfs-p3-foundation/"
+          cp include/linux/susfs_def.h "$RESTORE/susfs-p3-foundation/"
+          cp "$ARTIFACT_DIR/07-susfs-source-identity.txt" \
+             "$RESTORE/susfs-p3-foundation/UPSTREAM.txt"
+
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+
+          out=Path(os.environ["ARTIFACT_DIR"])/"restore-kit"/"manifest.json"
+          data={
+            "schema":3,
+            "project":"CLEAN-GEN1-VEUX-5.4.274",
+            "stage":"P3",
+            "vendor_sha":os.environ["EXPECTED_VENDOR_SHA"],
+            "p2_tree":os.environ["EXPECTED_P2_OUTER_TREE"],
+            "p3_commit":os.environ["P3_CHECKPOINT_COMMIT"],
+            "p3_tree":os.environ["P3_OUTER_TREE"],
+            "resukisu_head":os.environ["P3_RESUKISU_HEAD"],
+            "resukisu_tree":os.environ["P3_RESUKISU_TREE"],
+            "susfs_version":os.environ["SUSFS_VERSION"],
+            "susfs_source_head":os.environ["SUSFS_P3_SOURCE_HEAD"],
+            "susfs_source_branch":"gki-android12-5.10",
+            "susfs_source_foundation_present":True,
+            "susfs_runtime_enabled":False,
+            "stat_faccessat_bridge_integrated":False,
+            "open_redirect_hooks_integrated":False,
+            "module_load_filter":False,
+            "kernel_build_performed":False,
+            "p2_backup_replay_verified":True,
+            "susfs_whitespace_normalized":True,
+            "susfs_whitespace_normalization_scope":"trailing spaces/tabs plus trailing EOF blank lines only; exactly one final LF",
+            "precommit_to_commit_tree_identity_verified":True,
+          }
+          out.write_text(json.dumps(data,indent=2,sort_keys=True)+"\n",encoding="utf-8")
+          PY
+
+          cat > "$RESTORE/RESTORE-INSTRUCTIONS.txt" <<EOF
+          CLEAN-GEN1 P3 deterministic restore
+
+          Fast outer restore:
+          1. Checkout $VENDOR_REPO tag $VENDOR_TAG.
+          2. Verify vendor HEAD $EXPECTED_VENDOR_SHA.
+          3. Apply vendor-20240619-to-p3-outer.patch with git apply --index.
+          4. Verify write-tree equals $P3_OUTER_TREE.
+
+          Exact ReSukiSU restore:
+          5. Clone resukisu-p3-full.bundle.
+          6. Verify HEAD $P3_RESUKISU_HEAD.
+          7. Verify tree $P3_RESUKISU_TREE.
+
+          Safety:
+          - SUSFS source foundation is present but CONFIG_KSU_SUSFS remains disabled.
+          - stat/faccessat struct-filename bridge is NOT P3.
+          - OPEN_REDIRECT hook integration is NOT P3.
+          - No kernel build belongs to this checkpoint.
+          EOF
+
+          (
+            cd "$RESTORE"
+            find . -type f ! -name SHA256SUMS -print0 | sort -z \
+              | xargs -0 sha256sum > SHA256SUMS
+            sha256sum -c SHA256SUMS
+          )
+
+          echo "P3_RESTORE_KIT_CREATED=PASS" \
+            | tee "$ARTIFACT_DIR/15-restore-kit-create.txt"
+
+      - name: Replay verify complete P3 outer backup from fresh vendor tree
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERIFY="$GITHUB_WORKSPACE/p3-outer-restore-check"
+          rm -rf "$VERIFY"
+
+          git worktree add --detach "$VERIFY" "$EXPECTED_VENDOR_SHA" >/dev/null
+          git -C "$VERIFY" apply --check --binary \
+            "$ARTIFACT_DIR/restore-kit/vendor-20240619-to-p3-outer.patch"
+          git -C "$VERIFY" apply --index --binary \
+            "$ARTIFACT_DIR/restore-kit/vendor-20240619-to-p3-outer.patch"
+
+          replay_tree="$(git -C "$VERIFY" write-tree)"
+          test "$replay_tree" = "$P3_OUTER_TREE"
+
+          mapfile -t replay_changed < <(
+            git -C "$VERIFY" diff --cached --name-only "$EXPECTED_VENDOR_SHA" | sort
+          )
+          test "${#replay_changed[@]}" -gt 0
+
+          {
+            echo "P3_OUTER_RESTORE_REPLAY_TREE=$replay_tree"
+            echo "P3_OUTER_RESTORE_REPLAY_EXPECTED=$P3_OUTER_TREE"
+            echo "P3_OUTER_RESTORE_REPLAY=PASS"
+          } | tee "$ARTIFACT_DIR/16-p3-outer-restore-replay.txt"
+
+          git worktree remove --force "$VERIFY"
+
+      - name: Replay verify exact ReSukiSU P3 full bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERIFY="$GITHUB_WORKSPACE/p3-resukisu-bundle-check"
+          rm -rf "$VERIFY"
+
+          git init "$VERIFY" >/dev/null
+          git -C "$VERIFY" fetch             "$ARTIFACT_DIR/restore-kit/resukisu-p3-full.bundle"             refs/heads/clean-gen1-p3-resukisu:refs/heads/clean-gen1-p3-resukisu
+          git -C "$VERIFY" checkout --detach refs/heads/clean-gen1-p3-resukisu >/dev/null
+          test "$(git -C "$VERIFY" rev-parse HEAD)" = "$P3_RESUKISU_HEAD"
+          test "$(git -C "$VERIFY" rev-parse HEAD^{tree})" = "$P3_RESUKISU_TREE"
+
+          {
+            echo "P3_RESUKISU_BUNDLE_HEAD=$(git -C "$VERIFY" rev-parse HEAD)"
+            echo "P3_RESUKISU_BUNDLE_TREE=$(git -C "$VERIFY" rev-parse HEAD^{tree})"
+            echo "P3_RESUKISU_BUNDLE_REPLAY=PASS"
+          } | tee "$ARTIFACT_DIR/17-p3-resukisu-restore-replay.txt"
+
+          rm -rf "$VERIFY"
+
+      - name: Final P3 source-only safety gate
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test "$(make -s kernelversion)" = "5.4.274"
+          test "$(git rev-parse HEAD)" = "$P3_CHECKPOINT_COMMIT"
+          test "$(git rev-parse HEAD^{tree})" = "$P3_OUTER_TREE"
+          test "$(git -C KernelSU rev-parse HEAD)" = "$P3_RESUKISU_HEAD"
+          test "$(git -C KernelSU rev-parse HEAD^{tree})" = "$P3_RESUKISU_TREE"
+
+          test -f fs/susfs.c
+          test -f include/linux/susfs.h
+          test -f include/linux/susfs_def.h
+          grep -Fq '#define SUSFS_VERSION "v2.3.0"' include/linux/susfs.h
+          grep -Fxq '# CONFIG_KSU_SUSFS is not set' arch/arm64/configs/veux_defconfig
+          grep -Fq 'obj-$(CONFIG_KSU_SUSFS) += susfs.o' fs/Makefile
+
+          test ! -e KernelSU/kernel/feature/module_load_filter.c
+          ! grep -Fq 'feature/module_load_filter.o' KernelSU/kernel/Kbuild
+
+          test -z "$(git status --porcelain)"
+          test -z "$(git -C KernelSU status --porcelain)"
+
+          (
+            cd "$ARTIFACT_DIR/restore-kit"
+            sha256sum -c SHA256SUMS
+          ) > "$ARTIFACT_DIR/18-final-restore-sha256.txt"
+
+          {
+            echo "CLEAN_GEN1_P3_SUSFS_FOUNDATION=PASS"
+            echo "KERNEL_VERSION=5.4.274"
+            echo "P2_BACKUP_REPLAY=PASS"
+            echo "P3_OUTER_TREE=$P3_OUTER_TREE"
+            echo "P3_RESUKISU_HEAD=$P3_RESUKISU_HEAD"
+            echo "P3_RESUKISU_TREE=$P3_RESUKISU_TREE"
+            echo "SUSFS_VERSION=$SUSFS_VERSION"
+            echo "SUSFS_SOURCE_HEAD=$SUSFS_P3_SOURCE_HEAD"
+            echo "SUSFS_SOURCE_FOUNDATION_PRESENT=YES"
+            echo "SUSFS_RUNTIME_ENABLED=NO"
+            echo "TIF_PROC_UMOUNTED=33"
+            echo "TIF_PROC_NO_SU=34"
+            echo "TIF_PROC_UMOUNTED_FOR_ZYGOTE_NEXT=35"
+            echo "KSTAT_CTIME_FLAG_FIX=YES"
+            echo "ENABLED_FEATURES_NULL_DEREF_FIX=YES"
+            echo "SUSFS_WHITESPACE_NORMALIZATION=YES"
+            echo "P3_TRANSITION_GATE=PASS"
+            echo "PRECOMMIT_TO_COMMIT_TREE_IDENTITY=PASS"
+            echo "STAT_FACCESSAT_BRIDGE_INTEGRATED=NO"
+            echo "OPEN_REDIRECT_HOOKS_INTEGRATED=NO"
+            echo "MODULE_LOAD_FILTER_INCLUDED=NO"
+            echo "P3_OUTER_RESTORE_REPLAY=PASS"
+            echo "P3_RESUKISU_BUNDLE_REPLAY=PASS"
+            echo "KERNEL_COMPILE_PERFORMED=NO"
+            echo "IMAGE_CREATED=NO"
+            echo "DTB_BUILD_PERFORMED=NO"
+            echo "BOOT_IMAGE_CREATED=NO"
+            echo "FLASHABLE_ZIP_CREATED=NO"
+            echo "DEVICE_ACCESSED=NO"
+            echo "FLASHING_PERFORMED=NO"
+            echo "NEXT_STAGE=CLEAN_GEN1_P4_SAFE_STAT_FACCESSAT_FILENAME_BRIDGE"
+          } | tee "$ARTIFACT_DIR/19-result.txt"
+
+      - name: Preserve P3 failure evidence
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          mkdir -p "$ARTIFACT_DIR"
+          {
+            echo "JOB_STATUS=${{ job.status }}"
+            if [ -d "$GITHUB_WORKSPACE/kernel/.git" ]; then
+              echo "OUTER_HEAD=$(git -C "$GITHUB_WORKSPACE/kernel" rev-parse HEAD 2>/dev/null || true)"
+              echo "OUTER_TREE=$(git -C "$GITHUB_WORKSPACE/kernel" rev-parse HEAD^{tree} 2>/dev/null || true)"
+              echo "OUTER_STATUS_BEGIN"
+              git -C "$GITHUB_WORKSPACE/kernel" status --porcelain 2>/dev/null || true
+              echo "OUTER_STATUS_END"
+            fi
+            if [ -d "$GITHUB_WORKSPACE/kernel/KernelSU/.git" ]; then
+              echo "RESUKISU_HEAD=$(git -C "$GITHUB_WORKSPACE/kernel/KernelSU" rev-parse HEAD 2>/dev/null || true)"
+              echo "RESUKISU_TREE=$(git -C "$GITHUB_WORKSPACE/kernel/KernelSU" rev-parse HEAD^{tree} 2>/dev/null || true)"
+              echo "RESUKISU_STATUS_BEGIN"
+              git -C "$GITHUB_WORKSPACE/kernel/KernelSU" status --porcelain 2>/dev/null || true
+              echo "RESUKISU_STATUS_END"
+            fi
+          } > "$ARTIFACT_DIR/99-job-end-state.txt"
+
+          find "$ARTIFACT_DIR" -maxdepth 3 -type f -printf '%P\n' | sort \
+            > "$ARTIFACT_DIR/99-artifact-file-list.txt"
+          exit 0
+
+      - name: Upload P3 source checkpoint evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: clean-gen1-p3-susfs-foundation-v4-${{ github.run_id }}
+          path: clean-gen1-p3-audit/
+          if-no-files-found: error
+          retention-days: 90
