@@ -1,0 +1,1000 @@
+name: CLEAN GEN1 P4 - Safe stat faccessat struct-filename Bridge v2
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  p4-safe-filename-bridge:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+
+    env:
+      ARCH: arm64
+      TZ: UTC
+      LANG: C.UTF-8
+      LC_ALL: C.UTF-8
+
+      VENDOR_REPO: dereference23/kernel_xiaomi_sm6375
+      VENDOR_TAG: "20240619"
+      EXPECTED_VENDOR_SHA: "b2b7a3bbc36d120ee523ebc8d68e0f13a97df632"
+
+      P3_RUN_ID: "33463457422"
+      P3_ARTIFACT_NAME: clean-gen1-p3-susfs-foundation-v4-33463457422
+      EXPECTED_P3_CHECKPOINT_COMMIT: "c28c8dcdf8750e74fb0bec220a310f2754f5304d"
+      EXPECTED_P3_OUTER_TREE: "865bb9352e765aefa50e1381a392329ac21fd50f"
+      EXPECTED_P3_RESUKISU_HEAD: "42034caa96466e8473fe7553eba8a1888c7f460f"
+      EXPECTED_P3_RESUKISU_TREE: "d818d965b855d417edfe9eb38b152ff83e75e0fb"
+
+      RESUKISU_SNAPSHOT_HEAD: "0b5efe9e0102c43ca5c41174d500f5a7080cd0c7"
+      SUSFS_REPO: https://gitlab.com/simonpunk/susfs4ksu.git
+      SUSFS_54_HEAD: "76affd70abf61d77feb0a132f61365d6848505df"
+      SUSFS_510_HEAD: "ec785f47d49f7b3871ca9356f450411020af7017"
+      SUSFS_515_HEAD: "bca0d2333c1a7d717e7278b019d7af7ba1d16005"
+      SUSFS_61_HEAD: "4fc9c1898ea66f51847cdbc0d1473ea4ef525a70"
+
+      ARTIFACT_DIR: ${{ github.workspace }}/clean-gen1-p4-audit
+      P3_ARTIFACT_DIR: ${{ github.workspace }}/p3-artifact
+
+    steps:
+      - name: Initialize P4 audit
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$ARTIFACT_DIR" "$P3_ARTIFACT_DIR" \
+                 "$GITHUB_WORKSPACE/p4-p3-patch-check" \
+                 "$GITHUB_WORKSPACE/p4-vendor-restore-check" \
+                 "$GITHUB_WORKSPACE/p4-resukisu-bundle-check"
+          mkdir -p "$ARTIFACT_DIR"
+          cat > "$ARTIFACT_DIR/00-plan.txt" <<'EOF'
+          CLEAN GEN1 P4 - SAFE stat/faccessat struct filename bridge
+
+          Mandatory order:
+          1. Restore exact accepted P3 from its tested restore artifact.
+          2. Refuse mutation if reviewed ReSukiSU/SUSFS heads moved.
+          3. Prove exact Linux-5.4 filename ownership/lifetime semantics.
+          4. Prove selected ReSukiSU stat/faccessat handlers do not replace/free filename pointers.
+          5. Adapt only fs/stat.c and fs/open.c.
+          6. Keep CONFIG_KSU_SUSFS disabled; bridge remains dormant in P4.
+          7. Never cast a raw userspace pathname to struct filename.
+          8. Keep one owner reference across retries.
+          9. Give filename_lookup exactly one extra ref per lookup attempt; it consumes that ref.
+          10. No P4 changes to namei.c, SUSFS core, proc/maps, namespace or OPEN_REDIRECT hooks.
+          11. Create P4 restore kit and replay both incremental and full restore paths.
+          12. No kernel/Image/dtb/boot/flash/device work.
+          EOF
+
+      - name: Install P4 dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ca-certificates git jq patch python3 rsync zstd
+          git --version
+          python3 --version
+
+      - name: Checkout exact VEUX vendor source
+        uses: actions/checkout@v6
+        with:
+          repository: dereference23/kernel_xiaomi_sm6375
+          ref: "20240619"
+          path: kernel
+          fetch-depth: 0
+
+      - name: Download accepted P3 restore artifact
+        uses: actions/download-artifact@v7
+        with:
+          name: ${{ env.P3_ARTIFACT_NAME }}
+          path: p3-artifact
+          github-token: ${{ github.token }}
+          run-id: ${{ env.P3_RUN_ID }}
+
+      - name: Authenticate accepted P3 artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s "$P3_ARTIFACT_DIR/restore-kit/SHA256SUMS"
+          (
+            cd "$P3_ARTIFACT_DIR/restore-kit"
+            sha256sum -c SHA256SUMS
+          ) | tee "$ARTIFACT_DIR/01-p3-restore-sha256.txt"
+
+          jq -e \
+            --arg vendor "$EXPECTED_VENDOR_SHA" \
+            --arg p3commit "$EXPECTED_P3_CHECKPOINT_COMMIT" \
+            --arg p3tree "$EXPECTED_P3_OUTER_TREE" \
+            --arg rhead "$EXPECTED_P3_RESUKISU_HEAD" \
+            --arg rtree "$EXPECTED_P3_RESUKISU_TREE" \
+            '.stage=="P3" and
+             .vendor_sha==$vendor and
+             .p3_commit==$p3commit and
+             .p3_tree==$p3tree and
+             .resukisu_head==$rhead and
+             .resukisu_tree==$rtree and
+             .susfs_version=="v2.3.0" and
+             .susfs_source_foundation_present==true and
+             .susfs_runtime_enabled==false and
+             .stat_faccessat_bridge_integrated==false and
+             .open_redirect_hooks_integrated==false and
+             .module_load_filter==false and
+             .kernel_build_performed==false' \
+            "$P3_ARTIFACT_DIR/restore-kit/manifest.json" \
+            > "$ARTIFACT_DIR/01-p3-manifest-auth.json"
+
+          test -s "$P3_ARTIFACT_DIR/restore-kit/vendor-20240619-to-p3-outer.patch"
+          test -s "$P3_ARTIFACT_DIR/restore-kit/resukisu-p3-full.bundle"
+
+          {
+            echo "P3_RESTORE_ARTIFACT=PASS"
+            echo "P3_CHECKPOINT_COMMIT=$EXPECTED_P3_CHECKPOINT_COMMIT"
+            echo "P3_OUTER_TREE=$EXPECTED_P3_OUTER_TREE"
+            echo "P3_RESUKISU_HEAD=$EXPECTED_P3_RESUKISU_HEAD"
+            echo "P3_RESUKISU_TREE=$EXPECTED_P3_RESUKISU_TREE"
+          } | tee "$ARTIFACT_DIR/01-p3-artifact-auth.txt"
+
+      - name: Refuse stale reviewed upstream before P4 mutation
+        shell: bash
+        run: |
+          set -euo pipefail
+          current_resu="$(git ls-remote https://github.com/ReSukiSU/ReSukiSU.git refs/heads/main | awk '{print $1}')"
+          current_54="$(git ls-remote "$SUSFS_REPO" refs/heads/kernel-5.4 | awk '{print $1}')"
+          current_510="$(git ls-remote "$SUSFS_REPO" refs/heads/gki-android12-5.10 | awk '{print $1}')"
+          current_515="$(git ls-remote "$SUSFS_REPO" refs/heads/gki-android13-5.15 | awk '{print $1}')"
+          current_61="$(git ls-remote "$SUSFS_REPO" refs/heads/gki-android14-6.1 | awk '{print $1}')"
+
+          {
+            printf 'ReSukiSU-main\t%s\t%s\n' "$RESUKISU_SNAPSHOT_HEAD" "$current_resu"
+            printf 'SUSFS-kernel-5.4\t%s\t%s\n' "$SUSFS_54_HEAD" "$current_54"
+            printf 'SUSFS-5.10\t%s\t%s\n' "$SUSFS_510_HEAD" "$current_510"
+            printf 'SUSFS-5.15\t%s\t%s\n' "$SUSFS_515_HEAD" "$current_515"
+            printf 'SUSFS-6.1\t%s\t%s\n' "$SUSFS_61_HEAD" "$current_61"
+          } | tee "$ARTIFACT_DIR/02-upstream-drift.tsv"
+
+          drift=0
+          [ "$current_resu" = "$RESUKISU_SNAPSHOT_HEAD" ] || drift=1
+          [ "$current_54" = "$SUSFS_54_HEAD" ] || drift=1
+          [ "$current_510" = "$SUSFS_510_HEAD" ] || drift=1
+          [ "$current_515" = "$SUSFS_515_HEAD" ] || drift=1
+          [ "$current_61" = "$SUSFS_61_HEAD" ] || drift=1
+
+          if [ "$drift" -ne 0 ]; then
+            {
+              echo "UPSTREAM_REVIEW_SNAPSHOT_CURRENT=NO"
+              echo "P4_MUTATION_ALLOWED=NO"
+              echo "ACTION=RUN_UPSTREAM_SNAPSHOT_COMPARE_REVIEW"
+            } | tee "$ARTIFACT_DIR/02-upstream-drift-state.txt"
+            echo "ERROR: reviewed upstream snapshot changed; refusing P4 mutation." >&2
+            exit 1
+          fi
+
+          {
+            echo "UPSTREAM_REVIEW_SNAPSHOT_CURRENT=YES"
+            echo "P4_MUTATION_ALLOWED=YES"
+          } | tee "$ARTIFACT_DIR/02-upstream-drift-state.txt"
+
+      - name: Restore exact accepted P3 outer tree from vendor
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_VENDOR_SHA"
+          test -z "$(git status --porcelain)"
+
+          PATCH="$P3_ARTIFACT_DIR/restore-kit/vendor-20240619-to-p3-outer.patch"
+          git apply --check --binary "$PATCH"
+          git apply --index --binary "$PATCH"
+
+          restored_tree="$(git write-tree)"
+          test "$restored_tree" = "$EXPECTED_P3_OUTER_TREE"
+
+          GIT_AUTHOR_NAME="CLEAN-GEN1 Restore" \
+          GIT_AUTHOR_EMAIL="clean-gen1@invalid.local" \
+          GIT_AUTHOR_DATE="2026-09-01T00:00:00Z" \
+          GIT_COMMITTER_NAME="CLEAN-GEN1 Restore" \
+          GIT_COMMITTER_EMAIL="clean-gen1@invalid.local" \
+          GIT_COMMITTER_DATE="2026-09-01T00:00:00Z" \
+            git commit -m "CLEAN GEN1 restore accepted P3 outer tree"
+
+          P3_RESTORED_OUTER_COMMIT="$(git rev-parse HEAD)"
+          echo "P3_RESTORED_OUTER_COMMIT=$P3_RESTORED_OUTER_COMMIT" >> "$GITHUB_ENV"
+
+          test "$(git rev-parse HEAD^{tree})" = "$EXPECTED_P3_OUTER_TREE"
+          {
+            echo "P3_RESTORED_OUTER_COMMIT=$P3_RESTORED_OUTER_COMMIT"
+            echo "P3_RESTORED_OUTER_TREE=$(git rev-parse HEAD^{tree})"
+            echo "P3_OUTER_RESTORE_REPLAY=PASS"
+          } | tee "$ARTIFACT_DIR/03-p3-outer-restore.txt"
+
+      - name: Restore exact accepted P3 ReSukiSU from full bundle
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf KernelSU
+          git init KernelSU >/dev/null
+          git -C KernelSU fetch \
+            "$P3_ARTIFACT_DIR/restore-kit/resukisu-p3-full.bundle" \
+            refs/heads/clean-gen1-p3-resukisu:refs/heads/clean-gen1-p3-resukisu
+          git -C KernelSU checkout --detach refs/heads/clean-gen1-p3-resukisu >/dev/null
+
+          test "$(git -C KernelSU rev-parse HEAD)" = "$EXPECTED_P3_RESUKISU_HEAD"
+          test "$(git -C KernelSU rev-parse HEAD^{tree})" = "$EXPECTED_P3_RESUKISU_TREE"
+          test -z "$(git -C KernelSU status --porcelain)"
+
+          test -L drivers/kernelsu
+          test "$(readlink drivers/kernelsu)" = "../KernelSU/kernel"
+          test -d KernelSU/.git
+
+          {
+            echo "P3_RESTORED_RESUKISU_HEAD=$(git -C KernelSU rev-parse HEAD)"
+            echo "P3_RESTORED_RESUKISU_TREE=$(git -C KernelSU rev-parse HEAD^{tree})"
+            echo "P3_RESUKISU_RESTORE_REPLAY=PASS"
+          } | tee "$ARTIFACT_DIR/04-p3-resukisu-restore.txt"
+
+      - name: Register nested ReSukiSU as local outer-worktree exclude
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # KernelSU/ is intentionally a separate real Git repository.
+          # Keep it out of the outer repo's untracked-file status without
+          # modifying any tracked source or checkpoint tree.
+          mkdir -p .git/info
+          touch .git/info/exclude
+          grep -Fxq '/KernelSU/' .git/info/exclude || echo '/KernelSU/' >> .git/info/exclude
+
+          test -d KernelSU/.git
+          test -L drivers/kernelsu
+          test "$(readlink drivers/kernelsu)" = "../KernelSU/kernel"
+          test -z "$(git status --porcelain)"
+          test -z "$(git -C KernelSU status --porcelain)"
+
+          {
+            echo "NESTED_RESUKISU_OUTER_LOCAL_EXCLUDE=PASS"
+            echo "OUTER_TRACKED_SOURCE_CHANGED_BY_EXCLUDE=NO"
+            echo "OUTER_STATUS=CLEAN"
+            echo "RESUKISU_STATUS=CLEAN"
+          } | tee "$ARTIFACT_DIR/04b-nested-repo-status.txt"
+
+      - name: Prove exact P3 boundary before lifetime audit
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD^{tree})" = "$EXPECTED_P3_OUTER_TREE"
+          test "$(git -C KernelSU rev-parse HEAD)" = "$EXPECTED_P3_RESUKISU_HEAD"
+          test "$(git -C KernelSU rev-parse HEAD^{tree})" = "$EXPECTED_P3_RESUKISU_TREE"
+
+          test -f fs/susfs.c
+          test -f include/linux/susfs.h
+          test -f include/linux/susfs_def.h
+          grep -Fq '#define SUSFS_VERSION "v2.3.0"' include/linux/susfs.h
+          grep -Fxq '# CONFIG_KSU_SUSFS is not set' arch/arm64/configs/veux_defconfig
+          test -f include/linux/ksu_hook_contract.h
+          test ! -e KernelSU/kernel/feature/module_load_filter.c
+          ! grep -Fq 'feature/module_load_filter.o' KernelSU/kernel/Kbuild
+          test -z "$(git status --porcelain)"
+          test -z "$(git -C KernelSU status --porcelain)"
+
+          sha256sum fs/susfs.c include/linux/susfs.h include/linux/susfs_def.h \
+            > "$ARTIFACT_DIR/05-p3-susfs-foundation-before.sha256"
+
+          {
+            echo "P3_BOUNDARY=PASS"
+            echo "SUSFS_SOURCE_PRESENT=YES"
+            echo "SUSFS_RUNTIME_ENABLED=NO"
+            echo "STAT_FACCESSAT_BRIDGE_PRESENT=NO"
+            echo "OUTER_REPO_CLEAN_WITH_NESTED_RESUKISU_EXCLUDED_LOCALLY=YES"
+            echo "RESUKISU_REPO_CLEAN_SEPARATELY=YES"
+          } | tee "$ARTIFACT_DIR/05-p3-boundary.txt"
+
+      - name: Audit exact Linux 5.4 struct filename ownership contract
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY' > "$ARTIFACT_DIR/06-filename-lifetime-audit.txt"
+          from pathlib import Path
+          import re
+
+          namei = Path("fs/namei.c").read_text(encoding="utf-8")
+          fsh = Path("include/linux/fs.h").read_text(encoding="utf-8")
+          parser = Path("fs/fs_parser.c").read_text(encoding="utf-8") if Path("fs/fs_parser.c").exists() else ""
+
+          def extract_function(text, signature):
+              start = text.find(signature)
+              if start < 0:
+                  raise SystemExit(f"missing function signature: {signature}")
+              brace = text.find("{", start)
+              if brace < 0:
+                  raise SystemExit(f"missing opening brace: {signature}")
+              depth = 0
+              for i in range(brace, len(text)):
+                  if text[i] == "{":
+                      depth += 1
+                  elif text[i] == "}":
+                      depth -= 1
+                      if depth == 0:
+                          return text[start:i+1]
+              raise SystemExit(f"unterminated function: {signature}")
+
+          getname = extract_function(namei, "getname_flags(const char __user *filename")
+          lookup = extract_function(namei, "int filename_lookup(int dfd, struct filename *name")
+          user_empty = extract_function(namei, "int user_path_at_empty(int dfd, const char __user *name")
+
+          checks = {
+              "GETNAME_RETURNS_ERR_PTR_ON_ALLOC_FAILURE":
+                  "return ERR_PTR(-ENOMEM);" in getname,
+              "GETNAME_ESTABLISHES_OWNER_REFCOUNT_1":
+                  "result->refcnt = 1;" in getname,
+              "GETNAME_EMPTY_FAILURE_RELEASES_OWN_REF":
+                  "putname(result);" in getname and "return ERR_PTR(-ENOENT);" in getname,
+              "FILENAME_LOOKUP_ERR_PTR_IS_NOT_PUT":
+                  "if (IS_ERR(name))" in lookup and "return PTR_ERR(name);" in lookup,
+              "FILENAME_LOOKUP_ALWAYS_PUTS_NON_ERR_NAME":
+                  "restore_nameidata();" in lookup and "putname(name);" in lookup,
+              "USER_PATH_AT_EMPTY_GETS_NAME_THEN_FILENAME_LOOKUP":
+                  "filename_lookup(dfd, getname_flags(name, flags, empty)," in user_empty,
+              "STRUCT_FILENAME_REFCNT_FIELD_PRESENT":
+                  re.search(r"\bint\s+refcnt\s*;", fsh) is not None,
+          }
+
+          parser_pattern = (
+              "refcnt++" in parser and
+              "filename_lookup() drops our ref" in parser and
+              "filename_lookup(" in parser
+          )
+          checks["EXISTING_KERNEL_RETAINED_REF_PATTERN_PRESENT"] = parser_pattern
+
+          failed = [k for k,v in checks.items() if not v]
+          for k,v in checks.items():
+              print(f"{k}={'PASS' if v else 'FAIL'}")
+          if failed:
+              raise SystemExit("lifetime audit failed: " + ", ".join(failed))
+
+          print("FILENAME_LOOKUP_CONSUMES_ONE_NON_ERR_REFERENCE=YES")
+          print("SAFE_RETRY_MODEL=OWNER_REF_PLUS_ONE_LOOKUP_REF_PER_ATTEMPT")
+          print("PUTNAME_AFTER_EACH_FILENAME_LOOKUP_ATTEMPT=NO")
+          print("FINAL_OWNER_PUTNAME_REQUIRED=YES")
+          print("P4_FILENAME_LIFETIME_AUDIT=PASS")
+          PY
+
+          grep -Fq 'P4_FILENAME_LIFETIME_AUDIT=PASS' \
+            "$ARTIFACT_DIR/06-filename-lifetime-audit.txt"
+
+      - name: Audit selected ReSukiSU stat faccessat pointer mutation contract
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY' > "$ARTIFACT_DIR/07-resukisu-handler-contract.txt"
+          from pathlib import Path
+          import re
+
+          text = Path("KernelSU/kernel/feature/sucompat.c").read_text(encoding="utf-8")
+
+          def extract_function(text, signature):
+              start = text.find(signature)
+              if start < 0:
+                  raise SystemExit(f"missing function: {signature}")
+              brace = text.find("{", start)
+              depth = 0
+              for i in range(brace, len(text)):
+                  if text[i] == "{":
+                      depth += 1
+                  elif text[i] == "}":
+                      depth -= 1
+                      if depth == 0:
+                          return text[start:i+1]
+              raise SystemExit(f"unterminated: {signature}")
+
+          faccess = extract_function(
+              text,
+              "int ksu_handle_faccessat(int *dfd, struct filename **filename"
+          )
+          stat = extract_function(
+              text,
+              "int ksu_handle_stat(int *dfd, struct filename **filename"
+          )
+
+          for name, body in (("faccessat", faccess), ("stat", stat)):
+              required = [
+                  "IS_ERR(*filename)",
+                  "(*filename)->name",
+                  "memcpy((void *)((*filename)->name)",
+              ]
+              for token in required:
+                  if token not in body:
+                      raise SystemExit(f"{name}: missing expected selected-line behavior: {token}")
+
+              forbidden_patterns = {
+                  "REPLACE_FILENAME_POINTER": r"(?<!\()\*filename\s*=",
+                  "FREE_FILENAME": r"\bputname\s*\(",
+                  "ALTER_FILENAME_REFCNT": r"\brefcnt\s*(?:\+\+|--|[+\-]?=)",
+                  "ALTER_DFD": r"\*dfd\s*=",
+                  "ALTER_FLAGS": r"\*flags\s*=",
+                  "ALTER_MODE": r"\*mode\s*=",
+              }
+              for label, pat in forbidden_patterns.items():
+                  if re.search(pat, body):
+                      raise SystemExit(f"{name}: forbidden current selected-line behavior: {label}")
+
+              print(f"{name.upper()}_MUTATES_NAME_BUFFER_IN_PLACE=YES")
+              print(f"{name.upper()}_REPLACES_STRUCT_FILENAME_POINTER=NO")
+              print(f"{name.upper()}_FREES_STRUCT_FILENAME=NO")
+              print(f"{name.upper()}_ALTERS_REFCNT=NO")
+
+          print("SELECTED_RESUKISU_FILENAME_OWNER_REMAINS_CALLER=YES")
+          print("P4_RESUKISU_HANDLER_CONTRACT=PASS")
+          PY
+
+          grep -Fq 'P4_RESUKISU_HANDLER_CONTRACT=PASS' \
+            "$ARTIFACT_DIR/07-resukisu-handler-contract.txt"
+
+      - name: Adapt vfs_statx to retained-owner struct filename bridge
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          p = Path("fs/stat.c")
+          t = p.read_text(encoding="utf-8")
+
+          if '#include "internal.h"\n' not in t:
+              anchor = '#include <asm/unistd.h>\n'
+              if t.count(anchor) != 1:
+                  raise SystemExit("fs/stat.c internal.h include anchor mismatch")
+              t = t.replace(anchor, anchor + '\n#include "internal.h"\n', 1)
+
+          old_decl = '\tstruct path path;\n\tint error = -EINVAL;\n\tunsigned int lookup_flags = LOOKUP_FOLLOW | LOOKUP_AUTOMOUNT;\n\n#ifdef CONFIG_KSU_MANUAL_HOOK\n\tksu_handle_stat(&dfd, &filename, &flags);\n#endif\n\n\tif ((flags & ~(AT_SYMLINK_NOFOLLOW | AT_NO_AUTOMOUNT |\n\t\t       AT_EMPTY_PATH | KSTAT_QUERY_FLAGS)) != 0)\n\t\treturn -EINVAL;\n'
+          new_decl = '\tstruct path path;\n\tint error = -EINVAL;\n\tunsigned int lookup_flags = LOOKUP_FOLLOW | LOOKUP_AUTOMOUNT;\n#ifdef CONFIG_KSU_SUSFS\n\tstruct filename *ksu_filename;\n#endif\n\n#ifdef CONFIG_KSU_SUSFS\n\tksu_filename = getname_flags(filename,\n\t\t\t\t     (flags & AT_EMPTY_PATH) ? LOOKUP_EMPTY : 0,\n\t\t\t\t     NULL);\n\tif (IS_ERR(ksu_filename))\n\t\treturn PTR_ERR(ksu_filename);\n\tksu_handle_stat(&dfd, &ksu_filename, &flags);\n#elif defined(CONFIG_KSU_MANUAL_HOOK)\n\tksu_handle_stat(&dfd, &filename, &flags);\n#endif\n\n\tif ((flags & ~(AT_SYMLINK_NOFOLLOW | AT_NO_AUTOMOUNT |\n\t\t       AT_EMPTY_PATH | KSTAT_QUERY_FLAGS)) != 0) {\n#ifdef CONFIG_KSU_SUSFS\n\t\tputname(ksu_filename);\n#endif\n\t\treturn -EINVAL;\n\t}\n'
+          if t.count(old_decl) != 1:
+              raise SystemExit("fs/stat.c P3 declaration/hook anchor mismatch")
+          t = t.replace(old_decl, new_decl, 1)
+
+          old_lookup = 'retry:\n\terror = user_path_at(dfd, filename, lookup_flags, &path);\n\tif (error)\n\t\tgoto out;\n'
+          new_lookup = 'retry:\n#ifdef CONFIG_KSU_SUSFS\n\t/*\n\t * Keep one caller-owned reference across ESTALE retries.\n\t * filename_lookup() consumes exactly the extra reference below.\n\t */\n\tksu_filename->refcnt++;\n\terror = filename_lookup(dfd, ksu_filename, lookup_flags, &path, NULL);\n#else\n\terror = user_path_at(dfd, filename, lookup_flags, &path);\n#endif\n\tif (error)\n\t\tgoto out;\n'
+          if t.count(old_lookup) != 1:
+              raise SystemExit("fs/stat.c lookup anchor mismatch")
+          t = t.replace(old_lookup, new_lookup, 1)
+
+          old_out = 'out:\n\treturn error;\n}\nEXPORT_SYMBOL(vfs_statx);\n'
+          new_out = 'out:\n#ifdef CONFIG_KSU_SUSFS\n\tputname(ksu_filename);\n#endif\n\treturn error;\n}\nEXPORT_SYMBOL(vfs_statx);\n'
+          if t.count(old_out) != 1:
+              raise SystemExit("fs/stat.c out anchor mismatch")
+          t = t.replace(old_out, new_out, 1)
+
+          p.write_text(t, encoding="utf-8")
+          PY
+
+          git diff --check -- fs/stat.c
+          echo "P4_STAT_STRUCT_FILENAME_BRIDGE=PASS" \
+            | tee "$ARTIFACT_DIR/08-stat-bridge-state.txt"
+
+      - name: Adapt do_faccessat to retained-owner struct filename bridge
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          p = Path("fs/open.c")
+          t = p.read_text(encoding="utf-8")
+
+          old_decl = "\tstruct inode *inode;\n\tint res;\n\tunsigned int lookup_flags = LOOKUP_FOLLOW;\n\n#ifdef CONFIG_KSU_MANUAL_HOOK\n\tksu_handle_faccessat(&dfd, &filename, &mode, NULL);\n#endif\n\n\tif (mode & ~S_IRWXO)\t/* where's F_OK, X_OK, W_OK, R_OK? */\n\t\treturn -EINVAL;\n\n\toverride_cred = prepare_creds();\n\tif (!override_cred)\n\t\treturn -ENOMEM;\n"
+          new_decl = "\tstruct inode *inode;\n\tint res;\n\tunsigned int lookup_flags = LOOKUP_FOLLOW;\n#ifdef CONFIG_KSU_SUSFS\n\tstruct filename *ksu_filename;\n#endif\n\n#ifdef CONFIG_KSU_SUSFS\n\tksu_filename = getname_flags(filename, 0, NULL);\n\tif (IS_ERR(ksu_filename))\n\t\treturn PTR_ERR(ksu_filename);\n\tksu_handle_faccessat(&dfd, &ksu_filename, &mode, NULL);\n#elif defined(CONFIG_KSU_MANUAL_HOOK)\n\tksu_handle_faccessat(&dfd, &filename, &mode, NULL);\n#endif\n\n\tif (mode & ~S_IRWXO) { /* where's F_OK, X_OK, W_OK, R_OK? */\n#ifdef CONFIG_KSU_SUSFS\n\t\tputname(ksu_filename);\n#endif\n\t\treturn -EINVAL;\n\t}\n\n\toverride_cred = prepare_creds();\n\tif (!override_cred) {\n#ifdef CONFIG_KSU_SUSFS\n\t\tputname(ksu_filename);\n#endif\n\t\treturn -ENOMEM;\n\t}\n"
+          if t.count(old_decl) != 1:
+              raise SystemExit("fs/open.c P3 declaration/hook anchor mismatch")
+          t = t.replace(old_decl, new_decl, 1)
+
+          old_lookup = 'retry:\n\tres = user_path_at(dfd, filename, lookup_flags, &path);\n\tif (res)\n\t\tgoto out;\n'
+          new_lookup = 'retry:\n#ifdef CONFIG_KSU_SUSFS\n\t/*\n\t * Keep one caller-owned reference across ESTALE retries.\n\t * filename_lookup() consumes exactly the extra reference below.\n\t */\n\tksu_filename->refcnt++;\n\tres = filename_lookup(dfd, ksu_filename, lookup_flags, &path, NULL);\n#else\n\tres = user_path_at(dfd, filename, lookup_flags, &path);\n#endif\n\tif (res)\n\t\tgoto out;\n'
+          if t.count(old_lookup) != 1:
+              raise SystemExit("fs/open.c lookup anchor mismatch")
+          t = t.replace(old_lookup, new_lookup, 1)
+
+          old_out = 'out:\n\trevert_creds(old_cred);\n\tput_cred(override_cred);\n\treturn res;\n}\n'
+          new_out = 'out:\n\trevert_creds(old_cred);\n\tput_cred(override_cred);\n#ifdef CONFIG_KSU_SUSFS\n\tputname(ksu_filename);\n#endif\n\treturn res;\n}\n'
+          if t.count(old_out) != 1:
+              raise SystemExit("fs/open.c out anchor mismatch")
+          t = t.replace(old_out, new_out, 1)
+
+          p.write_text(t, encoding="utf-8")
+          PY
+
+          git diff --check -- fs/open.c
+          echo "P4_FACCESSAT_STRUCT_FILENAME_BRIDGE=PASS" \
+            | tee "$ARTIFACT_DIR/09-faccessat-bridge-state.txt"
+
+      - name: Prove P4 bridge lifetime invariants and cross-TU types
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY' > "$ARTIFACT_DIR/10-p4-bridge-invariants.txt"
+          from pathlib import Path
+
+          stat = Path("fs/stat.c").read_text(encoding="utf-8")
+          openc = Path("fs/open.c").read_text(encoding="utf-8")
+          hdr = Path("include/linux/ksu_hook_contract.h").read_text(encoding="utf-8")
+
+          def extract_function(text, signature):
+              start = text.find(signature)
+              if start < 0:
+                  raise SystemExit(f"missing: {signature}")
+              brace = text.find("{", start)
+              depth = 0
+              for i in range(brace, len(text)):
+                  if text[i] == "{":
+                      depth += 1
+                  elif text[i] == "}":
+                      depth -= 1
+                      if depth == 0:
+                          return text[start:i+1]
+              raise SystemExit(f"unterminated: {signature}")
+
+          s = extract_function(stat, "int vfs_statx(int dfd")
+          f = extract_function(openc, "long do_faccessat(int dfd")
+
+          checks = {
+              "HEADER_SUSFS_STAT_USES_STRUCT_FILENAME_DOUBLE_PTR":
+                  "int ksu_handle_stat(int *dfd, struct filename **filename, int *flags);" in hdr,
+              "HEADER_SUSFS_FACCESS_USES_STRUCT_FILENAME_DOUBLE_PTR":
+                  "int ksu_handle_faccessat(int *dfd, struct filename **filename," in hdr,
+              "STAT_GETNAME_FLAGS_PRESENT":
+                  "ksu_filename = getname_flags(filename," in s,
+              "FACCESS_GETNAME_FLAGS_PRESENT":
+                  "ksu_filename = getname_flags(filename, 0, NULL);" in f,
+              "STAT_HANDLER_GETS_STRUCT_FILENAME_PTR_PTR":
+                  "ksu_handle_stat(&dfd, &ksu_filename, &flags);" in s,
+              "FACCESS_HANDLER_GETS_STRUCT_FILENAME_PTR_PTR":
+                  "ksu_handle_faccessat(&dfd, &ksu_filename, &mode, NULL);" in f,
+              "STAT_EXTRA_REF_BEFORE_FILENAME_LOOKUP":
+                  "ksu_filename->refcnt++;" in s and
+                  s.index("ksu_filename->refcnt++;") < s.index("filename_lookup(dfd, ksu_filename"),
+              "FACCESS_EXTRA_REF_BEFORE_FILENAME_LOOKUP":
+                  "ksu_filename->refcnt++;" in f and
+                  f.index("ksu_filename->refcnt++;") < f.index("filename_lookup(dfd, ksu_filename"),
+              "STAT_FINAL_OWNER_PUTNAME":
+                  s.count("putname(ksu_filename);") == 2,
+              "FACCESS_FINAL_AND_EARLY_OWNER_PUTNAME":
+                  f.count("putname(ksu_filename);") == 3,
+              "STAT_OLD_USER_PATH_REMAINS_ONLY_NON_SUSFS":
+                  "#else\n\terror = user_path_at(dfd, filename, lookup_flags, &path);\n#endif" in s,
+              "FACCESS_OLD_USER_PATH_REMAINS_ONLY_NON_SUSFS":
+                  "#else\n\tres = user_path_at(dfd, filename, lookup_flags, &path);\n#endif" in f,
+              "FACCESS_NO_RAW_POINTER_CAST":
+                  "(struct filename **)&filename" not in f and
+                  "(struct filename *)&filename" not in f,
+              "STAT_NO_RAW_POINTER_CAST":
+                  "(struct filename **)&filename" not in s and
+                  "(struct filename *)&filename" not in s,
+          }
+
+          for label, ok in checks.items():
+              print(f"{label}={'PASS' if ok else 'FAIL'}")
+          failed = [label for label, ok in checks.items() if not ok]
+          if failed:
+              raise SystemExit("P4 bridge invariant failure: " + ", ".join(failed))
+
+          if s.index("retry:") > s.index("ksu_filename->refcnt++;"):
+              raise SystemExit("stat ref increment is outside retry region")
+          if f.index("retry:") > f.index("ksu_filename->refcnt++;"):
+              raise SystemExit("faccessat ref increment is outside retry region")
+
+          print("RAW_USER_POINTER_REINTERPRET_CAST=NO")
+          print("OWNER_REF_HELD_ACROSS_RETRY=YES")
+          print("LOOKUP_REF_ADDED_PER_ATTEMPT=YES")
+          print("FILENAME_LOOKUP_CONSUMES_LOOKUP_REF=YES")
+          print("P4_BRIDGE_LIFETIME_INVARIANTS=PASS")
+          PY
+
+          grep -Fq 'P4_BRIDGE_LIFETIME_INVARIANTS=PASS' \
+            "$ARTIFACT_DIR/10-p4-bridge-invariants.txt"
+
+          git diff -- fs/stat.c fs/open.c \
+            > "$ARTIFACT_DIR/10-p4-stat-faccessat.diff"
+          test -s "$ARTIFACT_DIR/10-p4-stat-faccessat.diff"
+
+      - name: Prove P4 change scope and preserve P3 SUSFS core byte identity
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mapfile -t changed < <(git diff --name-only "$P3_RESTORED_OUTER_COMMIT" -- | sort)
+          printf '%s\n' "${changed[@]}" | tee "$ARTIFACT_DIR/11-p4-changed-files.txt"
+
+          test "${#changed[@]}" -eq 2
+          printf '%s\n' "${changed[@]}" | grep -Fxq 'fs/open.c'
+          printf '%s\n' "${changed[@]}" | grep -Fxq 'fs/stat.c'
+
+          for forbidden in \
+            fs/namei.c \
+            fs/namespace.c \
+            fs/susfs.c \
+            include/linux/susfs.h \
+            include/linux/susfs_def.h \
+            fs/proc/task_mmu.c \
+            fs/proc/base.c \
+            fs/proc/fd.c \
+            fs/proc_namespace.c \
+            kernel/reboot.c \
+            include/linux/ksu_hook_contract.h
+          do
+            ! printf '%s\n' "${changed[@]}" | grep -Fxq "$forbidden"
+          done
+
+          sha256sum -c "$ARTIFACT_DIR/05-p3-susfs-foundation-before.sha256" \
+            > "$ARTIFACT_DIR/11-p3-susfs-foundation-after-verify.txt"
+
+          grep -Fxq '# CONFIG_KSU_SUSFS is not set' arch/arm64/configs/veux_defconfig
+          test ! -e KernelSU/kernel/feature/module_load_filter.c
+          ! grep -Fq 'feature/module_load_filter.o' KernelSU/kernel/Kbuild
+
+          {
+            echo "P4_CHANGE_SCOPE=PASS"
+            echo "CHANGED_FILES=fs/open.c,fs/stat.c"
+            echo "P3_SUSFS_CORE_BYTE_IDENTITY=PASS"
+            echo "NAMEI_CHANGED=NO"
+            echo "OPEN_REDIRECT_HOOKS_CHANGED=NO"
+            echo "PROC_MAPS_CHANGED=NO"
+            echo "SUSFS_RUNTIME_ENABLED=NO"
+          } | tee "$ARTIFACT_DIR/11-p4-scope.txt"
+
+      - name: Resolve P4 Kconfig state without compiling kernel
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf out-p4-config
+          make -s O=out-p4-config ARCH=arm64 veux_defconfig
+          CONFIG=out-p4-config/.config
+
+          grep -Fxq 'CONFIG_KSU=y' "$CONFIG"
+          grep -Fxq 'CONFIG_KSU_MANUAL_HOOK=y' "$CONFIG"
+          grep -Fxq '# CONFIG_KSU_SUSFS is not set' "$CONFIG"
+          grep -Fxq '# CONFIG_KSU_TRACEPOINT_HOOK is not set' "$CONFIG"
+
+          cp "$CONFIG" "$ARTIFACT_DIR/12-resolved-p4.config"
+          rm -rf out-p4-config
+
+          {
+            echo "P4_KCONFIG_RESOLUTION=PASS"
+            echo "SUSFS_SOURCE_FOUNDATION_PRESENT=YES"
+            echo "SUSFS_RUNTIME_ENABLED=NO"
+            echo "P4_BRIDGE_DORMANT_UNTIL_SUSFS_ENABLE=YES"
+            echo "KERNEL_COMPILE_PERFORMED=NO"
+          } | tee "$ARTIFACT_DIR/12-kconfig-state.txt"
+
+      - name: Freeze P4 safe filename bridge checkpoint
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+          git add fs/stat.c fs/open.c
+          git diff --cached --check
+
+          GIT_AUTHOR_NAME="CLEAN-GEN1 Builder" \
+          GIT_AUTHOR_EMAIL="clean-gen1@invalid.local" \
+          GIT_AUTHOR_DATE="2026-09-01T00:00:00Z" \
+          GIT_COMMITTER_NAME="CLEAN-GEN1 Builder" \
+          GIT_COMMITTER_EMAIL="clean-gen1@invalid.local" \
+          GIT_COMMITTER_DATE="2026-09-01T00:00:00Z" \
+            git commit -m "CLEAN GEN1 P4 safe stat faccessat filename bridge"
+
+          P4_CHECKPOINT_COMMIT="$(git rev-parse HEAD)"
+          P4_OUTER_TREE="$(git rev-parse HEAD^{tree})"
+          P4_RESUKISU_HEAD="$(git -C KernelSU rev-parse HEAD)"
+          P4_RESUKISU_TREE="$(git -C KernelSU rev-parse HEAD^{tree})"
+
+          test "$P4_RESUKISU_HEAD" = "$EXPECTED_P3_RESUKISU_HEAD"
+          test "$P4_RESUKISU_TREE" = "$EXPECTED_P3_RESUKISU_TREE"
+          test -z "$(git status --porcelain)"
+          test -z "$(git -C KernelSU status --porcelain)"
+
+          echo "P4_CHECKPOINT_COMMIT=$P4_CHECKPOINT_COMMIT" >> "$GITHUB_ENV"
+          echo "P4_OUTER_TREE=$P4_OUTER_TREE" >> "$GITHUB_ENV"
+          echo "P4_RESUKISU_HEAD=$P4_RESUKISU_HEAD" >> "$GITHUB_ENV"
+          echo "P4_RESUKISU_TREE=$P4_RESUKISU_TREE" >> "$GITHUB_ENV"
+
+          {
+            echo "P4_CHECKPOINT_COMMIT=$P4_CHECKPOINT_COMMIT"
+            echo "P4_OUTER_TREE=$P4_OUTER_TREE"
+            echo "P4_RESUKISU_HEAD=$P4_RESUKISU_HEAD"
+            echo "P4_RESUKISU_TREE=$P4_RESUKISU_TREE"
+            echo "P4_SOURCE_CHECKPOINT=PASS"
+          } | tee "$ARTIFACT_DIR/13-p4-checkpoint.txt"
+
+      - name: Create complete P4 restore kit
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+          RESTORE="$ARTIFACT_DIR/restore-kit"
+          mkdir -p "$RESTORE"
+
+          git diff --binary "$P3_RESTORED_OUTER_COMMIT" "$P4_CHECKPOINT_COMMIT" \
+            > "$RESTORE/p3-to-p4-outer.patch"
+          test -s "$RESTORE/p3-to-p4-outer.patch"
+
+          git diff --binary "$EXPECTED_VENDOR_SHA" "$P4_CHECKPOINT_COMMIT" \
+            > "$RESTORE/vendor-20240619-to-p4-outer.patch"
+          test -s "$RESTORE/vendor-20240619-to-p4-outer.patch"
+
+          git -C KernelSU branch -f clean-gen1-p4-resukisu "$P4_RESUKISU_HEAD"
+          git -C KernelSU bundle create \
+            "$RESTORE/resukisu-p4-full.bundle" \
+            refs/heads/clean-gen1-p4-resukisu
+          git -C KernelSU bundle verify "$RESTORE/resukisu-p4-full.bundle" \
+            > "$RESTORE/resukisu-p4-bundle-verify.txt" 2>&1
+
+          git -C KernelSU archive --format=tar "$P4_RESUKISU_HEAD" \
+            | zstd -T0 -19 -o "$RESTORE/resukisu-p4-source.tar.zst"
+
+          cp "$ARTIFACT_DIR/06-filename-lifetime-audit.txt" \
+             "$RESTORE/FILENAME-LIFETIME-CONTRACT.txt"
+          cp "$ARTIFACT_DIR/07-resukisu-handler-contract.txt" \
+             "$RESTORE/RESUKISU-HANDLER-CONTRACT.txt"
+          cp "$ARTIFACT_DIR/10-p4-stat-faccessat.diff" \
+             "$RESTORE/P4-STAT-FACCESSAT-DIFF.patch"
+
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+
+          out = Path(os.environ["ARTIFACT_DIR"]) / "restore-kit" / "manifest.json"
+          data = {
+              "schema": 4,
+              "project": "CLEAN-GEN1-VEUX-5.4.274",
+              "stage": "P4",
+              "vendor_sha": os.environ["EXPECTED_VENDOR_SHA"],
+              "p3_tree": os.environ["EXPECTED_P3_OUTER_TREE"],
+              "p4_commit": os.environ["P4_CHECKPOINT_COMMIT"],
+              "p4_tree": os.environ["P4_OUTER_TREE"],
+              "resukisu_head": os.environ["P4_RESUKISU_HEAD"],
+              "resukisu_tree": os.environ["P4_RESUKISU_TREE"],
+              "filename_lookup_consumes_one_non_err_ref": True,
+              "bridge_owner_ref_retained_across_retry": True,
+              "bridge_extra_lookup_ref_per_attempt": True,
+              "raw_user_pointer_reinterpret_cast": False,
+              "stat_faccessat_bridge_integrated": True,
+              "susfs_source_foundation_present": True,
+              "susfs_runtime_enabled": False,
+              "open_redirect_hooks_integrated": False,
+              "module_load_filter": False,
+              "kernel_build_performed": False,
+              "p3_restore_replay_verified": True,
+              "nested_resukisu_outer_status_policy": "local .git/info/exclude only",
+          }
+          out.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n",
+                         encoding="utf-8")
+          PY
+
+          cat > "$RESTORE/RESTORE-INSTRUCTIONS.txt" <<EOF
+          CLEAN-GEN1 P4 deterministic restore
+
+          Full outer restore:
+          1. Checkout $VENDOR_REPO tag $VENDOR_TAG.
+          2. Verify vendor HEAD $EXPECTED_VENDOR_SHA.
+          3. Apply vendor-20240619-to-p4-outer.patch with git apply --index --binary.
+          4. Verify write-tree equals $P4_OUTER_TREE.
+
+          Incremental restore:
+          5. Starting from exact P3 tree $EXPECTED_P3_OUTER_TREE,
+             apply p3-to-p4-outer.patch and verify tree $P4_OUTER_TREE.
+
+          ReSukiSU:
+          6. Restore resukisu-p4-full.bundle.
+          7. Verify HEAD $P4_RESUKISU_HEAD and tree $P4_RESUKISU_TREE.
+
+          Lifetime contract:
+          - one owner ref is retained across retry
+          - refcnt++ gives filename_lookup one disposable ref per attempt
+          - filename_lookup consumes that added ref
+          - caller releases the owner ref once at function exit
+          - no raw __user pathname is reinterpreted as struct filename
+
+          Outer-repo working-tree policy:
+          - KernelSU/ is a separate real Git repository.
+          - It is ignored only through outer .git/info/exclude.
+          - No tracked .gitignore or source file is changed for this purpose.
+          - ReSukiSU cleanliness is verified separately with git -C KernelSU status.
+
+          P4 remains source-only; CONFIG_KSU_SUSFS is still disabled.
+          EOF
+
+          (
+            cd "$RESTORE"
+            find . -type f ! -name SHA256SUMS -print0 | sort -z \
+              | xargs -0 sha256sum > SHA256SUMS
+            sha256sum -c SHA256SUMS
+          )
+
+          echo "P4_RESTORE_KIT_CREATED=PASS" \
+            | tee "$ARTIFACT_DIR/14-restore-kit-create.txt"
+
+      - name: Replay verify incremental P3 to P4 patch
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERIFY="$GITHUB_WORKSPACE/p4-p3-patch-check"
+          rm -rf "$VERIFY"
+
+          git worktree add --detach "$VERIFY" "$P3_RESTORED_OUTER_COMMIT" >/dev/null
+          git -C "$VERIFY" apply --check --binary \
+            "$ARTIFACT_DIR/restore-kit/p3-to-p4-outer.patch"
+          git -C "$VERIFY" apply --index --binary \
+            "$ARTIFACT_DIR/restore-kit/p3-to-p4-outer.patch"
+
+          replay_tree="$(git -C "$VERIFY" write-tree)"
+          test "$replay_tree" = "$P4_OUTER_TREE"
+
+          {
+            echo "P3_TO_P4_REPLAY_TREE=$replay_tree"
+            echo "P3_TO_P4_REPLAY_EXPECTED=$P4_OUTER_TREE"
+            echo "P3_TO_P4_INCREMENTAL_RESTORE_REPLAY=PASS"
+          } | tee "$ARTIFACT_DIR/15-p3-to-p4-replay.txt"
+
+          git worktree remove --force "$VERIFY"
+
+      - name: Replay verify full P4 outer backup from fresh vendor
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERIFY="$GITHUB_WORKSPACE/p4-vendor-restore-check"
+          rm -rf "$VERIFY"
+
+          git worktree add --detach "$VERIFY" "$EXPECTED_VENDOR_SHA" >/dev/null
+          git -C "$VERIFY" apply --check --binary \
+            "$ARTIFACT_DIR/restore-kit/vendor-20240619-to-p4-outer.patch"
+          git -C "$VERIFY" apply --index --binary \
+            "$ARTIFACT_DIR/restore-kit/vendor-20240619-to-p4-outer.patch"
+
+          replay_tree="$(git -C "$VERIFY" write-tree)"
+          test "$replay_tree" = "$P4_OUTER_TREE"
+
+          {
+            echo "P4_FULL_RESTORE_TREE=$replay_tree"
+            echo "P4_FULL_RESTORE_EXPECTED=$P4_OUTER_TREE"
+            echo "P4_FULL_OUTER_RESTORE_REPLAY=PASS"
+          } | tee "$ARTIFACT_DIR/16-p4-full-restore-replay.txt"
+
+          git worktree remove --force "$VERIFY"
+
+      - name: Replay verify exact ReSukiSU P4 bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERIFY="$GITHUB_WORKSPACE/p4-resukisu-bundle-check"
+          rm -rf "$VERIFY"
+
+          git init "$VERIFY" >/dev/null
+          git -C "$VERIFY" fetch \
+            "$ARTIFACT_DIR/restore-kit/resukisu-p4-full.bundle" \
+            refs/heads/clean-gen1-p4-resukisu:refs/heads/clean-gen1-p4-resukisu
+          git -C "$VERIFY" checkout --detach refs/heads/clean-gen1-p4-resukisu >/dev/null
+
+          test "$(git -C "$VERIFY" rev-parse HEAD)" = "$P4_RESUKISU_HEAD"
+          test "$(git -C "$VERIFY" rev-parse HEAD^{tree})" = "$P4_RESUKISU_TREE"
+
+          {
+            echo "P4_RESUKISU_BUNDLE_HEAD=$(git -C "$VERIFY" rev-parse HEAD)"
+            echo "P4_RESUKISU_BUNDLE_TREE=$(git -C "$VERIFY" rev-parse HEAD^{tree})"
+            echo "P4_RESUKISU_BUNDLE_REPLAY=PASS"
+          } | tee "$ARTIFACT_DIR/17-p4-resukisu-replay.txt"
+
+          rm -rf "$VERIFY"
+
+      - name: Final P4 source-only safety gate
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(make -s kernelversion)" = "5.4.274"
+          test "$(git rev-parse HEAD)" = "$P4_CHECKPOINT_COMMIT"
+          test "$(git rev-parse HEAD^{tree})" = "$P4_OUTER_TREE"
+          test "$(git -C KernelSU rev-parse HEAD)" = "$P4_RESUKISU_HEAD"
+          test "$(git -C KernelSU rev-parse HEAD^{tree})" = "$P4_RESUKISU_TREE"
+
+          grep -Fxq '# CONFIG_KSU_SUSFS is not set' arch/arm64/configs/veux_defconfig
+          grep -Fq 'ksu_filename->refcnt++;' fs/stat.c
+          grep -Fq 'ksu_filename->refcnt++;' fs/open.c
+          grep -Fq 'filename_lookup(dfd, ksu_filename' fs/stat.c
+          grep -Fq 'filename_lookup(dfd, ksu_filename' fs/open.c
+
+          test -f fs/susfs.c
+          test -f include/linux/susfs.h
+          test -f include/linux/susfs_def.h
+          test ! -e KernelSU/kernel/feature/module_load_filter.c
+          ! grep -Fq 'feature/module_load_filter.o' KernelSU/kernel/Kbuild
+
+          test -z "$(git status --porcelain)"
+          test -z "$(git -C KernelSU status --porcelain)"
+
+          (
+            cd "$ARTIFACT_DIR/restore-kit"
+            sha256sum -c SHA256SUMS
+          ) > "$ARTIFACT_DIR/18-final-restore-sha256.txt"
+
+          {
+            echo "CLEAN_GEN1_P4_SAFE_STAT_FACCESSAT_FILENAME_BRIDGE=PASS"
+            echo "KERNEL_VERSION=5.4.274"
+            echo "P3_RESTORE_REPLAY=PASS"
+            echo "P4_OUTER_TREE=$P4_OUTER_TREE"
+            echo "P4_RESUKISU_HEAD=$P4_RESUKISU_HEAD"
+            echo "P4_RESUKISU_TREE=$P4_RESUKISU_TREE"
+            echo "FILENAME_LOOKUP_CONSUMES_ONE_NON_ERR_REFERENCE=YES"
+            echo "OWNER_REF_HELD_ACROSS_RETRY=YES"
+            echo "LOOKUP_REF_ADDED_PER_ATTEMPT=YES"
+            echo "RAW_USER_POINTER_REINTERPRET_CAST=NO"
+            echo "STAT_FACCESSAT_BRIDGE_INTEGRATED=YES"
+            echo "SUSFS_SOURCE_FOUNDATION_PRESENT=YES"
+            echo "SUSFS_RUNTIME_ENABLED=NO"
+            echo "OPEN_REDIRECT_HOOKS_INTEGRATED=NO"
+            echo "MODULE_LOAD_FILTER_INCLUDED=NO"
+            echo "NESTED_RESUKISU_OUTER_LOCAL_EXCLUDE=YES"
+            echo "P3_TO_P4_INCREMENTAL_RESTORE_REPLAY=PASS"
+            echo "P4_FULL_OUTER_RESTORE_REPLAY=PASS"
+            echo "P4_RESUKISU_BUNDLE_REPLAY=PASS"
+            echo "KERNEL_COMPILE_PERFORMED=NO"
+            echo "IMAGE_CREATED=NO"
+            echo "DTB_BUILD_PERFORMED=NO"
+            echo "BOOT_IMAGE_CREATED=NO"
+            echo "FLASHABLE_ZIP_CREATED=NO"
+            echo "DEVICE_ACCESSED=NO"
+            echo "FLASHING_PERFORMED=NO"
+            echo "NEXT_STAGE=CLEAN_GEN1_P5_OPEN_REDIRECT_AND_SERIAL_SUSFS_INTEGRATION"
+          } | tee "$ARTIFACT_DIR/19-result.txt"
+
+      - name: Preserve P4 failure evidence
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          mkdir -p "$ARTIFACT_DIR"
+          {
+            echo "JOB_STATUS=${{ job.status }}"
+            if [ -d "$GITHUB_WORKSPACE/kernel/.git" ]; then
+              echo "OUTER_HEAD=$(git -C "$GITHUB_WORKSPACE/kernel" rev-parse HEAD 2>/dev/null || true)"
+              echo "OUTER_TREE=$(git -C "$GITHUB_WORKSPACE/kernel" rev-parse HEAD^{tree} 2>/dev/null || true)"
+              echo "OUTER_STATUS_BEGIN"
+              git -C "$GITHUB_WORKSPACE/kernel" status --porcelain 2>/dev/null || true
+              echo "OUTER_STATUS_END"
+            fi
+            if [ -d "$GITHUB_WORKSPACE/kernel/KernelSU/.git" ]; then
+              echo "RESUKISU_HEAD=$(git -C "$GITHUB_WORKSPACE/kernel/KernelSU" rev-parse HEAD 2>/dev/null || true)"
+              echo "RESUKISU_TREE=$(git -C "$GITHUB_WORKSPACE/kernel/KernelSU" rev-parse HEAD^{tree} 2>/dev/null || true)"
+              echo "RESUKISU_STATUS_BEGIN"
+              git -C "$GITHUB_WORKSPACE/kernel/KernelSU" status --porcelain 2>/dev/null || true
+              echo "RESUKISU_STATUS_END"
+            fi
+          } > "$ARTIFACT_DIR/99-job-end-state.txt"
+
+          find "$ARTIFACT_DIR" -maxdepth 3 -type f -printf '%P\n' | sort \
+            > "$ARTIFACT_DIR/99-artifact-file-list.txt"
+          exit 0
+
+      - name: Upload P4 source checkpoint evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: clean-gen1-p4-safe-stat-faccessat-filename-bridge-v2-${{ github.run_id }}
+          path: clean-gen1-p4-audit/
+          if-no-files-found: error
+          retention-days: 90
