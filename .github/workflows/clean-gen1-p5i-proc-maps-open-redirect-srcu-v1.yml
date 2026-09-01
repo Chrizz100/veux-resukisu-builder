@@ -1,0 +1,709 @@
+name: CLEAN GEN1 P5I - proc maps OPEN_REDIRECT SRCU v1
+'on':
+  workflow_dispatch: null
+permissions:
+  contents: read
+  actions: read
+jobs:
+  p5i-proc-maps-open-redirect-srcu:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      ARCH: arm64
+      TZ: UTC
+      LANG: C.UTF-8
+      LC_ALL: C.UTF-8
+      VENDOR_REPO: dereference23/kernel_xiaomi_sm6375
+      VENDOR_TAG: '20240619'
+      EXPECTED_VENDOR_SHA: b2b7a3bbc36d120ee523ebc8d68e0f13a97df632
+      P5H_RUN_ID: '33512343055'
+      P5H_ARTIFACT_NAME: clean-gen1-p5h-statfs-fdinfo-open-redirect-v2-33512343055
+      EXPECTED_P5H_COMMIT: fa9ec05de2c4b4f920891b1e53c23fd40d790b01
+      EXPECTED_P5H_TREE: 9c4c23eb7cd0d67d9d613602eea8df200edf9ad0
+      EXPECTED_RESUKISU_HEAD: 42034caa96466e8473fe7553eba8a1888c7f460f
+      EXPECTED_RESUKISU_TREE: d818d965b855d417edfe9eb38b152ff83e75e0fb
+      RESUKISU_SNAPSHOT_HEAD: 0b5efe9e0102c43ca5c41174d500f5a7080cd0c7
+      SUSFS_REPO: https://gitlab.com/simonpunk/susfs4ksu.git
+      SUSFS_54_HEAD: 76affd70abf61d77feb0a132f61365d6848505df
+      SUSFS_510_HEAD: ec785f47d49f7b3871ca9356f450411020af7017
+      SUSFS_515_HEAD: bca0d2333c1a7d717e7278b019d7af7ba1d16005
+      SUSFS_61_HEAD: 4fc9c1898ea66f51847cdbc0d1473ea4ef525a70
+      ARTIFACT_DIR: ${{ github.workspace }}/clean-gen1-p5i
+      P5H_ARTIFACT_DIR: ${{ github.workspace }}/p5h-artifact
+      BASELINE_BUILD_DIR: ${{ github.workspace }}/out-p5i-baseline
+      NORMAL_BUILD_DIR: ${{ github.workspace }}/out-p5i-normal
+      REDIRECT_BUILD_DIR: ${{ github.workspace }}/out-p5i-redirect
+    steps:
+    - name: Initialize P5I
+      shell: bash
+      run: |2
+
+        set -euo pipefail
+        rm -rf "$ARTIFACT_DIR" "$P5H_ARTIFACT_DIR" \
+               "$BASELINE_BUILD_DIR" "$NORMAL_BUILD_DIR" "$REDIRECT_BUILD_DIR" \
+               "$GITHUB_WORKSPACE/p5i-outer-replay" "$GITHUB_WORKSPACE/p5i-resukisu-replay"
+        mkdir -p "$ARTIFACT_DIR"
+
+        cat > "$ARTIFACT_DIR/00-plan.txt" <<'EOF'
+        CLEAN GEN1 P5I - /proc/*/maps OPEN_REDIRECT caller-held SRCU integration
+
+        Accepted P5H is input Last Good.
+
+        P5I changes exactly:
+          fs/proc/task_mmu.c
+          include/linux/susfs.h
+
+        Requirements:
+        - helper remains caller-held SRCU; fs/susfs.c is untouched.
+        - acquire susfs_srcu_open_redirect before helper lookup.
+        - keep SRCU held while using returned redirected_pathname pointer.
+        - spoof dev/ino before show_vma_header_prefix.
+        - release SRCU on header error and after redirected pathname seq copy.
+        - no-match releases SRCU immediately and falls back to stock d_path.
+        - stock d_path/seq_commit behavior remains intact for non-redirected mappings.
+        - all P5H prior source surfaces remain byte-identical.
+        - CONFIG_KSU_SUSFS remains disabled in real VEUX defconfig.
+
+        No full kernel build, Image, dtb, boot image, flash ZIP or device work.
+        EOF
+    - name: Install P5I dependencies
+      shell: bash
+      run: |2
+
+        set -euo pipefail
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends \
+          bc bison binutils-aarch64-linux-gnu build-essential ca-certificates flex \
+          gcc-aarch64-linux-gnu git jq libelf-dev libssl-dev python3 zstd
+    - name: Checkout exact VEUX vendor source
+      uses: actions/checkout@v6
+      with:
+        repository: dereference23/kernel_xiaomi_sm6375
+        ref: '20240619'
+        path: kernel
+        fetch-depth: 1
+    - name: Download accepted P5H artifact
+      uses: actions/download-artifact@v7
+      with:
+        name: ${{ env.P5H_ARTIFACT_NAME }}
+        path: p5h-artifact
+        github-token: ${{ github.token }}
+        run-id: ${{ env.P5H_RUN_ID }}
+    - name: Authenticate accepted P5H checkpoint
+      shell: bash
+      run: |2
+
+        set -euo pipefail
+        (
+          cd "$P5H_ARTIFACT_DIR/restore-kit"
+          sha256sum -c SHA256SUMS
+        ) > "$ARTIFACT_DIR/01-p5h-restore-sha256.txt"
+
+        jq -e \
+          --arg commit "$EXPECTED_P5H_COMMIT" \
+          --arg tree "$EXPECTED_P5H_TREE" \
+          --arg rhead "$EXPECTED_RESUKISU_HEAD" \
+          --arg rtree "$EXPECTED_RESUKISU_TREE" \
+          '.stage=="CLEAN_GEN1_P5H" and
+           .p5h_commit==$commit and
+           .p5h_tree==$tree and
+           .resukisu_head==$rhead and
+           .resukisu_tree==$rtree and
+           .vfs_statfs_open_redirect_integrated==true and
+           .fdinfo_mnt_id_open_redirect_integrated==true and
+           .proc_maps_open_redirect_integrated==false and
+           .susfs_runtime_enabled==false and
+           .full_kernel_build_performed==false' \
+          "$P5H_ARTIFACT_DIR/restore-kit/manifest.json" \
+          > "$ARTIFACT_DIR/01-p5h-manifest-auth.json"
+
+        grep -Fxq 'CLEAN_GEN1_P5H_STATFS_FDINFO_OPEN_REDIRECT=PASS' \
+          "$P5H_ARTIFACT_DIR/16-result.txt"
+        grep -Fxq 'P5H_METADATA_SYMBOL_CONTRACT=PASS' \
+          "$P5H_ARTIFACT_DIR/11-object-builds.txt"
+
+        {
+          echo "P5H_RESTORE_ARTIFACT=PASS"
+          echo "P5H_CHECKPOINT_AUTH=PASS"
+          echo "P5I_MUTATION_ALLOWED=YES"
+        } | tee "$ARTIFACT_DIR/01-p5h-auth.txt"
+    - name: Refuse stale reviewed upstream before P5I
+      shell: bash
+      run: |2
+
+        set -euo pipefail
+        test "$(git ls-remote https://github.com/ReSukiSU/ReSukiSU.git refs/heads/main | awk '{print $1}')" = "$RESUKISU_SNAPSHOT_HEAD"
+        test "$(git ls-remote "$SUSFS_REPO" refs/heads/kernel-5.4 | awk '{print $1}')" = "$SUSFS_54_HEAD"
+        test "$(git ls-remote "$SUSFS_REPO" refs/heads/gki-android12-5.10 | awk '{print $1}')" = "$SUSFS_510_HEAD"
+        test "$(git ls-remote "$SUSFS_REPO" refs/heads/gki-android13-5.15 | awk '{print $1}')" = "$SUSFS_515_HEAD"
+        test "$(git ls-remote "$SUSFS_REPO" refs/heads/gki-android14-6.1 | awk '{print $1}')" = "$SUSFS_61_HEAD"
+        echo "UPSTREAM_REVIEW_SNAPSHOT_CURRENT=YES" | tee "$ARTIFACT_DIR/02-upstream-state.txt"
+    - name: Restore exact accepted P5H outer tree
+      working-directory: kernel
+      shell: bash
+      run: |2
+
+        set -euo pipefail
+        test "$(git rev-parse HEAD)" = "$EXPECTED_VENDOR_SHA"
+        PATCH="$P5H_ARTIFACT_DIR/restore-kit/vendor-20240619-to-p5h-outer.patch"
+        git apply --check --binary "$PATCH"
+        git apply --index --binary "$PATCH"
+        test "$(git write-tree)" = "$EXPECTED_P5H_TREE"
+
+        GIT_AUTHOR_NAME="CLEAN-GEN1 Restore" \
+        GIT_AUTHOR_EMAIL="clean-gen1@invalid.local" \
+        GIT_AUTHOR_DATE="2026-09-01T00:00:00Z" \
+        GIT_COMMITTER_NAME="CLEAN-GEN1 Restore" \
+        GIT_COMMITTER_EMAIL="clean-gen1@invalid.local" \
+        GIT_COMMITTER_DATE="2026-09-01T00:00:00Z" \
+          git commit -m "CLEAN GEN1 restore accepted P5H outer tree"
+
+        test "$(git rev-parse HEAD^{tree})" = "$EXPECTED_P5H_TREE"
+        echo "P5H_RESTORED_COMMIT=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+        echo "P5H_OUTER_RESTORE_REPLAY=PASS" | tee "$ARTIFACT_DIR/03-p5h-outer-restore.txt"
+    - name: Restore exact accepted P5H ReSukiSU
+      working-directory: kernel
+      shell: bash
+      run: |2
+
+        set -euo pipefail
+        rm -rf KernelSU
+        git init KernelSU >/dev/null
+        git -C KernelSU fetch \
+          "$P5H_ARTIFACT_DIR/restore-kit/resukisu-p5h-full.bundle" \
+          refs/heads/clean-gen1-p5h-resukisu:refs/heads/clean-gen1-p5h-resukisu
+        git -C KernelSU checkout --detach refs/heads/clean-gen1-p5h-resukisu >/dev/null
+        test "$(git -C KernelSU rev-parse HEAD)" = "$EXPECTED_RESUKISU_HEAD"
+        test "$(git -C KernelSU rev-parse HEAD^{tree})" = "$EXPECTED_RESUKISU_TREE"
+        mkdir -p .git/info
+        touch .git/info/exclude
+        grep -Fxq '/KernelSU/' .git/info/exclude || echo '/KernelSU/' >> .git/info/exclude
+        test -L drivers/kernelsu
+        test "$(readlink drivers/kernelsu)" = "../KernelSU/kernel"
+        test -z "$(git status --porcelain)"
+        echo "P5H_RESUKISU_RESTORE_REPLAY=PASS" | tee "$ARTIFACT_DIR/04-p5h-resukisu-restore.txt"
+    - name: Audit P5I pre-maps shape and caller-held SRCU contract
+      working-directory: kernel
+      shell: bash
+      run: |
+        set -euo pipefail
+        python3 - <<'PY' > "$ARTIFACT_DIR/06-pre-maps-audit.txt"
+        from pathlib import Path
+        import hashlib, json, os
+
+        task = Path("fs/proc/task_mmu.c").read_text(encoding="utf-8")
+        susfs = Path("fs/susfs.c").read_text(encoding="utf-8")
+        hdr = Path("include/linux/susfs.h").read_text(encoding="utf-8")
+
+        def extract(text, signature):
+            start = text.find(signature)
+            if start < 0:
+                raise SystemExit("missing: " + signature)
+            brace = text.find("{", start)
+            depth = 0
+            for i in range(brace, len(text)):
+                if text[i] == "{":
+                    depth += 1
+                elif text[i] == "}":
+                    depth -= 1
+                    if depth == 0:
+                        return text[start:i+1]
+            raise SystemExit("unterminated: " + signature)
+
+        show = extract(task, "show_map_vma(struct seq_file *m, struct vm_area_struct *vma)")
+        helper = extract(susfs, "int susfs_open_redirect_spoof_show_map_vma_srcu(")
+
+        checks = {
+            "STOCK_FILE_METADATA_PRESENT":
+                "dev = inode->i_sb->s_dev;" in show and "ino = inode->i_ino;" in show,
+            "HEADER_BEFORE_PATHNAME":
+                show.find("show_vma_header_prefix(") < show.find("d_path(&file->f_path"),
+            "STOCK_D_PATH_PRESENT":
+                "d_path(&file->f_path, buf, size)" in show,
+            "STOCK_SEQ_COMMIT_PRESENT":
+                "seq_commit(m, len + 1);" in show,
+            "MAPS_HOOK_ABSENT":
+                "susfs_open_redirect_spoof_show_map_vma_srcu" not in show,
+            "MAPS_DECL_ABSENT":
+                "susfs_open_redirect_spoof_show_map_vma_srcu" not in hdr,
+            "MAPS_HELPER_DOES_NOT_SELF_LOCK":
+                "srcu_read_lock(&susfs_srcu_open_redirect)" not in helper and
+                "srcu_read_unlock(&susfs_srcu_open_redirect" not in helper,
+            "MAPS_HELPER_RETURNS_INTERNAL_PATH_POINTER":
+                "*out_spoofed_name = entry->info.redirected_pathname;" in helper,
+            "SRCU_DOMAIN_DEFINED":
+                "DEFINE_SRCU(susfs_srcu_open_redirect);" in susfs,
+        }
+        for k,v in checks.items():
+            print(f"{k}={'PASS' if v else 'FAIL'}")
+        failed = [k for k,v in checks.items() if not v]
+        if failed:
+            raise SystemExit("P5I pre-audit failed: " + ", ".join(failed))
+
+        protected = {
+            "susfs_c_sha256": hashlib.sha256(Path("fs/susfs.c").read_bytes()).hexdigest(),
+            "namei_sha256": hashlib.sha256(Path("fs/namei.c").read_bytes()).hexdigest(),
+            "proc_base_sha256": hashlib.sha256(Path("fs/proc/base.c").read_bytes()).hexdigest(),
+            "proc_fd_sha256": hashlib.sha256(Path("fs/proc/fd.c").read_bytes()).hexdigest(),
+            "statfs_sha256": hashlib.sha256(Path("fs/statfs.c").read_bytes()).hexdigest(),
+            "maps_helper_sha256": hashlib.sha256(helper.encode()).hexdigest(),
+        }
+        Path(os.environ["ARTIFACT_DIR"], "06-protected-p5h-state.json").write_text(
+            json.dumps(protected, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+
+        print("P5I_PRE_MAPS_SHAPE=PASS")
+        print("P5I_CALLER_HELD_SRCU_REQUIRED=YES")
+        PY
+        grep -Fq 'P5I_PRE_MAPS_SHAPE=PASS' "$ARTIFACT_DIR/06-pre-maps-audit.txt"
+    - name: Target-compile accepted P5H maps baseline
+      working-directory: kernel
+      shell: bash
+      run: |2
+
+        set -euo pipefail
+        rm -rf "$BASELINE_BUILD_DIR"
+        make O="$BASELINE_BUILD_DIR" ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- veux_defconfig
+        make O="$BASELINE_BUILD_DIR" \
+          ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
+          CONFIG_KSU_SUSFS=y CONFIG_KSU_SUSFS_OPEN_REDIRECT=y \
+          KCFLAGS='-DCONFIG_KSU_SUSFS -DCONFIG_KSU_SUSFS_OPEN_REDIRECT' \
+          -j2 fs/proc/task_mmu.o fs/susfs.o \
+          2>&1 | tee "$ARTIFACT_DIR/07-p5h-maps-baseline-build.log"
+        test -s "$BASELINE_BUILD_DIR/fs/proc/task_mmu.o"
+        test -s "$BASELINE_BUILD_DIR/fs/susfs.o"
+        echo "P5I_P5H_MAPS_BASELINE_COMPILE=PASS" \
+          | tee "$ARTIFACT_DIR/07-p5h-maps-baseline-build.txt"
+    - name: Integrate proc maps OPEN_REDIRECT caller-held SRCU
+      working-directory: kernel
+      shell: bash
+      run: "set -euo pipefail\npython3 - <<'PY'\nfrom pathlib import Path\n\ndef extract_function(text, signature):\n    start = text.find(signature)\n    if start < 0:\n        raise SystemExit(\"missing function: \" + signature)\n    brace = text.find(\"{\", start)\n    if brace < 0:\n        raise SystemExit(\"missing opening brace: \" + signature)\n    depth = 0\n    for i in range(brace, len(text)):\n        if text[i] == \"{\":\n            depth += 1\n        elif text[i] == \"}\":\n            depth -= 1\n            if depth == 0:\n                return start, i + 1, text[start:i+1]\n    raise SystemExit(\"unterminated function: \" + signature)\n\n# Shared SRCU/helper declarations.\nhp = Path(\"include/linux/susfs.h\")\nh = hp.read_text(encoding=\"utf-8\")\n\ninclude_anchor = \"#include <linux/statfs.h>\\n\"\ninclude_repl = \"#include <linux/statfs.h>\\n#include <linux/srcu.h>\\n\"\nif h.count(include_anchor) != 1:\n    raise SystemExit(\"susfs.h statfs include anchor mismatch\"\
+        )\nh = h.replace(include_anchor, include_repl, 1)\n\nold_decl = \"\"\"\\\nint susfs_open_redirect_spoof_seq_show(struct inode *inode,\n\t\t\t\t       int *out_mnt_id,\n\t\t\t\t       unsigned long *out_ino);\n#endif\n\"\"\"\nnew_decl = \"\"\"\\\nint susfs_open_redirect_spoof_seq_show(struct inode *inode,\n\t\t\t\t       int *out_mnt_id,\n\t\t\t\t       unsigned long *out_ino);\nextern struct srcu_struct susfs_srcu_open_redirect;\nint susfs_open_redirect_spoof_show_map_vma_srcu(struct inode *inode,\n\t\t\t\t\t\tunsigned long *out_ino,\n\t\t\t\t\t\tdev_t *out_dev,\n\t\t\t\t\t\tchar **out_spoofed_name);\n#endif\n\"\"\"\nif h.count(old_decl) != 1:\n    raise SystemExit(\"P5H OPEN_REDIRECT declaration anchor mismatch\")\nh = h.replace(old_decl, new_decl, 1)\nhp.write_text(h, encoding=\"utf-8\")\n\n# task_mmu includes SUSFS only when OPEN_REDIRECT is built.\ntp = Path(\"fs/proc/task_mmu.c\")\nt = tp.read_text(encoding=\"utf-8\")\n\ninclude_anchor = \"\"\"\\\n#include <linux/page_idle.h>\n\
+        #include <linux/shmem_fs.h>\n\"\"\"\ninclude_repl = \"\"\"\\\n#include <linux/page_idle.h>\n#include <linux/shmem_fs.h>\n#ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT\n#include <linux/susfs.h>\n#endif\n\"\"\"\nif t.count(include_anchor) != 1:\n    raise SystemExit(f\"task_mmu include anchor mismatch: {t.count(include_anchor)}\")\nt = t.replace(include_anchor, include_repl, 1)\n\nstart, end, show = extract_function(\n    t, \"show_map_vma(struct seq_file *m, struct vm_area_struct *vma)\"\n)\n\nold_vars = \"\"\"\\\n\tdev_t dev = 0;\n\tconst char *name = NULL;\n\"\"\"\nnew_vars = \"\"\"\\\n\tdev_t dev = 0;\n\tconst char *name = NULL;\n#ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT\n\tchar *susfs_spoofed_name = NULL;\n\tint susfs_srcu_idx = -1;\n#endif\n\"\"\"\nif show.count(old_vars) != 1:\n    raise SystemExit(\"show_map_vma variable anchor mismatch\")\nshow = show.replace(old_vars, new_vars, 1)\n\nold_file_block = \"\"\"\\\n\tif (file) {\n\t\tstruct inode *inode = file_inode(vma->vm_file);\n\t\tdev\
+        \ = inode->i_sb->s_dev;\n\t\tino = inode->i_ino;\n\t\tpgoff = ((loff_t)vma->vm_pgoff) << PAGE_SHIFT;\n\t}\n\"\"\"\nnew_file_block = \"\"\"\\\n\tif (file) {\n\t\tstruct inode *inode = file_inode(vma->vm_file);\n\t\tdev = inode->i_sb->s_dev;\n\t\tino = inode->i_ino;\n\t\tpgoff = ((loff_t)vma->vm_pgoff) << PAGE_SHIFT;\n#ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT\n\t\tif (SUSFS_IS_INODE_OPEN_REDIRECT(inode)) {\n\t\t\tsusfs_srcu_idx =\n\t\t\t\tsrcu_read_lock(&susfs_srcu_open_redirect);\n\t\t\tif (susfs_open_redirect_spoof_show_map_vma_srcu(\n\t\t\t\t\tinode, &ino, &dev,\n\t\t\t\t\t&susfs_spoofed_name)) {\n\t\t\t\tsrcu_read_unlock(&susfs_srcu_open_redirect,\n\t\t\t\t\t\t susfs_srcu_idx);\n\t\t\t\tsusfs_srcu_idx = -1;\n\t\t\t\tsusfs_spoofed_name = NULL;\n\t\t\t}\n\t\t}\n#endif\n\t}\n\"\"\"\nif show.count(old_file_block) != 1:\n    raise SystemExit(\"show_map_vma file metadata anchor mismatch\")\nshow = show.replace(old_file_block, new_file_block, 1)\n\nold_header = \"\"\"\\\n\tif (show_vma_header_prefix(m,\
+        \ start, end, flags, pgoff, dev, ino))\n\t\treturn;\n\"\"\"\nnew_header = \"\"\"\\\n\tif (show_vma_header_prefix(m, start, end, flags, pgoff, dev, ino)) {\n#ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT\n\t\tif (susfs_srcu_idx >= 0)\n\t\t\tsrcu_read_unlock(&susfs_srcu_open_redirect,\n\t\t\t\t\t susfs_srcu_idx);\n#endif\n\t\treturn;\n\t}\n\"\"\"\nif show.count(old_header) != 1:\n    raise SystemExit(\"show_vma_header_prefix anchor mismatch\")\nshow = show.replace(old_header, new_header, 1)\n\nold_path_block = \"\"\"\\\n\tif (file) {\n\t\tchar *buf;\n\t\tsize_t size = seq_get_buf(m, &buf);\n\n\t\t/*\n\t\t * This won't escape newline characters from the path. If a\n\t\t * program uses newlines in its paths then it can kick rocks.\n\t\t */\n\"\"\"\nnew_path_block = \"\"\"\\\n\tif (file) {\n#ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT\n\t\tif (susfs_spoofed_name) {\n\t\t\t/*\n\t\t\t * The redirected pathname pointer belongs to the\n\t\t\t * OPEN_REDIRECT entry. Keep caller-held SRCU through\n\t\t\t *\
+        \ the complete seq copy, then release it.\n\t\t\t */\n\t\t\tseq_puts(m, susfs_spoofed_name);\n\t\t\tseq_putc(m, '\\\\n');\n\t\t\tsrcu_read_unlock(&susfs_srcu_open_redirect,\n\t\t\t\t\t susfs_srcu_idx);\n\t\t\treturn;\n\t\t}\n#endif\n\t\t{\n\t\t\tchar *buf;\n\t\t\tsize_t size = seq_get_buf(m, &buf);\n\n\t\t/*\n\t\t * This won't escape newline characters from the path. If a\n\t\t * program uses newlines in its paths then it can kick rocks.\n\t\t */\n\"\"\"\nif show.count(old_path_block) != 1:\n    raise SystemExit(\"show_map_vma pathname block anchor mismatch\")\nshow = show.replace(old_path_block, new_path_block, 1)\n\nold_file_end = \"\"\"\\\n\t\t/* Set the overflow status to get more memory */\n\t\tseq_commit(m, -1);\n\t\treturn;\n\t}\n\n\tif (vma->vm_ops && vma->vm_ops->name) {\n\"\"\"\nnew_file_end = \"\"\"\\\n\t\t\t/* Set the overflow status to get more memory */\n\t\t\tseq_commit(m, -1);\n\t\t\treturn;\n\t\t}\n\t}\n\n\tif (vma->vm_ops && vma->vm_ops->name) {\n\"\"\"\nif show.count(old_file_end)\
+        \ != 1:\n    raise SystemExit(\"show_map_vma pathname block close anchor mismatch\")\nshow = show.replace(old_file_end, new_file_end, 1)\n\n# Hard lock/lifetime invariants.\nif show.count(\"srcu_read_lock(&susfs_srcu_open_redirect)\") != 1:\n    raise SystemExit(\"maps SRCU lock count mismatch\")\nif show.count(\"srcu_read_unlock(&susfs_srcu_open_redirect\") != 3:\n    raise SystemExit(\"maps SRCU unlock-site count mismatch\")\nif show.find(\"susfs_open_redirect_spoof_show_map_vma_srcu(\") > show.find(\n        \"show_vma_header_prefix(\"):\n    raise SystemExit(\"maps metadata spoof occurs after header output\")\nif show.find(\"seq_puts(m, susfs_spoofed_name);\") > show.find(\n        \"srcu_read_unlock(&susfs_srcu_open_redirect\", \n        show.find(\"seq_puts(m, susfs_spoofed_name);\")):\n    raise SystemExit(\"maps redirected name pointer unlocked before seq copy\")\nif \"d_path(&file->f_path, buf, size)\" not in show:\n    raise SystemExit(\"stock d_path fallback lost\")\n\n\
+        t = t[:start] + show + t[end:]\ntp.write_text(t, encoding=\"utf-8\")\nPY\ngit diff --check\ngit diff -- fs/proc/task_mmu.c include/linux/susfs.h > \"$ARTIFACT_DIR/08-p5i-maps.diff\"\ntest -s \"$ARTIFACT_DIR/08-p5i-maps.diff\"\n"
+    - name: Audit P5I maps pointer lifetime and fallback semantics
+      working-directory: kernel
+      shell: bash
+      run: |
+        set -euo pipefail
+        python3 - <<'PY' > "$ARTIFACT_DIR/09-p5i-maps-audit.txt"
+        from pathlib import Path
+        import hashlib, json, os
+
+        task = Path("fs/proc/task_mmu.c").read_text(encoding="utf-8")
+        susfs = Path("fs/susfs.c").read_text(encoding="utf-8")
+        hdr = Path("include/linux/susfs.h").read_text(encoding="utf-8")
+
+        def extract(text, signature):
+            start = text.find(signature)
+            if start < 0:
+                raise SystemExit("missing: " + signature)
+            brace = text.find("{", start)
+            depth = 0
+            for i in range(brace, len(text)):
+                if text[i] == "{":
+                    depth += 1
+                elif text[i] == "}":
+                    depth -= 1
+                    if depth == 0:
+                        return text[start:i+1]
+            raise SystemExit("unterminated: " + signature)
+
+        show = extract(task, "show_map_vma(struct seq_file *m, struct vm_area_struct *vma)")
+        helper = extract(susfs, "int susfs_open_redirect_spoof_show_map_vma_srcu(")
+        before = json.loads(
+            Path(os.environ["ARTIFACT_DIR"], "06-protected-p5h-state.json").read_text()
+        )
+
+        copy_pos = show.find("seq_puts(m, susfs_spoofed_name);")
+        copy_unlock = show.find(
+            "srcu_read_unlock(&susfs_srcu_open_redirect", copy_pos
+        )
+
+        checks = {
+            "SRCU_LOCK_BEFORE_HELPER":
+                show.find("srcu_read_lock(&susfs_srcu_open_redirect)") <
+                show.find("susfs_open_redirect_spoof_show_map_vma_srcu("),
+            "HELPER_BEFORE_HEADER":
+                show.find("susfs_open_redirect_spoof_show_map_vma_srcu(") <
+                show.find("show_vma_header_prefix("),
+            "SPOOFED_DEV_INO_FEED_HEADER":
+                "&ino, &dev," in show,
+            "NO_MATCH_UNLOCKS_AND_FALLS_BACK":
+                "susfs_srcu_idx = -1;" in show and
+                "susfs_spoofed_name = NULL;" in show,
+            "HEADER_ERROR_UNLOCKS":
+                show.find("show_vma_header_prefix(") <
+                show.find("srcu_read_unlock(&susfs_srcu_open_redirect",
+                          show.find("show_vma_header_prefix(")),
+            "REDIRECT_NAME_COPIED_UNDER_SRCU":
+                copy_pos >= 0 and copy_unlock > copy_pos,
+            "REDIRECT_NAME_RETURNS_AFTER_UNLOCK":
+                show.find("return;", copy_unlock) > copy_unlock,
+            "STOCK_D_PATH_FALLBACK_PRESERVED":
+                "d_path(&file->f_path, buf, size)" in show and
+                "seq_commit(m, len + 1);" in show,
+            "MAPS_HELPER_STILL_CALLER_LOCKED":
+                "srcu_read_lock(&susfs_srcu_open_redirect)" not in helper and
+                "srcu_read_unlock(&susfs_srcu_open_redirect" not in helper,
+            "MAPS_HELPER_BODY_BYTE_IDENTICAL":
+                hashlib.sha256(helper.encode()).hexdigest() == before["maps_helper_sha256"],
+            "SUSFS_C_BYTE_IDENTICAL":
+                hashlib.sha256(Path("fs/susfs.c").read_bytes()).hexdigest() ==
+                before["susfs_c_sha256"],
+            "P5H_NAMEI_PRESERVED":
+                hashlib.sha256(Path("fs/namei.c").read_bytes()).hexdigest() ==
+                before["namei_sha256"],
+            "P5H_PROC_BASE_PRESERVED":
+                hashlib.sha256(Path("fs/proc/base.c").read_bytes()).hexdigest() ==
+                before["proc_base_sha256"],
+            "P5H_PROC_FD_PRESERVED":
+                hashlib.sha256(Path("fs/proc/fd.c").read_bytes()).hexdigest() ==
+                before["proc_fd_sha256"],
+            "P5H_STATFS_PRESERVED":
+                hashlib.sha256(Path("fs/statfs.c").read_bytes()).hexdigest() ==
+                before["statfs_sha256"],
+            "SHARED_SRCU_EXTERN":
+                "extern struct srcu_struct susfs_srcu_open_redirect;" in hdr,
+            "SHARED_MAPS_HELPER_DECL":
+                "int susfs_open_redirect_spoof_show_map_vma_srcu(struct inode *inode," in hdr,
+        }
+
+        for k,v in checks.items():
+            print(f"{k}={'PASS' if v else 'FAIL'}")
+        failed = [k for k,v in checks.items() if not v]
+        if failed:
+            raise SystemExit("P5I post-audit failed: " + ", ".join(failed))
+
+        print("P5I_PROC_MAPS_METADATA_SPOOF=PASS")
+        print("P5I_PROC_MAPS_PATHNAME_SPOOF=PASS")
+        print("P5I_CALLER_HELD_SRCU_LIFETIME=PASS")
+        print("P5I_STOCK_D_PATH_FALLBACK=PASS")
+        print("P5H_PRIOR_SURFACES_PRESERVED=PASS")
+        PY
+        grep -Fq 'P5I_PROC_MAPS_METADATA_SPOOF=PASS' "$ARTIFACT_DIR/09-p5i-maps-audit.txt"
+        grep -Fq 'P5I_PROC_MAPS_PATHNAME_SPOOF=PASS' "$ARTIFACT_DIR/09-p5i-maps-audit.txt"
+        grep -Fq 'P5I_CALLER_HELD_SRCU_LIFETIME=PASS' "$ARTIFACT_DIR/09-p5i-maps-audit.txt"
+        grep -Fq 'P5I_STOCK_D_PATH_FALLBACK=PASS' "$ARTIFACT_DIR/09-p5i-maps-audit.txt"
+    - name: Prove P5I changed-file scope
+      working-directory: kernel
+      shell: bash
+      run: |2
+
+        set -euo pipefail
+        mapfile -t changed < <(git status --porcelain | awk '{print $2}' | sort)
+        printf '%s\n' "${changed[@]}" | tee "$ARTIFACT_DIR/10-changed-files.txt"
+        test "${#changed[@]}" -eq 2
+        printf '%s\n' "${changed[@]}" | grep -Fxq 'fs/proc/task_mmu.c'
+        printf '%s\n' "${changed[@]}" | grep -Fxq 'include/linux/susfs.h'
+        test "$(git -C KernelSU rev-parse HEAD)" = "$EXPECTED_RESUKISU_HEAD"
+        test "$(git -C KernelSU rev-parse HEAD^{tree})" = "$EXPECTED_RESUKISU_TREE"
+        test -z "$(git -C KernelSU status --porcelain)"
+        grep -Fxq '# CONFIG_KSU_SUSFS is not set' arch/arm64/configs/veux_defconfig
+        test ! -e KernelSU/kernel/feature/module_load_filter.c
+
+        {
+          echo "P5I_CHANGED_FILES=fs/proc/task_mmu.c,include/linux/susfs.h"
+          echo "P5I_CHANGE_SCOPE=PASS"
+          echo "SUSFS_RUNTIME_ENABLED=NO"
+        } | tee "$ARTIFACT_DIR/10-scope.txt"
+    - name: Target-compile normal and forced P5I maps objects
+      working-directory: kernel
+      shell: bash
+      run: |2
+
+        set -euo pipefail
+        rm -rf "$NORMAL_BUILD_DIR"
+        make O="$NORMAL_BUILD_DIR" ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- veux_defconfig
+        make O="$NORMAL_BUILD_DIR" \
+          ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
+          -j2 fs/proc/task_mmu.o \
+          2>&1 | tee "$ARTIFACT_DIR/11-normal-maps-object.log"
+        test -s "$NORMAL_BUILD_DIR/fs/proc/task_mmu.o"
+        ! aarch64-linux-gnu-nm "$NORMAL_BUILD_DIR/fs/proc/task_mmu.o" \
+          | grep -q 'susfs_open_redirect_spoof_show_map_vma_srcu'
+
+        rm -rf "$REDIRECT_BUILD_DIR"
+        make O="$REDIRECT_BUILD_DIR" ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- veux_defconfig
+        make O="$REDIRECT_BUILD_DIR" \
+          ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
+          CONFIG_KSU_SUSFS=y CONFIG_KSU_SUSFS_OPEN_REDIRECT=y \
+          KCFLAGS='-DCONFIG_KSU_SUSFS -DCONFIG_KSU_SUSFS_OPEN_REDIRECT' \
+          -j2 fs/proc/task_mmu.o fs/susfs.o \
+          2>&1 | tee "$ARTIFACT_DIR/11-forced-maps-objects.log"
+        test -s "$REDIRECT_BUILD_DIR/fs/proc/task_mmu.o"
+        test -s "$REDIRECT_BUILD_DIR/fs/susfs.o"
+
+        aarch64-linux-gnu-nm "$REDIRECT_BUILD_DIR/fs/proc/task_mmu.o" \
+          > "$ARTIFACT_DIR/11-task-mmu-nm.txt"
+        aarch64-linux-gnu-nm "$REDIRECT_BUILD_DIR/fs/susfs.o" \
+          > "$ARTIFACT_DIR/11-susfs-nm.txt"
+
+        grep -Eq '[[:space:]]U[[:space:]]+susfs_open_redirect_spoof_show_map_vma_srcu$' \
+          "$ARTIFACT_DIR/11-task-mmu-nm.txt"
+        grep -Eq '[[:space:]]U[[:space:]]+susfs_srcu_open_redirect$' \
+          "$ARTIFACT_DIR/11-task-mmu-nm.txt"
+        grep -Eq '[[:space:]][Tt][[:space:]]+susfs_open_redirect_spoof_show_map_vma_srcu$' \
+          "$ARTIFACT_DIR/11-susfs-nm.txt"
+        grep -Eq '[[:space:]][DdBb][[:space:]]+susfs_srcu_open_redirect$' \
+          "$ARTIFACT_DIR/11-susfs-nm.txt"
+
+        {
+          echo "P5I_NORMAL_MAPS_OBJECT_COMPILE=PASS"
+          echo "P5I_FORCED_TASK_MMU_OBJECT_COMPILE=PASS"
+          echo "P5I_FORCED_SUSFS_OBJECT_COMPILE=PASS"
+          echo "P5I_MAPS_SYMBOL_CONTRACT=PASS"
+          echo "FULL_KERNEL_BUILD_PERFORMED=NO"
+        } | tee "$ARTIFACT_DIR/11-object-builds.txt"
+    - name: Freeze deterministic P5I checkpoint
+      working-directory: kernel
+      shell: bash
+      run: |2
+
+        set -euo pipefail
+        git diff --check
+        git add fs/proc/task_mmu.c include/linux/susfs.h
+        mapfile -t staged < <(git diff --cached --name-only | sort)
+        test "${#staged[@]}" -eq 2
+        printf '%s\n' "${staged[@]}" | grep -Fxq 'fs/proc/task_mmu.c'
+        printf '%s\n' "${staged[@]}" | grep -Fxq 'include/linux/susfs.h'
+
+        GIT_AUTHOR_NAME="CLEAN-GEN1 Builder" \
+        GIT_AUTHOR_EMAIL="clean-gen1@invalid.local" \
+        GIT_AUTHOR_DATE="2026-09-01T00:00:00Z" \
+        GIT_COMMITTER_NAME="CLEAN-GEN1 Builder" \
+        GIT_COMMITTER_EMAIL="clean-gen1@invalid.local" \
+        GIT_COMMITTER_DATE="2026-09-01T00:00:00Z" \
+          git commit -m "CLEAN GEN1 P5I integrate OPEN_REDIRECT proc maps SRCU safely"
+
+        P5I_COMMIT="$(git rev-parse HEAD)"
+        P5I_TREE="$(git rev-parse HEAD^{tree})"
+        test -z "$(git status --porcelain)"
+        test -z "$(git -C KernelSU status --porcelain)"
+        echo "P5I_COMMIT=$P5I_COMMIT" >> "$GITHUB_ENV"
+        echo "P5I_TREE=$P5I_TREE" >> "$GITHUB_ENV"
+
+        {
+          echo "P5I_CHECKPOINT_COMMIT=$P5I_COMMIT"
+          echo "P5I_OUTER_TREE=$P5I_TREE"
+          echo "P5I_RESUKISU_HEAD=$(git -C KernelSU rev-parse HEAD)"
+          echo "P5I_RESUKISU_TREE=$(git -C KernelSU rev-parse HEAD^{tree})"
+          echo "P5I_SOURCE_CHECKPOINT=PASS"
+        } | tee "$ARTIFACT_DIR/12-p5i-checkpoint.txt"
+    - name: Create P5I restore kit
+      working-directory: kernel
+      shell: bash
+      run: |
+        set -euo pipefail
+        kit="$ARTIFACT_DIR/restore-kit"
+        rm -rf "$kit"
+        mkdir -p "$kit"
+
+        git diff --binary "$P5H_RESTORED_COMMIT" "$P5I_COMMIT" \
+          > "$kit/p5h-to-p5i-outer.patch"
+        git diff --binary "$EXPECTED_VENDOR_SHA" "$P5I_COMMIT" \
+          > "$kit/vendor-20240619-to-p5i-outer.patch"
+        cp "$ARTIFACT_DIR/08-p5i-maps.diff" "$kit/P5I-MAPS-DIFF.patch"
+        cp "$ARTIFACT_DIR/09-p5i-maps-audit.txt" "$kit/P5I-MAPS-AUDIT.txt"
+
+        git -C KernelSU branch -f clean-gen1-p5i-resukisu "$EXPECTED_RESUKISU_HEAD"
+        git -C KernelSU bundle create "$kit/resukisu-p5i-full.bundle" \
+          refs/heads/clean-gen1-p5i-resukisu
+        git -C KernelSU bundle verify "$kit/resukisu-p5i-full.bundle" \
+          > "$kit/resukisu-p5i-bundle-verify.txt" 2>&1
+        tar -C KernelSU --exclude=.git -cf - . \
+          | zstd -19 -T0 -o "$kit/resukisu-p5i-source.tar.zst"
+
+        python3 - <<'PY'
+        from pathlib import Path
+        import json, os
+
+        kit = Path(os.environ["ARTIFACT_DIR"]) / "restore-kit"
+        manifest = {
+            "stage": "CLEAN_GEN1_P5I",
+            "kernel_version": "5.4.274",
+            "vendor_sha": os.environ["EXPECTED_VENDOR_SHA"],
+            "p5h_tree": os.environ["EXPECTED_P5H_TREE"],
+            "p5i_commit": os.environ["P5I_COMMIT"],
+            "p5i_tree": os.environ["P5I_TREE"],
+            "resukisu_head": os.environ["EXPECTED_RESUKISU_HEAD"],
+            "resukisu_tree": os.environ["EXPECTED_RESUKISU_TREE"],
+            "changed_files": [
+                "fs/proc/task_mmu.c",
+                "include/linux/susfs.h",
+            ],
+            "normal_path_open_redirect_integrated": True,
+            "tmpfile_open_redirect_integrated": True,
+            "o_path_open_redirect_integrated": True,
+            "vfs_readlink_open_redirect_integrated": True,
+            "proc_readlink_open_redirect_integrated": True,
+            "vfs_statfs_open_redirect_integrated": True,
+            "fdinfo_mnt_id_open_redirect_integrated": True,
+            "proc_maps_open_redirect_integrated": True,
+            "proc_maps_caller_held_srcu": True,
+            "proc_maps_redirect_pointer_used_only_under_srcu": True,
+            "proc_maps_stock_d_path_fallback_preserved": True,
+            "susfs_helper_bodies_changed": False,
+            "susfs_runtime_enabled": False,
+            "open_redirect_runtime_enabled": False,
+            "full_kernel_build_performed": False,
+        }
+        (kit / "manifest.json").write_text(
+            json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        PY
+
+        cat > "$kit/RESTORE-INSTRUCTIONS.txt" <<EOF
+        CLEAN GEN1 P5I deterministic restore
+
+        Apply vendor-20240619-to-p5i-outer.patch on:
+          $VENDOR_REPO @ $EXPECTED_VENDOR_SHA
+
+        Expected outer tree:
+          $P5I_TREE
+
+        Expected ReSukiSU:
+          head $EXPECTED_RESUKISU_HEAD
+          tree $EXPECTED_RESUKISU_TREE
+
+        P5I completes OPEN_REDIRECT /proc/*/maps integration using caller-held SRCU.
+        The redirected pathname pointer is consumed only while SRCU is held.
+        Stock d_path behavior is retained for non-redirected/no-match mappings.
+
+        CONFIG_KSU_SUSFS remains disabled in real VEUX defconfig.
+        No full kernel build has been performed.
+        EOF
+
+        (
+          cd "$kit"
+          find . -maxdepth 1 -type f ! -name SHA256SUMS -printf '%f\n' \
+            | sort | xargs sha256sum > SHA256SUMS
+          sha256sum -c SHA256SUMS
+        ) | tee "$ARTIFACT_DIR/13-restore-kit-sha256.txt"
+    - name: Replay P5I outer and ReSukiSU restore
+      working-directory: kernel
+      shell: bash
+      run: |2
+
+        set -euo pipefail
+        outer="$GITHUB_WORKSPACE/p5i-outer-replay"
+        rm -rf "$outer"
+        git worktree add --detach "$outer" "$EXPECTED_VENDOR_SHA" >/dev/null
+        (
+          cd "$outer"
+          git apply --check --binary "$ARTIFACT_DIR/restore-kit/vendor-20240619-to-p5i-outer.patch"
+          git apply --index --binary "$ARTIFACT_DIR/restore-kit/vendor-20240619-to-p5i-outer.patch"
+          test "$(git write-tree)" = "$P5I_TREE"
+        )
+        git worktree remove --force "$outer"
+
+        resu="$GITHUB_WORKSPACE/p5i-resukisu-replay"
+        rm -rf "$resu"
+        git init "$resu" >/dev/null
+        git -C "$resu" fetch \
+          "$ARTIFACT_DIR/restore-kit/resukisu-p5i-full.bundle" \
+          refs/heads/clean-gen1-p5i-resukisu:refs/heads/clean-gen1-p5i-resukisu
+        git -C "$resu" checkout --detach refs/heads/clean-gen1-p5i-resukisu >/dev/null
+        test "$(git -C "$resu" rev-parse HEAD)" = "$EXPECTED_RESUKISU_HEAD"
+        test "$(git -C "$resu" rev-parse HEAD^{tree})" = "$EXPECTED_RESUKISU_TREE"
+        rm -rf "$resu"
+
+        {
+          echo "P5I_OUTER_RESTORE_REPLAY=PASS"
+          echo "P5I_RESUKISU_BUNDLE_REPLAY=PASS"
+        } | tee "$ARTIFACT_DIR/14-restore-replays.txt"
+    - name: Final P5I safety gate
+      working-directory: kernel
+      shell: bash
+      run: |2
+
+        set -euo pipefail
+        test "$(make -s kernelversion)" = "5.4.274"
+        test "$(git rev-parse HEAD)" = "$P5I_COMMIT"
+        test "$(git rev-parse HEAD^{tree})" = "$P5I_TREE"
+        test "$(git -C KernelSU rev-parse HEAD)" = "$EXPECTED_RESUKISU_HEAD"
+        test "$(git -C KernelSU rev-parse HEAD^{tree})" = "$EXPECTED_RESUKISU_TREE"
+        test -z "$(git status --porcelain)"
+        test -z "$(git -C KernelSU status --porcelain)"
+
+        grep -Fq 'P5I_PRE_MAPS_SHAPE=PASS' "$ARTIFACT_DIR/06-pre-maps-audit.txt"
+        grep -Fq 'P5I_P5H_MAPS_BASELINE_COMPILE=PASS' "$ARTIFACT_DIR/07-p5h-maps-baseline-build.txt"
+        grep -Fq 'P5I_PROC_MAPS_METADATA_SPOOF=PASS' "$ARTIFACT_DIR/09-p5i-maps-audit.txt"
+        grep -Fq 'P5I_PROC_MAPS_PATHNAME_SPOOF=PASS' "$ARTIFACT_DIR/09-p5i-maps-audit.txt"
+        grep -Fq 'P5I_CALLER_HELD_SRCU_LIFETIME=PASS' "$ARTIFACT_DIR/09-p5i-maps-audit.txt"
+        grep -Fq 'P5I_CHANGE_SCOPE=PASS' "$ARTIFACT_DIR/10-scope.txt"
+        grep -Fq 'P5I_MAPS_SYMBOL_CONTRACT=PASS' "$ARTIFACT_DIR/11-object-builds.txt"
+        grep -Fq 'P5I_OUTER_RESTORE_REPLAY=PASS' "$ARTIFACT_DIR/14-restore-replays.txt"
+        grep -Fq 'P5I_RESUKISU_BUNDLE_REPLAY=PASS' "$ARTIFACT_DIR/14-restore-replays.txt"
+
+        grep -Fxq '# CONFIG_KSU_SUSFS is not set' arch/arm64/configs/veux_defconfig
+        test ! -e KernelSU/kernel/feature/module_load_filter.c
+        (
+          cd "$ARTIFACT_DIR/restore-kit"
+          sha256sum -c SHA256SUMS
+        ) > "$ARTIFACT_DIR/15-final-restore-sha256.txt"
+
+        {
+          echo "CLEAN_GEN1_P5I_PROC_MAPS_OPEN_REDIRECT_SRCU=PASS"
+          echo "KERNEL_VERSION=5.4.274"
+          echo "P5H_INPUT_TREE=$EXPECTED_P5H_TREE"
+          echo "P5I_CHECKPOINT_COMMIT=$P5I_COMMIT"
+          echo "P5I_OUTER_TREE=$P5I_TREE"
+          echo "P5I_RESUKISU_HEAD=$EXPECTED_RESUKISU_HEAD"
+          echo "P5I_RESUKISU_TREE=$EXPECTED_RESUKISU_TREE"
+          echo "PROC_MAPS_OPEN_REDIRECT_INTEGRATED=YES"
+          echo "PROC_MAPS_DEV_INO_SPOOFED_BEFORE_HEADER=YES"
+          echo "PROC_MAPS_PATHNAME_SPOOFED=YES"
+          echo "PROC_MAPS_CALLER_HELD_SRCU=YES"
+          echo "PROC_MAPS_REDIRECT_POINTER_USED_AFTER_SRCU_UNLOCK=NO"
+          echo "PROC_MAPS_STOCK_D_PATH_FALLBACK=YES"
+          echo "SUSFS_HELPER_BODIES_CHANGED=NO"
+          echo "P5H_PRIOR_SURFACES_PRESERVED=PASS"
+          echo "P5I_CHANGED_FILES=fs/proc/task_mmu.c,include/linux/susfs.h"
+          echo "SUSFS_RUNTIME_ENABLED=NO"
+          echo "MODULE_LOAD_FILTER_INCLUDED=NO"
+          echo "P5I_OUTER_RESTORE_REPLAY=PASS"
+          echo "P5I_RESUKISU_BUNDLE_REPLAY=PASS"
+          echo "FULL_KERNEL_BUILD_PERFORMED=NO"
+          echo "IMAGE_CREATED=NO"
+          echo "DTB_BUILD_PERFORMED=NO"
+          echo "BOOT_IMAGE_CREATED=NO"
+          echo "FLASHABLE_ZIP_CREATED=NO"
+          echo "DEVICE_ACCESSED=NO"
+          echo "FLASHING_PERFORMED=NO"
+          echo "NEXT_STAGE=CLEAN_GEN1_P6_DETERMINISTIC_IMAGE_DTB_BUILD"
+        } | tee "$ARTIFACT_DIR/16-result.txt"
+    - name: Preserve P5I failure evidence
+      if: always()
+      shell: bash
+      run: |2
+
+        set +e
+        mkdir -p "$ARTIFACT_DIR"
+        {
+          echo "JOB_STATUS=${{ job.status }}"
+          if [ -d "$GITHUB_WORKSPACE/kernel/.git" ]; then
+            echo "OUTER_HEAD=$(git -C "$GITHUB_WORKSPACE/kernel" rev-parse HEAD 2>/dev/null || true)"
+            echo "OUTER_TREE=$(git -C "$GITHUB_WORKSPACE/kernel" rev-parse HEAD^{tree} 2>/dev/null || true)"
+            echo "OUTER_STATUS_BEGIN"
+            git -C "$GITHUB_WORKSPACE/kernel" status --porcelain 2>/dev/null || true
+            echo "OUTER_STATUS_END"
+          fi
+        } > "$ARTIFACT_DIR/99-job-end-state.txt"
+        find "$ARTIFACT_DIR" -maxdepth 2 -type f -printf '%P\n' \
+          | sort > "$ARTIFACT_DIR/99-artifact-file-list.txt"
+        exit 0
+    - name: Upload P5I checkpoint and evidence
+      if: always()
+      uses: actions/upload-artifact@v7
+      with:
+        name: clean-gen1-p5i-proc-maps-open-redirect-srcu-v1-${{ github.run_id }}
+        path: clean-gen1-p5i/
+        if-no-files-found: error
+        retention-days: 90
