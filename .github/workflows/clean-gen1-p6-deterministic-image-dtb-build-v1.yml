@@ -1,0 +1,841 @@
+name: CLEAN GEN1 P6 - deterministic Image + DTB build v1
+'on':
+  workflow_dispatch: null
+permissions:
+  contents: read
+  actions: read
+jobs:
+  p6-deterministic-image-dtb:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 210
+    env:
+      ARCH: arm64
+      TZ: UTC
+      LANG: C.UTF-8
+      LC_ALL: C.UTF-8
+      VENDOR_REPO: dereference23/kernel_xiaomi_sm6375
+      VENDOR_TAG: '20240619'
+      EXPECTED_VENDOR_SHA: b2b7a3bbc36d120ee523ebc8d68e0f13a97df632
+      P5I_RUN_ID: '33513399363'
+      P5I_ARTIFACT_NAME: clean-gen1-p5i-proc-maps-open-redirect-srcu-v1-33513399363
+      EXPECTED_P5I_COMMIT: f353a9475e40ca866d570c1d0ef55e24cf6556e4
+      EXPECTED_P5I_TREE: a947c1f2891c796a08373fc755e29b23139dc761
+      EXPECTED_RESUKISU_HEAD: 42034caa96466e8473fe7553eba8a1888c7f460f
+      EXPECTED_RESUKISU_TREE: d818d965b855d417edfe9eb38b152ff83e75e0fb
+      EXPECTED_KSU_VERSION: '35102'
+      RESUKISU_SNAPSHOT_HEAD: 0b5efe9e0102c43ca5c41174d500f5a7080cd0c7
+      SUSFS_REPO: https://gitlab.com/simonpunk/susfs4ksu.git
+      SUSFS_54_HEAD: 76affd70abf61d77feb0a132f61365d6848505df
+      SUSFS_510_HEAD: ec785f47d49f7b3871ca9356f450411020af7017
+      SUSFS_515_HEAD: bca0d2333c1a7d717e7278b019d7af7ba1d16005
+      SUSFS_61_HEAD: 4fc9c1898ea66f51847cdbc0d1473ea4ef525a70
+      CLANG_PREBUILT_COMMIT: aa2e4a514a6c85eebcc4a27149eaf9244e951a1e
+      TOOLCHAIN_DIR: ${{ github.workspace }}/toolchains/clang-r416183b
+      OUT_DIR: ${{ github.workspace }}/kernel/out-p6
+      ARTIFACT_DIR: ${{ github.workspace }}/clean-gen1-p6
+      P5I_ARTIFACT_DIR: ${{ github.workspace }}/p5i-artifact
+      KBUILD_BUILD_USER: clean-gen1
+      KBUILD_BUILD_HOST: veux-p6
+      KBUILD_BUILD_TIMESTAMP: Tue Sep 1 00:00:00 UTC 2026
+      KBUILD_BUILD_VERSION: '1'
+      SOURCE_DATE_EPOCH: '1788220800'
+      P6_SUSFS_MAKE_ARGS: CONFIG_KSU_SUSFS=y CONFIG_KSU_SUSFS_SUS_PATH=y CONFIG_KSU_SUSFS_SUS_MOUNT=y CONFIG_KSU_SUSFS_SUS_KSTAT=y CONFIG_KSU_SUSFS_SPOOF_UNAME=y CONFIG_KSU_SUSFS_ENABLE_LOG=y CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y CONFIG_KSU_SUSFS_OPEN_REDIRECT=y CONFIG_KSU_SUSFS_SUS_MAP=y
+      P6_EFFECTIVE_KCFLAGS: -D__ANDROID_COMMON_KERNEL__ -DCONFIG_KSU_SUSFS -DCONFIG_KSU_SUSFS_SUS_PATH -DCONFIG_KSU_SUSFS_SUS_MOUNT -DCONFIG_KSU_SUSFS_SUS_KSTAT -DCONFIG_KSU_SUSFS_SPOOF_UNAME -DCONFIG_KSU_SUSFS_ENABLE_LOG -DCONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS -DCONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG -DCONFIG_KSU_SUSFS_OPEN_REDIRECT -DCONFIG_KSU_SUSFS_SUS_MAP
+    steps:
+    - name: Initialize P6
+      shell: bash
+      run: |2
+
+        set -euo pipefail
+        rm -rf "$ARTIFACT_DIR" "$P5I_ARTIFACT_DIR" "$TOOLCHAIN_DIR" \
+               "$GITHUB_WORKSPACE/toolchains" \
+               "$GITHUB_WORKSPACE/p6-outer-replay" \
+               "$GITHUB_WORKSPACE/p6-resukisu-replay"
+        mkdir -p "$ARTIFACT_DIR" "$TOOLCHAIN_DIR"
+
+        cat > "$ARTIFACT_DIR/00-plan.txt" <<'EOF'
+        CLEAN GEN1 P6 - deterministic Image + DTB build
+
+        Input Last Good:
+          CLEAN GEN1 P5I
+
+        P6 source policy:
+        - restore exact P5I tree and selected ReSukiSU bundle;
+        - fresh upstream-drift gate BEFORE the first full kernel compile;
+        - no source mutation is permitted;
+        - module_load_filter remains excluded.
+
+        Toolchain:
+        - Android clang-r416183b pinned to prebuilts commit aa2e4a...
+
+        Important effective configuration model:
+        - real VEUX .config remains CONFIG_KSU_MANUAL_HOOK=y;
+        - real VEUX .config remains # CONFIG_KSU_SUSFS is not set;
+        - ReSukiSU Kconfig places MANUAL_HOOK and SUSFS in one choice, so native
+          Kconfig cannot represent the CLEAN GEN1 hybrid source contract;
+        - P6 therefore enables SUSFS and all currently integrated SUSFS features
+          through GNU make CONFIG_* command-line overrides plus matching KCFLAGS;
+        - this preserves MANUAL_HOOK from generated autoconf while compiling the
+          SUSFS bridge and SUSFS objects at the same time;
+        - this is recorded explicitly and is NOT reported as Kconfig-native dual mode.
+
+        Determinism:
+        - Build A from clean out-p6
+        - archive hashes/output
+        - delete out-p6 completely
+        - Build B again at the same absolute out-p6 path
+        - compare Image, VEUX DTB, vmlinux, System.map, .config and complete DTB hash list
+
+        Outputs:
+        - Image
+        - VEUX DTB
+        - base .config
+        - effective-build-config manifest
+        - complete provenance/build/reproducibility evidence
+
+        No boot.img, AnyKernel3 ZIP, device access or flashing in P6.
+        EOF
+    - name: Install P6 dependencies
+      shell: bash
+      run: |2
+
+        set -euo pipefail
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends \
+          bc bison build-essential ca-certificates cpio curl flex git jq \
+          libelf-dev libncurses-dev libssl-dev patch python3 rsync xz-utils zstd
+    - name: Checkout exact VEUX vendor source
+      uses: actions/checkout@v6
+      with:
+        repository: dereference23/kernel_xiaomi_sm6375
+        ref: '20240619'
+        path: kernel
+        fetch-depth: 1
+        persist-credentials: false
+    - name: Download accepted P5I artifact
+      uses: actions/download-artifact@v7
+      with:
+        name: ${{ env.P5I_ARTIFACT_NAME }}
+        path: p5i-artifact
+        github-token: ${{ github.token }}
+        run-id: ${{ env.P5I_RUN_ID }}
+    - name: Authenticate P5I Last Good
+      shell: bash
+      run: |2
+
+        set -euo pipefail
+        (
+          cd "$P5I_ARTIFACT_DIR/restore-kit"
+          sha256sum -c SHA256SUMS
+        ) > "$ARTIFACT_DIR/01-p5i-restore-sha256.txt"
+
+        jq -e \
+          --arg commit "$EXPECTED_P5I_COMMIT" \
+          --arg tree "$EXPECTED_P5I_TREE" \
+          --arg rhead "$EXPECTED_RESUKISU_HEAD" \
+          --arg rtree "$EXPECTED_RESUKISU_TREE" \
+          '.stage=="CLEAN_GEN1_P5I" and
+           .p5i_commit==$commit and
+           .p5i_tree==$tree and
+           .resukisu_head==$rhead and
+           .resukisu_tree==$rtree and
+           .normal_path_open_redirect_integrated==true and
+           .tmpfile_open_redirect_integrated==true and
+           .o_path_open_redirect_integrated==true and
+           .vfs_readlink_open_redirect_integrated==true and
+           .proc_readlink_open_redirect_integrated==true and
+           .vfs_statfs_open_redirect_integrated==true and
+           .fdinfo_mnt_id_open_redirect_integrated==true and
+           .proc_maps_open_redirect_integrated==true and
+           .proc_maps_caller_held_srcu==true and
+           .proc_maps_redirect_pointer_used_only_under_srcu==true and
+           .susfs_runtime_enabled==false and
+           .full_kernel_build_performed==false' \
+          "$P5I_ARTIFACT_DIR/restore-kit/manifest.json" \
+          > "$ARTIFACT_DIR/01-p5i-manifest-auth.json"
+
+        grep -Fxq 'CLEAN_GEN1_P5I_PROC_MAPS_OPEN_REDIRECT_SRCU=PASS' \
+          "$P5I_ARTIFACT_DIR/16-result.txt"
+        grep -Fxq 'P5I_MAPS_SYMBOL_CONTRACT=PASS' \
+          "$P5I_ARTIFACT_DIR/11-object-builds.txt"
+
+        {
+          echo "P5I_RESTORE_ARTIFACT=PASS"
+          echo "P5I_CHECKPOINT_AUTH=PASS"
+          echo "P5I_INPUT_TREE=$EXPECTED_P5I_TREE"
+          echo "P6_FULL_BUILD_ALLOWED=YES"
+        } | tee "$ARTIFACT_DIR/01-p5i-auth.txt"
+    - name: Fresh upstream audit immediately before full build
+      shell: bash
+      run: |2
+
+        set -euo pipefail
+        current_resu="$(git ls-remote https://github.com/ReSukiSU/ReSukiSU.git refs/heads/main | awk '{print $1}')"
+        current_54="$(git ls-remote "$SUSFS_REPO" refs/heads/kernel-5.4 | awk '{print $1}')"
+        current_510="$(git ls-remote "$SUSFS_REPO" refs/heads/gki-android12-5.10 | awk '{print $1}')"
+        current_515="$(git ls-remote "$SUSFS_REPO" refs/heads/gki-android13-5.15 | awk '{print $1}')"
+        current_61="$(git ls-remote "$SUSFS_REPO" refs/heads/gki-android14-6.1 | awk '{print $1}')"
+
+        {
+          echo "RESUKISU_CURRENT=$current_resu"
+          echo "RESUKISU_REVIEWED=$RESUKISU_SNAPSHOT_HEAD"
+          echo "SUSFS_54_CURRENT=$current_54"
+          echo "SUSFS_54_REVIEWED=$SUSFS_54_HEAD"
+          echo "SUSFS_510_CURRENT=$current_510"
+          echo "SUSFS_510_REVIEWED=$SUSFS_510_HEAD"
+          echo "SUSFS_515_CURRENT=$current_515"
+          echo "SUSFS_515_REVIEWED=$SUSFS_515_HEAD"
+          echo "SUSFS_61_CURRENT=$current_61"
+          echo "SUSFS_61_REVIEWED=$SUSFS_61_HEAD"
+        } > "$ARTIFACT_DIR/02-upstream-current.txt"
+
+        test "$current_resu" = "$RESUKISU_SNAPSHOT_HEAD"
+        test "$current_54" = "$SUSFS_54_HEAD"
+        test "$current_510" = "$SUSFS_510_HEAD"
+        test "$current_515" = "$SUSFS_515_HEAD"
+        test "$current_61" = "$SUSFS_61_HEAD"
+
+        echo "P6_FRESH_UPSTREAM_AUDIT=PASS" | tee -a "$ARTIFACT_DIR/02-upstream-current.txt"
+    - name: Restore exact accepted P5I outer tree
+      working-directory: kernel
+      shell: bash
+      run: |2
+
+        set -euo pipefail
+        test "$(git rev-parse HEAD)" = "$EXPECTED_VENDOR_SHA"
+        test -z "$(git status --porcelain)"
+
+        PATCH="$P5I_ARTIFACT_DIR/restore-kit/vendor-20240619-to-p5i-outer.patch"
+        git apply --check --binary "$PATCH"
+        git apply --index --binary "$PATCH"
+        test "$(git write-tree)" = "$EXPECTED_P5I_TREE"
+
+        GIT_AUTHOR_NAME="CLEAN-GEN1 Restore" \
+        GIT_AUTHOR_EMAIL="clean-gen1@invalid.local" \
+        GIT_AUTHOR_DATE="2026-09-01T00:00:00Z" \
+        GIT_COMMITTER_NAME="CLEAN-GEN1 Restore" \
+        GIT_COMMITTER_EMAIL="clean-gen1@invalid.local" \
+        GIT_COMMITTER_DATE="2026-09-01T00:00:00Z" \
+          git commit -m "CLEAN GEN1 restore accepted P5I outer tree"
+
+        test "$(git rev-parse HEAD^{tree})" = "$EXPECTED_P5I_TREE"
+        echo "P5I_RESTORED_COMMIT=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+
+        echo "P5I_OUTER_RESTORE_FOR_P6=PASS" \
+          | tee "$ARTIFACT_DIR/03-p5i-outer-restore.txt"
+    - name: Restore exact accepted P5I ReSukiSU
+      working-directory: kernel
+      shell: bash
+      run: |2
+
+        set -euo pipefail
+        rm -rf KernelSU
+        git init KernelSU >/dev/null
+        git -C KernelSU fetch \
+          "$P5I_ARTIFACT_DIR/restore-kit/resukisu-p5i-full.bundle" \
+          refs/heads/clean-gen1-p5i-resukisu:refs/heads/clean-gen1-p5i-resukisu
+        git -C KernelSU checkout --detach refs/heads/clean-gen1-p5i-resukisu >/dev/null
+
+        test "$(git -C KernelSU rev-parse HEAD)" = "$EXPECTED_RESUKISU_HEAD"
+        test "$(git -C KernelSU rev-parse HEAD^{tree})" = "$EXPECTED_RESUKISU_TREE"
+        test -z "$(git -C KernelSU status --porcelain)"
+
+        mkdir -p .git/info
+        touch .git/info/exclude
+        grep -Fxq '/KernelSU/' .git/info/exclude || echo '/KernelSU/' >> .git/info/exclude
+
+        test -L drivers/kernelsu
+        test "$(readlink drivers/kernelsu)" = "../KernelSU/kernel"
+        test -z "$(git status --porcelain)"
+
+        echo "P5I_RESUKISU_RESTORE_FOR_P6=PASS" \
+          | tee "$ARTIFACT_DIR/04-p5i-resukisu-restore.txt"
+    - name: Audit P6 hybrid Manual Hook plus forced SUSFS contract
+      working-directory: kernel
+      shell: bash
+      run: |2
+
+        set -euo pipefail
+        test "$(make -s kernelversion)" = "5.4.274"
+        test "$(git rev-parse HEAD^{tree})" = "$EXPECTED_P5I_TREE"
+        test "$(git -C KernelSU rev-parse HEAD)" = "$EXPECTED_RESUKISU_HEAD"
+        test "$(git -C KernelSU rev-parse HEAD^{tree})" = "$EXPECTED_RESUKISU_TREE"
+
+        grep -Fxq 'CONFIG_KSU=y' arch/arm64/configs/veux_defconfig
+        grep -Fxq 'CONFIG_KSU_MANUAL_HOOK=y' arch/arm64/configs/veux_defconfig
+        grep -Fxq '# CONFIG_KSU_SUSFS is not set' arch/arm64/configs/veux_defconfig
+        grep -Fxq 'CONFIG_KSU_MANUAL_HOOK_AUTO_SETUID_HOOK=y' arch/arm64/configs/veux_defconfig
+        grep -Fxq 'CONFIG_KSU_MANUAL_HOOK_AUTO_INITRC_HOOK=y' arch/arm64/configs/veux_defconfig
+        grep -Fxq 'CONFIG_KSU_MANUAL_HOOK_AUTO_INPUT_HOOK=y' arch/arm64/configs/veux_defconfig
+
+        # ReSukiSU Kconfig deliberately makes MANUAL_HOOK and SUSFS mutually exclusive.
+        python3 - <<'PY' > "$ARTIFACT_DIR/05-hook-choice-audit.txt"
+        from pathlib import Path
+
+        text = Path("KernelSU/kernel/Kconfig").read_text(encoding="utf-8")
+        choice = text.find('choice')
+        end = text.find('endchoice', choice)
+        if choice < 0 or end < 0:
+            raise SystemExit("ReSukiSU hooking-method choice missing")
+        body = text[choice:end]
+        required = (
+            "config KSU_TRACEPOINT_HOOK",
+            "config KSU_MANUAL_HOOK",
+            "config KSU_SUSFS",
+        )
+        for item in required:
+            if item not in body:
+                raise SystemExit("hooking choice missing " + item)
+
+        exec_text = Path("fs/exec.c").read_text(encoding="utf-8")
+        open_text = Path("fs/open.c").read_text(encoding="utf-8")
+        stat_text = Path("fs/stat.c").read_text(encoding="utf-8")
+
+        if "#ifdef CONFIG_KSU_MANUAL_HOOK" not in exec_text:
+            raise SystemExit("manual exec hook guard missing")
+        if "#ifdef CONFIG_KSU_SUSFS" not in open_text:
+            raise SystemExit("SUSFS faccessat bridge guard missing")
+        if "#ifdef CONFIG_KSU_SUSFS" not in stat_text:
+            raise SystemExit("SUSFS stat bridge guard missing")
+        if "#ifdef CONFIG_KSU_MANUAL_HOOK" not in stat_text:
+            raise SystemExit("manual fstat return hooks missing")
+
+        print("P6_KCONFIG_NATIVE_DUAL_SELECTION=NO")
+        print("P6_MANUAL_EXEC_HOOK_REQUIRED=YES")
+        print("P6_SUSFS_STRUCT_FILENAME_BRIDGE_REQUIRED=YES")
+        print("P6_EFFECTIVE_HYBRID_BUILD_REQUIRED=YES")
+        print("P6_HOOK_MODE_CONTRACT=PASS")
+        PY
+
+        grep -Fq 'P6_HOOK_MODE_CONTRACT=PASS' "$ARTIFACT_DIR/05-hook-choice-audit.txt"
+
+        # Explicit identity / exclusions.
+        grep -Fq 'CLEAN_GEN1_UPSTREAM_COMPAT_VERSION := 35102' KernelSU/kernel/Kbuild
+        test ! -e KernelSU/kernel/feature/module_load_filter.c
+
+        cat > "$ARTIFACT_DIR/05-effective-build-config.txt" <<EOF
+        P6_EFFECTIVE_HOOK_MODE=MANUAL_HOOK_PLUS_FORCED_SUSFS
+        P6_KCONFIG_NATIVE_DUAL_SELECTION=NO
+        P6_BASE_DEFCONFIG_KSU_MANUAL_HOOK=YES
+        P6_BASE_DEFCONFIG_KSU_SUSFS=NO
+        P6_EFFECTIVE_SUSFS_ENABLEMENT=MAKE_COMMAND_LINE_PLUS_KCFLAGS
+        P6_KSU_VERSION=$EXPECTED_KSU_VERSION
+        P6_SUSFS_MAKE_ARGS=$P6_SUSFS_MAKE_ARGS
+        P6_EFFECTIVE_KCFLAGS=$P6_EFFECTIVE_KCFLAGS
+        P6_MODULE_LOAD_FILTER_INCLUDED=NO
+        EOF
+    - name: Install pinned Android clang-r416183b
+      shell: bash
+      run: |2
+
+        set -euo pipefail
+        url="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/${CLANG_PREBUILT_COMMIT}/clang-r416183b.tar.gz"
+        curl --fail --location --retry 3 "$url" \
+          -o "$RUNNER_TEMP/clang-r416183b.tar.gz"
+
+        sha256sum "$RUNNER_TEMP/clang-r416183b.tar.gz" \
+          | tee "$ARTIFACT_DIR/06-clang-archive.sha256"
+
+        tar -xzf "$RUNNER_TEMP/clang-r416183b.tar.gz" -C "$TOOLCHAIN_DIR"
+        echo "$TOOLCHAIN_DIR/bin" >> "$GITHUB_PATH"
+
+        "$TOOLCHAIN_DIR/bin/clang" --version \
+          | tee "$ARTIFACT_DIR/06-clang-version.txt"
+        "$TOOLCHAIN_DIR/bin/ld.lld" --version \
+          | tee -a "$ARTIFACT_DIR/06-clang-version.txt"
+
+        grep -q 'r416183b' "$ARTIFACT_DIR/06-clang-version.txt"
+
+        for tool in clang ld.lld llvm-ar llvm-nm llvm-objcopy llvm-objdump llvm-readelf llvm-size llvm-strip
+        do
+          test -x "$TOOLCHAIN_DIR/bin/$tool"
+        done
+
+        {
+          echo "CLANG_PREBUILT_COMMIT=$CLANG_PREBUILT_COMMIT"
+          echo "CLANG_R416183B_PINNED=PASS"
+        } | tee "$ARTIFACT_DIR/06-toolchain.txt"
+    - name: Configure clean Build A base Kconfig
+      working-directory: kernel
+      shell: bash
+      run: |2
+
+        set -euo pipefail
+        export PATH="$TOOLCHAIN_DIR/bin:$PATH"
+
+        rm -rf "$OUT_DIR"
+        make O="$OUT_DIR" \
+          ARCH=arm64 CC=clang LD=ld.lld LLVM=1 LLVM_IAS=1 \
+          veux_defconfig \
+          2>&1 | tee "$ARTIFACT_DIR/07-build-a-config.log"
+
+        test -s "$OUT_DIR/.config"
+        grep -Fxq 'CONFIG_KSU=y' "$OUT_DIR/.config"
+        grep -Fxq 'CONFIG_KSU_MANUAL_HOOK=y' "$OUT_DIR/.config"
+        grep -Fxq '# CONFIG_KSU_SUSFS is not set' "$OUT_DIR/.config"
+        grep -Fxq 'CONFIG_KSU_MANUAL_HOOK_AUTO_SETUID_HOOK=y' "$OUT_DIR/.config"
+        grep -Fxq 'CONFIG_KSU_MANUAL_HOOK_AUTO_INITRC_HOOK=y' "$OUT_DIR/.config"
+        grep -Fxq 'CONFIG_KSU_MANUAL_HOOK_AUTO_INPUT_HOOK=y' "$OUT_DIR/.config"
+        grep -Fxq 'CONFIG_KSU_MULTI_MANAGER_SUPPORT=y' "$OUT_DIR/.config"
+        grep -Fxq 'CONFIG_64BIT=y' "$OUT_DIR/.config"
+        grep -Fxq 'CONFIG_THREAD_INFO_IN_TASK=y' "$OUT_DIR/.config"
+        grep -Fxq 'CONFIG_ARCH_QCOM=y' "$OUT_DIR/.config"
+        grep -Fxq 'CONFIG_ARCH_HOLI=y' "$OUT_DIR/.config"
+        grep -Fxq 'CONFIG_ARCH_BLAIR=y' "$OUT_DIR/.config"
+        grep -Fxq 'CONFIG_WT_QGKI=y' "$OUT_DIR/.config"
+        grep -Fxq 'CONFIG_LTO_CLANG=y' "$OUT_DIR/.config"
+        grep -Fxq 'CONFIG_BUILD_ARM64_UNCOMPRESSED_KERNEL=y' "$OUT_DIR/.config"
+
+        cp "$OUT_DIR/.config" "$ARTIFACT_DIR/build-a.base.config"
+        sha256sum "$OUT_DIR/.config" \
+          | tee "$ARTIFACT_DIR/07-build-a-config.sha256"
+
+        make -s O="$OUT_DIR" ARCH=arm64 CC=clang LD=ld.lld LLVM=1 LLVM_IAS=1 \
+          kernelrelease | tee "$ARTIFACT_DIR/07-kernelrelease.txt"
+
+        echo "P6_BUILD_A_BASE_CONFIG=PASS" \
+          | tee "$ARTIFACT_DIR/07-build-a-config.txt"
+    - name: Full Build A Image and dtbs
+      working-directory: kernel
+      shell: bash
+      timeout-minutes: 90
+      run: |2
+
+        set -euo pipefail
+        export PATH="$TOOLCHAIN_DIR/bin:$PATH"
+
+        echo "P6 build A effective overrides:" \
+          | tee "$ARTIFACT_DIR/08-build-a-command.txt"
+        echo "$P6_SUSFS_MAKE_ARGS" \
+          | tee -a "$ARTIFACT_DIR/08-build-a-command.txt"
+        echo "KCFLAGS=$P6_EFFECTIVE_KCFLAGS" \
+          | tee -a "$ARTIFACT_DIR/08-build-a-command.txt"
+
+        # Deliberate shell word splitting turns the CONFIG_FOO=y list into individual
+        # GNU make command-line variable assignments.
+        # shellcheck disable=SC2086
+        make -j"$(nproc)" \
+          O="$OUT_DIR" \
+          ARCH=arm64 \
+          CC=clang LD=ld.lld LLVM=1 LLVM_IAS=1 \
+          $P6_SUSFS_MAKE_ARGS \
+          KCFLAGS="$P6_EFFECTIVE_KCFLAGS" \
+          Image dtbs \
+          2>&1 | tee "$ARTIFACT_DIR/08-build-a.log"
+
+        echo "P6_BUILD_A_FULL_COMPILE=PASS" \
+          | tee "$ARTIFACT_DIR/08-build-a.txt"
+    - name: Validate Build A outputs and full link contracts
+      working-directory: kernel
+      shell: bash
+      run: |2
+
+        set -euo pipefail
+        export PATH="$TOOLCHAIN_DIR/bin:$PATH"
+
+        IMAGE="$OUT_DIR/arch/arm64/boot/Image"
+        VEUX_DTB="$OUT_DIR/arch/arm64/boot/dts/vendor/xiaomi/veux.dtb"
+        VMLINUX="$OUT_DIR/vmlinux"
+        SYSTEM_MAP="$OUT_DIR/System.map"
+
+        test -s "$IMAGE"
+        test -s "$VEUX_DTB"
+        test -s "$VMLINUX"
+        test -s "$SYSTEM_MAP"
+        test "$(stat -c '%s' "$IMAGE")" -gt 20000000
+
+        "$OUT_DIR/scripts/dtc/dtc" -I dtb -O dts -o /dev/null "$VEUX_DTB"
+
+        llvm-readelf -h "$VMLINUX" > "$ARTIFACT_DIR/09-build-a-vmlinux-elf.txt"
+        llvm-nm "$VMLINUX" > "$ARTIFACT_DIR/09-build-a-vmlinux-nm.txt"
+
+        for sym in \
+          ksu_handle_execveat \
+          susfs_open_redirect_spoof_do_sys_openat \
+          susfs_open_redirect_spoof_vfs_readlink \
+          susfs_open_redirect_spoof_do_proc_readlink \
+          susfs_open_redirect_spoof_vfs_statfs \
+          susfs_open_redirect_spoof_seq_show \
+          susfs_open_redirect_spoof_show_map_vma_srcu \
+          susfs_srcu_open_redirect
+        do
+          grep -Eq "[[:space:]][A-Za-z][[:space:]]+${sym}$" \
+            "$ARTIFACT_DIR/09-build-a-vmlinux-nm.txt"
+        done
+
+        mkdir -p "$ARTIFACT_DIR/build-a"
+        cp "$IMAGE" "$ARTIFACT_DIR/build-a/Image"
+        cp "$VEUX_DTB" "$ARTIFACT_DIR/build-a/veux.dtb"
+        cp "$OUT_DIR/.config" "$ARTIFACT_DIR/build-a/veux-5.4.274.base.config"
+
+        sha256sum "$IMAGE" "$VEUX_DTB" "$VMLINUX" "$SYSTEM_MAP" "$OUT_DIR/.config" \
+          > "$ARTIFACT_DIR/09-build-a-core.sha256"
+
+        find "$OUT_DIR/arch/arm64/boot/dts" -type f -name '*.dtb' -print0 \
+          | sort -z | xargs -0 sha256sum \
+          > "$ARTIFACT_DIR/09-build-a-all-dtbs.sha256"
+        test -s "$ARTIFACT_DIR/09-build-a-all-dtbs.sha256"
+        grep -Fq 'vendor/xiaomi/veux.dtb' "$ARTIFACT_DIR/09-build-a-all-dtbs.sha256"
+
+        {
+          echo "P6_BUILD_A_IMAGE=PASS"
+          echo "P6_BUILD_A_VEUX_DTB=PASS"
+          echo "P6_BUILD_A_DTB_PARSE=PASS"
+          echo "P6_BUILD_A_VMLINUX=PASS"
+          echo "P6_BUILD_A_MANUAL_HOOK_LINK=PASS"
+          echo "P6_BUILD_A_SUSFS_LINK=PASS"
+          echo "P6_BUILD_A_OPEN_REDIRECT_LINK=PASS"
+        } | tee "$ARTIFACT_DIR/09-build-a-validation.txt"
+    - name: Verify source remained exact after Build A
+      working-directory: kernel
+      shell: bash
+      run: |2
+
+        set -euo pipefail
+        test "$(git rev-parse HEAD^{tree})" = "$EXPECTED_P5I_TREE"
+        test -z "$(git status --porcelain)"
+        test "$(git -C KernelSU rev-parse HEAD)" = "$EXPECTED_RESUKISU_HEAD"
+        test "$(git -C KernelSU rev-parse HEAD^{tree})" = "$EXPECTED_RESUKISU_TREE"
+        test -z "$(git -C KernelSU status --porcelain)"
+        test ! -e KernelSU/kernel/feature/module_load_filter.c
+
+        echo "P6_BUILD_A_SOURCE_IMMUTABILITY=PASS" \
+          | tee "$ARTIFACT_DIR/10-build-a-source.txt"
+    - name: Clean and configure Build B at identical output path
+      working-directory: kernel
+      shell: bash
+      run: |2
+
+        set -euo pipefail
+        export PATH="$TOOLCHAIN_DIR/bin:$PATH"
+
+        rm -rf "$OUT_DIR"
+        make O="$OUT_DIR" \
+          ARCH=arm64 CC=clang LD=ld.lld LLVM=1 LLVM_IAS=1 \
+          veux_defconfig \
+          2>&1 | tee "$ARTIFACT_DIR/11-build-b-config.log"
+
+        test -s "$OUT_DIR/.config"
+        cmp -s "$OUT_DIR/.config" "$ARTIFACT_DIR/build-a/veux-5.4.274.base.config"
+
+        grep -Fxq 'CONFIG_KSU_MANUAL_HOOK=y' "$OUT_DIR/.config"
+        grep -Fxq '# CONFIG_KSU_SUSFS is not set' "$OUT_DIR/.config"
+
+        echo "P6_BUILD_B_CLEAN_SAME_PATH_CONFIG=PASS" \
+          | tee "$ARTIFACT_DIR/11-build-b-config.txt"
+    - name: Full Build B Image and dtbs
+      working-directory: kernel
+      shell: bash
+      timeout-minutes: 90
+      run: |2
+
+        set -euo pipefail
+        export PATH="$TOOLCHAIN_DIR/bin:$PATH"
+
+        # shellcheck disable=SC2086
+        make -j"$(nproc)" \
+          O="$OUT_DIR" \
+          ARCH=arm64 \
+          CC=clang LD=ld.lld LLVM=1 LLVM_IAS=1 \
+          $P6_SUSFS_MAKE_ARGS \
+          KCFLAGS="$P6_EFFECTIVE_KCFLAGS" \
+          Image dtbs \
+          2>&1 | tee "$ARTIFACT_DIR/12-build-b.log"
+
+        echo "P6_BUILD_B_FULL_COMPILE=PASS" \
+          | tee "$ARTIFACT_DIR/12-build-b.txt"
+    - name: Validate Build B and prove same-path reproducibility
+      working-directory: kernel
+      shell: bash
+      run: |2
+
+        set -euo pipefail
+        export PATH="$TOOLCHAIN_DIR/bin:$PATH"
+
+        IMAGE="$OUT_DIR/arch/arm64/boot/Image"
+        VEUX_DTB="$OUT_DIR/arch/arm64/boot/dts/vendor/xiaomi/veux.dtb"
+        VMLINUX="$OUT_DIR/vmlinux"
+        SYSTEM_MAP="$OUT_DIR/System.map"
+
+        test -s "$IMAGE"
+        test -s "$VEUX_DTB"
+        test -s "$VMLINUX"
+        test -s "$SYSTEM_MAP"
+        "$OUT_DIR/scripts/dtc/dtc" -I dtb -O dts -o /dev/null "$VEUX_DTB"
+
+        sha256sum "$IMAGE" "$VEUX_DTB" "$VMLINUX" "$SYSTEM_MAP" "$OUT_DIR/.config" \
+          > "$ARTIFACT_DIR/13-build-b-core.sha256"
+
+        find "$OUT_DIR/arch/arm64/boot/dts" -type f -name '*.dtb' -print0 \
+          | sort -z | xargs -0 sha256sum \
+          > "$ARTIFACT_DIR/13-build-b-all-dtbs.sha256"
+
+        python3 - <<'PY' > "$ARTIFACT_DIR/13-reproducibility.txt"
+        from pathlib import Path
+
+        def parse(path):
+            d = {}
+            for line in Path(path).read_text().splitlines():
+                sha, name = line.split(None, 1)
+                d[name.strip()] = sha
+            return d
+
+        a = parse("../clean-gen1-p6/09-build-a-core.sha256")
+        b = parse("../clean-gen1-p6/13-build-b-core.sha256")
+
+        suffixes = {
+            "Image": "/arch/arm64/boot/Image",
+            "VEUX_DTB": "/arch/arm64/boot/dts/vendor/xiaomi/veux.dtb",
+            "VMLINUX": "/vmlinux",
+            "SYSTEM_MAP": "/System.map",
+            "CONFIG": "/.config",
+        }
+        for label, suffix in suffixes.items():
+            av = next(v for k, v in a.items() if k.endswith(suffix))
+            bv = next(v for k, v in b.items() if k.endswith(suffix))
+            if av != bv:
+                raise SystemExit(f"{label} mismatch: {av} != {bv}")
+            print(f"P6_{label}_SHA256={av}")
+            print(f"P6_{label}_REPRODUCIBLE=YES")
+        PY
+
+        cmp -s "$ARTIFACT_DIR/09-build-a-all-dtbs.sha256" \
+               "$ARTIFACT_DIR/13-build-b-all-dtbs.sha256"
+
+        cmp -s "$IMAGE" "$ARTIFACT_DIR/build-a/Image"
+        cmp -s "$VEUX_DTB" "$ARTIFACT_DIR/build-a/veux.dtb"
+        cmp -s "$OUT_DIR/.config" "$ARTIFACT_DIR/build-a/veux-5.4.274.base.config"
+
+        {
+          echo "P6_REPRODUCIBILITY_MODE=SAME_RUN_CLEAN_REBUILD_SAME_ABSOLUTE_OUT_PATH"
+          echo "P6_IMAGE_REPRODUCIBLE=YES"
+          echo "P6_VEUX_DTB_REPRODUCIBLE=YES"
+          echo "P6_VMLINUX_REPRODUCIBLE=YES"
+          echo "P6_SYSTEM_MAP_REPRODUCIBLE=YES"
+          echo "P6_BASE_CONFIG_REPRODUCIBLE=YES"
+          echo "P6_ALL_DTBS_REPRODUCIBLE=YES"
+          echo "P6_BUILD_B_VALIDATION=PASS"
+        } | tee -a "$ARTIFACT_DIR/13-reproducibility.txt"
+    - name: Verify full Build B link and source immutability
+      working-directory: kernel
+      shell: bash
+      run: |2
+
+        set -euo pipefail
+        export PATH="$TOOLCHAIN_DIR/bin:$PATH"
+
+        llvm-nm "$OUT_DIR/vmlinux" > "$ARTIFACT_DIR/14-build-b-vmlinux-nm.txt"
+        for sym in \
+          ksu_handle_execveat \
+          susfs_open_redirect_spoof_do_sys_openat \
+          susfs_open_redirect_spoof_vfs_readlink \
+          susfs_open_redirect_spoof_do_proc_readlink \
+          susfs_open_redirect_spoof_vfs_statfs \
+          susfs_open_redirect_spoof_seq_show \
+          susfs_open_redirect_spoof_show_map_vma_srcu \
+          susfs_srcu_open_redirect
+        do
+          grep -Eq "[[:space:]][A-Za-z][[:space:]]+${sym}$" \
+            "$ARTIFACT_DIR/14-build-b-vmlinux-nm.txt"
+        done
+
+        test "$(git rev-parse HEAD^{tree})" = "$EXPECTED_P5I_TREE"
+        test -z "$(git status --porcelain)"
+        test "$(git -C KernelSU rev-parse HEAD)" = "$EXPECTED_RESUKISU_HEAD"
+        test "$(git -C KernelSU rev-parse HEAD^{tree})" = "$EXPECTED_RESUKISU_TREE"
+        test -z "$(git -C KernelSU status --porcelain)"
+        test ! -e KernelSU/kernel/feature/module_load_filter.c
+
+        {
+          echo "P6_BUILD_B_FULL_LINK_CONTRACT=PASS"
+          echo "P6_BUILD_B_SOURCE_IMMUTABILITY=PASS"
+          echo "P6_MODULE_LOAD_FILTER_INCLUDED=NO"
+        } | tee "$ARTIFACT_DIR/14-build-b-final.txt"
+    - name: Preserve P5I restore kit and P6 provenance
+      working-directory: kernel
+      shell: bash
+      run: |2
+
+        set -euo pipefail
+        rm -rf "$ARTIFACT_DIR/source-restore-kit"
+        cp -a "$P5I_ARTIFACT_DIR/restore-kit" "$ARTIFACT_DIR/source-restore-kit"
+
+        (
+          cd "$ARTIFACT_DIR/source-restore-kit"
+          sha256sum -c SHA256SUMS
+        ) > "$ARTIFACT_DIR/15-copied-p5i-restore-sha256.txt"
+
+        {
+          echo "P6_SOURCE_STAGE=P5I"
+          echo "P6_SOURCE_COMMIT=$EXPECTED_P5I_COMMIT"
+          echo "P6_SOURCE_TREE=$EXPECTED_P5I_TREE"
+          echo "P6_RESUKISU_HEAD=$EXPECTED_RESUKISU_HEAD"
+          echo "P6_RESUKISU_TREE=$EXPECTED_RESUKISU_TREE"
+          echo "P6_KSU_VERSION=$EXPECTED_KSU_VERSION"
+          echo "P6_CLANG_PREBUILT_COMMIT=$CLANG_PREBUILT_COMMIT"
+          echo "P6_BUILD_TIMESTAMP=$KBUILD_BUILD_TIMESTAMP"
+          echo "P6_SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH"
+        } > "$ARTIFACT_DIR/15-provenance.txt"
+
+        cp "$ARTIFACT_DIR/05-effective-build-config.txt" \
+           "$ARTIFACT_DIR/build-a/EFFECTIVE-BUILD-CONFIG.txt"
+
+        (
+          cd "$ARTIFACT_DIR/build-a"
+          sha256sum Image veux.dtb veux-5.4.274.base.config EFFECTIVE-BUILD-CONFIG.txt \
+            > SHA256SUMS
+          sha256sum -c SHA256SUMS
+        ) > "$ARTIFACT_DIR/15-output-package-sha256.txt"
+
+        echo "P6_PROVENANCE_PACKAGE=PASS" \
+          | tee "$ARTIFACT_DIR/15-provenance-state.txt"
+    - name: Replay P5I source restore independently after full builds
+      working-directory: kernel
+      shell: bash
+      run: |2
+
+        set -euo pipefail
+
+        outer="$GITHUB_WORKSPACE/p6-outer-replay"
+        rm -rf "$outer"
+        git worktree add --detach "$outer" "$EXPECTED_VENDOR_SHA" >/dev/null
+        (
+          cd "$outer"
+          git apply --check --binary \
+            "$ARTIFACT_DIR/source-restore-kit/vendor-20240619-to-p5i-outer.patch"
+          git apply --index --binary \
+            "$ARTIFACT_DIR/source-restore-kit/vendor-20240619-to-p5i-outer.patch"
+          test "$(git write-tree)" = "$EXPECTED_P5I_TREE"
+        )
+        git worktree remove --force "$outer"
+
+        resu="$GITHUB_WORKSPACE/p6-resukisu-replay"
+        rm -rf "$resu"
+        git init "$resu" >/dev/null
+        git -C "$resu" fetch \
+          "$ARTIFACT_DIR/source-restore-kit/resukisu-p5i-full.bundle" \
+          refs/heads/clean-gen1-p5i-resukisu:refs/heads/clean-gen1-p5i-resukisu
+        git -C "$resu" checkout --detach refs/heads/clean-gen1-p5i-resukisu >/dev/null
+        test "$(git -C "$resu" rev-parse HEAD)" = "$EXPECTED_RESUKISU_HEAD"
+        test "$(git -C "$resu" rev-parse HEAD^{tree})" = "$EXPECTED_RESUKISU_TREE"
+        rm -rf "$resu"
+
+        {
+          echo "P6_P5I_OUTER_RESTORE_REPLAY=PASS"
+          echo "P6_P5I_RESUKISU_RESTORE_REPLAY=PASS"
+        } | tee "$ARTIFACT_DIR/16-restore-replays.txt"
+    - name: Final P6 deterministic build gate
+      working-directory: kernel
+      shell: bash
+      run: |2
+
+        set -euo pipefail
+        test "$(make -s kernelversion)" = "5.4.274"
+        test "$(git rev-parse HEAD^{tree})" = "$EXPECTED_P5I_TREE"
+        test -z "$(git status --porcelain)"
+        test "$(git -C KernelSU rev-parse HEAD)" = "$EXPECTED_RESUKISU_HEAD"
+        test "$(git -C KernelSU rev-parse HEAD^{tree})" = "$EXPECTED_RESUKISU_TREE"
+        test -z "$(git -C KernelSU status --porcelain)"
+
+        grep -Fq 'P6_FRESH_UPSTREAM_AUDIT=PASS' "$ARTIFACT_DIR/02-upstream-current.txt"
+        grep -Fq 'P6_HOOK_MODE_CONTRACT=PASS' "$ARTIFACT_DIR/05-hook-choice-audit.txt"
+        grep -Fq 'CLANG_R416183B_PINNED=PASS' "$ARTIFACT_DIR/06-toolchain.txt"
+        grep -Fq 'P6_BUILD_A_BASE_CONFIG=PASS' "$ARTIFACT_DIR/07-build-a-config.txt"
+        grep -Fq 'P6_BUILD_A_FULL_COMPILE=PASS' "$ARTIFACT_DIR/08-build-a.txt"
+        grep -Fq 'P6_BUILD_A_OPEN_REDIRECT_LINK=PASS' "$ARTIFACT_DIR/09-build-a-validation.txt"
+        grep -Fq 'P6_BUILD_A_SOURCE_IMMUTABILITY=PASS' "$ARTIFACT_DIR/10-build-a-source.txt"
+        grep -Fq 'P6_BUILD_B_CLEAN_SAME_PATH_CONFIG=PASS' "$ARTIFACT_DIR/11-build-b-config.txt"
+        grep -Fq 'P6_BUILD_B_FULL_COMPILE=PASS' "$ARTIFACT_DIR/12-build-b.txt"
+        grep -Fq 'P6_IMAGE_REPRODUCIBLE=YES' "$ARTIFACT_DIR/13-reproducibility.txt"
+        grep -Fq 'P6_VEUX_DTB_REPRODUCIBLE=YES' "$ARTIFACT_DIR/13-reproducibility.txt"
+        grep -Fq 'P6_VMLINUX_REPRODUCIBLE=YES' "$ARTIFACT_DIR/13-reproducibility.txt"
+        grep -Fq 'P6_ALL_DTBS_REPRODUCIBLE=YES' "$ARTIFACT_DIR/13-reproducibility.txt"
+        grep -Fq 'P6_BUILD_B_FULL_LINK_CONTRACT=PASS' "$ARTIFACT_DIR/14-build-b-final.txt"
+        grep -Fq 'P6_PROVENANCE_PACKAGE=PASS' "$ARTIFACT_DIR/15-provenance-state.txt"
+        grep -Fq 'P6_P5I_OUTER_RESTORE_REPLAY=PASS' "$ARTIFACT_DIR/16-restore-replays.txt"
+        grep -Fq 'P6_P5I_RESUKISU_RESTORE_REPLAY=PASS' "$ARTIFACT_DIR/16-restore-replays.txt"
+
+        test -s "$ARTIFACT_DIR/build-a/Image"
+        test -s "$ARTIFACT_DIR/build-a/veux.dtb"
+        test -s "$ARTIFACT_DIR/build-a/veux-5.4.274.base.config"
+        test -s "$ARTIFACT_DIR/build-a/EFFECTIVE-BUILD-CONFIG.txt"
+
+        {
+          echo "CLEAN_GEN1_P6_DETERMINISTIC_IMAGE_DTB_BUILD=PASS"
+          echo "KERNEL_VERSION=5.4.274"
+          echo "P6_INPUT_STAGE=P5I"
+          echo "P6_INPUT_COMMIT=$EXPECTED_P5I_COMMIT"
+          echo "P6_INPUT_TREE=$EXPECTED_P5I_TREE"
+          echo "P6_RESUKISU_HEAD=$EXPECTED_RESUKISU_HEAD"
+          echo "P6_RESUKISU_TREE=$EXPECTED_RESUKISU_TREE"
+          echo "P6_KSU_VERSION=$EXPECTED_KSU_VERSION"
+          echo "P6_TOOLCHAIN=clang-r416183b"
+          echo "P6_CLANG_PREBUILT_COMMIT=$CLANG_PREBUILT_COMMIT"
+          echo "P6_EFFECTIVE_HOOK_MODE=MANUAL_HOOK_PLUS_FORCED_SUSFS"
+          echo "P6_KCONFIG_NATIVE_DUAL_SELECTION=NO"
+          echo "P6_EFFECTIVE_SUSFS_ENABLEMENT=MAKE_COMMAND_LINE_PLUS_KCFLAGS"
+          echo "P6_ALL_SUSFS_FEATURE_OVERRIDES=YES"
+          echo "P6_SUSFS_LOGGING=ENABLED_FOR_DIAGNOSTIC_CANDIDATE"
+          echo "P6_IMAGE_CREATED=YES"
+          echo "P6_DTB_BUILD_PERFORMED=YES"
+          echo "P6_VEUX_DTB_CREATED=YES"
+          echo "P6_IMAGE_REPRODUCIBLE=YES"
+          echo "P6_VEUX_DTB_REPRODUCIBLE=YES"
+          echo "P6_VMLINUX_REPRODUCIBLE=YES"
+          echo "P6_SYSTEM_MAP_REPRODUCIBLE=YES"
+          echo "P6_BASE_CONFIG_REPRODUCIBLE=YES"
+          echo "P6_ALL_DTBS_REPRODUCIBLE=YES"
+          echo "P6_REPRODUCIBILITY_SCOPE=SAME_RUN_CLEAN_REBUILD_SAME_ABSOLUTE_OUT_PATH"
+          echo "P6_FULL_LINK_MANUAL_HOOK=PASS"
+          echo "P6_FULL_LINK_SUSFS=PASS"
+          echo "P6_FULL_LINK_OPEN_REDIRECT=PASS"
+          echo "P6_SOURCE_MUTATION=NO"
+          echo "P6_LAST_GOOD_SOURCE=P5I"
+          echo "MODULE_LOAD_FILTER_INCLUDED=NO"
+          echo "BOOT_IMAGE_CREATED=NO"
+          echo "FLASHABLE_ZIP_CREATED=NO"
+          echo "DEVICE_ACCESSED=NO"
+          echo "FLASHING_PERFORMED=NO"
+          echo "NEXT_STAGE=CLEAN_GEN1_P7A_FROZEN_MANAGER_KSUD_DEVICE_AB_PREPARATION"
+        } | tee "$ARTIFACT_DIR/17-result.txt"
+    - name: Preserve P6 failure evidence
+      if: always()
+      shell: bash
+      run: |2
+
+        set +e
+        mkdir -p "$ARTIFACT_DIR"
+        {
+          echo "JOB_STATUS=${{ job.status }}"
+          if [ -d "$GITHUB_WORKSPACE/kernel/.git" ]; then
+            echo "OUTER_HEAD=$(git -C "$GITHUB_WORKSPACE/kernel" rev-parse HEAD 2>/dev/null || true)"
+            echo "OUTER_TREE=$(git -C "$GITHUB_WORKSPACE/kernel" rev-parse HEAD^{tree} 2>/dev/null || true)"
+            echo "OUTER_STATUS_BEGIN"
+            git -C "$GITHUB_WORKSPACE/kernel" status --porcelain 2>/dev/null || true
+            echo "OUTER_STATUS_END"
+          fi
+          if [ -d "$GITHUB_WORKSPACE/kernel/KernelSU/.git" ]; then
+            echo "RESUKISU_HEAD=$(git -C "$GITHUB_WORKSPACE/kernel/KernelSU" rev-parse HEAD 2>/dev/null || true)"
+            echo "RESUKISU_TREE=$(git -C "$GITHUB_WORKSPACE/kernel/KernelSU" rev-parse HEAD^{tree} 2>/dev/null || true)"
+            echo "RESUKISU_STATUS_BEGIN"
+            git -C "$GITHUB_WORKSPACE/kernel/KernelSU" status --porcelain 2>/dev/null || true
+            echo "RESUKISU_STATUS_END"
+          fi
+          if [ -n "${OUT_DIR:-}" ] && [ -d "$OUT_DIR" ]; then
+            echo "IMAGE_EXISTS=$(test -s "$OUT_DIR/arch/arm64/boot/Image" && echo YES || echo NO)"
+            echo "VEUX_DTB_EXISTS=$(test -s "$OUT_DIR/arch/arm64/boot/dts/vendor/xiaomi/veux.dtb" && echo YES || echo NO)"
+            echo "VMLINUX_EXISTS=$(test -s "$OUT_DIR/vmlinux" && echo YES || echo NO)"
+          fi
+        } > "$ARTIFACT_DIR/99-job-end-state.txt"
+
+        find "$ARTIFACT_DIR" -maxdepth 3 -type f -printf '%P\n' \
+          | sort > "$ARTIFACT_DIR/99-artifact-file-list.txt"
+        exit 0
+    - name: Upload P6 deterministic build evidence
+      if: always()
+      uses: actions/upload-artifact@v7
+      with:
+        name: clean-gen1-p6-deterministic-image-dtb-build-v1-${{ github.run_id }}
+        path: clean-gen1-p6/
+        if-no-files-found: error
+        retention-days: 90
