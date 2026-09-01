@@ -1,0 +1,752 @@
+name: CLEAN GEN1 P5D - normal-path OPEN_REDIRECT nested-nameidata v1
+'on':
+  workflow_dispatch: null
+permissions:
+  contents: read
+  actions: read
+jobs:
+  p5d-normal-path-open-redirect:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      ARCH: arm64
+      TZ: UTC
+      LANG: C.UTF-8
+      LC_ALL: C.UTF-8
+      VENDOR_REPO: dereference23/kernel_xiaomi_sm6375
+      VENDOR_TAG: '20240619'
+      EXPECTED_VENDOR_SHA: b2b7a3bbc36d120ee523ebc8d68e0f13a97df632
+      P5C_RUN_ID: '33476335464'
+      P5C_ARTIFACT_NAME: clean-gen1-p5c-54-lookup-open-structural-split-v1-33476335464
+      EXPECTED_P5C_COMMIT: 58255edb04ca382d471ecf53b1da94d41ce1222a
+      EXPECTED_P5C_TREE: 1f9a3a59a8691440c4e344705ddedea1b7caeedc
+      EXPECTED_P5C_RESUKISU_HEAD: 42034caa96466e8473fe7553eba8a1888c7f460f
+      EXPECTED_P5C_RESUKISU_TREE: d818d965b855d417edfe9eb38b152ff83e75e0fb
+      RESUKISU_SNAPSHOT_HEAD: 0b5efe9e0102c43ca5c41174d500f5a7080cd0c7
+      SUSFS_REPO: https://gitlab.com/simonpunk/susfs4ksu.git
+      SUSFS_54_HEAD: 76affd70abf61d77feb0a132f61365d6848505df
+      SUSFS_510_HEAD: ec785f47d49f7b3871ca9356f450411020af7017
+      SUSFS_515_HEAD: bca0d2333c1a7d717e7278b019d7af7ba1d16005
+      SUSFS_61_HEAD: 4fc9c1898ea66f51847cdbc0d1473ea4ef525a70
+      ARTIFACT_DIR: ${{ github.workspace }}/clean-gen1-p5d
+      P5C_ARTIFACT_DIR: ${{ github.workspace }}/p5c-artifact
+      BASELINE_BUILD_DIR: ${{ github.workspace }}/out-p5d-baseline
+      NORMAL_BUILD_DIR: ${{ github.workspace }}/out-p5d-normal
+      REDIRECT_BUILD_DIR: ${{ github.workspace }}/out-p5d-redirect
+    steps:
+    - name: Initialize P5D
+      shell: bash
+      run: |2
+
+        set -euo pipefail
+        rm -rf "$ARTIFACT_DIR" "$P5C_ARTIFACT_DIR" \
+               "$BASELINE_BUILD_DIR" "$NORMAL_BUILD_DIR" "$REDIRECT_BUILD_DIR" \
+               "$GITHUB_WORKSPACE/p5d-outer-replay" \
+               "$GITHUB_WORKSPACE/p5d-resukisu-replay"
+        mkdir -p "$ARTIFACT_DIR"
+
+        cat > "$ARTIFACT_DIR/00-plan.txt" <<'EOF'
+        CLEAN GEN1 P5D - OPEN_REDIRECT normal-path nested-nameidata integration
+
+        Integrate only normal path_openat OPEN_REDIRECT:
+        - outer nd->name remains untouched;
+        - only FINAL phase is redirect-eligible;
+        - fake_filename gets a separate redirect_nd;
+        - original walk is terminated before redirect restart;
+        - redirect_nd is terminated and restore_nameidata runs before putname;
+        - LOOKUP_ROOT context is preserved;
+        - redirect recursion is impossible in nested helper;
+        - do_tmpfile and do_o_path are deferred to P5E;
+        - CONFIG_KSU_SUSFS remains disabled;
+        - no full kernel build.
+        EOF
+    - name: Install P5D dependencies
+      shell: bash
+      run: |2
+
+        set -euo pipefail
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends \
+          bc bison binutils-aarch64-linux-gnu build-essential ca-certificates flex \
+          gcc-aarch64-linux-gnu git jq libelf-dev libssl-dev patch python3 rsync zstd
+        git --version
+        aarch64-linux-gnu-gcc --version | head -1
+        aarch64-linux-gnu-nm --version | head -1
+        python3 --version
+    - name: Checkout exact VEUX vendor source
+      uses: actions/checkout@v6
+      with:
+        repository: dereference23/kernel_xiaomi_sm6375
+        ref: '20240619'
+        path: kernel
+        fetch-depth: 1
+    - name: Download accepted P5C artifact
+      uses: actions/download-artifact@v7
+      with:
+        name: ${{ env.P5C_ARTIFACT_NAME }}
+        path: p5c-artifact
+        github-token: ${{ github.token }}
+        run-id: ${{ env.P5C_RUN_ID }}
+    - name: Authenticate accepted P5C checkpoint
+      shell: bash
+      run: |2
+
+        set -euo pipefail
+
+        test -s "$P5C_ARTIFACT_DIR/restore-kit/SHA256SUMS"
+        (
+          cd "$P5C_ARTIFACT_DIR/restore-kit"
+          sha256sum -c SHA256SUMS
+        ) > "$ARTIFACT_DIR/01-p5c-restore-sha256.txt"
+
+        jq -e \
+          --arg commit "$EXPECTED_P5C_COMMIT" \
+          --arg tree "$EXPECTED_P5C_TREE" \
+          --arg rhead "$EXPECTED_P5C_RESUKISU_HEAD" \
+          --arg rtree "$EXPECTED_P5C_RESUKISU_TREE" \
+          '.stage=="CLEAN_GEN1_P5C" and
+           .p5c_commit==$commit and
+           .p5c_tree==$tree and
+           .resukisu_head==$rhead and
+           .resukisu_tree==$rtree and
+           .open_redirect_decision_integrated==false and
+           .susfs_runtime_enabled==false and
+           .p5d_requires_separate_nested_nameidata==true and
+           .full_kernel_build_performed==false' \
+          "$P5C_ARTIFACT_DIR/restore-kit/manifest.json" \
+          > "$ARTIFACT_DIR/01-p5c-manifest-auth.json"
+
+        grep -Fxq 'CLEAN_GEN1_P5C_54_LOOKUP_OPEN_STRUCTURAL_SPLIT=PASS' \
+          "$P5C_ARTIFACT_DIR/19-result.txt"
+        grep -Fxq 'P5D_SEPARATE_REDIRECT_NAMEIDATA_REQUIRED=YES' \
+          "$P5C_ARTIFACT_DIR/19-result.txt"
+        grep -Fxq 'P5D_ORIGINAL_ND_NAME_MUST_REMAIN_UNCHANGED=YES' \
+          "$P5C_ARTIFACT_DIR/19-result.txt"
+        grep -Fq 'P5D_LIFETIME_CONTRACT=PASS' \
+          "$P5C_ARTIFACT_DIR/11-p5d-lifetime-contract.txt"
+
+        {
+          echo "P5C_RESTORE_ARTIFACT=PASS"
+          echo "P5C_COMMIT=$EXPECTED_P5C_COMMIT"
+          echo "P5C_TREE=$EXPECTED_P5C_TREE"
+          echo "P5D_LIFETIME_CONTRACT_AUTH=PASS"
+        } | tee "$ARTIFACT_DIR/01-p5c-auth.txt"
+    - name: Refuse stale reviewed upstream before P5D
+      shell: bash
+      run: |2
+
+        set -euo pipefail
+        current_resu="$(git ls-remote https://github.com/ReSukiSU/ReSukiSU.git refs/heads/main | awk '{print $1}')"
+        current_54="$(git ls-remote "$SUSFS_REPO" refs/heads/kernel-5.4 | awk '{print $1}')"
+        current_510="$(git ls-remote "$SUSFS_REPO" refs/heads/gki-android12-5.10 | awk '{print $1}')"
+        current_515="$(git ls-remote "$SUSFS_REPO" refs/heads/gki-android13-5.15 | awk '{print $1}')"
+        current_61="$(git ls-remote "$SUSFS_REPO" refs/heads/gki-android14-6.1 | awk '{print $1}')"
+
+        test "$current_resu" = "$RESUKISU_SNAPSHOT_HEAD"
+        test "$current_54" = "$SUSFS_54_HEAD"
+        test "$current_510" = "$SUSFS_510_HEAD"
+        test "$current_515" = "$SUSFS_515_HEAD"
+        test "$current_61" = "$SUSFS_61_HEAD"
+
+        {
+          echo "UPSTREAM_REVIEW_SNAPSHOT_CURRENT=YES"
+          echo "P5D_ALLOWED=YES"
+        } | tee "$ARTIFACT_DIR/02-upstream-state.txt"
+    - name: Restore exact accepted P5C outer tree
+      working-directory: kernel
+      shell: bash
+      run: |2
+
+        set -euo pipefail
+        test "$(git rev-parse HEAD)" = "$EXPECTED_VENDOR_SHA"
+        test -z "$(git status --porcelain)"
+
+        PATCH="$P5C_ARTIFACT_DIR/restore-kit/vendor-20240619-to-p5c-outer.patch"
+        git apply --check --binary "$PATCH"
+        git apply --index --binary "$PATCH"
+        test "$(git write-tree)" = "$EXPECTED_P5C_TREE"
+
+        GIT_AUTHOR_NAME="CLEAN-GEN1 Restore" \
+        GIT_AUTHOR_EMAIL="clean-gen1@invalid.local" \
+        GIT_AUTHOR_DATE="2026-09-01T00:00:00Z" \
+        GIT_COMMITTER_NAME="CLEAN-GEN1 Restore" \
+        GIT_COMMITTER_EMAIL="clean-gen1@invalid.local" \
+        GIT_COMMITTER_DATE="2026-09-01T00:00:00Z" \
+          git commit -m "CLEAN GEN1 restore accepted P5C outer tree"
+
+        test "$(git rev-parse HEAD^{tree})" = "$EXPECTED_P5C_TREE"
+        echo "P5C_RESTORED_COMMIT=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+
+        echo "P5C_OUTER_RESTORE_REPLAY=PASS" \
+          | tee "$ARTIFACT_DIR/03-p5c-outer-restore.txt"
+    - name: Restore exact accepted P5C ReSukiSU
+      working-directory: kernel
+      shell: bash
+      run: |2
+
+        set -euo pipefail
+        rm -rf KernelSU
+        git init KernelSU >/dev/null
+        git -C KernelSU fetch \
+          "$P5C_ARTIFACT_DIR/restore-kit/resukisu-p5c-full.bundle" \
+          refs/heads/clean-gen1-p5c-resukisu:refs/heads/clean-gen1-p5c-resukisu
+        git -C KernelSU checkout --detach refs/heads/clean-gen1-p5c-resukisu >/dev/null
+
+        test "$(git -C KernelSU rev-parse HEAD)" = "$EXPECTED_P5C_RESUKISU_HEAD"
+        test "$(git -C KernelSU rev-parse HEAD^{tree})" = "$EXPECTED_P5C_RESUKISU_TREE"
+        test -z "$(git -C KernelSU status --porcelain)"
+
+        mkdir -p .git/info
+        touch .git/info/exclude
+        grep -Fxq '/KernelSU/' .git/info/exclude || echo '/KernelSU/' >> .git/info/exclude
+
+        test -L drivers/kernelsu
+        test "$(readlink drivers/kernelsu)" = "../KernelSU/kernel"
+        test -z "$(git status --porcelain)"
+
+        echo "P5C_RESUKISU_RESTORE_REPLAY=PASS" \
+          | tee "$ARTIFACT_DIR/04-p5c-resukisu-restore.txt"
+    - name: Gate exact P5C boundary
+      working-directory: kernel
+      shell: bash
+      run: |2
+
+        set -euo pipefail
+        test "$(git rev-parse HEAD^{tree})" = "$EXPECTED_P5C_TREE"
+
+        grep -Fq 'static int clean_gen1_open_last_lookups' fs/namei.c
+        grep -Fq 'static int clean_gen1_do_open' fs/namei.c
+        grep -Fq '#ifndef CONFIG_KSU_SUSFS_OPEN_REDIRECT' fs/namei.c
+        ! grep -Fq 'clean_gen1_open_redirect_nested' fs/namei.c
+        ! grep -Fq 'susfs_open_redirect_spoof_do_sys_openat(redirect_inode)' fs/namei.c
+
+        grep -Fxq '# CONFIG_KSU_SUSFS is not set' arch/arm64/configs/veux_defconfig
+        test ! -e KernelSU/kernel/feature/module_load_filter.c
+
+        sha256sum \
+          fs/namei.c fs/susfs.c include/linux/susfs.h include/linux/susfs_def.h \
+          fs/open.c fs/stat.c \
+          > "$ARTIFACT_DIR/05-p5c-source-before.sha256"
+
+        echo "P5C_BOUNDARY=PASS" | tee "$ARTIFACT_DIR/05-p5c-boundary.txt"
+    - name: Audit accepted SUSFS redirect helper ownership
+      working-directory: kernel
+      shell: bash
+      run: |
+        set -euo pipefail
+        python3 - <<'PY' > "$ARTIFACT_DIR/06-susfs-helper-lifetime.txt"
+        from pathlib import Path
+
+        text = Path("fs/susfs.c").read_text(encoding="utf-8")
+        start = text.find(
+            "struct filename *susfs_open_redirect_spoof_do_sys_openat(struct inode *inode)"
+        )
+        end = text.find("int susfs_open_redirect_spoof_vfs_readlink", start)
+        if start < 0 or end < 0:
+            raise SystemExit("OPEN_REDIRECT helper boundary missing")
+        body = text[start:end]
+
+        checks = {
+            "SRCU_READ_LOCK":
+                "srcu_read_lock(&susfs_srcu_open_redirect)" in body,
+            "GETNAME_KERNEL_COPY":
+                "new_filename = getname_kernel(entry->info.redirected_pathname);" in body,
+            "SRCU_UNLOCK_BEFORE_RETURN":
+                body.find("srcu_read_unlock(&susfs_srcu_open_redirect, srcu_idx);") <
+                body.find("return new_filename;"),
+            "NO_ENTRY_POINTER_RETURNED":
+                "return entry" not in body,
+        }
+        for label, ok in checks.items():
+            print(f"{label}={'PASS' if ok else 'FAIL'}")
+        if not all(checks.values()):
+            raise SystemExit("SUSFS helper ownership audit failed")
+
+        print("P5D_REDIRECT_FILENAME_OWNERSHIP=CALLER_MUST_PUTNAME")
+        print("P5D_SUSFS_HELPER_LIFETIME=PASS")
+        PY
+        grep -Fq 'P5D_SUSFS_HELPER_LIFETIME=PASS' "$ARTIFACT_DIR/06-susfs-helper-lifetime.txt"
+    - name: Target-compile accepted P5C baseline namei
+      working-directory: kernel
+      shell: bash
+      run: |2
+
+        set -euo pipefail
+        rm -rf "$BASELINE_BUILD_DIR"
+        make O="$BASELINE_BUILD_DIR" ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- veux_defconfig
+        make O="$BASELINE_BUILD_DIR" \
+          ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
+          -j2 fs/namei.o 2>&1 | tee "$ARTIFACT_DIR/07-p5c-baseline-namei-build.log"
+        test -s "$BASELINE_BUILD_DIR/fs/namei.o"
+
+        echo "P5C_BASELINE_NAMEI_OBJECT_COMPILE=PASS" \
+          | tee "$ARTIFACT_DIR/07-p5c-baseline-namei-build.txt"
+    - name: Integrate P5D normal-path nested-nameidata redirect
+      working-directory: kernel
+      shell: bash
+      run: "set -euo pipefail\npython3 - <<'PY'\nfrom pathlib import Path\n\nnamei_path = Path(\"fs/namei.c\")\nsusfs_h_path = Path(\"include/linux/susfs.h\")\n\nnamei = namei_path.read_text(encoding=\"utf-8\")\nsusfs_h = susfs_h_path.read_text(encoding=\"utf-8\")\n\ninclude_anchor = \"#include <linux/uaccess.h>\\n\"\ninclude_replacement = (\n    \"#include <linux/uaccess.h>\\n\"\n    \"\\n\"\n    \"#ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT\\n\"\n    \"#include <linux/susfs.h>\\n\"\n    \"#endif\\n\"\n)\nif namei.count(include_anchor) != 1:\n    raise SystemExit(\"namei include anchor mismatch\")\nnamei = namei.replace(include_anchor, include_replacement, 1)\n\nopen_sig = \"static int clean_gen1_do_open(struct nameidata *nd,\"\nopen_start = namei.find(open_sig)\nif open_start < 0:\n    raise SystemExit(\"clean_gen1_do_open missing\")\n\nbrace = namei.find(\"{\", open_start)\ndepth = 0\nopen_end = None\nfor i in range(brace, len(namei)):\n    if namei[i] == \"{\":\n        depth += 1\n    elif\
+        \ namei[i] == \"}\":\n        depth -= 1\n        if depth == 0:\n            open_end = i + 1\n            break\nif open_end is None:\n    raise SystemExit(\"clean_gen1_do_open end missing\")\n\nnested_helper = r\"\"\"\n#ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT\n/*\n * Run the redirected pathname with a distinct nested nameidata.\n *\n * The caller's original nameidata stays current as redirect_nd.saved and its\n * nd->name is never overwritten. This keeps the outer -ECHILD/-ESTALE retry\n * pathname alive after fake_filename is released.\n */\nstatic int clean_gen1_open_redirect_nested(struct nameidata *outer_nd,\n\t\t\t\t\t   const struct path *outer_root,\n\t\t\t\t\t   struct file *file,\n\t\t\t\t\t   const struct open_flags *op,\n\t\t\t\t\t   unsigned flags,\n\t\t\t\t\t   struct filename *fake_filename)\n{\n\tstruct nameidata redirect_nd;\n\tstruct clean_gen1_open_state redirect_state;\n\tconst char *s;\n\tint error;\n\n\tif (WARN_ON(file->f_mode & FMODE_OPENED))\n\t\treturn -EINVAL;\n\
+        \n\tif (flags & LOOKUP_ROOT)\n\t\tredirect_nd.root = *outer_root;\n\n\tset_nameidata(&redirect_nd, outer_nd->dfd, fake_filename);\n\ts = path_init(&redirect_nd, flags);\n\n\twhile (!(error = link_path_walk(s, &redirect_nd)) &&\n\t       (error = clean_gen1_open_last_lookups(&redirect_nd, file, op,\n\t\t\t\t\t\t     &redirect_state)) > 0) {\n\t\tredirect_nd.flags &= ~(LOOKUP_OPEN | LOOKUP_CREATE | LOOKUP_EXCL);\n\t\ts = trailing_symlink(&redirect_nd);\n\t}\n\n\tif (!error)\n\t\terror = clean_gen1_do_open(&redirect_nd, file, op, &redirect_state);\n\n\tterminate_walk(&redirect_nd);\n\trestore_nameidata();\n\treturn error;\n}\n#endif\n\"\"\".strip()\n\nnamei = namei[:open_end] + \"\\n\\n\" + nested_helper + \"\\n\" + namei[open_end:]\n\nold_path_block = (\n    \"\\t} else {\\n\"\n    \"\\t\\tstruct clean_gen1_open_state open_state;\\n\"\n    \"\\t\\tconst char *s = path_init(nd, flags);\\n\"\n    \"\\n\"\n    \"\\t\\twhile (!(error = link_path_walk(s, nd)) &&\\n\"\n    \"\\t\\t\\t(error\
+        \ = clean_gen1_open_last_lookups(nd, file, op,\\n\"\n    \"\\t\\t\\t\\t\\t\\t\\t       &open_state)) > 0) {\\n\"\n    \"\\t\\t\\tnd->flags &= ~(LOOKUP_OPEN|LOOKUP_CREATE|LOOKUP_EXCL);\\n\"\n    \"\\t\\t\\ts = trailing_symlink(nd);\\n\"\n    \"\\t\\t}\\n\"\n    \"\\n\"\n    \"\\t\\tif (!error)\\n\"\n    \"\\t\\t\\terror = clean_gen1_do_open(nd, file, op, &open_state);\\n\"\n    \"\\n\"\n    \"\\t\\tterminate_walk(nd);\\n\"\n    \"\\t}\"\n)\n\nnew_path_block = (\n    \"\\t} else {\\n\"\n    \"\\t\\tstruct clean_gen1_open_state open_state;\\n\"\n    \"#ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT\\n\"\n    \"\\t\\tbool outer_walk_terminated = false;\\n\"\n    \"\\t\\tstruct path redirect_root = { NULL, NULL };\\n\"\n    \"\\n\"\n    \"\\t\\tif (flags & LOOKUP_ROOT)\\n\"\n    \"\\t\\t\\tredirect_root = nd->root;\\n\"\n    \"#endif\\n\"\n    \"\\t\\tconst char *s = path_init(nd, flags);\\n\"\n    \"\\n\"\n    \"\\t\\twhile (!(error = link_path_walk(s, nd)) &&\\n\"\n    \"\\t\\t\\t(error = clean_gen1_open_last_lookups(nd,\
+        \ file, op,\\n\"\n    \"\\t\\t\\t\\t\\t\\t\\t       &open_state)) > 0) {\\n\"\n    \"\\t\\t\\tnd->flags &= ~(LOOKUP_OPEN|LOOKUP_CREATE|LOOKUP_EXCL);\\n\"\n    \"\\t\\t\\ts = trailing_symlink(nd);\\n\"\n    \"\\t\\t}\\n\"\n    \"\\n\"\n    \"\\t\\tif (!error) {\\n\"\n    \"#ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT\\n\"\n    \"\\t\\t\\tstruct inode *redirect_inode = d_backing_inode(nd->path.dentry);\\n\"\n    \"\\t\\t\\tstruct filename *fake_filename = NULL;\\n\"\n    \"\\n\"\n    \"\\t\\t\\tif (open_state.phase == CLEAN_GEN1_OPEN_PHASE_FINAL &&\\n\"\n    \"\\t\\t\\t    SUSFS_IS_INODE_OPEN_REDIRECT_WITHOUT_UID_CHECK(redirect_inode))\\n\"\n    \"\\t\\t\\t\\tfake_filename =\\n\"\n    \"\\t\\t\\t\\t\\tsusfs_open_redirect_spoof_do_sys_openat(redirect_inode);\\n\"\n    \"\\n\"\n    \"\\t\\t\\tif (IS_ERR(fake_filename)) {\\n\"\n    \"\\t\\t\\t\\terror = PTR_ERR(fake_filename);\\n\"\n    \"\\t\\t\\t} else if (fake_filename) {\\n\"\n    \"\\t\\t\\t\\tif (WARN_ON(open_state.got_write)) {\\n\"\n\
+        \    \"\\t\\t\\t\\t\\terror = -EINVAL;\\n\"\n    \"\\t\\t\\t\\t} else {\\n\"\n    \"\\t\\t\\t\\t\\tBUG_ON(file->f_mode & FMODE_OPENED);\\n\"\n    \"\\t\\t\\t\\t\\tterminate_walk(nd);\\n\"\n    \"\\t\\t\\t\\t\\touter_walk_terminated = true;\\n\"\n    \"\\t\\t\\t\\t\\terror = clean_gen1_open_redirect_nested(nd,\\n\"\n    \"\\t\\t\\t\\t\\t\\t\\t\\t\\t  &redirect_root,\\n\"\n    \"\\t\\t\\t\\t\\t\\t\\t\\t\\t  file, op, flags,\\n\"\n    \"\\t\\t\\t\\t\\t\\t\\t\\t\\t  fake_filename);\\n\"\n    \"\\t\\t\\t\\t\\tputname(fake_filename);\\n\"\n    \"\\t\\t\\t\\t}\\n\"\n    \"\\t\\t\\t} else\\n\"\n    \"#endif\\n\"\n    \"\\t\\t\\t{\\n\"\n    \"\\t\\t\\t\\terror = clean_gen1_do_open(nd, file, op, &open_state);\\n\"\n    \"\\t\\t\\t}\\n\"\n    \"\\t\\t}\\n\"\n    \"\\n\"\n    \"#ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT\\n\"\n    \"\\t\\tif (!outer_walk_terminated)\\n\"\n    \"#endif\\n\"\n    \"\\t\\t\\tterminate_walk(nd);\\n\"\n    \"\\t}\"\n)\n\nif namei.count(old_path_block) != 1:\n    raise\
+        \ SystemExit(f\"path_openat block mismatch: {namei.count(old_path_block)}\")\nnamei = namei.replace(old_path_block, new_path_block, 1)\n\nheader_anchor = (\n    \"#ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT\\n\"\n    \"void susfs_add_open_redirect(void __user **user_info);\\n\"\n    \"#endif\\n\"\n)\nheader_replacement = (\n    \"#ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT\\n\"\n    \"void susfs_add_open_redirect(void __user **user_info);\\n\"\n    \"struct filename *susfs_open_redirect_spoof_do_sys_openat(struct inode *inode);\\n\"\n    \"#endif\\n\"\n)\nif susfs_h.count(header_anchor) != 1:\n    raise SystemExit(\"susfs.h OPEN_REDIRECT declaration anchor mismatch\")\nsusfs_h = susfs_h.replace(header_anchor, header_replacement, 1)\n\nfor forbidden in (\"nd->name = fake_filename\", \"outer_nd->name = fake_filename\"):\n    if forbidden in namei:\n        raise SystemExit(\"forbidden outer nameidata rewrite: \" + forbidden)\n\nrequired = (\n    \"clean_gen1_open_redirect_nested\",\n    \"set_nameidata(&redirect_nd,\
+        \ outer_nd->dfd, fake_filename);\",\n    \"terminate_walk(&redirect_nd);\",\n    \"restore_nameidata();\",\n    \"putname(fake_filename);\",\n    \"SUSFS_IS_INODE_OPEN_REDIRECT_WITHOUT_UID_CHECK\",\n    \"susfs_open_redirect_spoof_do_sys_openat(redirect_inode)\",\n)\nmissing = [token for token in required if token not in namei]\nif missing:\n    raise SystemExit(\"P5D transform missing: \" + repr(missing))\n\nnamei_path.write_text(namei, encoding=\"utf-8\")\nsusfs_h_path.write_text(susfs_h, encoding=\"utf-8\")\nPY\ngit diff --check -- fs/namei.c include/linux/susfs.h\ngit diff -- fs/namei.c include/linux/susfs.h > \"$ARTIFACT_DIR/08-p5d-source.diff\"\ntest -s \"$ARTIFACT_DIR/08-p5d-source.diff\"\n"
+    - name: Audit nested-nameidata lifetime contract
+      working-directory: kernel
+      shell: bash
+      run: |
+        set -euo pipefail
+        python3 - <<'PY' > "$ARTIFACT_DIR/09-p5d-lifetime-audit.txt"
+        from pathlib import Path
+
+        text = Path("fs/namei.c").read_text(encoding="utf-8")
+        hdr = Path("include/linux/susfs.h").read_text(encoding="utf-8")
+
+        nested_start = text.find("static int clean_gen1_open_redirect_nested(")
+        tmp_start = text.find("struct dentry *vfs_tmpfile(", nested_start)
+        path_start = text.find("static struct file *path_openat(")
+        do_filp_start = text.find("struct file *do_filp_open(", path_start)
+        if min(nested_start, tmp_start, path_start, do_filp_start) < 0:
+            raise SystemExit("P5D function boundary missing")
+
+        nested = text[nested_start:tmp_start]
+        path = text[path_start:do_filp_start]
+        do_filp = text[do_filp_start:text.find("struct file *do_file_open_root(", do_filp_start)]
+
+        checks = {
+            "AUTHORITATIVE_SUSFS_PROTOTYPE":
+                "struct filename *susfs_open_redirect_spoof_do_sys_openat(struct inode *inode);" in hdr,
+            "NESTED_NAMEIDATA_LOCAL":
+                "struct nameidata redirect_nd;" in nested,
+            "NESTED_SET_NAMEIDATA":
+                "set_nameidata(&redirect_nd, outer_nd->dfd, fake_filename);" in nested,
+            "NESTED_PATH_INIT":
+                "s = path_init(&redirect_nd, flags);" in nested,
+            "NESTED_LOOKUP_USES_REDIRECT_ND":
+                "clean_gen1_open_last_lookups(&redirect_nd, file, op," in nested,
+            "NESTED_OPEN_USES_REDIRECT_ND":
+                "clean_gen1_do_open(&redirect_nd, file, op, &redirect_state)" in nested,
+            "NESTED_TERMINATE_BEFORE_RESTORE":
+                nested.find("terminate_walk(&redirect_nd);") <
+                nested.find("restore_nameidata();"),
+            "LOOKUP_ROOT_PRESERVED":
+                "if (flags & LOOKUP_ROOT)" in nested and
+                "redirect_nd.root = *outer_root;" in nested,
+            "OUTER_ND_NAME_NOT_REPLACED":
+                "nd->name =" not in path and "outer_nd->name =" not in nested,
+            "ONLY_FINAL_PHASE_ELIGIBLE":
+                "open_state.phase == CLEAN_GEN1_OPEN_PHASE_FINAL" in path,
+            "INODE_FLAG_PRECHECK":
+                "SUSFS_IS_INODE_OPEN_REDIRECT_WITHOUT_UID_CHECK(redirect_inode)" in path,
+            "HELPER_ERR_PTR_PROPAGATED":
+                "if (IS_ERR(fake_filename))" in path and
+                "error = PTR_ERR(fake_filename);" in path,
+            "OUTER_TERMINATED_BEFORE_NESTED_RESTART":
+                path.find("terminate_walk(nd);") <
+                path.find("clean_gen1_open_redirect_nested(nd,"),
+            "OUTER_DOUBLE_TERMINATE_GUARDED":
+                "bool outer_walk_terminated = false;" in path and
+                "outer_walk_terminated = true;" in path and
+                "if (!outer_walk_terminated)" in path,
+            "FAKE_FILENAME_RELEASE_AFTER_NESTED_RETURNS":
+                path.find("clean_gen1_open_redirect_nested(nd,") <
+                path.find("putname(fake_filename);"),
+            "ALREADY_OPENED_FILE_REJECTED":
+                "BUG_ON(file->f_mode & FMODE_OPENED);" in path and
+                "WARN_ON(file->f_mode & FMODE_OPENED)" in nested,
+            "OUTER_ECHILD_RETRY_PRESERVED":
+                "filp = path_openat(&nd, op, flags | LOOKUP_RCU);" in do_filp and
+                "filp = path_openat(&nd, op, flags);" in do_filp,
+            "OUTER_ESTALE_RETRY_PRESERVED":
+                "filp = path_openat(&nd, op, flags | LOOKUP_REVAL);" in do_filp,
+        }
+        for label, ok in checks.items():
+            print(f"{label}={'PASS' if ok else 'FAIL'}")
+        failed = [label for label, ok in checks.items() if not ok]
+        if failed:
+            raise SystemExit("P5D lifetime audit failed: " + ", ".join(failed))
+
+        print("P5D_ORIGINAL_ND_NAME_REMAINS_VALID_ACROSS_OUTER_RETRIES=YES")
+        print("P5D_FAKE_FILENAME_LIFETIME_ENDS_AFTER_NESTED_NAMEIDATA_RESTORE=YES")
+        print("P5D_NORMAL_PATH_NESTED_NAMEIDATA_CONTRACT=PASS")
+        PY
+        grep -Fq 'P5D_NORMAL_PATH_NESTED_NAMEIDATA_CONTRACT=PASS' "$ARTIFACT_DIR/09-p5d-lifetime-audit.txt"
+    - name: Audit P5D partial feature scope
+      working-directory: kernel
+      shell: bash
+      run: |
+        set -euo pipefail
+        python3 - <<'PY' > "$ARTIFACT_DIR/10-p5d-feature-scope.txt"
+        from pathlib import Path
+
+        text = Path("fs/namei.c").read_text(encoding="utf-8")
+
+        tmp_start = text.find("static int do_tmpfile(struct nameidata *nd")
+        opath_start = text.find("static int do_o_path(struct nameidata *nd")
+        path_start = text.find("static struct file *path_openat(struct nameidata *nd")
+        if min(tmp_start, opath_start, path_start) < 0:
+            raise SystemExit("direct path function boundary missing")
+
+        tmp = text[tmp_start:opath_start]
+        opath = text[opath_start:path_start]
+
+        if "susfs_open_redirect_spoof_do_sys_openat" in tmp:
+            raise SystemExit("do_tmpfile redirect integrated too early")
+        if "susfs_open_redirect_spoof_do_sys_openat" in opath:
+            raise SystemExit("do_o_path redirect integrated too early")
+
+        print("NORMAL_PATH_OPEN_REDIRECT_INTEGRATED=YES")
+        print("DO_TMPFILE_OPEN_REDIRECT_INTEGRATED=NO")
+        print("DO_O_PATH_OPEN_REDIRECT_INTEGRATED=NO")
+        print("P5D_SCOPE_PARTIAL_OPEN_REDIRECT=PASS")
+        PY
+        grep -Fq 'P5D_SCOPE_PARTIAL_OPEN_REDIRECT=PASS' "$ARTIFACT_DIR/10-p5d-feature-scope.txt"
+    - name: Prove changed-file scope
+      working-directory: kernel
+      shell: bash
+      run: |2
+
+        set -euo pipefail
+        mapfile -t changed < <(git status --porcelain | awk '{print $2}' | sort)
+        printf '%s\n' "${changed[@]}" | tee "$ARTIFACT_DIR/11-changed-files.txt"
+
+        test "${#changed[@]}" -eq 2
+        printf '%s\n' "${changed[@]}" | grep -Fxq 'fs/namei.c'
+        printf '%s\n' "${changed[@]}" | grep -Fxq 'include/linux/susfs.h'
+
+        grep -Fxq '# CONFIG_KSU_SUSFS is not set' arch/arm64/configs/veux_defconfig
+        test ! -e KernelSU/kernel/feature/module_load_filter.c
+
+        {
+          echo "P5D_CHANGED_FILES=fs/namei.c,include/linux/susfs.h"
+          echo "P5D_CHANGE_SCOPE=PASS"
+          echo "SUSFS_RUNTIME_ENABLED=NO"
+        } | tee "$ARTIFACT_DIR/11-scope.txt"
+    - name: Target-compile normal and forced OPEN_REDIRECT objects
+      working-directory: kernel
+      shell: bash
+      run: |2
+
+        set -euo pipefail
+
+        rm -rf "$NORMAL_BUILD_DIR"
+        make O="$NORMAL_BUILD_DIR" ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- veux_defconfig
+        make O="$NORMAL_BUILD_DIR" \
+          ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
+          -j2 fs/namei.o 2>&1 | tee "$ARTIFACT_DIR/12-normal-namei-build.log"
+        test -s "$NORMAL_BUILD_DIR/fs/namei.o"
+        ! aarch64-linux-gnu-nm "$NORMAL_BUILD_DIR/fs/namei.o" \
+          | grep -q 'susfs_open_redirect_spoof_do_sys_openat'
+
+        rm -rf "$REDIRECT_BUILD_DIR"
+        make O="$REDIRECT_BUILD_DIR" ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- veux_defconfig
+        make O="$REDIRECT_BUILD_DIR" \
+          ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
+          KCFLAGS='-DCONFIG_KSU_SUSFS -DCONFIG_KSU_SUSFS_OPEN_REDIRECT' \
+          -j2 fs/namei.o fs/susfs.o \
+          2>&1 | tee "$ARTIFACT_DIR/12-redirect-objects-build.log"
+
+        test -s "$REDIRECT_BUILD_DIR/fs/namei.o"
+        test -s "$REDIRECT_BUILD_DIR/fs/susfs.o"
+
+        aarch64-linux-gnu-nm "$REDIRECT_BUILD_DIR/fs/namei.o" \
+          | tee "$ARTIFACT_DIR/12-namei-nm.txt"
+        aarch64-linux-gnu-nm "$REDIRECT_BUILD_DIR/fs/susfs.o" \
+          | tee "$ARTIFACT_DIR/12-susfs-nm.txt"
+
+        grep -Eq '[[:space:]]U[[:space:]]+susfs_open_redirect_spoof_do_sys_openat$' \
+          "$ARTIFACT_DIR/12-namei-nm.txt"
+        grep -Eq '[[:space:]][Tt][[:space:]]+susfs_open_redirect_spoof_do_sys_openat$' \
+          "$ARTIFACT_DIR/12-susfs-nm.txt"
+
+        {
+          echo "P5D_NORMAL_NAMEI_OBJECT_COMPILE=PASS"
+          echo "P5D_REDIRECT_NAMEI_OBJECT_COMPILE=PASS"
+          echo "P5D_REDIRECT_SUSFS_OBJECT_COMPILE=PASS"
+          echo "P5D_REDIRECT_SYMBOL_CONTRACT=PASS"
+          echo "FULL_KERNEL_BUILD_PERFORMED=NO"
+        } | tee "$ARTIFACT_DIR/12-object-builds.txt"
+    - name: Verify protected source identity
+      working-directory: kernel
+      shell: bash
+      run: |2
+
+        set -euo pipefail
+
+        for file in fs/susfs.c include/linux/susfs_def.h fs/open.c fs/stat.c
+        do
+          before="$(awk -v f="$file" '$2==f {print $1}' "$ARTIFACT_DIR/05-p5c-source-before.sha256")"
+          after="$(sha256sum "$file" | awk '{print $1}')"
+          test -n "$before"
+          test "$before" = "$after"
+        done
+
+        test "$(git -C KernelSU rev-parse HEAD)" = "$EXPECTED_P5C_RESUKISU_HEAD"
+        test "$(git -C KernelSU rev-parse HEAD^{tree})" = "$EXPECTED_P5C_RESUKISU_TREE"
+        test -z "$(git -C KernelSU status --porcelain)"
+
+        {
+          echo "P3_SUSFS_IMPLEMENTATION_BYTE_IDENTITY=PASS"
+          echo "P4_STAT_FACCESSAT_BRIDGE_BYTE_IDENTITY=PASS"
+          echo "P5C_RESUKISU_BYTE_IDENTITY=PASS"
+        } | tee "$ARTIFACT_DIR/13-protected-source.txt"
+    - name: Freeze deterministic P5D checkpoint
+      working-directory: kernel
+      shell: bash
+      run: |2
+
+        set -euo pipefail
+        git diff --check
+        git add fs/namei.c include/linux/susfs.h
+
+        mapfile -t staged < <(git diff --cached --name-only | sort)
+        test "${#staged[@]}" -eq 2
+        printf '%s\n' "${staged[@]}" | grep -Fxq 'fs/namei.c'
+        printf '%s\n' "${staged[@]}" | grep -Fxq 'include/linux/susfs.h'
+
+        GIT_AUTHOR_NAME="CLEAN-GEN1 Builder" \
+        GIT_AUTHOR_EMAIL="clean-gen1@invalid.local" \
+        GIT_AUTHOR_DATE="2026-09-01T00:00:00Z" \
+        GIT_COMMITTER_NAME="CLEAN-GEN1 Builder" \
+        GIT_COMMITTER_EMAIL="clean-gen1@invalid.local" \
+        GIT_COMMITTER_DATE="2026-09-01T00:00:00Z" \
+          git commit -m "CLEAN GEN1 P5D integrate normal-path OPEN_REDIRECT safely"
+
+        P5D_COMMIT="$(git rev-parse HEAD)"
+        P5D_TREE="$(git rev-parse HEAD^{tree})"
+
+        test -z "$(git status --porcelain)"
+        test -z "$(git -C KernelSU status --porcelain)"
+
+        echo "P5D_COMMIT=$P5D_COMMIT" >> "$GITHUB_ENV"
+        echo "P5D_TREE=$P5D_TREE" >> "$GITHUB_ENV"
+
+        {
+          echo "P5D_CHECKPOINT_COMMIT=$P5D_COMMIT"
+          echo "P5D_OUTER_TREE=$P5D_TREE"
+          echo "P5D_RESUKISU_HEAD=$(git -C KernelSU rev-parse HEAD)"
+          echo "P5D_RESUKISU_TREE=$(git -C KernelSU rev-parse HEAD^{tree})"
+          echo "P5D_SOURCE_CHECKPOINT=PASS"
+        } | tee "$ARTIFACT_DIR/14-p5d-checkpoint.txt"
+    - name: Create P5D restore kit
+      working-directory: kernel
+      shell: bash
+      run: |
+        set -euo pipefail
+        kit="$ARTIFACT_DIR/restore-kit"
+        rm -rf "$kit"
+        mkdir -p "$kit"
+
+        git diff --binary "$P5C_RESTORED_COMMIT" "$P5D_COMMIT" \
+          > "$kit/p5c-to-p5d-outer.patch"
+        git diff --binary "$EXPECTED_VENDOR_SHA" "$P5D_COMMIT" \
+          > "$kit/vendor-20240619-to-p5d-outer.patch"
+
+        cp "$ARTIFACT_DIR/06-susfs-helper-lifetime.txt" "$kit/P5D-SUSFS-HELPER-LIFETIME.txt"
+        cp "$ARTIFACT_DIR/08-p5d-source.diff" "$kit/P5D-SOURCE-DIFF.patch"
+        cp "$ARTIFACT_DIR/09-p5d-lifetime-audit.txt" "$kit/P5D-NESTED-NAMEIDATA-AUDIT.txt"
+        cp "$ARTIFACT_DIR/10-p5d-feature-scope.txt" "$kit/P5D-FEATURE-SCOPE.txt"
+
+        git -C KernelSU branch -f clean-gen1-p5d-resukisu "$EXPECTED_P5C_RESUKISU_HEAD"
+        git -C KernelSU bundle create "$kit/resukisu-p5d-full.bundle" \
+          refs/heads/clean-gen1-p5d-resukisu
+        git -C KernelSU bundle verify "$kit/resukisu-p5d-full.bundle" \
+          > "$kit/resukisu-p5d-bundle-verify.txt" 2>&1
+        tar -C KernelSU --exclude=.git -cf - . \
+          | zstd -19 -T0 -o "$kit/resukisu-p5d-source.tar.zst"
+
+        python3 - <<'PY'
+        from pathlib import Path
+        import json, os
+
+        kit = Path(os.environ["ARTIFACT_DIR"]) / "restore-kit"
+        manifest = {
+            "stage": "CLEAN_GEN1_P5D",
+            "kernel_version": "5.4.274",
+            "vendor_sha": os.environ["EXPECTED_VENDOR_SHA"],
+            "p5c_tree": os.environ["EXPECTED_P5C_TREE"],
+            "p5d_commit": os.environ["P5D_COMMIT"],
+            "p5d_tree": os.environ["P5D_TREE"],
+            "resukisu_head": os.environ["EXPECTED_P5C_RESUKISU_HEAD"],
+            "resukisu_tree": os.environ["EXPECTED_P5C_RESUKISU_TREE"],
+            "changed_files": ["fs/namei.c", "include/linux/susfs.h"],
+            "normal_path_open_redirect_integrated": True,
+            "tmpfile_open_redirect_integrated": False,
+            "o_path_open_redirect_integrated": False,
+            "separate_nested_nameidata": True,
+            "outer_nameidata_name_replaced": False,
+            "fake_filename_put_after_nested_restore": True,
+            "lookup_root_preserved": True,
+            "open_redirect_runtime_enabled": False,
+            "susfs_runtime_enabled": False,
+            "full_kernel_build_performed": False,
+        }
+        (kit / "manifest.json").write_text(
+            json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        PY
+
+        cat > "$kit/RESTORE-INSTRUCTIONS.txt" <<EOF
+        CLEAN GEN1 P5D deterministic restore
+
+        Apply vendor-20240619-to-p5d-outer.patch on:
+          $VENDOR_REPO @ $EXPECTED_VENDOR_SHA
+
+        Expected outer tree:
+          $P5D_TREE
+
+        Expected ReSukiSU:
+          head $EXPECTED_P5C_RESUKISU_HEAD
+          tree $EXPECTED_P5C_RESUKISU_TREE
+
+        P5D changes:
+          fs/namei.c
+          include/linux/susfs.h
+
+        Normal path OPEN_REDIRECT is integrated but CONFIG_KSU_SUSFS remains disabled.
+        do_tmpfile and do_o_path OPEN_REDIRECT are deferred to P5E.
+        EOF
+
+        (
+          cd "$kit"
+          find . -maxdepth 1 -type f ! -name SHA256SUMS -printf '%f\n' \
+            | sort | xargs sha256sum > SHA256SUMS
+          sha256sum -c SHA256SUMS
+        ) | tee "$ARTIFACT_DIR/15-restore-kit-sha256.txt"
+    - name: Replay P5D outer and ReSukiSU restore
+      working-directory: kernel
+      shell: bash
+      run: |2
+
+        set -euo pipefail
+
+        outer="$GITHUB_WORKSPACE/p5d-outer-replay"
+        rm -rf "$outer"
+        git worktree add --detach "$outer" "$EXPECTED_VENDOR_SHA" >/dev/null
+        (
+          cd "$outer"
+          git apply --check --binary \
+            "$ARTIFACT_DIR/restore-kit/vendor-20240619-to-p5d-outer.patch"
+          git apply --index --binary \
+            "$ARTIFACT_DIR/restore-kit/vendor-20240619-to-p5d-outer.patch"
+          test "$(git write-tree)" = "$P5D_TREE"
+        )
+        git worktree remove --force "$outer"
+
+        resu="$GITHUB_WORKSPACE/p5d-resukisu-replay"
+        rm -rf "$resu"
+        git init "$resu" >/dev/null
+        git -C "$resu" fetch \
+          "$ARTIFACT_DIR/restore-kit/resukisu-p5d-full.bundle" \
+          refs/heads/clean-gen1-p5d-resukisu:refs/heads/clean-gen1-p5d-resukisu
+        git -C "$resu" checkout --detach refs/heads/clean-gen1-p5d-resukisu >/dev/null
+        test "$(git -C "$resu" rev-parse HEAD)" = "$EXPECTED_P5C_RESUKISU_HEAD"
+        test "$(git -C "$resu" rev-parse HEAD^{tree})" = "$EXPECTED_P5C_RESUKISU_TREE"
+        rm -rf "$resu"
+
+        {
+          echo "P5D_OUTER_RESTORE_REPLAY=PASS"
+          echo "P5D_RESUKISU_BUNDLE_REPLAY=PASS"
+        } | tee "$ARTIFACT_DIR/16-restore-replays.txt"
+    - name: Final P5D safety gate
+      working-directory: kernel
+      shell: bash
+      run: |2
+
+        set -euo pipefail
+
+        test "$(make -s kernelversion)" = "5.4.274"
+        test "$(git rev-parse HEAD)" = "$P5D_COMMIT"
+        test "$(git rev-parse HEAD^{tree})" = "$P5D_TREE"
+        test "$(git -C KernelSU rev-parse HEAD)" = "$EXPECTED_P5C_RESUKISU_HEAD"
+        test "$(git -C KernelSU rev-parse HEAD^{tree})" = "$EXPECTED_P5C_RESUKISU_TREE"
+        test -z "$(git status --porcelain)"
+        test -z "$(git -C KernelSU status --porcelain)"
+
+        grep -Fq 'P5D_SUSFS_HELPER_LIFETIME=PASS' "$ARTIFACT_DIR/06-susfs-helper-lifetime.txt"
+        grep -Fq 'P5D_NORMAL_PATH_NESTED_NAMEIDATA_CONTRACT=PASS' "$ARTIFACT_DIR/09-p5d-lifetime-audit.txt"
+        grep -Fq 'P5D_SCOPE_PARTIAL_OPEN_REDIRECT=PASS' "$ARTIFACT_DIR/10-p5d-feature-scope.txt"
+        grep -Fq 'P5D_CHANGE_SCOPE=PASS' "$ARTIFACT_DIR/11-scope.txt"
+        grep -Fq 'P5D_REDIRECT_SYMBOL_CONTRACT=PASS' "$ARTIFACT_DIR/12-object-builds.txt"
+        grep -Fq 'P5D_OUTER_RESTORE_REPLAY=PASS' "$ARTIFACT_DIR/16-restore-replays.txt"
+        grep -Fq 'P5D_RESUKISU_BUNDLE_REPLAY=PASS' "$ARTIFACT_DIR/16-restore-replays.txt"
+
+        grep -Fxq '# CONFIG_KSU_SUSFS is not set' arch/arm64/configs/veux_defconfig
+        test ! -e KernelSU/kernel/feature/module_load_filter.c
+
+        (
+          cd "$ARTIFACT_DIR/restore-kit"
+          sha256sum -c SHA256SUMS
+        ) > "$ARTIFACT_DIR/17-final-restore-sha256.txt"
+
+        {
+          echo "CLEAN_GEN1_P5D_NORMAL_PATH_OPEN_REDIRECT=PASS"
+          echo "KERNEL_VERSION=5.4.274"
+          echo "P5C_RESTORE_REPLAY=PASS"
+          echo "P5C_TREE=$EXPECTED_P5C_TREE"
+          echo "P5D_CHECKPOINT_COMMIT=$P5D_COMMIT"
+          echo "P5D_OUTER_TREE=$P5D_TREE"
+          echo "P5D_RESUKISU_HEAD=$EXPECTED_P5C_RESUKISU_HEAD"
+          echo "P5D_RESUKISU_TREE=$EXPECTED_P5C_RESUKISU_TREE"
+          echo "NORMAL_PATH_OPEN_REDIRECT_INTEGRATED=YES"
+          echo "SEPARATE_REDIRECT_NAMEIDATA=YES"
+          echo "ORIGINAL_ND_NAME_REPLACED=NO"
+          echo "FAKE_FILENAME_PUT_AFTER_NESTED_RESTORE=YES"
+          echo "LOOKUP_ROOT_PRESERVED=YES"
+          echo "REDIRECT_RECURSION_ALLOWED=NO"
+          echo "CREATED_PHASE_REDIRECT_ELIGIBLE=NO"
+          echo "ATOMIC_OPENED_PHASE_REDIRECT_ELIGIBLE=NO"
+          echo "DO_TMPFILE_OPEN_REDIRECT_INTEGRATED=NO"
+          echo "DO_O_PATH_OPEN_REDIRECT_INTEGRATED=NO"
+          echo "P5D_REDIRECT_SYMBOL_CONTRACT=PASS"
+          echo "SUSFS_RUNTIME_ENABLED=NO"
+          echo "MODULE_LOAD_FILTER_INCLUDED=NO"
+          echo "P5D_OUTER_RESTORE_REPLAY=PASS"
+          echo "P5D_RESUKISU_BUNDLE_REPLAY=PASS"
+          echo "FULL_KERNEL_BUILD_PERFORMED=NO"
+          echo "IMAGE_CREATED=NO"
+          echo "DTB_BUILD_PERFORMED=NO"
+          echo "BOOT_IMAGE_CREATED=NO"
+          echo "FLASHABLE_ZIP_CREATED=NO"
+          echo "DEVICE_ACCESSED=NO"
+          echo "FLASHING_PERFORMED=NO"
+          echo "NEXT_STAGE=CLEAN_GEN1_P5E_TMPFILE_O_PATH_OPEN_REDIRECT_INTEGRATION"
+        } | tee "$ARTIFACT_DIR/18-result.txt"
+    - name: Preserve P5D failure evidence
+      if: always()
+      shell: bash
+      run: |2
+
+        set +e
+        mkdir -p "$ARTIFACT_DIR"
+        {
+          echo "JOB_STATUS=${{ job.status }}"
+          if [ -d "$GITHUB_WORKSPACE/kernel/.git" ]; then
+            echo "OUTER_HEAD=$(git -C "$GITHUB_WORKSPACE/kernel" rev-parse HEAD 2>/dev/null || true)"
+            echo "OUTER_TREE=$(git -C "$GITHUB_WORKSPACE/kernel" rev-parse HEAD^{tree} 2>/dev/null || true)"
+            echo "OUTER_STATUS_BEGIN"
+            git -C "$GITHUB_WORKSPACE/kernel" status --porcelain 2>/dev/null || true
+            echo "OUTER_STATUS_END"
+          fi
+          if [ -d "$GITHUB_WORKSPACE/kernel/KernelSU/.git" ]; then
+            echo "RESUKISU_HEAD=$(git -C "$GITHUB_WORKSPACE/kernel/KernelSU" rev-parse HEAD 2>/dev/null || true)"
+            echo "RESUKISU_TREE=$(git -C "$GITHUB_WORKSPACE/kernel/KernelSU" rev-parse HEAD^{tree} 2>/dev/null || true)"
+            echo "RESUKISU_STATUS_BEGIN"
+            git -C "$GITHUB_WORKSPACE/kernel/KernelSU" status --porcelain 2>/dev/null || true
+            echo "RESUKISU_STATUS_END"
+          fi
+        } > "$ARTIFACT_DIR/99-job-end-state.txt"
+
+        find "$ARTIFACT_DIR" -maxdepth 2 -type f -printf '%P\n' \
+          | sort > "$ARTIFACT_DIR/99-artifact-file-list.txt"
+        exit 0
+    - name: Upload P5D checkpoint and evidence
+      if: always()
+      uses: actions/upload-artifact@v7
+      with:
+        name: clean-gen1-p5d-normal-path-open-redirect-v1-${{ github.run_id }}
+        path: clean-gen1-p5d/
+        if-no-files-found: error
+        retention-days: 90
