@@ -1,0 +1,602 @@
+name: CLEAN GEN1 P5F - remaining OPEN_REDIRECT hooks audit v1
+'on':
+  workflow_dispatch: null
+permissions:
+  contents: read
+  actions: read
+jobs:
+  p5f-open-redirect-audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      ARCH: arm64
+      TZ: UTC
+      LANG: C.UTF-8
+      LC_ALL: C.UTF-8
+      VENDOR_REPO: dereference23/kernel_xiaomi_sm6375
+      VENDOR_TAG: '20240619'
+      EXPECTED_VENDOR_SHA: b2b7a3bbc36d120ee523ebc8d68e0f13a97df632
+      P5E_RUN_ID: '33497987886'
+      P5E_ARTIFACT_NAME: clean-gen1-p5e-tmpfile-o-path-open-redirect-v1-33497987886
+      EXPECTED_P5E_COMMIT: c4fa4cc16958274498ba03c9fe1ae2c65ac85b16
+      EXPECTED_P5E_TREE: b373e7c07682016a7bf08bc920dbc8834a0e08f5
+      EXPECTED_P5E_RESUKISU_HEAD: 42034caa96466e8473fe7553eba8a1888c7f460f
+      EXPECTED_P5E_RESUKISU_TREE: d818d965b855d417edfe9eb38b152ff83e75e0fb
+      RESUKISU_SNAPSHOT_HEAD: 0b5efe9e0102c43ca5c41174d500f5a7080cd0c7
+      SUSFS_REPO: https://gitlab.com/simonpunk/susfs4ksu.git
+      SUSFS_54_HEAD: 76affd70abf61d77feb0a132f61365d6848505df
+      SUSFS_510_HEAD: ec785f47d49f7b3871ca9356f450411020af7017
+      SUSFS_515_HEAD: bca0d2333c1a7d717e7278b019d7af7ba1d16005
+      SUSFS_61_HEAD: 4fc9c1898ea66f51847cdbc0d1473ea4ef525a70
+      ARTIFACT_DIR: ${{ github.workspace }}/clean-gen1-p5f
+      P5E_ARTIFACT_DIR: ${{ github.workspace }}/p5e-artifact
+      AUDIT_BUILD_DIR: ${{ github.workspace }}/out-p5f-audit
+    steps:
+    - name: Initialize P5F
+      shell: bash
+      run: |2
+
+        set -euo pipefail
+        rm -rf "$ARTIFACT_DIR" "$P5E_ARTIFACT_DIR" "$AUDIT_BUILD_DIR"
+        mkdir -p "$ARTIFACT_DIR"
+
+        cat > "$ARTIFACT_DIR/00-plan.txt" <<'EOF'
+        CLEAN GEN1 P5F - remaining OPEN_REDIRECT hooks audit
+
+        P5E is accepted Last Good.
+        P5F is audit-only: no source mutation and no new checkpoint promotion.
+
+        Remaining helper/surface inventory:
+        1. vfs_readlink              -> fs/namei.c
+        2. do_proc_readlink          -> fs/proc/base.c
+        3. vfs_statfs                -> fs/statfs.c
+        4. fdinfo seq_show           -> fs/proc/fd.c
+        5. show_map_vma SRCU         -> fs/proc/task_mmu.c
+
+        Audit goals:
+        - prove all five helpers exist in SUSFS but are not yet hooked;
+        - prove exact VEUX 5.4 target function shapes;
+        - distinguish self-locked helpers from caller-held maps SRCU;
+        - reject a wholesale fdinfo reference port that adds a stock-visible ino field;
+        - define serial P5G/P5H/P5I integration boundaries;
+        - keep CONFIG_KSU_SUSFS disabled in the real defconfig.
+
+        No source mutation, full kernel build, Image, dtb, boot image, flash ZIP or device work.
+        EOF
+    - name: Install P5F dependencies
+      shell: bash
+      run: |2
+
+        set -euo pipefail
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends \
+          bc bison binutils-aarch64-linux-gnu build-essential ca-certificates flex \
+          gcc-aarch64-linux-gnu git jq libelf-dev libssl-dev python3 zstd
+    - name: Checkout exact VEUX vendor source
+      uses: actions/checkout@v6
+      with:
+        repository: dereference23/kernel_xiaomi_sm6375
+        ref: '20240619'
+        path: kernel
+        fetch-depth: 1
+    - name: Download accepted P5E artifact
+      uses: actions/download-artifact@v7
+      with:
+        name: ${{ env.P5E_ARTIFACT_NAME }}
+        path: p5e-artifact
+        github-token: ${{ github.token }}
+        run-id: ${{ env.P5E_RUN_ID }}
+    - name: Authenticate accepted P5E checkpoint
+      shell: bash
+      run: |2
+
+        set -euo pipefail
+        (
+          cd "$P5E_ARTIFACT_DIR/restore-kit"
+          sha256sum -c SHA256SUMS
+        ) > "$ARTIFACT_DIR/01-p5e-restore-sha256.txt"
+
+        jq -e \
+          --arg commit "$EXPECTED_P5E_COMMIT" \
+          --arg tree "$EXPECTED_P5E_TREE" \
+          --arg rhead "$EXPECTED_P5E_RESUKISU_HEAD" \
+          --arg rtree "$EXPECTED_P5E_RESUKISU_TREE" \
+          '.stage=="CLEAN_GEN1_P5E" and
+           .p5e_commit==$commit and
+           .p5e_tree==$tree and
+           .resukisu_head==$rhead and
+           .resukisu_tree==$rtree and
+           .normal_path_open_redirect_integrated==true and
+           .tmpfile_open_redirect_integrated==true and
+           .o_path_open_redirect_integrated==true and
+           .outer_nameidata_name_replaced==false and
+           .susfs_runtime_enabled==false and
+           .full_kernel_build_performed==false' \
+          "$P5E_ARTIFACT_DIR/restore-kit/manifest.json" \
+          > "$ARTIFACT_DIR/01-p5e-manifest-auth.json"
+
+        grep -Fxq 'CLEAN_GEN1_P5E_TMPFILE_O_PATH_OPEN_REDIRECT=PASS' \
+          "$P5E_ARTIFACT_DIR/17-result.txt"
+        grep -Fxq 'P5E_OPEN_REDIRECT_SYMBOL_CONTRACT=PASS' \
+          "$P5E_ARTIFACT_DIR/17-result.txt"
+
+        {
+          echo "P5E_RESTORE_ARTIFACT=PASS"
+          echo "P5E_CHECKPOINT_AUTH=PASS"
+          echo "P5E_TREE=$EXPECTED_P5E_TREE"
+          echo "P5F_AUDIT_ALLOWED=YES"
+        } | tee "$ARTIFACT_DIR/01-p5e-auth.txt"
+    - name: Refuse stale reviewed upstream before P5F
+      shell: bash
+      run: |2
+
+        set -euo pipefail
+        test "$(git ls-remote https://github.com/ReSukiSU/ReSukiSU.git refs/heads/main | awk '{print $1}')" = "$RESUKISU_SNAPSHOT_HEAD"
+        test "$(git ls-remote "$SUSFS_REPO" refs/heads/kernel-5.4 | awk '{print $1}')" = "$SUSFS_54_HEAD"
+        test "$(git ls-remote "$SUSFS_REPO" refs/heads/gki-android12-5.10 | awk '{print $1}')" = "$SUSFS_510_HEAD"
+        test "$(git ls-remote "$SUSFS_REPO" refs/heads/gki-android13-5.15 | awk '{print $1}')" = "$SUSFS_515_HEAD"
+        test "$(git ls-remote "$SUSFS_REPO" refs/heads/gki-android14-6.1 | awk '{print $1}')" = "$SUSFS_61_HEAD"
+
+        {
+          echo "UPSTREAM_REVIEW_SNAPSHOT_CURRENT=YES"
+          echo "P5F_ALLOWED=YES"
+        } | tee "$ARTIFACT_DIR/02-upstream-state.txt"
+    - name: Restore exact accepted P5E outer tree
+      working-directory: kernel
+      shell: bash
+      run: |2
+
+        set -euo pipefail
+        test "$(git rev-parse HEAD)" = "$EXPECTED_VENDOR_SHA"
+        PATCH="$P5E_ARTIFACT_DIR/restore-kit/vendor-20240619-to-p5e-outer.patch"
+        git apply --check --binary "$PATCH"
+        git apply --index --binary "$PATCH"
+        test "$(git write-tree)" = "$EXPECTED_P5E_TREE"
+
+        GIT_AUTHOR_NAME="CLEAN-GEN1 Restore" \
+        GIT_AUTHOR_EMAIL="clean-gen1@invalid.local" \
+        GIT_AUTHOR_DATE="2026-09-01T00:00:00Z" \
+        GIT_COMMITTER_NAME="CLEAN-GEN1 Restore" \
+        GIT_COMMITTER_EMAIL="clean-gen1@invalid.local" \
+        GIT_COMMITTER_DATE="2026-09-01T00:00:00Z" \
+          git commit -m "CLEAN GEN1 restore accepted P5E outer tree"
+
+        test "$(git rev-parse HEAD^{tree})" = "$EXPECTED_P5E_TREE"
+        echo "P5E_RESTORED_COMMIT=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+
+        echo "P5E_OUTER_RESTORE_REPLAY=PASS" | tee "$ARTIFACT_DIR/03-p5e-outer-restore.txt"
+    - name: Restore exact accepted P5E ReSukiSU
+      working-directory: kernel
+      shell: bash
+      run: |2
+
+        set -euo pipefail
+        rm -rf KernelSU
+        git init KernelSU >/dev/null
+        git -C KernelSU fetch \
+          "$P5E_ARTIFACT_DIR/restore-kit/resukisu-p5e-full.bundle" \
+          refs/heads/clean-gen1-p5e-resukisu:refs/heads/clean-gen1-p5e-resukisu
+        git -C KernelSU checkout --detach refs/heads/clean-gen1-p5e-resukisu >/dev/null
+
+        test "$(git -C KernelSU rev-parse HEAD)" = "$EXPECTED_P5E_RESUKISU_HEAD"
+        test "$(git -C KernelSU rev-parse HEAD^{tree})" = "$EXPECTED_P5E_RESUKISU_TREE"
+
+        mkdir -p .git/info
+        touch .git/info/exclude
+        grep -Fxq '/KernelSU/' .git/info/exclude || echo '/KernelSU/' >> .git/info/exclude
+
+        test -L drivers/kernelsu
+        test "$(readlink drivers/kernelsu)" = "../KernelSU/kernel"
+        test -z "$(git status --porcelain)"
+
+        echo "P5E_RESUKISU_RESTORE_REPLAY=PASS" | tee "$ARTIFACT_DIR/04-p5e-resukisu-restore.txt"
+    - name: Audit OPEN_REDIRECT helper and SRCU inventory
+      working-directory: kernel
+      shell: bash
+      run: |
+        set -euo pipefail
+        python3 - <<'PY' > "$ARTIFACT_DIR/06-helper-inventory.txt"
+        from pathlib import Path
+
+        text = Path("fs/susfs.c").read_text(encoding="utf-8")
+
+        def extract(name):
+            pos = text.find(name + "(")
+            if pos < 0:
+                raise SystemExit("missing helper: " + name)
+            start = text.rfind("\n", 0, pos) + 1
+            brace = text.find("{", pos)
+            if brace < 0:
+                raise SystemExit("missing helper brace: " + name)
+            depth = 0
+            for i in range(brace, len(text)):
+                if text[i] == "{":
+                    depth += 1
+                elif text[i] == "}":
+                    depth -= 1
+                    if depth == 0:
+                        return text[start:i+1]
+            raise SystemExit("unterminated helper: " + name)
+
+        helpers = {
+            "OPEN": "susfs_open_redirect_spoof_do_sys_openat",
+            "VFS_READLINK": "susfs_open_redirect_spoof_vfs_readlink",
+            "PROC_READLINK": "susfs_open_redirect_spoof_do_proc_readlink",
+            "VFS_STATFS": "susfs_open_redirect_spoof_vfs_statfs",
+            "FDINFO_SEQ_SHOW": "susfs_open_redirect_spoof_seq_show",
+            "MAPS_SRCU": "susfs_open_redirect_spoof_show_map_vma_srcu",
+        }
+
+        bodies = {label: extract(name) for label, name in helpers.items()}
+
+        self_locked = ("OPEN", "VFS_READLINK", "PROC_READLINK", "VFS_STATFS", "FDINFO_SEQ_SHOW")
+        for label in self_locked:
+            body = bodies[label]
+            ok = (
+                "srcu_read_lock(&susfs_srcu_open_redirect)" in body and
+                "srcu_read_unlock(&susfs_srcu_open_redirect" in body
+            )
+            print(f"{label}_SELF_LOCKED_SRCU={'PASS' if ok else 'FAIL'}")
+            if not ok:
+                raise SystemExit(label + " missing internal SRCU contract")
+
+        maps = bodies["MAPS_SRCU"]
+        if "srcu_read_lock(&susfs_srcu_open_redirect)" in maps or \
+           "srcu_read_unlock(&susfs_srcu_open_redirect" in maps:
+            raise SystemExit("maps helper unexpectedly self-locks SRCU")
+        if "callers must hold and release" not in text[text.find("/* callers must hold", text.find(helpers["FDINFO_SEQ_SHOW"])):text.find(helpers["MAPS_SRCU"]) + 1]:
+            raise SystemExit("maps caller-held SRCU comment missing")
+
+        if "DEFINE_SRCU(susfs_srcu_open_redirect);" not in text:
+            raise SystemExit("OPEN_REDIRECT SRCU domain missing")
+        if "synchronize_srcu(&susfs_srcu_open_redirect)" not in text:
+            raise SystemExit("OPEN_REDIRECT writer synchronization missing")
+        if "synchronize_rcu()" in text[text.find("/* open_redirect */"):text.find("/* sus_map */")]:
+            raise SystemExit("global synchronize_rcu found in OPEN_REDIRECT block")
+
+        print("OPEN_REDIRECT_HELPER_COUNT=6")
+        print("OPEN_REDIRECT_ALREADY_INTEGRATED_HELPER=DO_SYS_OPENAT")
+        print("OPEN_REDIRECT_REMAINING_HELPER_COUNT=5")
+        print("MAPS_HELPER_LOCKING=CALLER_HELD_SRCU")
+        print("OPEN_REDIRECT_SRCU_CORE=PASS")
+        print("P5F_HELPER_INVENTORY=PASS")
+        PY
+        grep -Fq 'P5F_HELPER_INVENTORY=PASS' "$ARTIFACT_DIR/06-helper-inventory.txt"
+    - name: Audit exact VEUX 5.4 target function shapes
+      working-directory: kernel
+      shell: bash
+      run: |
+        set -euo pipefail
+        python3 - <<'PY' > "$ARTIFACT_DIR/07-target-shapes.txt"
+        from pathlib import Path
+        import hashlib, json, os
+
+        files = {
+            "namei": Path("fs/namei.c").read_text(encoding="utf-8"),
+            "proc_base": Path("fs/proc/base.c").read_text(encoding="utf-8"),
+            "statfs": Path("fs/statfs.c").read_text(encoding="utf-8"),
+            "proc_fd": Path("fs/proc/fd.c").read_text(encoding="utf-8"),
+            "task_mmu": Path("fs/proc/task_mmu.c").read_text(encoding="utf-8"),
+        }
+
+        def extract(text, signature):
+            start = text.find(signature)
+            if start < 0:
+                raise SystemExit("missing target: " + signature)
+            brace = text.find("{", start)
+            depth = 0
+            for i in range(brace, len(text)):
+                if text[i] == "{":
+                    depth += 1
+                elif text[i] == "}":
+                    depth -= 1
+                    if depth == 0:
+                        return text[start:i+1]
+            raise SystemExit("unterminated target: " + signature)
+
+        vfs_readlink = extract(files["namei"], "int vfs_readlink(struct dentry *dentry")
+        proc_readlink = extract(files["proc_base"], "static int do_proc_readlink(struct path *path")
+        vfs_statfs = extract(files["statfs"], "int vfs_statfs(const struct path *path")
+        fdinfo = extract(files["proc_fd"], "static int seq_show(struct seq_file *m, void *v)")
+        maps = extract(files["task_mmu"], "show_map_vma(struct seq_file *m, struct vm_area_struct *vma)")
+
+        checks = {
+            "VFS_READLINK_HAS_CUSTOM_READLINK_BRANCH":
+                "inode->i_op->readlink" in vfs_readlink,
+            "VFS_READLINK_HAS_DEFAULT_GET_LINK_BRANCH":
+                "inode->i_op->get_link" in vfs_readlink and
+                "DEFINE_DELAYED_CALL(done)" in vfs_readlink,
+            "VFS_READLINK_RELEASES_DELAYED_CALL":
+                "do_delayed_call(&done);" in vfs_readlink,
+            "PROC_READLINK_ALLOCATES_TMP_PAGE":
+                "__get_free_page(GFP_KERNEL)" in proc_readlink,
+            "PROC_READLINK_D_PATH_BEFORE_COPY":
+                proc_readlink.find("d_path(path, tmp, PAGE_SIZE)") <
+                proc_readlink.find("copy_to_user(buffer, pathname, len)"),
+            "PROC_READLINK_FREES_TMP_PAGE":
+                "free_page((unsigned long)tmp);" in proc_readlink,
+            "STATFS_ORIGINAL_ORDER":
+                vfs_statfs.find("statfs_by_dentry(path->dentry, buf)") <
+                vfs_statfs.find("calculate_f_flags(path->mnt)"),
+            "FDINFO_STOCK_HAS_MNT_ID":
+                'mnt_id:\\t%i\\n' in fdinfo,
+            "FDINFO_STOCK_HAS_NO_INO_FIELD":
+                'ino:\\t' not in fdinfo,
+            "MAPS_HAS_FILE_INODE":
+                "struct inode *inode = file_inode(vma->vm_file);" in maps,
+            "MAPS_HAS_HEADER_DEV_INO":
+                "dev = inode->i_sb->s_dev;" in maps and
+                "ino = inode->i_ino;" in maps,
+            "MAPS_HAS_D_PATH_NAME_OUTPUT":
+                "d_path(&file->f_path, buf, size)" in maps and
+                "seq_commit(m, len + 1)" in maps,
+        }
+
+        for k,v in checks.items():
+            print(f"{k}={'PASS' if v else 'FAIL'}")
+        failed = [k for k,v in checks.items() if not v]
+        if failed:
+            raise SystemExit("P5F target-shape audit failed: " + ", ".join(failed))
+
+        hashes = {
+            "vfs_readlink": hashlib.sha256(vfs_readlink.encode()).hexdigest(),
+            "do_proc_readlink": hashlib.sha256(proc_readlink.encode()).hexdigest(),
+            "vfs_statfs": hashlib.sha256(vfs_statfs.encode()).hexdigest(),
+            "fdinfo_seq_show": hashlib.sha256(fdinfo.encode()).hexdigest(),
+            "show_map_vma": hashlib.sha256(maps.encode()).hexdigest(),
+        }
+        Path(os.environ["ARTIFACT_DIR"], "07-target-function-hashes.json").write_text(
+            json.dumps(hashes, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+
+        print("P5F_TARGET_HOOK_SHAPES=PASS")
+        print("FDINFO_DIRECT_REFERENCE_PORT_ALLOWED=NO")
+        print("FDINFO_REASON=STOCK_5_4_OUTPUT_HAS_MNT_ID_BUT_NO_INO_FIELD")
+        print("MAPS_CALLER_HELD_SRCU_REQUIRED=YES")
+        PY
+        grep -Fq 'P5F_TARGET_HOOK_SHAPES=PASS' "$ARTIFACT_DIR/07-target-shapes.txt"
+    - name: Prove remaining OPEN_REDIRECT hooks are not yet integrated
+      working-directory: kernel
+      shell: bash
+      run: |
+        set -euo pipefail
+        python3 - <<'PY' > "$ARTIFACT_DIR/08-remaining-hooks-absent.txt"
+        from pathlib import Path
+
+        targets = {
+            "fs/namei.c": "susfs_open_redirect_spoof_vfs_readlink",
+            "fs/proc/base.c": "susfs_open_redirect_spoof_do_proc_readlink",
+            "fs/statfs.c": "susfs_open_redirect_spoof_vfs_statfs",
+            "fs/proc/fd.c": "susfs_open_redirect_spoof_seq_show",
+            "fs/proc/task_mmu.c": "susfs_open_redirect_spoof_show_map_vma_srcu",
+        }
+
+        for path, helper in targets.items():
+            text = Path(path).read_text(encoding="utf-8")
+            present = helper in text
+            print(f"{path}:{helper}:INTEGRATED={'YES' if present else 'NO'}")
+            if present:
+                raise SystemExit("remaining hook unexpectedly already integrated: " + path)
+
+        hdr = Path("include/linux/susfs.h").read_text(encoding="utf-8")
+        if "susfs_open_redirect_spoof_do_sys_openat" not in hdr:
+            raise SystemExit("accepted P5D/P5E do_sys_openat prototype missing")
+
+        remaining = [
+            "susfs_open_redirect_spoof_vfs_readlink",
+            "susfs_open_redirect_spoof_do_proc_readlink",
+            "susfs_open_redirect_spoof_vfs_statfs",
+            "susfs_open_redirect_spoof_seq_show",
+            "susfs_open_redirect_spoof_show_map_vma_srcu",
+        ]
+        for helper in remaining:
+            if helper in hdr:
+                raise SystemExit("remaining helper prototype integrated prematurely: " + helper)
+
+        print("DO_SYS_OPENAT_HELPER_PROTOTYPE=ALREADY_INTEGRATED")
+        print("REMAINING_HELPER_PROTOTYPES=NOT_YET_INTEGRATED")
+        print("REMAINING_OPEN_REDIRECT_HOOK_COUNT=5")
+        print("P5F_REMAINING_HOOKS_ABSENT=PASS")
+        PY
+        grep -Fq 'P5F_REMAINING_HOOKS_ABSENT=PASS' "$ARTIFACT_DIR/08-remaining-hooks-absent.txt"
+    - name: Target-compile accepted P5E candidate objects
+      working-directory: kernel
+      shell: bash
+      run: |2
+
+        set -euo pipefail
+        rm -rf "$AUDIT_BUILD_DIR"
+        make O="$AUDIT_BUILD_DIR" ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- veux_defconfig
+
+        make O="$AUDIT_BUILD_DIR" \
+          ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
+          CONFIG_KSU_SUSFS=y CONFIG_KSU_SUSFS_OPEN_REDIRECT=y \
+          KCFLAGS='-DCONFIG_KSU_SUSFS -DCONFIG_KSU_SUSFS_OPEN_REDIRECT' \
+          -j2 \
+          fs/namei.o fs/susfs.o fs/proc/base.o fs/proc/fd.o fs/proc/task_mmu.o fs/statfs.o \
+          2>&1 | tee "$ARTIFACT_DIR/09-candidate-object-build.log"
+
+        for obj in \
+          fs/namei.o fs/susfs.o fs/proc/base.o fs/proc/fd.o fs/proc/task_mmu.o fs/statfs.o
+        do
+          test -s "$AUDIT_BUILD_DIR/$obj"
+        done
+
+        {
+          echo "P5F_P5E_CANDIDATE_OBJECT_COMPILE=PASS"
+          echo "CANDIDATE_OBJECT_COUNT=6"
+          echo "FULL_KERNEL_BUILD_PERFORMED=NO"
+        } | tee "$ARTIFACT_DIR/09-candidate-object-build.txt"
+    - name: Write serial integration decision
+      working-directory: kernel
+      shell: bash
+      run: |
+        set -euo pipefail
+        python3 - <<'PY' > "$ARTIFACT_DIR/10-decision.txt"
+        from pathlib import Path
+        import json, os
+
+        decision = {
+            "stage": "CLEAN_GEN1_P5F",
+            "source_mutation": False,
+            "last_good_remains": "P5E",
+            "remaining_open_redirect_hooks": [
+                {
+                    "stage": "P5G",
+                    "surface": "readlink",
+                    "files": ["fs/namei.c", "fs/proc/base.c", "include/linux/susfs.h"],
+                    "helpers": [
+                        "susfs_open_redirect_spoof_vfs_readlink",
+                        "susfs_open_redirect_spoof_do_proc_readlink",
+                    ],
+                    "requirements": [
+                        "hook both custom i_op->readlink and default get_link branches",
+                        "preserve delayed_call cleanup",
+                        "proc readlink hook before d_path",
+                        "no handwritten externs; shared susfs.h declarations",
+                    ],
+                },
+                {
+                    "stage": "P5H",
+                    "surface": "metadata",
+                    "files": ["fs/statfs.c", "fs/proc/fd.c", "include/linux/susfs.h"],
+                    "helpers": [
+                        "susfs_open_redirect_spoof_vfs_statfs",
+                        "susfs_open_redirect_spoof_seq_show",
+                    ],
+                    "requirements": [
+                        "statfs spoof before original statfs_by_dentry",
+                        "preserve stock VEUX fdinfo format",
+                        "do not add a global ino field to non-redirected fdinfo",
+                        "use spoofed mnt_id without changing stock-visible field set",
+                    ],
+                },
+                {
+                    "stage": "P5I",
+                    "surface": "proc_maps",
+                    "files": ["fs/proc/task_mmu.c", "include/linux/susfs.h"],
+                    "helpers": ["susfs_open_redirect_spoof_show_map_vma_srcu"],
+                    "requirements": [
+                        "caller acquires susfs_srcu_open_redirect",
+                        "caller keeps SRCU held while using returned redirected pathname pointer",
+                        "caller releases SRCU after seq output is complete",
+                        "preserve stock show_vma_header_prefix and d_path fallback semantics",
+                    ],
+                },
+            ],
+            "direct_wholesale_reference_patch_allowed": False,
+            "full_kernel_build_performed": False,
+            "susfs_runtime_enabled": False,
+        }
+        out = Path(os.environ["ARTIFACT_DIR"], "10-p5f-decision.json")
+        out.write_text(json.dumps(decision, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+        print("P5G_NEXT=READLINK_SURFACES")
+        print("P5H_AFTER_P5G=STATFS_AND_FDINFO_METADATA")
+        print("P5I_AFTER_P5H=PROC_MAPS_CALLER_HELD_SRCU")
+        print("WHOLESALE_REFERENCE_PATCH_ALLOWED=NO")
+        print("P5F_DECISION=PASS")
+        PY
+        grep -Fq 'P5F_DECISION=PASS' "$ARTIFACT_DIR/10-decision.txt"
+    - name: Prove P5F is source-mutation free
+      working-directory: kernel
+      shell: bash
+      run: |2
+
+        set -euo pipefail
+        test "$(git rev-parse HEAD^{tree})" = "$EXPECTED_P5E_TREE"
+        test -z "$(git status --porcelain)"
+        test "$(git -C KernelSU rev-parse HEAD)" = "$EXPECTED_P5E_RESUKISU_HEAD"
+        test "$(git -C KernelSU rev-parse HEAD^{tree})" = "$EXPECTED_P5E_RESUKISU_TREE"
+        test -z "$(git -C KernelSU status --porcelain)"
+        grep -Fxq '# CONFIG_KSU_SUSFS is not set' arch/arm64/configs/veux_defconfig
+        test ! -e KernelSU/kernel/feature/module_load_filter.c
+
+        sha256sum \
+          fs/namei.c fs/susfs.c include/linux/susfs.h include/linux/susfs_def.h \
+          fs/proc/base.c fs/proc/fd.c fs/proc/task_mmu.c fs/statfs.c \
+          > "$ARTIFACT_DIR/11-audited-source.sha256"
+
+        {
+          echo "P5F_TRACKED_SOURCE_MUTATION=NO"
+          echo "P5E_LAST_GOOD_REMAINS=YES"
+          echo "P5F_NO_MUTATION_GATE=PASS"
+        } | tee "$ARTIFACT_DIR/11-no-mutation.txt"
+    - name: Final P5F audit gate
+      working-directory: kernel
+      shell: bash
+      run: |2
+
+        set -euo pipefail
+        test "$(make -s kernelversion)" = "5.4.274"
+        test "$(git rev-parse HEAD^{tree})" = "$EXPECTED_P5E_TREE"
+        test -z "$(git status --porcelain)"
+
+        grep -Fq 'P5F_HELPER_INVENTORY=PASS' "$ARTIFACT_DIR/06-helper-inventory.txt"
+        grep -Fq 'P5F_TARGET_HOOK_SHAPES=PASS' "$ARTIFACT_DIR/07-target-shapes.txt"
+        grep -Fq 'P5F_REMAINING_HOOKS_ABSENT=PASS' "$ARTIFACT_DIR/08-remaining-hooks-absent.txt"
+        grep -Fq 'P5F_P5E_CANDIDATE_OBJECT_COMPILE=PASS' "$ARTIFACT_DIR/09-candidate-object-build.txt"
+        grep -Fq 'P5F_DECISION=PASS' "$ARTIFACT_DIR/10-decision.txt"
+        grep -Fq 'P5F_NO_MUTATION_GATE=PASS' "$ARTIFACT_DIR/11-no-mutation.txt"
+
+        {
+          echo "CLEAN_GEN1_P5F_REMAINING_OPEN_REDIRECT_HOOKS_AUDIT=PASS"
+          echo "KERNEL_VERSION=5.4.274"
+          echo "P5E_LAST_GOOD_COMMIT=$EXPECTED_P5E_COMMIT"
+          echo "P5E_LAST_GOOD_TREE=$EXPECTED_P5E_TREE"
+          echo "P5E_RESUKISU_HEAD=$EXPECTED_P5E_RESUKISU_HEAD"
+          echo "P5E_RESUKISU_TREE=$EXPECTED_P5E_RESUKISU_TREE"
+          echo "OPEN_REDIRECT_TOTAL_HELPER_COUNT=6"
+          echo "OPEN_REDIRECT_OPEN_HELPER_INTEGRATED=YES"
+          echo "REMAINING_OPEN_REDIRECT_HOOK_COUNT=5"
+          echo "VFS_READLINK_HOOK_REMAINING=YES"
+          echo "PROC_READLINK_HOOK_REMAINING=YES"
+          echo "VFS_STATFS_HOOK_REMAINING=YES"
+          echo "FDINFO_SEQ_SHOW_HOOK_REMAINING=YES"
+          echo "PROC_MAPS_HOOK_REMAINING=YES"
+          echo "FDINFO_DIRECT_REFERENCE_PORT_ALLOWED=NO"
+          echo "FDINFO_STOCK_FIELD_SET_MUST_BE_PRESERVED=YES"
+          echo "PROC_MAPS_CALLER_HELD_SRCU_REQUIRED=YES"
+          echo "P5F_TRACKED_SOURCE_MUTATION=NO"
+          echo "P5E_LAST_GOOD_REMAINS=YES"
+          echo "SUSFS_RUNTIME_ENABLED=NO"
+          echo "MODULE_LOAD_FILTER_INCLUDED=NO"
+          echo "FULL_KERNEL_BUILD_PERFORMED=NO"
+          echo "IMAGE_CREATED=NO"
+          echo "DTB_BUILD_PERFORMED=NO"
+          echo "BOOT_IMAGE_CREATED=NO"
+          echo "FLASHABLE_ZIP_CREATED=NO"
+          echo "DEVICE_ACCESSED=NO"
+          echo "FLASHING_PERFORMED=NO"
+          echo "NEXT_STAGE=CLEAN_GEN1_P5G_READLINK_OPEN_REDIRECT_INTEGRATION"
+        } | tee "$ARTIFACT_DIR/12-result.txt"
+    - name: Preserve P5F failure evidence
+      if: always()
+      shell: bash
+      run: |2
+
+        set +e
+        mkdir -p "$ARTIFACT_DIR"
+        {
+          echo "JOB_STATUS=${{ job.status }}"
+          if [ -d "$GITHUB_WORKSPACE/kernel/.git" ]; then
+            echo "OUTER_HEAD=$(git -C "$GITHUB_WORKSPACE/kernel" rev-parse HEAD 2>/dev/null || true)"
+            echo "OUTER_TREE=$(git -C "$GITHUB_WORKSPACE/kernel" rev-parse HEAD^{tree} 2>/dev/null || true)"
+            echo "OUTER_STATUS_BEGIN"
+            git -C "$GITHUB_WORKSPACE/kernel" status --porcelain 2>/dev/null || true
+            echo "OUTER_STATUS_END"
+          fi
+        } > "$ARTIFACT_DIR/99-job-end-state.txt"
+
+        find "$ARTIFACT_DIR" -maxdepth 2 -type f -printf '%P\n' \
+          | sort > "$ARTIFACT_DIR/99-artifact-file-list.txt"
+        exit 0
+    - name: Upload P5F audit evidence
+      if: always()
+      uses: actions/upload-artifact@v7
+      with:
+        name: clean-gen1-p5f-remaining-open-redirect-hooks-audit-v1-${{ github.run_id }}
+        path: clean-gen1-p5f/
+        if-no-files-found: error
+        retention-days: 90
