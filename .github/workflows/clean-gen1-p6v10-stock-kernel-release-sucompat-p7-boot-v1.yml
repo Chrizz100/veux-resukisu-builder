@@ -1,0 +1,2333 @@
+name: CLEAN GEN1 P6-v10 - stock VEUX kernel release identity + sucompat gate + 
+  P7 boot v1
+'on':
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  p6-deterministic-image-dtb:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 210
+    env:
+      ARCH: arm64
+      TZ: UTC
+      LANG: C.UTF-8
+      LC_ALL: C.UTF-8
+      VENDOR_REPO: dereference23/kernel_xiaomi_sm6375
+      VENDOR_TAG: '20240619'
+      EXPECTED_VENDOR_SHA: b2b7a3bbc36d120ee523ebc8d68e0f13a97df632
+      P5I_RUN_ID: '33513399363'
+      P5I_ARTIFACT_NAME: 
+        clean-gen1-p5i-proc-maps-open-redirect-srcu-v1-33513399363
+      EXPECTED_P5I_COMMIT: f353a9475e40ca866d570c1d0ef55e24cf6556e4
+      EXPECTED_P5I_TREE: a947c1f2891c796a08373fc755e29b23139dc761
+      EXPECTED_RESUKISU_HEAD: 42034caa96466e8473fe7553eba8a1888c7f460f
+      EXPECTED_RESUKISU_TREE: d818d965b855d417edfe9eb38b152ff83e75e0fb
+      EXPECTED_KSU_VERSION: '35102'
+      RESUKISU_SNAPSHOT_HEAD: 0b5efe9e0102c43ca5c41174d500f5a7080cd0c7
+      SUSFS_REPO: https://gitlab.com/simonpunk/susfs4ksu.git
+      SUSFS_54_HEAD: 76affd70abf61d77feb0a132f61365d6848505df
+      SUSFS_510_HEAD: ec785f47d49f7b3871ca9356f450411020af7017
+      SUSFS_515_HEAD: bca0d2333c1a7d717e7278b019d7af7ba1d16005
+      SUSFS_61_HEAD: 4fc9c1898ea66f51847cdbc0d1473ea4ef525a70
+      CLANG_PREBUILT_COMMIT: aa2e4a514a6c85eebcc4a27149eaf9244e951a1e
+      TOOLCHAIN_DIR: ${{ github.workspace }}/toolchains/clang-r416183b
+      OUT_DIR: ${{ github.workspace }}/kernel/out-p6
+      ARTIFACT_DIR: ${{ github.workspace }}/clean-gen1-p6
+      P5I_ARTIFACT_DIR: ${{ github.workspace }}/p5i-artifact
+      KBUILD_BUILD_USER: builder
+      KBUILD_BUILD_HOST: pangu-build-component-vendor-345942-54r9t-tw0tk-tq90c
+      KBUILD_BUILD_TIMESTAMP: Thu Dec 5 14:47:59 UTC 2024
+      KBUILD_BUILD_VERSION: '1'
+      SOURCE_DATE_EPOCH: '1788220800'
+      P6_EFFECTIVE_KCFLAGS: -D__ANDROID_COMMON_KERNEL__
+      P6_PARENT_RUN_ID: '33527695472'
+      P6_PARENT_FAILURE: REAL_LINK_SPLIT_BRAIN_MANUAL_KBUILD_FORCED_SUSFS_CPP
+      P6_REQUIRED_EXPORT_FILE: security/selinux/selinuxfs.c
+      FINAL_BOOT_RELEASE_TAG: Final_Boot
+      FINAL_BOOT_RELEASE_ASSET: Boot.img.zip
+      FINAL_BOOT_RELEASE_ZIP_SHA256: 
+        920f2aa04d495771506c9e34ef81776de50273bde82835553cadbb73a864b4b8
+      FINAL_BOOT_REFERENCE_BOOT_SHA256: 
+        2baffafce260348c247674c5e8176408d45dc75b35ccbf7ca5834cbb4679398e
+      FINAL_BOOT_REFERENCE_KERNEL_SHA256: 
+        e036175ada602df3bcb443da7c390e8cd4b0e900c26fbfa313725db02855ec96
+      ROLLBACK_GZIP_SHA256: 
+        9a1532ccfc57b465256bba97863f927b80823fa8812a4d13e4f4c8bf9af0c78b
+      STOCK_BOOT_SHA256: 
+        ac6522e4eed55782dd2ae61362e9d345d01a1f229c87333818511d5537fa79c5
+      STOCK_BOOT_BYTES: '134217728'
+      STOCK_RAMDISK_SHA256: 
+        0bc8b54373b5501818e8b252517419786db207771047b6def7ec9bc89beb607a
+      P6V9_TEST_BOOT_NAME: CLEAN_GEN1_P7_SU_VISIBILITY_FIX_TEST_boot.img
+      STOCK_KERNEL_RELEASE: 5.4.274-qgki-g82179e362f33
+      STOCK_KERNEL_BUILD_USER: builder
+      STOCK_KERNEL_BUILD_HOST: 
+        pangu-build-component-vendor-345942-54r9t-tw0tk-tq90c
+      STOCK_KERNEL_BUILD_TIMESTAMP: Thu Dec 5 14:47:59 UTC 2024
+      P6V10_TEST_BOOT_NAME: CLEAN_GEN1_P7_STOCK_ID_SU_FIX_TEST_boot.img
+    steps:
+    - name: Initialize P6-v10 stock VEUX kernel release identity correction
+      shell: bash
+      run: |2
+
+        set -euo pipefail
+        rm -rf "$ARTIFACT_DIR" "$P5I_ARTIFACT_DIR" "$TOOLCHAIN_DIR" \
+               "$GITHUB_WORKSPACE/toolchains" \
+               "$GITHUB_WORKSPACE/p6-outer-replay" \
+               "$GITHUB_WORKSPACE/p6-resukisu-replay"
+        mkdir -p "$ARTIFACT_DIR" "$TOOLCHAIN_DIR"
+
+        cat > "$ARTIFACT_DIR/00-plan.txt" <<'EOF'
+        CLEAN GEN1 P6-v9 v8 - native SUSFS deterministic Image + DTB build
+
+        P6-v7 reached the canonical full build and failed only at final vmlinux link:
+          undefined symbol ksu_init_rc_hook.
+
+        Root cause:
+        - the generated Kconfig selected CONFIG_KSU_MANUAL_HOOK=y;
+        - GNU make/KCFLAGS simultaneously forced CONFIG_KSU_SUSFS;
+        - ReSukiSU Kbuild therefore selected Manual Hook while C preprocessing selected
+          SUSFS branches in other translation units;
+        - core/init.c would also take the Manual-Hook branch first and skip susfs_init().
+
+        P6-v8 rejects this split-brain model completely.
+        It uses native CONFIG_KSU_SUSFS=y in the real VEUX defconfig, MANUAL_HOOK=n,
+        and the seven source inline hooks required by ReSukiSU's own
+        inline_hook_check.mk.
+
+        P6 validation policy:
+        - native Kconfig hook mode only; no Make/KCFLAGS CONFIG_KSU_SUSFS forcing;
+        - no artificial subdir compile or standalone make preflight;
+        - source invariants before build, canonical full build for compile truth;
+        - post-build symbol/output/reproducibility validation after compiler success;
+
+        P6 source policy:
+        - restore exact P5I tree and selected ReSukiSU bundle;
+        - fresh upstream-drift gate BEFORE the first full kernel compile;
+        - exactly one required ReSukiSU static-export source repair is permitted;
+        - permitted scope: security/selinux/selinuxfs.c only;
+        - remove static from write_op and sel_handle_status_ops exactly as documented;
+        - module_load_filter remains excluded.
+
+        Toolchain:
+        - Android clang-r416183b pinned to prebuilts commit aa2e4a...
+
+        Native configuration model:
+        - real VEUX defconfig selects CONFIG_KSU_SUSFS=y;
+        - CONFIG_KSU_MANUAL_HOOK is disabled by the ReSukiSU hook-method choice;
+        - all integrated SUSFS features are real .config symbols;
+        - KCFLAGS contains only the Android-common compatibility define;
+        - no CONFIG_KSU_* symbol is injected through compiler command-line defines;
+        - ReSukiSU Kbuild and C preprocessing therefore see one identical hook mode.
+
+        Determinism:
+        - Build A from clean out-p6
+        - archive hashes/output
+        - delete out-p6 completely
+        - Build B again at the same absolute out-p6 path
+        - compare Image, VEUX DTB, vmlinux, System.map, .config and complete DTB hash list
+
+        Outputs:
+        - Image
+        - VEUX DTB
+        - base .config
+        - effective-build-config manifest
+        - complete provenance/build/reproducibility evidence
+
+        No boot.img, AnyKernel3 ZIP, device access or flashing in P6.
+        EOF
+
+
+        {
+          echo "P6V9_TRIGGER=P7_REAL_DEVICE_SU_PATH_VISIBILITY_REGRESSION"
+          echo "P6V9_OBSERVED_PATH=/system/bin/su"
+          echo "P6V9_FIX_SCOPE=RESTORE_RESUKISU_SUSFS_CALLER_AUTHORIZATION_GATE"
+          echo "P6V9_HANDLER_SOURCE_MODIFIED=NO"
+          echo "P6V9_P4_STRUCT_FILENAME_LIFETIME_MODEL_CHANGED=NO"
+          echo "P6V9_MANAGER_PIN=NO"
+        } >> "$ARTIFACT_DIR/00-plan.txt"
+
+
+        {
+          echo "P6V10_TRIGGER=VEUX_KERNEL_RELEASE_DESCRIPTION_MUST_MATCH_STOCK_NOT_POSITRON"
+          echo "P6V10_STOCK_KERNEL_RELEASE=$STOCK_KERNEL_RELEASE"
+          echo "P6V10_STOCK_BUILD_USER=$STOCK_KERNEL_BUILD_USER"
+          echo "P6V10_STOCK_BUILD_HOST=$STOCK_KERNEL_BUILD_HOST"
+          echo "P6V10_STOCK_BUILD_TIMESTAMP=$STOCK_KERNEL_BUILD_TIMESTAMP"
+          echo "P6V10_POSITRON_LOCALVERSION_ALLOWED=NO"
+          echo "P6V10_SCM_HASH_SUFFIX_ALLOWED=NO"
+          echo "P6V10_COMPILER_STRING_POLICY=TRUTHFUL_ACTUAL_TOOLCHAIN"
+          echo "P6V10_FUNCTIONAL_DELTA_FROM_V9=NO_EXCEPT_ALREADY_PLANNED_SUCOMPAT_GATE"
+          echo "P6V10_METADATA_DELTA=STOCK_RELEASE_BUILDER_HOST_TIMESTAMP"
+        } >> "$ARTIFACT_DIR/00-plan.txt"
+    - name: Install P6 dependencies
+      shell: bash
+      run: |2
+
+        set -euo pipefail
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends \
+          bc bison build-essential ca-certificates cpio curl flex git jq \
+          libelf-dev libncurses-dev libssl-dev patch python3 rsync unzip xz-utils zstd
+    - name: Checkout exact VEUX vendor source
+      uses: actions/checkout@v6
+      with:
+        repository: dereference23/kernel_xiaomi_sm6375
+        ref: '20240619'
+        path: kernel
+        fetch-depth: 1
+        persist-credentials: false
+    - name: Download accepted P5I artifact
+      uses: actions/download-artifact@v7
+      with:
+        name: ${{ env.P5I_ARTIFACT_NAME }}
+        path: p5i-artifact
+        github-token: ${{ github.token }}
+        run-id: ${{ env.P5I_RUN_ID }}
+    - name: Authenticate P5I Last Good
+      shell: bash
+      run: |2
+
+        set -euo pipefail
+        (
+          cd "$P5I_ARTIFACT_DIR/restore-kit"
+          sha256sum -c SHA256SUMS
+        ) > "$ARTIFACT_DIR/01-p5i-restore-sha256.txt"
+
+        jq -e \
+          --arg commit "$EXPECTED_P5I_COMMIT" \
+          --arg tree "$EXPECTED_P5I_TREE" \
+          --arg rhead "$EXPECTED_RESUKISU_HEAD" \
+          --arg rtree "$EXPECTED_RESUKISU_TREE" \
+          '.stage=="CLEAN_GEN1_P5I" and
+           .p5i_commit==$commit and
+           .p5i_tree==$tree and
+           .resukisu_head==$rhead and
+           .resukisu_tree==$rtree and
+           .normal_path_open_redirect_integrated==true and
+           .tmpfile_open_redirect_integrated==true and
+           .o_path_open_redirect_integrated==true and
+           .vfs_readlink_open_redirect_integrated==true and
+           .proc_readlink_open_redirect_integrated==true and
+           .vfs_statfs_open_redirect_integrated==true and
+           .fdinfo_mnt_id_open_redirect_integrated==true and
+           .proc_maps_open_redirect_integrated==true and
+           .proc_maps_caller_held_srcu==true and
+           .proc_maps_redirect_pointer_used_only_under_srcu==true and
+           .susfs_runtime_enabled==false and
+           .full_kernel_build_performed==false' \
+          "$P5I_ARTIFACT_DIR/restore-kit/manifest.json" \
+          > "$ARTIFACT_DIR/01-p5i-manifest-auth.json"
+
+        grep -Fxq 'CLEAN_GEN1_P5I_PROC_MAPS_OPEN_REDIRECT_SRCU=PASS' \
+          "$P5I_ARTIFACT_DIR/16-result.txt"
+        grep -Fxq 'P5I_MAPS_SYMBOL_CONTRACT=PASS' \
+          "$P5I_ARTIFACT_DIR/11-object-builds.txt"
+
+        {
+          echo "P5I_RESTORE_ARTIFACT=PASS"
+          echo "P5I_CHECKPOINT_AUTH=PASS"
+          echo "P5I_INPUT_TREE=$EXPECTED_P5I_TREE"
+          echo "P6_FULL_BUILD_ALLOWED=YES"
+        } | tee "$ARTIFACT_DIR/01-p5i-auth.txt"
+    - name: Fresh upstream audit immediately before full build
+      shell: bash
+      run: |2
+
+        set -euo pipefail
+        current_resu="$(git ls-remote https://github.com/ReSukiSU/ReSukiSU.git refs/heads/main | awk '{print $1}')"
+        current_54="$(git ls-remote "$SUSFS_REPO" refs/heads/kernel-5.4 | awk '{print $1}')"
+        current_510="$(git ls-remote "$SUSFS_REPO" refs/heads/gki-android12-5.10 | awk '{print $1}')"
+        current_515="$(git ls-remote "$SUSFS_REPO" refs/heads/gki-android13-5.15 | awk '{print $1}')"
+        current_61="$(git ls-remote "$SUSFS_REPO" refs/heads/gki-android14-6.1 | awk '{print $1}')"
+
+        {
+          echo "RESUKISU_CURRENT=$current_resu"
+          echo "RESUKISU_REVIEWED=$RESUKISU_SNAPSHOT_HEAD"
+          echo "SUSFS_54_CURRENT=$current_54"
+          echo "SUSFS_54_REVIEWED=$SUSFS_54_HEAD"
+          echo "SUSFS_510_CURRENT=$current_510"
+          echo "SUSFS_510_REVIEWED=$SUSFS_510_HEAD"
+          echo "SUSFS_515_CURRENT=$current_515"
+          echo "SUSFS_515_REVIEWED=$SUSFS_515_HEAD"
+          echo "SUSFS_61_CURRENT=$current_61"
+          echo "SUSFS_61_REVIEWED=$SUSFS_61_HEAD"
+        } > "$ARTIFACT_DIR/02-upstream-current.txt"
+
+        test "$current_resu" = "$RESUKISU_SNAPSHOT_HEAD"
+        test "$current_54" = "$SUSFS_54_HEAD"
+        test "$current_510" = "$SUSFS_510_HEAD"
+        test "$current_515" = "$SUSFS_515_HEAD"
+        test "$current_61" = "$SUSFS_61_HEAD"
+
+        echo "P6_FRESH_UPSTREAM_AUDIT=PASS" | tee -a "$ARTIFACT_DIR/02-upstream-current.txt"
+    - name: Restore exact accepted P5I outer tree
+      working-directory: kernel
+      shell: bash
+      run: |2
+
+        set -euo pipefail
+        test "$(git rev-parse HEAD)" = "$EXPECTED_VENDOR_SHA"
+        test -z "$(git status --porcelain)"
+
+        PATCH="$P5I_ARTIFACT_DIR/restore-kit/vendor-20240619-to-p5i-outer.patch"
+        git apply --check --binary "$PATCH"
+        git apply --index --binary "$PATCH"
+        test "$(git write-tree)" = "$EXPECTED_P5I_TREE"
+
+        GIT_AUTHOR_NAME="CLEAN-GEN1 Restore" \
+        GIT_AUTHOR_EMAIL="clean-gen1@invalid.local" \
+        GIT_AUTHOR_DATE="2026-09-01T00:00:00Z" \
+        GIT_COMMITTER_NAME="CLEAN-GEN1 Restore" \
+        GIT_COMMITTER_EMAIL="clean-gen1@invalid.local" \
+        GIT_COMMITTER_DATE="2026-09-01T00:00:00Z" \
+          git commit -m "CLEAN GEN1 restore accepted P5I outer tree"
+
+        test "$(git rev-parse HEAD^{tree})" = "$EXPECTED_P5I_TREE"
+        echo "P5I_RESTORED_COMMIT=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+
+        echo "P5I_OUTER_RESTORE_FOR_P6=PASS" \
+          | tee "$ARTIFACT_DIR/03-p5i-outer-restore.txt"
+    - name: Restore exact accepted P5I ReSukiSU
+      working-directory: kernel
+      shell: bash
+      run: |2
+
+        set -euo pipefail
+        rm -rf KernelSU
+        git init KernelSU >/dev/null
+        git -C KernelSU fetch \
+          "$P5I_ARTIFACT_DIR/restore-kit/resukisu-p5i-full.bundle" \
+          refs/heads/clean-gen1-p5i-resukisu:refs/heads/clean-gen1-p5i-resukisu
+        git -C KernelSU checkout --detach refs/heads/clean-gen1-p5i-resukisu >/dev/null
+
+        test "$(git -C KernelSU rev-parse HEAD)" = "$EXPECTED_RESUKISU_HEAD"
+        test "$(git -C KernelSU rev-parse HEAD^{tree})" = "$EXPECTED_RESUKISU_TREE"
+        test -z "$(git -C KernelSU status --porcelain)"
+
+        mkdir -p .git/info
+        touch .git/info/exclude
+        grep -Fxq '/KernelSU/' .git/info/exclude || echo '/KernelSU/' >> .git/info/exclude
+
+        test -L drivers/kernelsu
+        test "$(readlink drivers/kernelsu)" = "../KernelSU/kernel"
+        test -z "$(git status --porcelain)"
+
+        echo "P5I_RESUKISU_RESTORE_FOR_P6=PASS" \
+          | tee "$ARTIFACT_DIR/04-p5i-resukisu-restore.txt"
+    - name: Audit v7 split-brain failure and native SUSFS architecture
+      working-directory: kernel
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        test "$(make -s kernelversion)" = "5.4.274"
+        test "$(git rev-parse HEAD^{tree})" = "$EXPECTED_P5I_TREE"
+        test "$(git -C KernelSU rev-parse HEAD)" = "$EXPECTED_RESUKISU_HEAD"
+        test "$(git -C KernelSU rev-parse HEAD^{tree})" = "$EXPECTED_RESUKISU_TREE"
+
+        python3 - <<'PY' > "$ARTIFACT_DIR/05-hook-choice-audit.txt"
+        from pathlib import Path
+
+        kconfig = Path("KernelSU/kernel/Kconfig").read_text(encoding="utf-8")
+        kbuild = Path("KernelSU/kernel/Kbuild").read_text(encoding="utf-8")
+        core = Path("KernelSU/kernel/core/init.c").read_text(encoding="utf-8")
+        runtime = Path("KernelSU/kernel/runtime/ksud_integration.c").read_text(encoding="utf-8")
+        inline = Path("KernelSU/kernel/tools/inline_hook_check.mk").read_text(encoding="utf-8")
+
+        choice = kconfig.find("choice")
+        choice_end = kconfig.find("endchoice", choice)
+        if choice < 0 or choice_end < 0:
+            raise SystemExit("ReSukiSU hook-method choice missing")
+        choice_body = kconfig[choice:choice_end]
+
+        for sym in ("config KSU_TRACEPOINT_HOOK", "config KSU_MANUAL_HOOK", "config KSU_SUSFS"):
+            if sym not in choice_body:
+                raise SystemExit("hook-method choice missing " + sym)
+
+        manual_kbuild = kbuild.find("else ifdef CONFIG_KSU_MANUAL_HOOK")
+        susfs_kbuild = kbuild.find("else ifdef CONFIG_KSU_SUSFS")
+        if not (0 <= manual_kbuild < susfs_kbuild):
+            raise SystemExit("expected ReSukiSU Kbuild Manual->SUSFS precedence not found")
+
+        manual_core = core.find("#elif defined(CONFIG_KSU_MANUAL_HOOK)")
+        susfs_core = core.find("#elif defined(CONFIG_KSU_SUSFS)")
+        susfs_init = core.find("susfs_init();", susfs_core)
+        if not (0 <= manual_core < susfs_core < susfs_init):
+            raise SystemExit("expected core init Manual->SUSFS/susfs_init ordering not found")
+
+        susfs_key = runtime.find("DEFINE_STATIC_KEY_TRUE(ksu_is_init_rc_hook_enabled)")
+        manual_key = runtime.find("DEFINE_STATIC_KEY_TRUE(ksu_init_rc_hook)")
+        if susfs_key < 0 or manual_key < 0:
+            raise SystemExit("expected SUSFS/manual init-rc static-key variants missing")
+
+        required_hooks = {
+            "kernel/sys.c": "ksu_handle_setresuid",
+            "fs/exec.c": "ksu_handle_execveat",
+            "fs/open.c": "ksu_handle_faccessat",
+            "fs/read_write.c": "ksu_handle_sys_read",
+            "fs/stat.c": "ksu_handle_stat",
+            "kernel/reboot.c": "ksu_handle_sys_reboot",
+            "drivers/input/input.c": "ksu_handle_input_handle_event",
+        }
+        for path, hook in required_hooks.items():
+            if hook not in inline:
+                raise SystemExit(f"inline hook checker missing {hook} / {path}")
+
+        print("P6_V7_SPLIT_BRAIN_MODEL=CONFIRMED")
+        print("P6_V7_KBUILD_SELECTED_MANUAL=YES")
+        print("P6_V7_CPP_FORCED_SUSFS=YES")
+        print("P6_V7_SUSFS_INIT_WOULD_BE_SKIPPED=YES")
+        print("P6_NATIVE_KCONFIG_SUSFS_REQUIRED=YES")
+        print("P6_NATIVE_KCONFIG_MANUAL_HOOK_REQUIRED=NO")
+        print("P6_REQUIRES_SEVEN_INLINE_HOOK_SITES=YES")
+        print("P6_NATIVE_SUSFS_ARCHITECTURE=PASS")
+        PY
+
+        grep -Fq 'P6_NATIVE_SUSFS_ARCHITECTURE=PASS' "$ARTIFACT_DIR/05-hook-choice-audit.txt"
+        grep -Fq 'CLEAN_GEN1_UPSTREAM_COMPAT_VERSION := 35102' KernelSU/kernel/Kbuild
+        test ! -e KernelSU/kernel/feature/module_load_filter.c
+    - name: Integrate sucompat gate and stock VEUX kernel release identity
+      working-directory: kernel
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        test -s "$P6_REQUIRED_EXPORT_FILE"
+        grep -Fq 'struct selinux_state {' security/selinux/include/security.h
+
+        for f in \
+          arch/arm64/configs/veux_defconfig \
+          localversion \
+          drivers/input/input.c \
+          fs/exec.c \
+          fs/open.c \
+          fs/read_write.c \
+          fs/stat.c \
+          include/linux/ksu_hook_contract.h \
+          include/linux/susfs_def.h \
+          kernel/reboot.c \
+          kernel/sys.c \
+          security/selinux/selinuxfs.c
+        do
+          cp "$f" "$ARTIFACT_DIR/05a-before-$(echo "$f" | tr '/' '_')"
+        done
+
+        python3 - <<'PY'
+        from pathlib import Path
+
+        def replace_once(path, old, new, label):
+            p = Path(path)
+            s = p.read_text(encoding="utf-8")
+            count = s.count(old)
+            if count != 1:
+                raise SystemExit(f"{label}: expected one anchor in {path}, got {count}")
+            s = s.replace(old, new, 1)
+            p.write_text(s, encoding="utf-8")
+
+        # ------------------------------------------------------------------
+        # Required ReSukiSU 5.4 static exports.
+        # ------------------------------------------------------------------
+        replace_once(
+            "security/selinux/selinuxfs.c",
+            "static ssize_t (*const write_op[])(struct file *, char *, size_t) = {",
+            "ssize_t (*const write_op[])(struct file *, char *, size_t) = {",
+            "write_op export",
+        )
+        replace_once(
+            "security/selinux/selinuxfs.c",
+            "static const struct file_operations sel_handle_status_ops = {",
+            "const struct file_operations sel_handle_status_ops = {",
+            "sel_handle_status_ops export",
+        )
+
+        # ------------------------------------------------------------------
+        # SUSFS header self-containment for current_uid().
+        # ------------------------------------------------------------------
+        replace_once(
+            "include/linux/susfs_def.h",
+            "#include <linux/bits.h>\n#include <linux/string.h>\n",
+            "#include <linux/bits.h>\n#include <linux/cred.h>\n#include <linux/string.h>\n",
+            "susfs_def cred include",
+        )
+
+        # ------------------------------------------------------------------
+        # Authoritative hook contract:
+        # - shared source-hook macro supports Manual and native SUSFS source hooks;
+        # - manual-only fstat-return macro preserves the optional Manual behavior;
+        # - add the three native-inline hook prototypes previously absent.
+        # Target kernel files no longer contain CONFIG_KSU_MANUAL_HOOK text, so
+        # ReSukiSU's inline checker sees native SUSFS call sites without warnings.
+        # ------------------------------------------------------------------
+        replace_once(
+            "include/linux/ksu_hook_contract.h",
+            """#ifdef CONFIG_KSU
+
+        int ksu_handle_execveat(int *fd, struct filename **filename_ptr,
+        """,
+            """#ifdef CONFIG_KSU
+
+        #if defined(CONFIG_KSU_MANUAL_HOOK) || defined(CONFIG_KSU_SUSFS)
+        #define KSU_SOURCE_INLINE_HOOK 1
+        #endif
+
+        #ifdef CONFIG_KSU_MANUAL_HOOK
+        #define KSU_MANUAL_RET_HOOK 1
+        #endif
+
+        int ksu_handle_setresuid(uid_t ruid, uid_t euid, uid_t suid);
+        int ksu_handle_sys_read(unsigned int fd, char __user **buf_ptr,
+                                size_t *count_ptr);
+        int ksu_handle_input_handle_event(unsigned int *type, unsigned int *code,
+                                          int *value);
+
+        int ksu_handle_execveat(int *fd, struct filename **filename_ptr,
+        """,
+            "authoritative inline hook contract",
+        )
+
+        # ------------------------------------------------------------------
+        # exec: common source inline hook. Native SUSFS gets the same call while
+        # still allowing Manual mode if a future non-SUSFS config intentionally uses it.
+        # ------------------------------------------------------------------
+        replace_once(
+            "fs/exec.c",
+            """#ifdef CONFIG_KSU_MANUAL_HOOK
+        	ksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);
+        #endif
+        """,
+            """#ifdef KSU_SOURCE_INLINE_HOOK
+        	ksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);
+        #endif
+        """,
+            "exec inline hook guard",
+        )
+
+        # faccessat: keep the proven struct-filename SUSFS bridge; only normalize
+        # the non-SUSFS/manual fallback guard.
+        replace_once(
+            "fs/open.c",
+            "#elif defined(CONFIG_KSU_MANUAL_HOOK)\n\tksu_handle_faccessat(&dfd, &filename, &mode, NULL);\n",
+            "#elif defined(KSU_SOURCE_INLINE_HOOK)\n\tksu_handle_faccessat(&dfd, &filename, &mode, NULL);\n",
+            "faccessat fallback guard",
+        )
+
+        # stat: same proven struct-filename bridge. fstat-return hooks are Manual-only
+        # implementation details and remain Manual-only via the shared macro.
+        replace_once(
+            "fs/stat.c",
+            "#elif defined(CONFIG_KSU_MANUAL_HOOK)\n\tksu_handle_stat(&dfd, &filename, &flags);\n",
+            "#elif defined(KSU_SOURCE_INLINE_HOOK)\n\tksu_handle_stat(&dfd, &filename, &flags);\n",
+            "stat fallback guard",
+        )
+        stat = Path("fs/stat.c")
+        ss = stat.read_text(encoding="utf-8")
+        if ss.count("#ifdef CONFIG_KSU_MANUAL_HOOK") != 2:
+            raise SystemExit(
+                "stat manual fstat-return guard count mismatch: "
+                f"{ss.count('#ifdef CONFIG_KSU_MANUAL_HOOK')}"
+            )
+        ss = ss.replace("#ifdef CONFIG_KSU_MANUAL_HOOK", "#ifdef KSU_MANUAL_RET_HOOK")
+        stat.write_text(ss, encoding="utf-8")
+
+        # reboot: required source inline hook in native SUSFS.
+        replace_once(
+            "kernel/reboot.c",
+            """#ifdef CONFIG_KSU_MANUAL_HOOK
+        	ksu_handle_sys_reboot(magic1, magic2, cmd, &arg);
+        #endif
+        """,
+            """#ifdef KSU_SOURCE_INLINE_HOOK
+        	ksu_handle_sys_reboot(magic1, magic2, cmd, &arg);
+        #endif
+        """,
+            "reboot inline hook guard",
+        )
+
+        # setresuid: required native SUSFS source hook.
+        replace_once(
+            "kernel/sys.c",
+            "#include <linux/syscalls.h>\n#include <linux/kprobes.h>\n",
+            "#include <linux/syscalls.h>\n#include <linux/ksu_hook_contract.h>\n#include <linux/kprobes.h>\n",
+            "kernel sys contract include",
+        )
+        replace_once(
+            "kernel/sys.c",
+            """	kuid_t kruid, keuid, ksuid;
+
+        	kruid = make_kuid(ns, ruid);
+        """,
+            """	kuid_t kruid, keuid, ksuid;
+
+        #ifdef KSU_SOURCE_INLINE_HOOK
+        	ksu_handle_setresuid(ruid, euid, suid);
+        #endif
+
+        	kruid = make_kuid(ns, ruid);
+        """,
+            "setresuid inline hook",
+        )
+
+        # read: required init-rc source hook. In native SUSFS, ReSukiSU's own
+        # ksu_handle_sys_read() uses ksu_is_init_rc_hook_enabled.
+        replace_once(
+            "fs/read_write.c",
+            "#include <linux/syscalls.h>\n#include <linux/pagemap.h>\n",
+            "#include <linux/syscalls.h>\n#include <linux/ksu_hook_contract.h>\n#include <linux/pagemap.h>\n",
+            "read_write contract include",
+        )
+        replace_once(
+            "fs/read_write.c",
+            """SYSCALL_DEFINE3(read, unsigned int, fd, char __user *, buf, size_t, count)
+        {
+        	return ksys_read(fd, buf, count);
+        }
+        """,
+            """SYSCALL_DEFINE3(read, unsigned int, fd, char __user *, buf, size_t, count)
+        {
+        #ifdef KSU_SOURCE_INLINE_HOOK
+        	ksu_handle_sys_read(fd, &buf, &count);
+        #endif
+        	return ksys_read(fd, buf, count);
+        }
+        """,
+            "sys_read inline hook",
+        )
+
+        # input: required native SUSFS input hook; handler owns the static-key check.
+        replace_once(
+            "drivers/input/input.c",
+            "#include <linux/rcupdate.h>\n#include \"input-compat.h\"\n",
+            "#include <linux/rcupdate.h>\n#include <linux/ksu_hook_contract.h>\n#include \"input-compat.h\"\n",
+            "input contract include",
+        )
+        replace_once(
+            "drivers/input/input.c",
+            """{
+        	unsigned long flags;
+
+        	if (is_event_supported(type, dev->evbit, EV_MAX)) {
+        """,
+            """{
+        	unsigned long flags;
+
+        #ifdef KSU_SOURCE_INLINE_HOOK
+        	ksu_handle_input_handle_event(&type, &code, &value);
+        #endif
+
+        	if (is_event_supported(type, dev->evbit, EV_MAX)) {
+        """,
+            "input inline hook",
+        )
+
+        # ------------------------------------------------------------------
+        # Real VEUX defconfig: select one and only one native ReSukiSU hook mode.
+        # All SUSFS feature toggles become genuine Kconfig symbols.
+        # ------------------------------------------------------------------
+        replace_once(
+            "arch/arm64/configs/veux_defconfig",
+            """CONFIG_KSU=y
+        # CONFIG_KSU_TRACEPOINT_HOOK is not set
+        CONFIG_KSU_MANUAL_HOOK=y
+        # CONFIG_KSU_SUSFS is not set
+        CONFIG_KSU_MANUAL_HOOK_AUTO_SETUID_HOOK=y
+        CONFIG_KSU_MANUAL_HOOK_AUTO_INITRC_HOOK=y
+        CONFIG_KSU_MANUAL_HOOK_AUTO_INPUT_HOOK=y
+        CONFIG_KSU_MULTI_MANAGER_SUPPORT=y
+        """,
+            """CONFIG_KSU=y
+        # CONFIG_KSU_TRACEPOINT_HOOK is not set
+        # CONFIG_KSU_MANUAL_HOOK is not set
+        CONFIG_KSU_SUSFS=y
+        CONFIG_KSU_MULTI_MANAGER_SUPPORT=y
+        CONFIG_KSU_SUSFS_SUS_PATH=y
+        CONFIG_KSU_SUSFS_SUS_MOUNT=y
+        CONFIG_KSU_SUSFS_SUS_KSTAT=y
+        CONFIG_KSU_SUSFS_SPOOF_UNAME=y
+        CONFIG_KSU_SUSFS_ENABLE_LOG=y
+        CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y
+        CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y
+        CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
+        CONFIG_KSU_SUSFS_SUS_MAP=y
+        """,
+            "VEUX native SUSFS defconfig",
+        )
+
+
+        # ------------------------------------------------------------------
+        # P6-v9: restore the caller-side authorization gate required by the
+        # ReSukiSU CONFIG_KSU_SUSFS sucompat contract.
+        #
+        # Current ReSukiSU's SUSFS faccessat handler intentionally assumes that
+        # the hook caller already filtered ordinary/unprivileged processes.
+        # P6-v8 preserved the safe P4 struct-filename ownership bridge but called
+        # ksu_handle_faccessat() unconditionally, so an ordinary app probing
+        # /system/bin/su could have its lookup redirected to /system/bin/sh and
+        # receive a false "exists" result.
+        #
+        # Do NOT change ReSukiSU's handler. Restore the proven caller contract:
+        #   - process is not in the SUSFS-unmounted state,
+        #   - sucompat feature is enabled,
+        #   - current UID is explicitly allowed.
+        #
+        # getname_flags()/putname() ownership remains exactly P4/P6-v8.
+        # ------------------------------------------------------------------
+        replace_once(
+            "include/linux/ksu_hook_contract.h",
+            """int ksu_handle_input_handle_event(unsigned int *type, unsigned int *code,
+                                          int *value);
+
+        int ksu_handle_execveat(int *fd, struct filename **filename_ptr,
+        """,
+            """int ksu_handle_input_handle_event(unsigned int *type, unsigned int *code,
+                                          int *value);
+
+        #ifdef CONFIG_KSU_SUSFS
+        struct static_key_true;
+        extern struct static_key_true ksu_su_compat_enabled;
+        bool __ksu_is_allow_uid_for_current(uid_t uid);
+        #endif
+
+        int ksu_handle_execveat(int *fd, struct filename **filename_ptr,
+        """,
+            "P6-v9 shared sucompat caller declarations",
+        )
+
+        replace_once(
+            "fs/open.c",
+            "#include <linux/ksu_hook_contract.h>\n#include <linux/rcupdate.h>\n",
+            """#include <linux/ksu_hook_contract.h>
+        #ifdef CONFIG_KSU_SUSFS
+        #include <linux/cred.h>
+        #include <linux/jump_label.h>
+        #include <linux/susfs_def.h>
+        #endif
+        #include <linux/rcupdate.h>
+        """,
+            "P6-v9 faccessat gate includes",
+        )
+
+        replace_once(
+            "fs/stat.c",
+            "#include <linux/ksu_hook_contract.h>\n#include <linux/pagemap.h>\n",
+            """#include <linux/ksu_hook_contract.h>
+        #ifdef CONFIG_KSU_SUSFS
+        #include <linux/jump_label.h>
+        #include <linux/susfs_def.h>
+        #endif
+        #include <linux/pagemap.h>
+        """,
+            "P6-v9 stat gate includes",
+        )
+
+        replace_once(
+            "fs/open.c",
+            """	ksu_handle_faccessat(&dfd, &ksu_filename, &mode, NULL);
+        #elif defined(KSU_SOURCE_INLINE_HOOK)
+        """,
+            """	if (!likely(susfs_is_current_proc_umounted()) &&
+        	    static_branch_likely(&ksu_su_compat_enabled) &&
+        	    unlikely(__ksu_is_allow_uid_for_current(current_uid().val)))
+        		ksu_handle_faccessat(&dfd, &ksu_filename, &mode, NULL);
+        #elif defined(KSU_SOURCE_INLINE_HOOK)
+        """,
+            "P6-v9 faccessat caller authorization gate",
+        )
+
+        replace_once(
+            "fs/stat.c",
+            """	ksu_handle_stat(&dfd, &ksu_filename, &flags);
+        #elif defined(KSU_SOURCE_INLINE_HOOK)
+        """,
+            """	if (!likely(susfs_is_current_proc_umounted()) &&
+        	    static_branch_likely(&ksu_su_compat_enabled) &&
+        	    unlikely(__ksu_is_allow_uid_for_current(current_uid().val)))
+        		ksu_handle_stat(&dfd, &ksu_filename, &flags);
+        #elif defined(KSU_SOURCE_INLINE_HOOK)
+        """,
+            "P6-v9 stat caller authorization gate",
+        )
+
+        # Exact source-shape proof.  The unprivileged path must keep the real
+        # filesystem lookup semantics; only an explicitly allowed UID may enter
+        # the sucompat redirection handler.
+        open_text = Path("fs/open.c").read_text(encoding="utf-8")
+        stat_text = Path("fs/stat.c").read_text(encoding="utf-8")
+        contract_text = Path("include/linux/ksu_hook_contract.h").read_text(encoding="utf-8")
+
+        gate_terms = (
+            "susfs_is_current_proc_umounted()",
+            "static_branch_likely(&ksu_su_compat_enabled)",
+            "__ksu_is_allow_uid_for_current(current_uid().val)",
+        )
+        for term in gate_terms:
+            if open_text.count(term) < 1:
+                raise SystemExit("P6-v9 faccessat gate term missing: " + term)
+            if stat_text.count(term) < 1:
+                raise SystemExit("P6-v9 stat gate term missing: " + term)
+
+        if contract_text.count("extern struct static_key_true ksu_su_compat_enabled;") != 1:
+            raise SystemExit("P6-v9 shared sucompat static-key declaration mismatch")
+        if contract_text.count("bool __ksu_is_allow_uid_for_current(uid_t uid);") != 1:
+            raise SystemExit("P6-v9 shared allow-UID declaration mismatch")
+
+        # Behavioral dispatch model for the caller condition itself.
+        def dispatch_to_sucompat(proc_umounted, sucompat_enabled, uid_allowed):
+            return (
+                (not proc_umounted)
+                and sucompat_enabled
+                and uid_allowed
+            )
+
+        if dispatch_to_sucompat(False, True, False):
+            raise SystemExit("ordinary UID must not enter sucompat path")
+        if dispatch_to_sucompat(True, True, True):
+            raise SystemExit("SUSFS-unmounted process must not enter sucompat path")
+        if dispatch_to_sucompat(False, False, True):
+            raise SystemExit("disabled sucompat must not enter sucompat path")
+        if not dispatch_to_sucompat(False, True, True):
+            raise SystemExit("allowed UID lost sucompat functionality")
+
+        # ------------------------------------------------------------------
+        # P6-v10: remove Positron release branding from the kernel release and
+        # restore the exact stock VEUX release suffix exposed by the rollback
+        # stock boot used by the current device reference.
+        #
+        # The vendor fork ships a root-level `localversion` containing ~positron,
+        # while its custom scripts/setlocalversion appends /<git-short-hash>.
+        # For the actual build commands below we suppress SCM discovery only for
+        # Kbuild (GIT_DIR=/dev/null), so the release becomes exactly:
+        #   5.4.274-qgki-g82179e362f33
+        #
+        # Do not forge the compiler description: it remains the truthful actual
+        # pinned toolchain used by this CLEAN build.
+        # ------------------------------------------------------------------
+        replace_once(
+            "localversion",
+            "~positron\n",
+            "-qgki-g82179e362f33\n",
+            "stock VEUX localversion",
+        )
+
+        replace_once(
+            "arch/arm64/configs/veux_defconfig",
+            'CONFIG_LOCALVERSION="-lineageos"\nCONFIG_LOCALVERSION_AUTO=y\n',
+            'CONFIG_LOCALVERSION=""\n# CONFIG_LOCALVERSION_AUTO is not set\n',
+            "stock-neutral defconfig localversion metadata",
+        )
+
+        localversion_text = Path("localversion").read_text(encoding="utf-8")
+        if localversion_text != "-qgki-g82179e362f33\n":
+            raise SystemExit("P6-v10 stock localversion mismatch")
+
+        cfg_identity = Path("arch/arm64/configs/veux_defconfig").read_text(encoding="utf-8")
+        if 'CONFIG_LOCALVERSION=""' not in cfg_identity:
+            raise SystemExit("P6-v10 defconfig LOCALVERSION not neutralized")
+        if '# CONFIG_LOCALVERSION_AUTO is not set' not in cfg_identity:
+            raise SystemExit("P6-v10 LOCALVERSION_AUTO still enabled")
+
+        # ------------------------------------------------------------------
+        # Cross-file invariants.
+        # ------------------------------------------------------------------
+        targets = {
+            "kernel/sys.c": "ksu_handle_setresuid",
+            "fs/exec.c": "ksu_handle_execveat",
+            "fs/open.c": "ksu_handle_faccessat",
+            "fs/read_write.c": "ksu_handle_sys_read",
+            "fs/stat.c": "ksu_handle_stat",
+            "kernel/reboot.c": "ksu_handle_sys_reboot",
+            "drivers/input/input.c": "ksu_handle_input_handle_event",
+        }
+        for path, hook in targets.items():
+            text = Path(path).read_text(encoding="utf-8")
+            if hook not in text:
+                raise SystemExit(f"{hook} missing from {path}")
+            if "CONFIG_KSU_MANUAL_HOOK" in text:
+                raise SystemExit(
+                    f"literal CONFIG_KSU_MANUAL_HOOK remains in inline target {path}"
+                )
+
+        cfg = Path("arch/arm64/configs/veux_defconfig").read_text(encoding="utf-8")
+        if "CONFIG_KSU_MANUAL_HOOK=y" in cfg:
+            raise SystemExit("native defconfig still selects Manual Hook")
+        if cfg.count("CONFIG_KSU_SUSFS=y") != 1:
+            raise SystemExit("native defconfig SUSFS selection count mismatch")
+
+        hdr = Path("include/linux/ksu_hook_contract.h").read_text(encoding="utf-8")
+        for proto in (
+            "int ksu_handle_setresuid(",
+            "int ksu_handle_sys_read(",
+            "int ksu_handle_input_handle_event(",
+        ):
+            if hdr.count(proto) != 1:
+                raise SystemExit(f"hook contract prototype count mismatch: {proto}")
+
+        # The P4 struct-filename bridge must remain intact.
+        for path in ("fs/open.c", "fs/stat.c"):
+            text = Path(path).read_text(encoding="utf-8")
+            if "#ifdef CONFIG_KSU_SUSFS" not in text:
+                raise SystemExit(f"SUSFS struct-filename bridge lost in {path}")
+
+        # The two previous real 5.4 fixes remain exact.
+        if Path("include/linux/susfs_def.h").read_text().count("#include <linux/cred.h>") != 1:
+            raise SystemExit("susfs_def cred include count mismatch")
+        sel = Path("security/selinux/selinuxfs.c").read_text()
+        if "static const struct file_operations sel_handle_status_ops" in sel:
+            raise SystemExit("sel_handle_status_ops became static again")
+        PY
+
+        git diff --check
+
+        mapfile -t changed < <(git diff --name-only | sort)
+        printf '%s\n' "${changed[@]}" | tee "$ARTIFACT_DIR/05a-changed-files.txt"
+
+        test "${#changed[@]}" -eq 12
+        for f in \
+          arch/arm64/configs/veux_defconfig \
+          localversion \
+          drivers/input/input.c \
+          fs/exec.c \
+          fs/open.c \
+          fs/read_write.c \
+          fs/stat.c \
+          include/linux/ksu_hook_contract.h \
+          include/linux/susfs_def.h \
+          kernel/reboot.c \
+          kernel/sys.c \
+          security/selinux/selinuxfs.c
+        do
+          printf '%s\n' "${changed[@]}" | grep -Fxq "$f"
+        done
+
+        # ReSukiSU's own native inline-hook source expectations.
+        for spec in \
+          'kernel/sys.c:ksu_handle_setresuid' \
+          'fs/exec.c:ksu_handle_execveat' \
+          'fs/open.c:ksu_handle_faccessat' \
+          'fs/read_write.c:ksu_handle_sys_read' \
+          'fs/stat.c:ksu_handle_stat' \
+          'kernel/reboot.c:ksu_handle_sys_reboot' \
+          'drivers/input/input.c:ksu_handle_input_handle_event'
+        do
+          file="${spec%%:*}"
+          hook="${spec#*:}"
+          grep -Fq "$hook" "$file"
+          ! grep -wq 'CONFIG_KSU_MANUAL_HOOK' "$file"
+        done
+
+        git diff --binary -- "${changed[@]}" \
+          > "$ARTIFACT_DIR/p5i-to-p6-source-compat.patch"
+        test -s "$ARTIFACT_DIR/p5i-to-p6-source-compat.patch"
+
+        git add "${changed[@]}"
+        git diff --cached --check
+
+        P6_SOURCE_TREE="$(git write-tree)"
+        test -n "$P6_SOURCE_TREE"
+
+        GIT_AUTHOR_NAME="CLEAN-GEN1 P6" \
+        GIT_AUTHOR_EMAIL="clean-gen1@invalid.local" \
+        GIT_AUTHOR_DATE="2026-09-01T00:00:00Z" \
+        GIT_COMMITTER_NAME="CLEAN-GEN1 P6" \
+        GIT_COMMITTER_EMAIL="clean-gen1@invalid.local" \
+        GIT_COMMITTER_DATE="2026-09-01T00:00:00Z" \
+          git commit -m "CLEAN GEN1 P6-v9 restore ReSukiSU SUSFS sucompat caller gate"
+
+        P6_SOURCE_COMMIT="$(git rev-parse HEAD)"
+        test "$(git rev-parse HEAD^{tree})" = "$P6_SOURCE_TREE"
+        test -z "$(git status --porcelain)"
+
+        {
+          echo "P6_SOURCE_TREE=$P6_SOURCE_TREE"
+          echo "P6_SOURCE_COMMIT=$P6_SOURCE_COMMIT"
+        } >> "$GITHUB_ENV"
+
+        {
+          echo "P6_PARENT_RUN_ID=$P6_PARENT_RUN_ID"
+          echo "P6_PARENT_FAILURE=$P6_PARENT_FAILURE"
+          echo "P6_V7_FAILURE_CLASS=REAL_LINK_SPLIT_BRAIN_MANUAL_KBUILD_FORCED_SUSFS_CPP"
+          echo "P6_V7_FAILURE_IS_WORKFLOW_ERROR=NO"
+          echo "P6_V7_HYBRID_MODEL_REJECTED=YES"
+          echo "P6_NATIVE_KCONFIG_SUSFS=YES"
+          echo "P6_NATIVE_KCONFIG_MANUAL_HOOK=NO"
+          echo "P6_NATIVE_INLINE_HOOK_COUNT=7"
+          echo "P6_STATIC_EXPORT_WRITE_OP=PASS"
+          echo "P6_STATIC_EXPORT_SEL_HANDLE_STATUS_OPS=PASS"
+          echo "P6_SUSFS_DEF_CRED_INCLUDE=PASS"
+          echo "P6_SUSFS_UID_SEMANTICS_CHANGED=NO"
+          echo "P6_P4_STRUCT_FILENAME_BRIDGE_PRESERVED=YES"
+          echo "P6_SOURCE_CHANGED_FILE_COUNT=12"
+          echo "P6_SOURCE_COMPAT_CHANGE_SCOPE=PASS"
+          echo "P6_SOURCE_COMMIT=$P6_SOURCE_COMMIT"
+          echo "P6_SOURCE_TREE=$P6_SOURCE_TREE"
+          echo "P6_NATIVE_SUSFS_SOURCE_INTEGRATION=PASS"
+          echo "P6V9_SUCOMPAT_CALLER_GATE_FIX=PASS"
+          echo "P6V9_UNPRIVILEGED_SU_REDIRECT_DISPATCH=NO"
+          echo "P6V9_ALLOWED_SUCOMPAT_DISPATCH=YES"
+          echo "P6V9_HANDLER_SOURCE_MODIFIED=NO"
+          echo "P6V9_P4_STRUCT_FILENAME_LIFETIME_MODEL_CHANGED=NO"
+          echo "P6V10_STOCK_KERNEL_RELEASE_IDENTITY_SOURCE=PASS"
+          echo "P6V10_STOCK_KERNEL_RELEASE=$STOCK_KERNEL_RELEASE"
+          echo "P6V10_POSITRON_LOCALVERSION_PRESENT=NO"
+          echo "P6V10_SCM_SUFFIX_POLICY=SUPPRESS_DURING_KBUILD_ONLY"
+        } | tee "$ARTIFACT_DIR/05a-source-integration.txt"
+    - name: Install pinned Android clang-r416183b
+      shell: bash
+      run: |2
+
+        set -euo pipefail
+        url="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/${CLANG_PREBUILT_COMMIT}/clang-r416183b.tar.gz"
+        curl --fail --location --retry 3 "$url" \
+          -o "$RUNNER_TEMP/clang-r416183b.tar.gz"
+
+        sha256sum "$RUNNER_TEMP/clang-r416183b.tar.gz" \
+          | tee "$ARTIFACT_DIR/06-clang-archive.sha256"
+
+        tar -xzf "$RUNNER_TEMP/clang-r416183b.tar.gz" -C "$TOOLCHAIN_DIR"
+        echo "$TOOLCHAIN_DIR/bin" >> "$GITHUB_PATH"
+
+        "$TOOLCHAIN_DIR/bin/clang" --version \
+          | tee "$ARTIFACT_DIR/06-clang-version.txt"
+        "$TOOLCHAIN_DIR/bin/ld.lld" --version \
+          | tee -a "$ARTIFACT_DIR/06-clang-version.txt"
+
+        grep -q 'r416183b' "$ARTIFACT_DIR/06-clang-version.txt"
+
+        for tool in clang ld.lld llvm-ar llvm-nm llvm-objcopy llvm-objdump llvm-readelf llvm-size llvm-strip
+        do
+          test -x "$TOOLCHAIN_DIR/bin/$tool"
+        done
+
+        {
+          echo "CLANG_PREBUILT_COMMIT=$CLANG_PREBUILT_COMMIT"
+          echo "CLANG_R416183B_PINNED=PASS"
+        } | tee "$ARTIFACT_DIR/06-toolchain.txt"
+    - name: Validate source invariants immediately before canonical Build A
+      working-directory: kernel
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        test "$(make -s kernelversion)" = "5.4.274"
+        test "$(git rev-parse HEAD^{tree})" = "$P6_SOURCE_TREE"
+        test -z "$(git status --porcelain)"
+        test "$(git -C KernelSU rev-parse HEAD)" = "$EXPECTED_RESUKISU_HEAD"
+        test "$(git -C KernelSU rev-parse HEAD^{tree})" = "$EXPECTED_RESUKISU_TREE"
+        test -z "$(git -C KernelSU status --porcelain)"
+
+        grep -Fxq '# CONFIG_KSU_MANUAL_HOOK is not set' arch/arm64/configs/veux_defconfig
+        grep -Fxq 'CONFIG_KSU_SUSFS=y' arch/arm64/configs/veux_defconfig
+
+        for sym in \
+          KSU_SUSFS_SUS_PATH \
+          KSU_SUSFS_SUS_MOUNT \
+          KSU_SUSFS_SUS_KSTAT \
+          KSU_SUSFS_SPOOF_UNAME \
+          KSU_SUSFS_ENABLE_LOG \
+          KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \
+          KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \
+          KSU_SUSFS_OPEN_REDIRECT \
+          KSU_SUSFS_SUS_MAP
+        do
+          grep -Fxq "CONFIG_${sym}=y" arch/arm64/configs/veux_defconfig
+        done
+
+        for spec in \
+          'kernel/sys.c:ksu_handle_setresuid' \
+          'fs/exec.c:ksu_handle_execveat' \
+          'fs/open.c:ksu_handle_faccessat' \
+          'fs/read_write.c:ksu_handle_sys_read' \
+          'fs/stat.c:ksu_handle_stat' \
+          'kernel/reboot.c:ksu_handle_sys_reboot' \
+          'drivers/input/input.c:ksu_handle_input_handle_event'
+        do
+          file="${spec%%:*}"
+          hook="${spec#*:}"
+          grep -Fq "$hook" "$file"
+          ! grep -wq 'CONFIG_KSU_MANUAL_HOOK' "$file"
+        done
+
+        grep -Fq 'ssize_t (*const write_op[])(struct file *, char *, size_t) = {' \
+          security/selinux/selinuxfs.c
+        grep -Fq 'const struct file_operations sel_handle_status_ops = {' \
+          security/selinux/selinuxfs.c
+        grep -Fxq '#include <linux/cred.h>' include/linux/susfs_def.h
+        grep -Fq 'current_uid().val >= 10000' include/linux/susfs_def.h
+
+        grep -Fq 'CLEAN_GEN1_UPSTREAM_COMPAT_VERSION := 35102' KernelSU/kernel/Kbuild
+        test ! -e KernelSU/kernel/feature/module_load_filter.c
+
+        {
+          echo "P6_SOURCE_INVARIANTS=PASS"
+          echo "P6_NATIVE_SUSFS_DEFCONFIG=PASS"
+          echo "P6_NATIVE_INLINE_HOOK_SITES=7/7=PASS"
+          echo "P6_LITERAL_MANUAL_GUARDS_IN_INLINE_TARGETS=0"
+          echo "P6_ARTIFICIAL_COMPILE_PREFLIGHT=NO"
+          echo "P6_STANDALONE_MAKE_PREFLIGHT=NO"
+          echo "P6_NEXT_COMPILER_ACTION=CANONICAL_FULL_BUILD_A"
+        } | tee "$ARTIFACT_DIR/06a-source-invariants.txt"
+
+        cat > "$ARTIFACT_DIR/05-effective-build-config.txt" <<EOF
+        P6_EFFECTIVE_HOOK_MODE=NATIVE_KSU_SUSFS
+        P6_KCONFIG_KSU_MANUAL_HOOK=NO
+        P6_KCONFIG_KSU_SUSFS=YES
+        P6_KSU_CONFIG_CPP_FORCE=NO
+        P6_EFFECTIVE_KCFLAGS=$P6_EFFECTIVE_KCFLAGS
+        P6_NATIVE_INLINE_HOOK_COUNT=7
+        P6_KSU_VERSION=$EXPECTED_KSU_VERSION
+        P6_MODULE_LOAD_FILTER_INCLUDED=NO
+        EOF
+
+
+        python3 - <<'PY' | tee "$ARTIFACT_DIR/06b-p6v9-sucompat-caller-contract.txt"
+        from pathlib import Path
+
+        def function_body(text, signature):
+            start = text.find(signature)
+            if start < 0:
+                raise SystemExit("missing function: " + signature)
+            brace = text.find("{", start)
+            depth = 0
+            for pos in range(brace, len(text)):
+                if text[pos] == "{":
+                    depth += 1
+                elif text[pos] == "}":
+                    depth -= 1
+                    if depth == 0:
+                        return text[start:pos + 1]
+            raise SystemExit("unterminated function: " + signature)
+
+        open_text = Path("fs/open.c").read_text(encoding="utf-8")
+        stat_text = Path("fs/stat.c").read_text(encoding="utf-8")
+        sucompat = Path("KernelSU/kernel/feature/sucompat.c").read_text(encoding="utf-8")
+
+        open_fn = function_body(open_text, "long do_faccessat(")
+        stat_fn = function_body(stat_text, "int vfs_statx(")
+        handler = function_body(
+            sucompat,
+            "int ksu_handle_faccessat(int *dfd, struct filename **filename"
+        )
+
+        gate = (
+            "!likely(susfs_is_current_proc_umounted())",
+            "static_branch_likely(&ksu_su_compat_enabled)",
+            "__ksu_is_allow_uid_for_current(current_uid().val)",
+            "ksu_handle_faccessat(&dfd, &ksu_filename, &mode, NULL)",
+        )
+        for token in gate:
+            if token not in open_fn:
+                raise SystemExit("P6-v9 faccessat contract missing: " + token)
+
+        stat_gate = (
+            "!likely(susfs_is_current_proc_umounted())",
+            "static_branch_likely(&ksu_su_compat_enabled)",
+            "__ksu_is_allow_uid_for_current(current_uid().val)",
+            "ksu_handle_stat(&dfd, &ksu_filename, &flags)",
+        )
+        for token in stat_gate:
+            if token not in stat_fn:
+                raise SystemExit("P6-v9 stat contract missing: " + token)
+
+        # This is the upstream-selected SUSFS handler contract that made the
+        # caller gate necessary.  We do not patch the handler itself.
+        if "susfs already complete in caller" not in handler:
+            raise SystemExit("ReSukiSU caller-responsibility marker missing")
+        if 'memcpy((void *)((*filename)->name), sh_path, sizeof(sh_path));' not in handler:
+            raise SystemExit("expected ReSukiSU su->sh redirection missing")
+
+        print("P6V9_RESUKISU_FACCESSAT_HANDLER_UNMODIFIED=PASS")
+        print("P6V9_RESUKISU_HANDLER_EXPECTS_CALLER_FILTER=YES")
+        print("P6V9_FACCESSAT_CALLER_AUTHORIZATION_GATE=PASS")
+        print("P6V9_STAT_CALLER_AUTHORIZATION_GATE=PASS")
+        print("P6V9_UNPRIVILEGED_SU_REDIRECT_DISPATCH=NO")
+        print("P6V9_ALLOWED_SUCOMPAT_DISPATCH=YES")
+        print("P6V9_P4_STRUCT_FILENAME_BRIDGE_PRESERVED=YES")
+        PY
+
+
+        test "$(cat localversion)" = '-qgki-g82179e362f33'
+        ! grep -qi 'positron' localversion
+        grep -Fxq 'CONFIG_LOCALVERSION=""' arch/arm64/configs/veux_defconfig
+        grep -Fxq '# CONFIG_LOCALVERSION_AUTO is not set' arch/arm64/configs/veux_defconfig
+
+        {
+          echo "P6V10_STOCK_LOCALVERSION_SOURCE=PASS"
+          echo "P6V10_POSITRON_SOURCE_BRANDING=ABSENT"
+          echo "P6V10_EXPECTED_KERNEL_RELEASE=$STOCK_KERNEL_RELEASE"
+          echo "P6V10_EXPECTED_BUILD_IDENTITY=$STOCK_KERNEL_BUILD_USER@$STOCK_KERNEL_BUILD_HOST"
+          echo "P6V10_EXPECTED_BUILD_TIMESTAMP=$STOCK_KERNEL_BUILD_TIMESTAMP"
+        } | tee "$ARTIFACT_DIR/06c-stock-release-identity-source.txt"
+    - name: Configure clean Build A native SUSFS Kconfig
+      working-directory: kernel
+      shell: bash
+      run: |
+        set -euo pipefail
+        export PATH="$TOOLCHAIN_DIR/bin:$PATH"
+
+        rm -rf "$OUT_DIR"
+        GIT_DIR=/dev/null make O="$OUT_DIR" \
+          ARCH=arm64 CC=clang LD=ld.lld LLVM=1 LLVM_IAS=1 \
+          veux_defconfig \
+          2>&1 | tee "$ARTIFACT_DIR/07-build-a-config.log"
+
+        test -s "$OUT_DIR/.config"
+        grep -Fxq 'CONFIG_KSU=y' "$OUT_DIR/.config"
+        grep -Fxq '# CONFIG_KSU_TRACEPOINT_HOOK is not set' "$OUT_DIR/.config"
+        grep -Fxq '# CONFIG_KSU_MANUAL_HOOK is not set' "$OUT_DIR/.config"
+        grep -Fxq 'CONFIG_KSU_SUSFS=y' "$OUT_DIR/.config"
+        ! grep -q '^CONFIG_KSU_MANUAL_HOOK_AUTO_' "$OUT_DIR/.config"
+
+        for sym in \
+          KSU_SUSFS_SUS_PATH \
+          KSU_SUSFS_SUS_MOUNT \
+          KSU_SUSFS_SUS_KSTAT \
+          KSU_SUSFS_SPOOF_UNAME \
+          KSU_SUSFS_ENABLE_LOG \
+          KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \
+          KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \
+          KSU_SUSFS_OPEN_REDIRECT \
+          KSU_SUSFS_SUS_MAP
+        do
+          grep -Fxq "CONFIG_${sym}=y" "$OUT_DIR/.config"
+        done
+
+        grep -Fxq 'CONFIG_KSU_MULTI_MANAGER_SUPPORT=y' "$OUT_DIR/.config"
+        grep -Fxq 'CONFIG_64BIT=y' "$OUT_DIR/.config"
+        grep -Fxq 'CONFIG_THREAD_INFO_IN_TASK=y' "$OUT_DIR/.config"
+        grep -Fxq 'CONFIG_ARCH_QCOM=y' "$OUT_DIR/.config"
+        grep -Fxq 'CONFIG_ARCH_HOLI=y' "$OUT_DIR/.config"
+        grep -Fxq 'CONFIG_ARCH_BLAIR=y' "$OUT_DIR/.config"
+        grep -Fxq 'CONFIG_WT_QGKI=y' "$OUT_DIR/.config"
+        grep -Fxq 'CONFIG_LTO_CLANG=y' "$OUT_DIR/.config"
+        grep -Fxq 'CONFIG_BUILD_ARM64_UNCOMPRESSED_KERNEL=y' "$OUT_DIR/.config"
+
+        cp "$OUT_DIR/.config" "$ARTIFACT_DIR/build-a.base.config"
+        sha256sum "$OUT_DIR/.config" \
+          | tee "$ARTIFACT_DIR/07-build-a-config.sha256"
+
+        GIT_DIR=/dev/null make -s O="$OUT_DIR" ARCH=arm64 CC=clang LD=ld.lld LLVM=1 LLVM_IAS=1 \
+          kernelrelease | tee "$ARTIFACT_DIR/07-kernelrelease.txt"
+
+        test "$(cat "$ARTIFACT_DIR/07-kernelrelease.txt")" = "$STOCK_KERNEL_RELEASE"
+
+        {
+          echo "P6_BUILD_A_BASE_CONFIG=PASS"
+          echo "P6_BUILD_A_NATIVE_SUSFS_CONFIG=PASS"
+          echo "P6_BUILD_A_MANUAL_HOOK_CONFIG=NO"
+          echo "P6V10_KERNELRELEASE_EXACT_STOCK=PASS"
+          echo "P6V10_KERNELRELEASE=$STOCK_KERNEL_RELEASE"
+        } | tee "$ARTIFACT_DIR/07-build-a-config.txt"
+    - name: Full Build A Image and dtbs
+      working-directory: kernel
+      shell: bash
+      timeout-minutes: 90
+      run: |
+        set -euo pipefail
+        export PATH="$TOOLCHAIN_DIR/bin:$PATH"
+
+        {
+          echo "P6_BUILD_MODE=NATIVE_KCONFIG_SUSFS"
+          echo "P6_CONFIG_KSU_SUSFS=FROM_DOT_CONFIG"
+          echo "P6_CONFIG_KSU_MANUAL_HOOK=DISABLED"
+          echo "P6_CONFIG_KSU_CPP_FORCE=NO"
+          echo "KCFLAGS=$P6_EFFECTIVE_KCFLAGS"
+        } | tee "$ARTIFACT_DIR/08-build-a-command.txt"
+
+        GIT_DIR=/dev/null make -j"$(nproc)" \
+          O="$OUT_DIR" \
+          ARCH=arm64 \
+          CC=clang LD=ld.lld LLVM=1 LLVM_IAS=1 \
+          KCFLAGS="$P6_EFFECTIVE_KCFLAGS" \
+          Image dtbs \
+          2>&1 | tee "$ARTIFACT_DIR/08-build-a.log"
+
+        grep -Fq -- '-- ReSukiSU: using SuSFS Inline hook' "$ARTIFACT_DIR/08-build-a.log"
+        ! grep -Fq -- '-- ReSukiSU: using Manual Hook' "$ARTIFACT_DIR/08-build-a.log"
+
+        {
+          echo "P6_BUILD_A_FULL_COMPILE=PASS"
+          echo "P6_BUILD_A_RESUKISU_HOOK_MODE=NATIVE_SUSFS"
+        } | tee "$ARTIFACT_DIR/08-build-a.txt"
+    - name: Validate Build A outputs and full link contracts
+      working-directory: kernel
+      shell: bash
+      run: |2
+
+        set -euo pipefail
+        export PATH="$TOOLCHAIN_DIR/bin:$PATH"
+
+        IMAGE="$OUT_DIR/arch/arm64/boot/Image"
+        VEUX_DTB="$OUT_DIR/arch/arm64/boot/dts/vendor/xiaomi/veux.dtb"
+        VMLINUX="$OUT_DIR/vmlinux"
+        SYSTEM_MAP="$OUT_DIR/System.map"
+
+        test -s "$IMAGE"
+        test -s "$VEUX_DTB"
+        test -s "$VMLINUX"
+        test -s "$SYSTEM_MAP"
+        test "$(stat -c '%s' "$IMAGE")" -gt 20000000
+
+        "$OUT_DIR/scripts/dtc/dtc" -I dtb -O dts -o /dev/null "$VEUX_DTB"
+
+        llvm-readelf -h "$VMLINUX" > "$ARTIFACT_DIR/09-build-a-vmlinux-elf.txt"
+        llvm-nm "$VMLINUX" > "$ARTIFACT_DIR/09-build-a-vmlinux-nm.txt"
+
+        for sym in \
+          ksu_handle_setresuid \
+          ksu_handle_execveat \
+          ksu_handle_faccessat \
+          ksu_handle_sys_read \
+          ksu_handle_stat \
+          ksu_handle_sys_reboot \
+          ksu_handle_input_handle_event \
+          ksu_is_init_rc_hook_enabled \
+          ksu_is_input_hook_enabled \
+          susfs_init \
+          susfs_open_redirect_spoof_do_sys_openat \
+          susfs_open_redirect_spoof_vfs_readlink \
+          susfs_open_redirect_spoof_do_proc_readlink \
+          susfs_open_redirect_spoof_vfs_statfs \
+          susfs_open_redirect_spoof_seq_show \
+          susfs_open_redirect_spoof_show_map_vma_srcu \
+          susfs_srcu_open_redirect
+        do
+          grep -Eq "[[:space:]][A-Za-z][[:space:]]+${sym}$" \
+            "$ARTIFACT_DIR/09-build-a-vmlinux-nm.txt"
+        done
+
+        ! grep -Eq '[[:space:]][A-Za-z][[:space:]]+ksu_init_rc_hook$'   "$ARTIFACT_DIR/09-build-a-vmlinux-nm.txt"
+
+        mkdir -p "$ARTIFACT_DIR/build-a"
+
+        cp "$IMAGE" "$ARTIFACT_DIR/build-a/Image"
+        cp "$VEUX_DTB" "$ARTIFACT_DIR/build-a/veux.dtb"
+        cp "$OUT_DIR/.config" "$ARTIFACT_DIR/build-a/veux-5.4.274.base.config"
+
+        sha256sum "$IMAGE" "$VEUX_DTB" "$VMLINUX" "$SYSTEM_MAP" "$OUT_DIR/.config" \
+          > "$ARTIFACT_DIR/09-build-a-core.sha256"
+
+        find "$OUT_DIR/arch/arm64/boot/dts" -type f -name '*.dtb' -print0 \
+          | sort -z | xargs -0 sha256sum \
+          > "$ARTIFACT_DIR/09-build-a-all-dtbs.sha256"
+        test -s "$ARTIFACT_DIR/09-build-a-all-dtbs.sha256"
+        grep -Fq 'vendor/xiaomi/veux.dtb' "$ARTIFACT_DIR/09-build-a-all-dtbs.sha256"
+
+        {
+          echo "P6_BUILD_A_IMAGE=PASS"
+          echo "P6_BUILD_A_VEUX_DTB=PASS"
+          echo "P6_BUILD_A_DTB_PARSE=PASS"
+          echo "P6_BUILD_A_VMLINUX=PASS"
+          echo "P6_BUILD_A_NATIVE_INLINE_HOOK_LINK=PASS"
+          echo "P6_BUILD_A_SUSFS_RUNTIME_INIT_LINK=PASS"
+          echo "P6_BUILD_A_SPLIT_BRAIN_KSU_INIT_RC_HOOK=ABSENT"
+          echo "P6_BUILD_A_SUSFS_LINK=PASS"
+          echo "P6_BUILD_A_OPEN_REDIRECT_LINK=PASS"
+        } | tee "$ARTIFACT_DIR/09-build-a-validation.txt"
+
+
+        python3 - <<'PY' | tee "$ARTIFACT_DIR/09b-stock-release-banner-audit.txt"
+        import os
+        from pathlib import Path
+
+        data = (Path(os.environ['OUT_DIR']) / 'arch/arm64/boot/Image').read_bytes()
+        expected_release = os.environ['STOCK_KERNEL_RELEASE'].encode()
+        expected_identity = (
+            os.environ['STOCK_KERNEL_BUILD_USER'] + '@' +
+            os.environ['STOCK_KERNEL_BUILD_HOST']
+        ).encode()
+        expected_timestamp = os.environ['STOCK_KERNEL_BUILD_TIMESTAMP'].encode()
+
+        if expected_release not in data:
+            raise SystemExit('stock kernel release not embedded in Image')
+        if expected_identity not in data:
+            raise SystemExit('stock builder/host identity not embedded in Image')
+        if expected_timestamp not in data:
+            raise SystemExit('stock build timestamp not embedded in Image')
+        if b'positron' in data.lower():
+            raise SystemExit('Positron branding remains in final Image')
+        if b'clean-gen1@veux-p6' in data:
+            raise SystemExit('CLEAN build host identity remains in final Image')
+
+        # Extract the actual NUL-terminated Linux version banner for evidence.
+        marker = b'Linux version ' + expected_release
+        pos = data.find(marker)
+        if pos < 0:
+            raise SystemExit('Linux version banner not found')
+        end = data.find(b'\0', pos)
+        if end < 0:
+            raise SystemExit('Linux version banner terminator not found')
+        banner = data[pos:end].decode('latin1', 'replace')
+
+        print('P6V10_STOCK_KERNEL_RELEASE_IN_IMAGE=PASS')
+        print('P6V10_POSITRON_IN_IMAGE=NO')
+        print('P6V10_STOCK_BUILDER_HOST_IN_IMAGE=PASS')
+        print('P6V10_STOCK_BUILD_TIMESTAMP_IN_IMAGE=PASS')
+        print('P6V10_COMPILER_DESCRIPTION=ACTUAL_PINNED_TOOLCHAIN')
+        print('P6V10_LINUX_VERSION_BANNER=' + banner)
+        PY
+    - name: Verify source remained exact after Build A
+      working-directory: kernel
+      shell: bash
+      run: |2
+
+        set -euo pipefail
+        test "$(git rev-parse HEAD^{tree})" = "$P6_SOURCE_TREE"
+        test -z "$(git status --porcelain)"
+        test "$(git -C KernelSU rev-parse HEAD)" = "$EXPECTED_RESUKISU_HEAD"
+        test "$(git -C KernelSU rev-parse HEAD^{tree})" = "$EXPECTED_RESUKISU_TREE"
+        test -z "$(git -C KernelSU status --porcelain)"
+        test ! -e KernelSU/kernel/feature/module_load_filter.c
+
+        echo "P6_BUILD_A_SOURCE_IMMUTABILITY=PASS" \
+          | tee "$ARTIFACT_DIR/10-build-a-source.txt"
+    - name: Clean and configure Build B native SUSFS at identical output path
+      working-directory: kernel
+      shell: bash
+      run: |
+        set -euo pipefail
+        export PATH="$TOOLCHAIN_DIR/bin:$PATH"
+
+        rm -rf "$OUT_DIR"
+        GIT_DIR=/dev/null make O="$OUT_DIR" \
+          ARCH=arm64 CC=clang LD=ld.lld LLVM=1 LLVM_IAS=1 \
+          veux_defconfig \
+          2>&1 | tee "$ARTIFACT_DIR/11-build-b-config.log"
+
+        test -s "$OUT_DIR/.config"
+        cmp -s "$OUT_DIR/.config" "$ARTIFACT_DIR/build-a/veux-5.4.274.base.config"
+
+        grep -Fxq '# CONFIG_KSU_MANUAL_HOOK is not set' "$OUT_DIR/.config"
+        grep -Fxq 'CONFIG_KSU_SUSFS=y' "$OUT_DIR/.config"
+        ! grep -q '^CONFIG_KSU_MANUAL_HOOK_AUTO_' "$OUT_DIR/.config"
+
+        echo "P6_BUILD_B_CLEAN_SAME_PATH_CONFIG=PASS" \
+          | tee "$ARTIFACT_DIR/11-build-b-config.txt"
+    - name: Full Build B Image and dtbs
+      working-directory: kernel
+      shell: bash
+      timeout-minutes: 90
+      run: |
+        set -euo pipefail
+        export PATH="$TOOLCHAIN_DIR/bin:$PATH"
+
+        GIT_DIR=/dev/null make -j"$(nproc)" \
+          O="$OUT_DIR" \
+          ARCH=arm64 \
+          CC=clang LD=ld.lld LLVM=1 LLVM_IAS=1 \
+          KCFLAGS="$P6_EFFECTIVE_KCFLAGS" \
+          Image dtbs \
+          2>&1 | tee "$ARTIFACT_DIR/12-build-b.log"
+
+        grep -Fq -- '-- ReSukiSU: using SuSFS Inline hook' "$ARTIFACT_DIR/12-build-b.log"
+        ! grep -Fq -- '-- ReSukiSU: using Manual Hook' "$ARTIFACT_DIR/12-build-b.log"
+
+        {
+          echo "P6_BUILD_B_FULL_COMPILE=PASS"
+          echo "P6_BUILD_B_RESUKISU_HOOK_MODE=NATIVE_SUSFS"
+        } | tee "$ARTIFACT_DIR/12-build-b.txt"
+    - name: Validate Build B and prove same-path reproducibility
+      working-directory: kernel
+      shell: bash
+      run: |2
+
+        set -euo pipefail
+        export PATH="$TOOLCHAIN_DIR/bin:$PATH"
+
+        IMAGE="$OUT_DIR/arch/arm64/boot/Image"
+        VEUX_DTB="$OUT_DIR/arch/arm64/boot/dts/vendor/xiaomi/veux.dtb"
+        VMLINUX="$OUT_DIR/vmlinux"
+        SYSTEM_MAP="$OUT_DIR/System.map"
+
+        test -s "$IMAGE"
+        test -s "$VEUX_DTB"
+        test -s "$VMLINUX"
+        test -s "$SYSTEM_MAP"
+        "$OUT_DIR/scripts/dtc/dtc" -I dtb -O dts -o /dev/null "$VEUX_DTB"
+
+        sha256sum "$IMAGE" "$VEUX_DTB" "$VMLINUX" "$SYSTEM_MAP" "$OUT_DIR/.config" \
+          > "$ARTIFACT_DIR/13-build-b-core.sha256"
+
+        find "$OUT_DIR/arch/arm64/boot/dts" -type f -name '*.dtb' -print0 \
+          | sort -z | xargs -0 sha256sum \
+          > "$ARTIFACT_DIR/13-build-b-all-dtbs.sha256"
+
+        python3 - <<'PY' > "$ARTIFACT_DIR/13-reproducibility.txt"
+        from pathlib import Path
+
+        def parse(path):
+            d = {}
+            for line in Path(path).read_text().splitlines():
+                sha, name = line.split(None, 1)
+                d[name.strip()] = sha
+            return d
+
+        a = parse("../clean-gen1-p6/09-build-a-core.sha256")
+        b = parse("../clean-gen1-p6/13-build-b-core.sha256")
+
+        suffixes = {
+            "Image": "/arch/arm64/boot/Image",
+            "VEUX_DTB": "/arch/arm64/boot/dts/vendor/xiaomi/veux.dtb",
+            "VMLINUX": "/vmlinux",
+            "SYSTEM_MAP": "/System.map",
+            "CONFIG": "/.config",
+        }
+        for label, suffix in suffixes.items():
+            av = next(v for k, v in a.items() if k.endswith(suffix))
+            bv = next(v for k, v in b.items() if k.endswith(suffix))
+            if av != bv:
+                raise SystemExit(f"{label} mismatch: {av} != {bv}")
+            print(f"P6_{label}_SHA256={av}")
+            print(f"P6_{label}_REPRODUCIBLE=YES")
+        PY
+
+        cmp -s "$ARTIFACT_DIR/09-build-a-all-dtbs.sha256" \
+               "$ARTIFACT_DIR/13-build-b-all-dtbs.sha256"
+
+        cmp -s "$IMAGE" "$ARTIFACT_DIR/build-a/Image"
+        cmp -s "$VEUX_DTB" "$ARTIFACT_DIR/build-a/veux.dtb"
+        cmp -s "$OUT_DIR/.config" "$ARTIFACT_DIR/build-a/veux-5.4.274.base.config"
+
+        {
+          echo "P6_REPRODUCIBILITY_MODE=SAME_RUN_CLEAN_REBUILD_SAME_ABSOLUTE_OUT_PATH"
+          echo "P6_IMAGE_REPRODUCIBLE=YES"
+          echo "P6_VEUX_DTB_REPRODUCIBLE=YES"
+          echo "P6_VMLINUX_REPRODUCIBLE=YES"
+          echo "P6_SYSTEM_MAP_REPRODUCIBLE=YES"
+          echo "P6_BASE_CONFIG_REPRODUCIBLE=YES"
+          echo "P6_ALL_DTBS_REPRODUCIBLE=YES"
+          echo "P6_BUILD_B_VALIDATION=PASS"
+        } | tee -a "$ARTIFACT_DIR/13-reproducibility.txt"
+
+
+        python3 - <<'PY' | tee "$ARTIFACT_DIR/13b-stock-release-banner-b-audit.txt"
+        import os
+        from pathlib import Path
+
+        data = (Path(os.environ['OUT_DIR']) / 'arch/arm64/boot/Image').read_bytes()
+        for token, label in (
+            (os.environ['STOCK_KERNEL_RELEASE'].encode(), 'release'),
+            ((os.environ['STOCK_KERNEL_BUILD_USER'] + '@' + os.environ['STOCK_KERNEL_BUILD_HOST']).encode(), 'builder-host'),
+            (os.environ['STOCK_KERNEL_BUILD_TIMESTAMP'].encode(), 'timestamp'),
+        ):
+            if token not in data:
+                raise SystemExit('Build B missing stock ' + label)
+        if b'positron' in data.lower():
+            raise SystemExit('Build B contains Positron branding')
+        print('P6V10_BUILD_B_STOCK_RELEASE_IDENTITY=PASS')
+        print('P6V10_BUILD_B_POSITRON_IN_IMAGE=NO')
+        PY
+    - name: Verify full Build B link and source immutability
+      working-directory: kernel
+      shell: bash
+      run: "\nset -euo pipefail\nexport PATH=\"$TOOLCHAIN_DIR/bin:$PATH\"\n\nllvm-nm
+        \"$OUT_DIR/vmlinux\" > \"$ARTIFACT_DIR/14-build-b-vmlinux-nm.txt\"\nfor sym
+        in \\\n  ksu_handle_setresuid \\\n  ksu_handle_execveat \\\n  ksu_handle_faccessat
+        \\\n  ksu_handle_sys_read \\\n  ksu_handle_stat \\\n  ksu_handle_sys_reboot
+        \\\n  ksu_handle_input_handle_event \\\n  ksu_is_init_rc_hook_enabled \\\n\
+        \  ksu_is_input_hook_enabled \\\n  susfs_init \\\n  susfs_open_redirect_spoof_do_sys_openat
+        \\\n  susfs_open_redirect_spoof_vfs_readlink \\\n  susfs_open_redirect_spoof_do_proc_readlink
+        \\\n  susfs_open_redirect_spoof_vfs_statfs \\\n  susfs_open_redirect_spoof_seq_show
+        \\\n  susfs_open_redirect_spoof_show_map_vma_srcu \\\n  susfs_srcu_open_redirect\n\
+        do\n  grep -Eq \"[[:space:]][A-Za-z][[:space:]]+${sym}$\" \\\n    \"$ARTIFACT_DIR/14-build-b-vmlinux-nm.txt\"\
+        \ndone\n\n! grep -Eq '[[:space:]][A-Za-z][[:space:]]+ksu_init_rc_hook$'  \
+        \ \"$ARTIFACT_DIR/14-build-b-vmlinux-nm.txt\"\n\ntest \"$(git rev-parse HEAD^{tree})\"\
+        \ = \"$P6_SOURCE_TREE\" \ntest -z \"$(git status --porcelain)\"\ntest \"$(git
+        -C KernelSU rev-parse HEAD)\" = \"$EXPECTED_RESUKISU_HEAD\"\ntest \"$(git
+        -C KernelSU rev-parse HEAD^{tree})\" = \"$EXPECTED_RESUKISU_TREE\"\ntest -z
+        \"$(git -C KernelSU status --porcelain)\"\ntest ! -e KernelSU/kernel/feature/module_load_filter.c\n\
+        \n{\n  echo \"P6_BUILD_B_FULL_LINK_CONTRACT=PASS\"\n  echo \"P6_BUILD_B_SOURCE_IMMUTABILITY=PASS\"\
+        \n  echo \"P6_MODULE_LOAD_FILTER_INCLUDED=NO\"\n} | tee \"$ARTIFACT_DIR/14-build-b-final.txt\"\
+        \n"
+    - name: Create P6 source restore kit and provenance
+      working-directory: kernel
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        rm -rf "$ARTIFACT_DIR/source-restore-kit"
+        mkdir -p "$ARTIFACT_DIR/source-restore-kit/p5i"
+
+        cp -a "$P5I_ARTIFACT_DIR/restore-kit/." \
+          "$ARTIFACT_DIR/source-restore-kit/p5i/"
+        cp "$ARTIFACT_DIR/p5i-to-p6-source-compat.patch" \
+          "$ARTIFACT_DIR/source-restore-kit/p5i-to-p6-source-compat.patch"
+
+        (
+          cd "$ARTIFACT_DIR/source-restore-kit/p5i"
+          sha256sum -c SHA256SUMS
+        ) > "$ARTIFACT_DIR/15-copied-p5i-restore-sha256.txt"
+
+        python3 - <<'PY'
+        import json
+        import os
+        from pathlib import Path
+
+        m = {
+            "stage": "CLEAN_GEN1_P6_SOURCE",
+            "parent_stage": "CLEAN_GEN1_P5I",
+            "parent_run_id": os.environ["P6_PARENT_RUN_ID"],
+            "parent_failure": os.environ["P6_PARENT_FAILURE"],
+            "p5i_commit": os.environ["EXPECTED_P5I_COMMIT"],
+            "p5i_tree": os.environ["EXPECTED_P5I_TREE"],
+            "p6_source_commit": os.environ["P6_SOURCE_COMMIT"],
+            "p6_source_tree": os.environ["P6_SOURCE_TREE"],
+            "resukisu_head": os.environ["EXPECTED_RESUKISU_HEAD"],
+            "resukisu_tree": os.environ["EXPECTED_RESUKISU_TREE"],
+            "changed_files": [
+                "arch/arm64/configs/veux_defconfig",
+                "drivers/input/input.c",
+                "fs/exec.c",
+                "fs/open.c",
+                "fs/read_write.c",
+                "fs/stat.c",
+                "include/linux/ksu_hook_contract.h",
+                "include/linux/susfs_def.h",
+                "kernel/reboot.c",
+                "kernel/sys.c",
+                "security/selinux/selinuxfs.c",
+            ],
+            "hook_mode": "native_kconfig_susfs",
+            "manual_hook_enabled": False,
+            "susfs_enabled": True,
+            "native_inline_hook_count": 7,
+            "forced_ksu_config_cpp_macros": False,
+            "susfs_header_self_containment": {"linux_cred_include": True, "uid_semantics_changed": False},
+            "static_exports": {
+                "write_op": True,
+                "sel_handle_status_ops": True,
+            },
+            "kallsyms_all_enabled": False,
+            "selinux_state_present": True,
+            "conditional_4_17_minus_export_set_required": False,
+            "module_load_filter_included": False,
+            "boot_image_created": False,
+            "flashing_performed": False,
+        }
+        Path("../clean-gen1-p6/source-restore-kit/manifest.json").write_text(
+            json.dumps(m, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        PY
+
+        (
+          cd "$ARTIFACT_DIR/source-restore-kit"
+          sha256sum \
+            manifest.json \
+            p5i-to-p6-source-compat.patch \
+            > SHA256SUMS
+          sha256sum -c SHA256SUMS
+        ) > "$ARTIFACT_DIR/15-p6-source-restore-sha256.txt"
+
+        {
+          echo "P6_SOURCE_STAGE=P6_NATIVE_SUSFS_5_4_SOURCE_CONTRACT"
+          echo "P6_PARENT_SOURCE_STAGE=P5I"
+          echo "P6_PARENT_SOURCE_COMMIT=$EXPECTED_P5I_COMMIT"
+          echo "P6_PARENT_SOURCE_TREE=$EXPECTED_P5I_TREE"
+          echo "P6_SOURCE_COMMIT=$P6_SOURCE_COMMIT"
+          echo "P6_SOURCE_TREE=$P6_SOURCE_TREE"
+          echo "P6_RESUKISU_HEAD=$EXPECTED_RESUKISU_HEAD"
+          echo "P6_RESUKISU_TREE=$EXPECTED_RESUKISU_TREE"
+          echo "P6_KSU_VERSION=$EXPECTED_KSU_VERSION"
+          echo "P6_CLANG_PREBUILT_COMMIT=$CLANG_PREBUILT_COMMIT"
+          echo "P6_STATIC_EXPORT_WRITE_OP=YES"
+          echo "P6_STATIC_EXPORT_SEL_HANDLE_STATUS_OPS=YES"
+          echo "P6_SUSFS_DEF_CRED_INCLUDE=YES"
+          echo "P6_SUSFS_UID_SEMANTICS_CHANGED=NO"
+          echo "P6_NATIVE_KCONFIG_SUSFS=YES"
+          echo "P6_NATIVE_KCONFIG_MANUAL_HOOK=NO"
+          echo "P6_NATIVE_INLINE_HOOK_COUNT=7"
+          echo "P6_BUILD_TIMESTAMP=$KBUILD_BUILD_TIMESTAMP"
+          echo "P6_SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH"
+        } > "$ARTIFACT_DIR/15-provenance.txt"
+
+        cp "$ARTIFACT_DIR/05-effective-build-config.txt" \
+           "$ARTIFACT_DIR/build-a/EFFECTIVE-BUILD-CONFIG.txt"
+
+        (
+          cd "$ARTIFACT_DIR/build-a"
+          sha256sum Image veux.dtb veux-5.4.274.base.config EFFECTIVE-BUILD-CONFIG.txt \
+            > SHA256SUMS
+          sha256sum -c SHA256SUMS
+        ) > "$ARTIFACT_DIR/15-output-package-sha256.txt"
+
+        echo "P6_PROVENANCE_PACKAGE=PASS" \
+          | tee "$ARTIFACT_DIR/15-provenance-state.txt"
+    - name: Replay complete P6 source restore independently after full builds
+      working-directory: kernel
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        outer="$GITHUB_WORKSPACE/p6-outer-replay"
+        rm -rf "$outer"
+        git worktree add --detach "$outer" "$EXPECTED_VENDOR_SHA" >/dev/null
+        (
+          cd "$outer"
+
+          git apply --check --binary \
+            "$ARTIFACT_DIR/source-restore-kit/p5i/vendor-20240619-to-p5i-outer.patch"
+          git apply --index --binary \
+            "$ARTIFACT_DIR/source-restore-kit/p5i/vendor-20240619-to-p5i-outer.patch"
+          test "$(git write-tree)" = "$EXPECTED_P5I_TREE"
+
+          git apply --check --binary \
+            "$ARTIFACT_DIR/source-restore-kit/p5i-to-p6-source-compat.patch"
+          git apply --index --binary \
+            "$ARTIFACT_DIR/source-restore-kit/p5i-to-p6-source-compat.patch"
+          test "$(git write-tree)" = "$P6_SOURCE_TREE"
+
+          grep -Fq 'ssize_t (*const write_op[])(struct file *, char *, size_t) = {' \
+            security/selinux/selinuxfs.c
+          grep -Fq 'const struct file_operations sel_handle_status_ops = {' \
+            security/selinux/selinuxfs.c
+          grep -Fxq '#include <linux/cred.h>' include/linux/susfs_def.h
+          grep -Fq 'current_uid().val >= 10000' include/linux/susfs_def.h
+          grep -Fxq '# CONFIG_KSU_MANUAL_HOOK is not set' arch/arm64/configs/veux_defconfig
+          grep -Fxq 'CONFIG_KSU_SUSFS=y' arch/arm64/configs/veux_defconfig
+          test "$(cat localversion)" = '-qgki-g82179e362f33'
+          ! grep -qi 'positron' localversion
+          grep -Fxq 'CONFIG_LOCALVERSION=""' arch/arm64/configs/veux_defconfig
+          grep -Fxq '# CONFIG_LOCALVERSION_AUTO is not set' arch/arm64/configs/veux_defconfig
+          grep -Fq '!likely(susfs_is_current_proc_umounted())' fs/open.c
+          grep -Fq 'static_branch_likely(&ksu_su_compat_enabled)' fs/open.c
+          grep -Fq '__ksu_is_allow_uid_for_current(current_uid().val)' fs/open.c
+          grep -Fq 'ksu_handle_faccessat(&dfd, &ksu_filename, &mode, NULL)' fs/open.c
+          grep -Fq '!likely(susfs_is_current_proc_umounted())' fs/stat.c
+          grep -Fq '__ksu_is_allow_uid_for_current(current_uid().val)' fs/stat.c
+          grep -Fq 'ksu_handle_stat(&dfd, &ksu_filename, &flags)' fs/stat.c
+          for spec in     'kernel/sys.c:ksu_handle_setresuid'     'fs/exec.c:ksu_handle_execveat'     'fs/open.c:ksu_handle_faccessat'     'fs/read_write.c:ksu_handle_sys_read'     'fs/stat.c:ksu_handle_stat'     'kernel/reboot.c:ksu_handle_sys_reboot'     'drivers/input/input.c:ksu_handle_input_handle_event'
+          do
+            file="${spec%%:*}"
+            hook="${spec#*:}"
+            grep -Fq "$hook" "$file"
+            ! grep -wq 'CONFIG_KSU_MANUAL_HOOK' "$file"
+          done
+        )
+        git worktree remove --force "$outer"
+
+        resu="$GITHUB_WORKSPACE/p6-resukisu-replay"
+        rm -rf "$resu"
+        git init "$resu" >/dev/null
+        git -C "$resu" fetch \
+          "$ARTIFACT_DIR/source-restore-kit/p5i/resukisu-p5i-full.bundle" \
+          refs/heads/clean-gen1-p5i-resukisu:refs/heads/clean-gen1-p5i-resukisu
+        git -C "$resu" checkout --detach refs/heads/clean-gen1-p5i-resukisu >/dev/null
+        test "$(git -C "$resu" rev-parse HEAD)" = "$EXPECTED_RESUKISU_HEAD"
+        test "$(git -C "$resu" rev-parse HEAD^{tree})" = "$EXPECTED_RESUKISU_TREE"
+        rm -rf "$resu"
+
+        {
+          echo "P6_SOURCE_RESTORE_REPLAY=PASS"
+          echo "P6_RESUKISU_RESTORE_REPLAY=PASS"
+          echo "P6V9_SUCOMPAT_CALLER_GATE_RESTORE_REPLAY=PASS"
+          echo "P6V10_STOCK_RELEASE_IDENTITY_RESTORE_REPLAY=PASS"
+        } | tee "$ARTIFACT_DIR/16-restore-replays.txt"
+    - name: Recover exact current-phone Final_Boot calibration inputs
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        BOOT_WORK="$ARTIFACT_DIR/device-test/calibration"
+        mkdir -p "$BOOT_WORK" "$ARTIFACT_DIR/device-test"
+
+        RELEASE_ZIP="$BOOT_WORK/$FINAL_BOOT_RELEASE_ASSET"
+
+        curl --fail --location --silent --show-error \
+          --retry 5 --retry-delay 2 \
+          "https://github.com/${GITHUB_REPOSITORY}/releases/download/${FINAL_BOOT_RELEASE_TAG}/${FINAL_BOOT_RELEASE_ASSET}" \
+          -o "$RELEASE_ZIP"
+
+        test "$(sha256sum "$RELEASE_ZIP" | awk '{print $1}')" = \
+          "$FINAL_BOOT_RELEASE_ZIP_SHA256"
+
+        unzip -t "$RELEASE_ZIP" >/dev/null
+        unzip -q "$RELEASE_ZIP" -d "$BOOT_WORK/reference"
+
+        test -s "$BOOT_WORK/reference/boot.img"
+        test -s "$BOOT_WORK/reference/rollback_stock_boot.img.gz"
+
+        test "$(sha256sum "$BOOT_WORK/reference/boot.img" | awk '{print $1}')" = \
+          "$FINAL_BOOT_REFERENCE_BOOT_SHA256"
+        test "$(sha256sum "$BOOT_WORK/reference/rollback_stock_boot.img.gz" | awk '{print $1}')" = \
+          "$ROLLBACK_GZIP_SHA256"
+
+        gzip -t "$BOOT_WORK/reference/rollback_stock_boot.img.gz"
+        gzip -dc "$BOOT_WORK/reference/rollback_stock_boot.img.gz" \
+          > "$BOOT_WORK/stock_boot.img"
+
+        test "$(stat -c '%s' "$BOOT_WORK/stock_boot.img")" = "$STOCK_BOOT_BYTES"
+        test "$(sha256sum "$BOOT_WORK/stock_boot.img" | awk '{print $1}')" = \
+          "$STOCK_BOOT_SHA256"
+
+        {
+          echo "P6V9_FINAL_BOOT_RELEASE_CALIBRATION_INPUT=PASS"
+          echo "FINAL_BOOT_RELEASE_ZIP_SHA256=$FINAL_BOOT_RELEASE_ZIP_SHA256"
+          echo "FINAL_BOOT_REFERENCE_BOOT_SHA256=$FINAL_BOOT_REFERENCE_BOOT_SHA256"
+          echo "STOCK_BOOT_SHA256=$STOCK_BOOT_SHA256"
+          echo "STOCK_RAMDISK_SHA256=$STOCK_RAMDISK_SHA256"
+        } | tee "$ARTIFACT_DIR/18-final-boot-calibration-input.txt"
+    - name: Build calibrated P6-v10 stock-identity P7 retest boot image
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        BOOT_WORK="$ARTIFACT_DIR/device-test/calibration"
+        IMAGE="$ARTIFACT_DIR/build-a/Image"
+        TEST_BOOT="$ARTIFACT_DIR/device-test/$P6V10_TEST_BOOT_NAME"
+
+        test -s "$IMAGE"
+
+        python3 - \
+          "$BOOT_WORK/stock_boot.img" \
+          "$BOOT_WORK/reference/boot.img" \
+          "$IMAGE" \
+          "$TEST_BOOT" \
+          "$ARTIFACT_DIR/device-test/P6V9-BOOT-BUILD.json" \
+          "$ARTIFACT_DIR/device-test/P6V9-BOOT-BUILD.txt" <<'PY'
+        import hashlib
+        import json
+        import struct
+        import sys
+        from pathlib import Path
+
+        stock_path = Path(sys.argv[1])
+        old_boot_path = Path(sys.argv[2])
+        new_image_path = Path(sys.argv[3])
+        out_path = Path(sys.argv[4])
+        json_out = Path(sys.argv[5])
+        txt_out = Path(sys.argv[6])
+
+        STOCK_SHA = "ac6522e4eed55782dd2ae61362e9d345d01a1f229c87333818511d5537fa79c5"
+        OLD_BOOT_SHA = "2baffafce260348c247674c5e8176408d45dc75b35ccbf7ca5834cbb4679398e"
+        OLD_KERNEL_SHA = "e036175ada602df3bcb443da7c390e8cd4b0e900c26fbfa313725db02855ec96"
+        RAMDISK_SHA = "0bc8b54373b5501818e8b252517419786db207771047b6def7ec9bc89beb607a"
+        BOOT_BYTES = 134217728
+        PAGE = 4096
+
+        def sha(data):
+            return hashlib.sha256(data).hexdigest()
+
+        def align(value):
+            return (value + PAGE - 1) // PAGE * PAGE
+
+        def need(condition, message):
+            if not condition:
+                raise SystemExit("ERROR: " + message)
+
+        def parse_footer(data):
+            raw = data[-64:]
+            need(raw[:4] == b"AVBf", "AVB footer magic")
+            major, minor = struct.unpack_from(">II", raw, 4)
+            original, offset, size = struct.unpack_from(">QQQ", raw, 12)
+            need(offset + size <= len(data) - 64, "AVB footer geometry")
+            return {
+                "major": major,
+                "minor": minor,
+                "original": original,
+                "offset": offset,
+                "size": size,
+                "raw": raw,
+                "vbmeta": data[offset:offset + size],
+            }
+
+        def parse_vbmeta(vb):
+            need(vb[:4] == b"AVB0", "AVB0 magic")
+            auth_size, aux_size = struct.unpack_from(">QQ", vb, 12)
+            algorithm_type = struct.unpack_from(">I", vb, 28)[0]
+            values = struct.unpack_from(">QQQQQQQQQQQ", vb, 32)
+            descriptors_offset = values[8]
+            descriptors_size = values[9]
+            aux_start = 256 + auth_size
+            pos = aux_start + descriptors_offset
+            end = pos + descriptors_size
+            need(end <= aux_start + aux_size, "AVB descriptor geometry")
+
+            items = []
+            while pos < end:
+                tag, following = struct.unpack_from(">QQ", vb, pos)
+                raw = vb[pos:pos + 16 + following]
+                need(len(raw) == 16 + following, "truncated AVB descriptor")
+                item = {"tag": tag, "offset": pos}
+                if tag == 2:
+                    image_size = struct.unpack_from(">Q", raw, 16)[0]
+                    algorithm = raw[24:56].split(b"\0", 1)[0].decode("ascii", "replace")
+                    name_len, salt_len, digest_len, flags = struct.unpack_from(">IIII", raw, 56)
+                    q = 132
+                    partition = raw[q:q + name_len].decode("ascii", "replace")
+                    q += name_len
+                    salt = raw[q:q + salt_len]
+                    q += salt_len
+                    digest = raw[q:q + digest_len]
+                    item.update({
+                        "type": "hash",
+                        "image_size": image_size,
+                        "hash_algorithm": algorithm,
+                        "partition": partition,
+                        "salt": salt,
+                        "digest": digest,
+                        "digest_offset": pos + q,
+                        "digest_len": digest_len,
+                        "image_size_offset": pos + 16,
+                        "flags": flags,
+                    })
+                else:
+                    item["type"] = "other"
+                items.append(item)
+                pos += 16 + following
+
+            need(pos == end, "AVB descriptor parse end")
+            return {"algorithm_type": algorithm_type, "descriptors": items}
+
+        def boot_descriptor(info):
+            found = [
+                d for d in info["descriptors"]
+                if d.get("type") == "hash" and d.get("partition") == "boot"
+            ]
+            need(len(found) == 1, "exactly one boot hash descriptor")
+            return found[0]
+
+        def verify_descriptor(data, desc):
+            need(desc["hash_algorithm"] == "sha256", "AVB hash algorithm")
+            calculated = hashlib.sha256(
+                desc["salt"] + data[:desc["image_size"]]
+            ).digest()
+            return calculated == desc["digest"], calculated
+
+        stock = stock_path.read_bytes()
+        old_boot = old_boot_path.read_bytes()
+        new_image = new_image_path.read_bytes()
+
+        need(len(stock) == BOOT_BYTES, "stock boot size")
+        need(sha(stock) == STOCK_SHA, "stock boot hash")
+        need(len(old_boot) == BOOT_BYTES, "reference boot size")
+        need(sha(old_boot) == OLD_BOOT_SHA, "reference boot hash")
+        need(stock[:8] == b"ANDROID!", "stock Android magic")
+        need(old_boot[:8] == b"ANDROID!", "reference Android magic")
+        need(len(new_image) > 1024 * 1024, "candidate Image too small")
+
+        stock_kernel_size = struct.unpack_from("<I", stock, 8)[0]
+        ramdisk_size = struct.unpack_from("<I", stock, 12)[0]
+        header_size = struct.unpack_from("<I", stock, 20)[0]
+        header_version = struct.unpack_from("<I", stock, 40)[0]
+
+        need(header_version == 3, "Boot header v3")
+        need(header_size == 1580, "Boot header size")
+        need(stock_kernel_size == 45480448, "stock kernel size")
+        need(ramdisk_size == 22061278, "stock ramdisk size")
+
+        stock_ramdisk_offset = PAGE + align(stock_kernel_size)
+        ramdisk = stock[
+            stock_ramdisk_offset:
+            stock_ramdisk_offset + ramdisk_size
+        ]
+        need(sha(ramdisk) == RAMDISK_SHA, "stock ramdisk hash")
+
+        stock_footer = parse_footer(stock)
+        stock_vbmeta = parse_vbmeta(stock_footer["vbmeta"])
+        need(stock_vbmeta["algorithm_type"] == 0, "stock vbmeta algorithm NONE")
+        stock_desc = boot_descriptor(stock_vbmeta)
+        valid, _ = verify_descriptor(stock, stock_desc)
+        need(valid, "stock embedded AVB descriptor")
+
+        old_kernel_size = struct.unpack_from("<I", old_boot, 8)[0]
+        old_kernel = old_boot[PAGE:PAGE + old_kernel_size]
+        need(sha(old_kernel) == OLD_KERNEL_SHA, "reference embedded kernel hash")
+
+        def build_custom(image):
+            ramdisk_offset = PAGE + align(len(image))
+            payload_end = ramdisk_offset + align(len(ramdisk))
+
+            footer_len = 64
+            vbmeta_size = len(stock_footer["vbmeta"])
+            need(
+                payload_end + vbmeta_size <= BOOT_BYTES - footer_len,
+                "candidate boot payload exceeds partition",
+            )
+
+            output = bytearray(BOOT_BYTES)
+            header = bytearray(stock[:PAGE])
+            struct.pack_into("<I", header, 8, len(image))
+
+            output[:PAGE] = header
+            output[PAGE:PAGE + len(image)] = image
+            output[ramdisk_offset:ramdisk_offset + len(ramdisk)] = ramdisk
+
+            vbmeta = bytearray(stock_footer["vbmeta"])
+            struct.pack_into(">Q", vbmeta, stock_desc["image_size_offset"], payload_end)
+
+            digest = hashlib.sha256(
+                stock_desc["salt"] + bytes(output[:payload_end])
+            ).digest()
+            d0 = stock_desc["digest_offset"]
+            d1 = d0 + stock_desc["digest_len"]
+            vbmeta[d0:d1] = digest
+            output[payload_end:payload_end + len(vbmeta)] = vbmeta
+
+            footer = bytearray(stock_footer["raw"])
+            struct.pack_into(">Q", footer, 12, payload_end)
+            struct.pack_into(">Q", footer, 20, payload_end)
+            output[-64:] = footer
+
+            result = bytes(output)
+            parsed_footer = parse_footer(result)
+            parsed_vbmeta = parse_vbmeta(parsed_footer["vbmeta"])
+            parsed_desc = boot_descriptor(parsed_vbmeta)
+            ok, calculated = verify_descriptor(result, parsed_desc)
+            need(ok, "rebuilt embedded AVB descriptor")
+            need(calculated == digest, "rebuilt AVB digest")
+
+            return {
+                "bytes": result,
+                "ramdisk_offset": ramdisk_offset,
+                "payload_end": payload_end,
+                "digest": digest.hex(),
+            }
+
+        # Mandatory historical calibration: the exact uploaded/current-phone
+        # Final_Boot container must be reproduced byte-for-byte before a new
+        # candidate boot is accepted.
+        calibration = build_custom(old_kernel)
+        need(calibration["bytes"] == old_boot, "Final_Boot calibration byte identity")
+        need(sha(calibration["bytes"]) == OLD_BOOT_SHA, "Final_Boot calibration hash")
+
+        candidate = build_custom(new_image)
+        data = candidate["bytes"]
+
+        kernel_size = struct.unpack_from("<I", data, 8)[0]
+        embedded_kernel = data[PAGE:PAGE + kernel_size]
+        embedded_ramdisk = data[
+            candidate["ramdisk_offset"]:
+            candidate["ramdisk_offset"] + ramdisk_size
+        ]
+
+        need(embedded_kernel == new_image, "candidate embedded kernel byte identity")
+        need(sha(embedded_ramdisk) == RAMDISK_SHA, "candidate stock ramdisk identity")
+
+        # ARM64 Image sanity; do not hardcode image_size because this source fix
+        # may legitimately change the linked memory footprint.
+        need(len(new_image) >= 64, "ARM64 Image header")
+        text_offset, arm_image_size, arm_flags = struct.unpack_from("<QQQ", new_image, 8)
+        arm_magic, arm_res5 = struct.unpack_from("<II", new_image, 56)
+        need(text_offset == 0x80000, "ARM64 text offset")
+        need(arm_magic == 0x644D5241, "ARM64 magic")
+        need(arm_flags == 0xA, "ARM64 flags")
+        need(arm_res5 == 0x40, "ARM64 res5")
+
+        out_path.write_bytes(data)
+
+        report = {
+            "result": "PASS_P6V10_CALIBRATED_P7_RETEST_BOOT",
+            "historical_final_boot_calibration_byte_identical": True,
+            "stock_boot_sha256": STOCK_SHA,
+            "stock_ramdisk_sha256": RAMDISK_SHA,
+            "candidate_image_sha256": sha(new_image),
+            "candidate_image_bytes": len(new_image),
+            "candidate_boot_sha256": sha(data),
+            "candidate_boot_bytes": len(data),
+            "ramdisk_offset": candidate["ramdisk_offset"],
+            "payload_end": candidate["payload_end"],
+            "embedded_avb_digest": candidate["digest"],
+            "arm64_text_offset": text_offset,
+            "arm64_image_size": arm_image_size,
+            "arm64_flags": arm_flags,
+        }
+        json_out.write_text(
+            json.dumps(report, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+
+        lines = [
+            "P6V10_CALIBRATED_P7_RETEST_BOOT=PASS",
+            "HISTORICAL_FINAL_BOOT_CALIBRATION=PASS",
+            "HISTORICAL_FINAL_BOOT_CALIBRATION_BYTE_IDENTICAL=YES",
+            "SAME_STOCK_BOOT_TEMPLATE=YES",
+            "SAME_STOCK_RAMDISK=YES",
+            "BOOT_HEADER_VERSION=3",
+            "BOOT_BYTES=134217728",
+            "P6V10_IMAGE_SHA256=" + sha(new_image),
+            "P6V10_IMAGE_BYTES=" + str(len(new_image)),
+            "P6V10_BOOT_SHA256=" + sha(data),
+            "P6V10_BOOT_BYTES=" + str(len(data)),
+            "STOCK_RAMDISK_SHA256=" + RAMDISK_SHA,
+            "P6V10_EMBEDDED_AVB_VERIFIES=YES",
+        ]
+        txt_out.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        print("\n".join(lines))
+        PY
+
+        test -s "$TEST_BOOT"
+        test "$(stat -c '%s' "$TEST_BOOT")" = "$STOCK_BOOT_BYTES"
+
+        sha256sum "$TEST_BOOT" > "$TEST_BOOT.sha256"
+
+        grep -Fxq 'P6V10_CALIBRATED_P7_RETEST_BOOT=PASS' \
+          "$ARTIFACT_DIR/device-test/P6V9-BOOT-BUILD.txt"
+        grep -Fxq 'HISTORICAL_FINAL_BOOT_CALIBRATION_BYTE_IDENTICAL=YES' \
+          "$ARTIFACT_DIR/device-test/P6V9-BOOT-BUILD.txt"
+        grep -Fxq 'P6V10_EMBEDDED_AVB_VERIFIES=YES' \
+          "$ARTIFACT_DIR/device-test/P6V9-BOOT-BUILD.txt"
+    - name: Independently audit P6-v10 stock-identity P7 retest boot image
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        python3 - <<'PY' | tee "$ARTIFACT_DIR/device-test/P6V10-BOOT-INDEPENDENT-AUDIT.txt"
+        import hashlib
+        import os
+        import struct
+        from pathlib import Path
+
+        root = Path(os.environ["ARTIFACT_DIR"])
+        name = os.environ["P6V10_TEST_BOOT_NAME"]
+        boot = (root / "device-test" / name).read_bytes()
+        image = (root / "build-a" / "Image").read_bytes()
+
+        def sha(b):
+            return hashlib.sha256(b).hexdigest()
+
+        def need(c, m):
+            if not c:
+                raise SystemExit("ERROR: " + m)
+
+        need(len(boot) == 134217728, "boot size")
+        need(boot[:8] == b"ANDROID!", "Android magic")
+
+        kernel_size = struct.unpack_from("<I", boot, 8)[0]
+        ramdisk_size = struct.unpack_from("<I", boot, 12)[0]
+        header_size = struct.unpack_from("<I", boot, 20)[0]
+        header_version = struct.unpack_from("<I", boot, 40)[0]
+
+        need(kernel_size == len(image), "kernel size")
+        need(header_size == 1580, "header size")
+        need(header_version == 3, "header version")
+        need(ramdisk_size == 22061278, "ramdisk size")
+
+        page = 4096
+        align = lambda n: (n + page - 1) // page * page
+        ramdisk_offset = page + align(kernel_size)
+
+        kernel = boot[page:page + kernel_size]
+        ramdisk = boot[ramdisk_offset:ramdisk_offset + ramdisk_size]
+
+        need(kernel == image, "embedded kernel byte identity")
+        need(sha(ramdisk) == os.environ["STOCK_RAMDISK_SHA256"], "stock ramdisk hash")
+
+        footer = boot[-64:]
+        need(footer[:4] == b"AVBf", "AVB footer")
+        major, minor = struct.unpack_from(">II", footer, 4)
+        original, vbmeta_offset, vbmeta_size = struct.unpack_from(">QQQ", footer, 12)
+        need((major, minor) == (1, 0), "AVB footer version")
+        need(original == vbmeta_offset, "AVB original/vbmeta offset")
+        need(vbmeta_size == 896, "vbmeta size")
+
+        vbmeta = boot[vbmeta_offset:vbmeta_offset + vbmeta_size]
+        need(vbmeta[:4] == b"AVB0", "vbmeta magic")
+        need(struct.unpack_from(">I", vbmeta, 28)[0] == 0, "vbmeta algorithm NONE")
+
+        auth_size, aux_size = struct.unpack_from(">QQ", vbmeta, 12)
+        vals = struct.unpack_from(">QQQQQQQQQQQ", vbmeta, 32)
+        desc_off, desc_size = vals[8], vals[9]
+        pos = 256 + auth_size + desc_off
+        end = pos + desc_size
+        found = None
+
+        while pos < end:
+            tag, following = struct.unpack_from(">QQ", vbmeta, pos)
+            raw = vbmeta[pos:pos + 16 + following]
+            need(len(raw) == 16 + following, "descriptor length")
+            if tag == 2:
+                image_size = struct.unpack_from(">Q", raw, 16)[0]
+                algo = raw[24:56].split(b"\0", 1)[0].decode()
+                name_len, salt_len, digest_len, flags = struct.unpack_from(">IIII", raw, 56)
+                q = 132
+                part = raw[q:q + name_len].decode()
+                q += name_len
+                salt = raw[q:q + salt_len]
+                q += salt_len
+                digest = raw[q:q + digest_len]
+                if part == "boot":
+                    need(found is None, "duplicate boot descriptor")
+                    found = (image_size, algo, salt, digest, flags)
+            pos += 16 + following
+
+        need(found is not None, "boot hash descriptor")
+        image_size, algo, salt, digest, flags = found
+        need(algo == "sha256", "descriptor hash algorithm")
+        need(flags == 0, "descriptor flags")
+        need(image_size == original, "descriptor image size")
+        calculated = hashlib.sha256(salt + boot[:image_size]).digest()
+        need(calculated == digest, "embedded AVB digest")
+
+        print("P6V10_BOOT_INDEPENDENT_AUDIT=PASS")
+        print("P6V10_BOOT_SHA256=" + sha(boot))
+        print("P6V10_IMAGE_SHA256=" + sha(image))
+        print("P6V10_STOCK_RAMDISK_SHA256=" + sha(ramdisk))
+        print("P6V10_EMBEDDED_AVB_VERIFIES=YES")
+        PY
+    - name: Final P6-v10 stock release identity + sucompat + calibrated P7 gate
+      working-directory: kernel
+      shell: bash
+      run: |2
+
+        set -euo pipefail
+        test "$(make -s kernelversion)" = "5.4.274"
+        test "$(git rev-parse HEAD^{tree})" = "$P6_SOURCE_TREE"
+        test -z "$(git status --porcelain)"
+        test "$(git -C KernelSU rev-parse HEAD)" = "$EXPECTED_RESUKISU_HEAD"
+        test "$(git -C KernelSU rev-parse HEAD^{tree})" = "$EXPECTED_RESUKISU_TREE"
+        test -z "$(git -C KernelSU status --porcelain)"
+
+        grep -Fq 'P6_FRESH_UPSTREAM_AUDIT=PASS' "$ARTIFACT_DIR/02-upstream-current.txt"
+        grep -Fq 'P6_NATIVE_SUSFS_ARCHITECTURE=PASS' "$ARTIFACT_DIR/05-hook-choice-audit.txt"
+        grep -Fq 'P6_SOURCE_INVARIANTS=PASS' "$ARTIFACT_DIR/06a-source-invariants.txt"
+        grep -Fq 'P6V9_FACCESSAT_CALLER_AUTHORIZATION_GATE=PASS' "$ARTIFACT_DIR/06b-p6v9-sucompat-caller-contract.txt"
+        grep -Fq 'P6V9_STAT_CALLER_AUTHORIZATION_GATE=PASS' "$ARTIFACT_DIR/06b-p6v9-sucompat-caller-contract.txt"
+        grep -Fq 'P6V9_UNPRIVILEGED_SU_REDIRECT_DISPATCH=NO' "$ARTIFACT_DIR/06b-p6v9-sucompat-caller-contract.txt"
+        grep -Fq 'P6V9_ALLOWED_SUCOMPAT_DISPATCH=YES' "$ARTIFACT_DIR/06b-p6v9-sucompat-caller-contract.txt"
+        grep -Fq 'P6V9_SUCOMPAT_CALLER_GATE_RESTORE_REPLAY=PASS' "$ARTIFACT_DIR/16-restore-replays.txt"
+        grep -Fq 'P6V10_STOCK_RELEASE_IDENTITY_RESTORE_REPLAY=PASS' "$ARTIFACT_DIR/16-restore-replays.txt"
+        grep -Fq 'P6V10_STOCK_KERNEL_RELEASE_IN_IMAGE=PASS' "$ARTIFACT_DIR/09b-stock-release-banner-audit.txt"
+        grep -Fq 'P6V10_POSITRON_IN_IMAGE=NO' "$ARTIFACT_DIR/09b-stock-release-banner-audit.txt"
+        grep -Fq 'P6V10_BUILD_B_STOCK_RELEASE_IDENTITY=PASS' "$ARTIFACT_DIR/13b-stock-release-banner-b-audit.txt"
+        test "$(cat "$ARTIFACT_DIR/07-kernelrelease.txt")" = "$STOCK_KERNEL_RELEASE"
+        grep -Fq 'P6V10_CALIBRATED_P7_RETEST_BOOT=PASS' "$ARTIFACT_DIR/device-test/P6V9-BOOT-BUILD.txt"
+        grep -Fq 'P6V10_BOOT_INDEPENDENT_AUDIT=PASS' "$ARTIFACT_DIR/device-test/P6V9-BOOT-INDEPENDENT-AUDIT.txt"
+        test -s "$ARTIFACT_DIR/device-test/$P6V10_TEST_BOOT_NAME"
+        test -s "$ARTIFACT_DIR/device-test/$P6V10_TEST_BOOT_NAME.sha256" 
+        grep -Fq 'P6_NEXT_COMPILER_ACTION=CANONICAL_FULL_BUILD_A' "$ARTIFACT_DIR/06a-source-invariants.txt"
+        grep -Fq 'P6_NATIVE_SUSFS_SOURCE_INTEGRATION=PASS' "$ARTIFACT_DIR/05a-source-integration.txt"
+        grep -Fq 'CLANG_R416183B_PINNED=PASS' "$ARTIFACT_DIR/06-toolchain.txt"
+        grep -Fq 'P6_BUILD_A_NATIVE_SUSFS_CONFIG=PASS' "$ARTIFACT_DIR/07-build-a-config.txt"
+        grep -Fq 'P6_BUILD_A_FULL_COMPILE=PASS' "$ARTIFACT_DIR/08-build-a.txt"
+        grep -Fq 'P6_BUILD_A_OPEN_REDIRECT_LINK=PASS' "$ARTIFACT_DIR/09-build-a-validation.txt"
+        grep -Fq 'P6_BUILD_A_NATIVE_INLINE_HOOK_LINK=PASS' "$ARTIFACT_DIR/09-build-a-validation.txt"
+        grep -Fq 'P6_BUILD_A_SUSFS_RUNTIME_INIT_LINK=PASS' "$ARTIFACT_DIR/09-build-a-validation.txt"
+        grep -Fq 'P6_BUILD_A_SOURCE_IMMUTABILITY=PASS' "$ARTIFACT_DIR/10-build-a-source.txt"
+        grep -Fq 'P6_BUILD_B_CLEAN_SAME_PATH_CONFIG=PASS' "$ARTIFACT_DIR/11-build-b-config.txt"
+        grep -Fq 'P6_BUILD_B_FULL_COMPILE=PASS' "$ARTIFACT_DIR/12-build-b.txt"
+        grep -Fq 'P6_IMAGE_REPRODUCIBLE=YES' "$ARTIFACT_DIR/13-reproducibility.txt"
+        grep -Fq 'P6_VEUX_DTB_REPRODUCIBLE=YES' "$ARTIFACT_DIR/13-reproducibility.txt"
+        grep -Fq 'P6_VMLINUX_REPRODUCIBLE=YES' "$ARTIFACT_DIR/13-reproducibility.txt"
+        grep -Fq 'P6_ALL_DTBS_REPRODUCIBLE=YES' "$ARTIFACT_DIR/13-reproducibility.txt"
+        grep -Fq 'P6_BUILD_B_FULL_LINK_CONTRACT=PASS' "$ARTIFACT_DIR/14-build-b-final.txt"
+        grep -Fq 'P6_PROVENANCE_PACKAGE=PASS' "$ARTIFACT_DIR/15-provenance-state.txt"
+        grep -Fq 'P6_SOURCE_RESTORE_REPLAY=PASS' "$ARTIFACT_DIR/16-restore-replays.txt"
+        grep -Fq 'P6_RESUKISU_RESTORE_REPLAY=PASS' "$ARTIFACT_DIR/16-restore-replays.txt"
+
+        test -s "$ARTIFACT_DIR/build-a/Image"
+        test -s "$ARTIFACT_DIR/build-a/veux.dtb"
+        test -s "$ARTIFACT_DIR/build-a/veux-5.4.274.base.config"
+        test -s "$ARTIFACT_DIR/build-a/EFFECTIVE-BUILD-CONFIG.txt"
+
+        {
+          echo "CLEAN_GEN1_P6V10_STOCK_RELEASE_SUCOMPAT_DETERMINISTIC_BUILD=PASS"
+          echo "KERNEL_VERSION=5.4.274"
+          echo "P6_PARENT_RUN_ID=$P6_PARENT_RUN_ID"
+          echo "P6_V7_FAILURE_CLASS=REAL_LINK_SPLIT_BRAIN_MANUAL_KBUILD_FORCED_SUSFS_CPP"
+          echo "P6_V7_HYBRID_MODEL_REJECTED=YES"
+          echo "P6_INPUT_STAGE=P5I_PLUS_NATIVE_SUSFS_5_4_COMPAT_PLUS_SUCOMPAT_CALLER_GATE"
+          echo "P6_PARENT_INPUT_COMMIT=$EXPECTED_P5I_COMMIT"
+          echo "P6_PARENT_INPUT_TREE=$EXPECTED_P5I_TREE"
+          echo "P6_SOURCE_COMMIT=$P6_SOURCE_COMMIT"
+          echo "P6_SOURCE_TREE=$P6_SOURCE_TREE"
+          echo "P6_RESUKISU_HEAD=$EXPECTED_RESUKISU_HEAD"
+          echo "P6_RESUKISU_TREE=$EXPECTED_RESUKISU_TREE"
+          echo "P6_KSU_VERSION=$EXPECTED_KSU_VERSION"
+          echo "P6_TOOLCHAIN=clang-r416183b"
+          echo "P6_CLANG_PREBUILT_COMMIT=$CLANG_PREBUILT_COMMIT"
+          echo "P6_EFFECTIVE_HOOK_MODE=NATIVE_KSU_SUSFS"
+          echo "P6_KCONFIG_KSU_MANUAL_HOOK=NO"
+          echo "P6_KCONFIG_KSU_SUSFS=YES"
+          echo "P6_KSU_CONFIG_CPP_FORCE=NO"
+          echo "P6_NATIVE_INLINE_HOOK_COUNT=7"
+          echo "P6_SUSFS_INIT_LINK=PASS"
+          echo "P6_SPLIT_BRAIN_KSU_INIT_RC_HOOK=ABSENT"
+          echo "P6_IMAGE_CREATED=YES"
+          echo "P6_DTB_BUILD_PERFORMED=YES"
+          echo "P6_VEUX_DTB_CREATED=YES"
+          echo "P6_IMAGE_REPRODUCIBLE=YES"
+          echo "P6_VEUX_DTB_REPRODUCIBLE=YES"
+          echo "P6_VMLINUX_REPRODUCIBLE=YES"
+          echo "P6_SYSTEM_MAP_REPRODUCIBLE=YES"
+          echo "P6_BASE_CONFIG_REPRODUCIBLE=YES"
+          echo "P6_ALL_DTBS_REPRODUCIBLE=YES"
+          echo "P6_REPRODUCIBILITY_SCOPE=SAME_RUN_CLEAN_REBUILD_SAME_ABSOLUTE_OUT_PATH"
+          echo "P6_FULL_LINK_NATIVE_INLINE_HOOKS=PASS"
+          echo "P6_FULL_LINK_SUSFS=PASS"
+          echo "P6_FULL_LINK_OPEN_REDIRECT=PASS"
+          echo "P6_SOURCE_MUTATION=YES_NATIVE_SUSFS_5_4_COMPAT_LAYER"
+          echo "P6_SOURCE_CHANGED_FILE_COUNT=11"
+          echo "P6_STATIC_EXPORT_WRITE_OP=YES"
+          echo "P6_STATIC_EXPORT_SEL_HANDLE_STATUS_OPS=YES"
+          echo "P6_SUSFS_DEF_CRED_INCLUDE=YES"
+          echo "P6_P4_STRUCT_FILENAME_BRIDGE_PRESERVED=YES"
+          echo "P6V9_SUCOMPAT_CALLER_GATE_FIX=PASS"
+          echo "P6V9_UNPRIVILEGED_SU_REDIRECT_DISPATCH=NO"
+          echo "P6V9_ALLOWED_SUCOMPAT_DISPATCH=YES"
+          echo "P6V9_RESUKISU_HANDLER_SOURCE_MODIFIED=NO"
+          echo "P6V9_REAL_DEVICE_FINDING_ADDRESSED=SYSTEM_BIN_SU_FALSE_VISIBILITY"
+          echo "P6V10_STOCK_KERNEL_RELEASE_IDENTITY=PASS"
+          echo "P6V10_KERNEL_RELEASE=$STOCK_KERNEL_RELEASE"
+          echo "P6V10_POSITRON_IN_IMAGE=NO"
+          echo "P6V10_STOCK_BUILD_USER=$STOCK_KERNEL_BUILD_USER"
+          echo "P6V10_STOCK_BUILD_HOST=$STOCK_KERNEL_BUILD_HOST"
+          echo "P6V10_STOCK_BUILD_TIMESTAMP=$STOCK_KERNEL_BUILD_TIMESTAMP"
+          echo "P6V10_COMPILER_STRING_POLICY=TRUTHFUL_ACTUAL_TOOLCHAIN"
+          echo "P6_LAST_GOOD_SOURCE=P6_SOURCE_CHECKPOINT_AFTER_FULL_BUILD_PASS"
+          echo "MODULE_LOAD_FILTER_INCLUDED=NO"
+          echo "BOOT_IMAGE_CREATED=YES"
+          echo "P6V10_TEST_BOOT_NAME=$P6V10_TEST_BOOT_NAME"
+          echo "P6V10_TEST_BOOT_SHA256=$(sha256sum "$ARTIFACT_DIR/device-test/$P6V10_TEST_BOOT_NAME" | awk '{print $1}')"
+          echo "P6V10_HISTORICAL_FINAL_BOOT_CALIBRATION=PASS"
+          echo "P6V10_STOCK_RAMDISK_PRESERVED=YES"
+          echo "P6V10_EMBEDDED_AVB_VERIFIES=YES"
+          echo "FLASHABLE_ZIP_CREATED=NO"
+          echo "DEVICE_ACCESSED=NO"
+          echo "FLASHING_PERFORMED=NO"
+          echo "NEXT_STAGE=CLEAN_GEN1_P7_STOCK_ID_AND_SU_VISIBILITY_REAL_DEVICE_RETEST"
+        } | tee "$ARTIFACT_DIR/17-result.txt"
+    - name: Preserve P6 failure evidence
+      if: always()
+      shell: bash
+      run: |2
+
+        set +e
+        mkdir -p "$ARTIFACT_DIR"
+        {
+          echo "JOB_STATUS=${{ job.status }}"
+          if [ -d "$GITHUB_WORKSPACE/kernel/.git" ]; then
+            echo "OUTER_HEAD=$(git -C "$GITHUB_WORKSPACE/kernel" rev-parse HEAD 2>/dev/null || true)"
+            echo "OUTER_TREE=$(git -C "$GITHUB_WORKSPACE/kernel" rev-parse HEAD^{tree} 2>/dev/null || true)"
+            echo "OUTER_STATUS_BEGIN"
+            git -C "$GITHUB_WORKSPACE/kernel" status --porcelain 2>/dev/null || true
+            echo "OUTER_STATUS_END"
+          fi
+          if [ -d "$GITHUB_WORKSPACE/kernel/KernelSU/.git" ]; then
+            echo "RESUKISU_HEAD=$(git -C "$GITHUB_WORKSPACE/kernel/KernelSU" rev-parse HEAD 2>/dev/null || true)"
+            echo "RESUKISU_TREE=$(git -C "$GITHUB_WORKSPACE/kernel/KernelSU" rev-parse HEAD^{tree} 2>/dev/null || true)"
+            echo "RESUKISU_STATUS_BEGIN"
+            git -C "$GITHUB_WORKSPACE/kernel/KernelSU" status --porcelain 2>/dev/null || true
+            echo "RESUKISU_STATUS_END"
+          fi
+          if [ -n "${OUT_DIR:-}" ] && [ -d "$OUT_DIR" ]; then
+            echo "IMAGE_EXISTS=$(test -s "$OUT_DIR/arch/arm64/boot/Image" && echo YES || echo NO)"
+            echo "VEUX_DTB_EXISTS=$(test -s "$OUT_DIR/arch/arm64/boot/dts/vendor/xiaomi/veux.dtb" && echo YES || echo NO)"
+            echo "VMLINUX_EXISTS=$(test -s "$OUT_DIR/vmlinux" && echo YES || echo NO)"
+          fi
+        } > "$ARTIFACT_DIR/99-job-end-state.txt"
+
+        find "$ARTIFACT_DIR" -maxdepth 3 -type f -printf '%P\n' \
+          | sort > "$ARTIFACT_DIR/99-artifact-file-list.txt"
+        exit 0
+    - name: Upload P6-v10 stock-identity deterministic build and P7 retest boot 
+        evidence
+      if: always()
+      uses: actions/upload-artifact@v7
+      with:
+        name: clean-gen1-p6v10-stock-kernel-release-sucompat-p7-boot-v1-${{ 
+          github.run_id }}
+        path: clean-gen1-p6/
+        if-no-files-found: error
+        retention-days: 90
