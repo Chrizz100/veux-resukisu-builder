@@ -1,0 +1,616 @@
+name: CLEAN GEN1 P6-v10 v3 - VEUX stock module contract repair
+
+'on':
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: clean-gen1-p6v10-v3-stock-module-contract
+  cancel-in-progress: false
+
+env:
+  BUILDER_REFERENCE_REPO: Chrizz100/veux-resukisu-builder
+  BUILDER_REFERENCE_REF: 473fd3821412fd43e0d650dab07467350fce394f
+  BUILDER_REFERENCE_WORKFLOW: .github/workflows/clean-gen1-p6v10-stock-kernel-release-sucompat-p7-boot-v2.yml
+  BUILDER_REFERENCE_WORKFLOW_BLOB: 64199f096ab4171e1234d1fba723559d384b4e10
+  VENDOR_REPO: dereference23/kernel_xiaomi_sm6375
+  VENDOR_TAG: '20240619'
+  EXPECTED_VENDOR_SHA: b2b7a3bbc36d120ee523ebc8d68e0f13a97df632
+  P5I_RUN_ID: '33513399363'
+  P5I_ARTIFACT_NAME: clean-gen1-p5i-proc-maps-open-redirect-srcu-v1-33513399363
+  P8_V1_RUN_ID: '33665257535'
+  P6_V10_V2_RUN_ID: '33603757875'
+  P6_V10_V3_ARTIFACT: clean-gen1-p6-v10-v3-veux-a13-stock-module-contract
+
+jobs:
+  p6-v10-v3-module-contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+
+    steps:
+      - name: Checkout pinned builder reference containing accepted P6-v10-v2
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ env.BUILDER_REFERENCE_REPO }}
+          ref: ${{ env.BUILDER_REFERENCE_REF }}
+          path: builder-reference
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Checkout exact VEUX vendor source
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ env.VENDOR_REPO }}
+          ref: ${{ env.VENDOR_TAG }}
+          path: kernel
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Stage accepted P5I artifact
+        uses: actions/download-artifact@v7
+        with:
+          name: ${{ env.P5I_ARTIFACT_NAME }}
+          path: p5i-staged
+          github-token: ${{ github.token }}
+          run-id: ${{ env.P5I_RUN_ID }}
+
+      - name: Authenticate replay inputs and install YAML parser
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ref="$GITHUB_WORKSPACE/builder-reference/$BUILDER_REFERENCE_WORKFLOW"
+          test -s "$ref"
+          test "$(git hash-object "$ref")" = "$BUILDER_REFERENCE_WORKFLOW_BLOB"
+
+          test "$(git -C "$GITHUB_WORKSPACE/kernel" rev-parse HEAD)" = "$EXPECTED_VENDOR_SHA"
+          test -n "$(find "$GITHUB_WORKSPACE/p5i-staged" -mindepth 1 -maxdepth 2 -print -quit)"
+
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends python3-yaml
+
+          {
+            echo "P6V10_V3_REFERENCE_WORKFLOW_AUTH=PASS"
+            echo "P6V10_V3_REFERENCE_REF=$BUILDER_REFERENCE_REF"
+            echo "P6V10_V3_REFERENCE_WORKFLOW_BLOB=$BUILDER_REFERENCE_WORKFLOW_BLOB"
+            echo "P6V10_V3_VENDOR_SHA=$EXPECTED_VENDOR_SHA"
+            echo "P6V10_V3_P5I_RUN_ID=$P5I_RUN_ID"
+            echo "P6V10_V3_P8_V1_RUN_ID=$P8_V1_RUN_ID"
+          } | tee "$RUNNER_TEMP/p6v10-v3-reference-auth.txt"
+
+      - name: Replay accepted P6-v10-v2 source/build path with narrow stock module repair
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 <<'PY'
+          import hashlib
+          import json
+          import os
+          import re
+          import shutil
+          import subprocess
+          import tempfile
+          from pathlib import Path
+
+          import yaml
+
+          root = Path(os.environ["GITHUB_WORKSPACE"])
+          ref_path = root / "builder-reference" / os.environ["BUILDER_REFERENCE_WORKFLOW"]
+          data = yaml.safe_load(ref_path.read_text(encoding="utf-8"))
+
+          job_name = "p6-deterministic-image-dtb"
+          try:
+              job = data["jobs"][job_name]
+          except Exception as exc:
+              raise SystemExit(f"ERROR: pinned reference job missing: {exc}")
+
+          env = os.environ.copy()
+
+          def resolve(value):
+              if value is None:
+                  return ""
+              value = str(value)
+              replacements = {
+                  "${{ github.workspace }}": env["GITHUB_WORKSPACE"],
+                  "${{ github.repository }}": env.get("GITHUB_REPOSITORY", ""),
+                  "${{ github.run_id }}": env.get("GITHUB_RUN_ID", ""),
+              }
+              for old, new in replacements.items():
+                  value = value.replace(old, new)
+              return value
+
+          for key, value in (job.get("env") or {}).items():
+              env[str(key)] = resolve(value)
+
+          env["P6V10_V3_TRIGGER"] = "P8_V1_STOCK_MODULE_CONTRACT_MISMATCH"
+          env["P6V10_V3_P8_RUN_ID"] = os.environ["P8_V1_RUN_ID"]
+          env["P6V10_V3_PARENT_RUN_ID"] = os.environ["P6_V10_V2_RUN_ID"]
+          env["P6V10_V3_REFERENCE_REF"] = os.environ["BUILDER_REFERENCE_REF"]
+          env["P6V10_V3_REFERENCE_WORKFLOW_BLOB"] = os.environ["BUILDER_REFERENCE_WORKFLOW_BLOB"]
+
+          staged_p5i = root / "p5i-staged"
+          live_p5i = root / "p5i-artifact"
+
+          github_env = Path(env["GITHUB_ENV"])
+          github_path = Path(env["GITHUB_PATH"])
+          env_pos = github_env.stat().st_size if github_env.exists() else 0
+          path_pos = github_path.stat().st_size if github_path.exists() else 0
+
+          def absorb_github_env():
+              global env_pos, path_pos
+
+              if github_env.exists():
+                  raw = github_env.read_text(encoding="utf-8", errors="strict")
+                  new = raw[env_pos:]
+                  env_pos = len(raw)
+                  lines = new.splitlines()
+                  i = 0
+                  while i < len(lines):
+                      line = lines[i]
+                      if "<<" in line:
+                          key, delim = line.split("<<", 1)
+                          key = key.strip()
+                          delim = delim.strip()
+                          i += 1
+                          vals = []
+                          while i < len(lines) and lines[i] != delim:
+                              vals.append(lines[i])
+                              i += 1
+                          if i >= len(lines):
+                              raise SystemExit(f"ERROR: unterminated GITHUB_ENV block for {key}")
+                          env[key] = "\n".join(vals)
+                      elif "=" in line:
+                          key, value = line.split("=", 1)
+                          env[key] = value
+                      elif line.strip():
+                          raise SystemExit(f"ERROR: unsupported GITHUB_ENV line: {line!r}")
+                      i += 1
+
+              if github_path.exists():
+                  raw = github_path.read_text(encoding="utf-8", errors="strict")
+                  new = raw[path_pos:]
+                  path_pos = len(raw)
+                  additions = [x for x in new.splitlines() if x]
+                  if additions:
+                      env["PATH"] = os.pathsep.join(reversed(additions)) + os.pathsep + env["PATH"]
+
+          def run_bash(name, script, cwd):
+              print(f"\n===== P6-v10-v3 replay: {name} =====", flush=True)
+              fd, tmp = tempfile.mkstemp(prefix="p6v10-v3-", suffix=".sh")
+              os.close(fd)
+              path = Path(tmp)
+              path.write_text(script, encoding="utf-8")
+              try:
+                  proc = subprocess.run(
+                      ["bash", str(path)],
+                      cwd=str(cwd),
+                      env=env,
+                      check=False,
+                  )
+              finally:
+                  path.unlink(missing_ok=True)
+              if proc.returncode != 0:
+                  raise SystemExit(
+                      f"ERROR: reference step failed after v3 overlay: {name} rc={proc.returncode}"
+                  )
+              absorb_github_env()
+
+          def add_module_source_contract(script):
+              pattern = re.compile(
+                  r'(CONFIG_KSU_SUSFS_SUS_MAP=y\n)([ \t]*""",\n[ \t]*"VEUX native SUSFS defconfig",)'
+              )
+              addition = (
+                  "CONFIG_MODULES=y\n"
+                  "CONFIG_MODVERSIONS=y\n"
+                  "CONFIG_MODULE_UNLOAD=y\n"
+                  "# CONFIG_MODULE_FORCE_LOAD is not set\n"
+                  "# CONFIG_MODULE_FORCE_UNLOAD is not set\n"
+              )
+              script, count = pattern.subn(
+                  lambda m: m.group(1) + addition + m.group(2),
+                  script,
+                  count=1,
+              )
+              if count != 1:
+                  raise SystemExit(
+                      "ERROR: v3 overlay could not locate unique native SUSFS defconfig replacement"
+                  )
+              return script
+
+          module_config_gate = r"""
+          for required in \
+            'CONFIG_MODULES=y' \
+            'CONFIG_MODVERSIONS=y' \
+            'CONFIG_MODULE_UNLOAD=y' \
+            '# CONFIG_MODULE_FORCE_LOAD is not set' \
+            '# CONFIG_MODULE_FORCE_UNLOAD is not set'
+          do
+            grep -Fxq "$required" "$OUT_DIR/.config" || {
+              echo "::error::P6-v10-v3 stock module contract missing: $required"
+              exit 125
+            }
+          done
+          """
+
+          source_module_gate = r"""
+          for required in \
+            'CONFIG_MODULES=y' \
+            'CONFIG_MODVERSIONS=y' \
+            'CONFIG_MODULE_UNLOAD=y' \
+            '# CONFIG_MODULE_FORCE_LOAD is not set' \
+            '# CONFIG_MODULE_FORCE_UNLOAD is not set'
+          do
+            grep -Fxq "$required" arch/arm64/configs/veux_defconfig || {
+              echo "::error::P6-v10-v3 source module contract missing: $required"
+              exit 124
+            }
+          done
+          """
+
+          release_gate = r"""
+          P6V10_V3_KERNEL_RELEASE="$(
+            make -s O="$OUT_DIR" ARCH=arm64 CC=clang LD=ld.lld LLVM=1 LLVM_IAS=1 kernelrelease \
+              | tail -n1 | tr -d '\r'
+          )"
+          if [[ -z "$P6V10_V3_KERNEL_RELEASE" || "$P6V10_V3_KERNEL_RELEASE" == *%* ]]; then
+            echo "::error::Invalid generated kernel release: $P6V10_V3_KERNEL_RELEASE"
+            exit 126
+          fi
+          if [[ ! "$P6V10_V3_KERNEL_RELEASE" =~ ^[0-9]+\.[0-9]+\.[0-9]+[-+._A-Za-z0-9]*$ ]]; then
+            echo "::error::Unexpected generated kernel release syntax: $P6V10_V3_KERNEL_RELEASE"
+            exit 126
+          fi
+          test "$P6V10_V3_KERNEL_RELEASE" = "$STOCK_KERNEL_RELEASE"
+          printf '%s\n' "$P6V10_V3_KERNEL_RELEASE" > "$ARTIFACT_DIR/P6V10-V3-kernel-release.txt"
+          """
+
+          symvers_a_gate = r"""
+          test -s "$OUT_DIR/Module.symvers" || {
+            echo "::error::CONFIG_MODVERSIONS=y but Build A Module.symvers is missing or empty"
+            exit 127
+          }
+          cp "$OUT_DIR/Module.symvers" "$ARTIFACT_DIR/08-build-a-Module.symvers"
+          sha256sum "$ARTIFACT_DIR/08-build-a-Module.symvers" \
+            > "$ARTIFACT_DIR/08-build-a-Module.symvers.sha256"
+          """
+
+          symvers_b_gate = r"""
+          test -s "$OUT_DIR/Module.symvers" || {
+            echo "::error::CONFIG_MODVERSIONS=y but Build B Module.symvers is missing or empty"
+            exit 127
+          }
+          cmp -s "$OUT_DIR/Module.symvers" "$ARTIFACT_DIR/08-build-a-Module.symvers" || {
+            echo "::error::Build A/B Module.symvers mismatch"
+            exit 128
+          }
+          cp "$OUT_DIR/Module.symvers" "$ARTIFACT_DIR/12-build-b-Module.symvers"
+          sha256sum "$ARTIFACT_DIR/12-build-b-Module.symvers" \
+            > "$ARTIFACT_DIR/12-build-b-Module.symvers.sha256"
+          """
+
+          saw_source_overlay = False
+          saw_build_a = False
+          saw_build_b = False
+          saw_restore_replay = False
+          saw_download = False
+          saw_checkout = False
+
+          for step in job.get("steps", []):
+              name = str(step.get("name", "<unnamed>"))
+
+              if "uses" in step:
+                  use = str(step["uses"])
+                  if use.startswith("actions/checkout@"):
+                      saw_checkout = True
+                      continue
+                  if use.startswith("actions/download-artifact@"):
+                      if live_p5i.exists():
+                          shutil.rmtree(live_p5i)
+                      shutil.copytree(staged_p5i, live_p5i)
+                      if not any(live_p5i.iterdir()):
+                          raise SystemExit("ERROR: staged P5I artifact copy is empty")
+                      saw_download = True
+                      continue
+                  if use.startswith("actions/upload-artifact@"):
+                      break
+                  raise SystemExit(f"ERROR: unexpected reference action before v3 stop gate: {use}")
+
+              if "run" not in step:
+                  continue
+
+              script = str(step["run"])
+
+              if name.startswith("Initialize P6-v10"):
+                  old = (
+                      "A calibrated boot.img is created for P7 testing. No AnyKernel3 ZIP,\n"
+                      "device access or flashing is performed by this workflow."
+                  )
+                  new = (
+                      "P6-v10-v3 intentionally creates no boot.img and no AnyKernel3 ZIP.\n"
+                      "This workflow repairs and audits only the kernel/module ABI build contract;\n"
+                      "device bootability remains unclaimed until the later regional gate."
+                  )
+                  if old not in script:
+                      raise SystemExit("ERROR: v3 plan anchor missing in pinned v2")
+                  script = script.replace(old, new, 1)
+                  script += r"""
+
+          {
+            echo "P6V10_V3_TRIGGER=P8_V1_STOCK_MODULE_CONTRACT_MISMATCH"
+            echo "P6V10_V3_P8_RUN_ID=$P6V10_V3_P8_RUN_ID"
+            echo "P6V10_V3_PARENT_RUN_ID=$P6V10_V3_PARENT_RUN_ID"
+            echo "P6V10_V3_STOCK_MODULES=Y"
+            echo "P6V10_V3_STOCK_MODVERSIONS=Y"
+            echo "P6V10_V3_STOCK_MODULE_UNLOAD=Y"
+            echo "P6V10_V3_BOOT_IMAGE_CREATED=NO"
+            echo "P6V10_V3_BOOTABILITY_CLAIM=NONE"
+            echo "P6V10_V3_NEXT_GATE=P8_V2_REGIONAL_MODULE_ABI_AUDIT"
+          } >> "$ARTIFACT_DIR/00-plan.txt"
+          """
+
+              if "VEUX native SUSFS defconfig" in script:
+                  script = add_module_source_contract(script)
+                  script += source_module_gate
+                  saw_source_overlay = True
+
+              if name.startswith("Validate source invariants immediately before canonical Build A"):
+                  script += source_module_gate
+
+              if name.startswith("Configure clean Build A native SUSFS Kconfig"):
+                  script += module_config_gate
+                  script += release_gate
+
+              if name.startswith("Full Build A Image and dtbs"):
+                  script += symvers_a_gate
+                  saw_build_a = True
+
+              if name.startswith("Clean and configure Build B native SUSFS"):
+                  script += module_config_gate
+                  script += release_gate
+
+              if name.startswith("Full Build B Image and dtbs"):
+                  script += symvers_b_gate
+                  saw_build_b = True
+
+              if name.startswith("Replay complete P6 source restore independently after full builds"):
+                  script += source_module_gate
+
+              wd = resolve(step.get("working-directory") or ".")
+              cwd = Path(wd)
+              if not cwd.is_absolute():
+                  cwd = root / cwd
+
+              run_bash(name, script, cwd)
+
+              if name.startswith("Replay complete P6 source restore independently after full builds"):
+                  saw_restore_replay = True
+                  break
+
+          required = {
+              "reference checkout encountered": saw_checkout,
+              "P5I download boundary encountered": saw_download,
+              "source module overlay applied": saw_source_overlay,
+              "Build A executed": saw_build_a,
+              "Build B executed": saw_build_b,
+              "source restore replay executed": saw_restore_replay,
+          }
+          missing = [key for key, ok in required.items() if not ok]
+          if missing:
+              raise SystemExit("ERROR: incomplete pinned replay: " + ", ".join(missing))
+
+          art = Path(env["ARTIFACT_DIR"])
+          if not art.is_dir():
+              raise SystemExit("ERROR: P6 artifact directory missing after replay")
+
+          cfg = root / "kernel" / "out-p6" / ".config"
+          if not cfg.is_file():
+              raise SystemExit("ERROR: final Build B .config missing")
+
+          cfg_lines = set(cfg.read_text(encoding="utf-8").splitlines())
+          required_cfg = {
+              "CONFIG_MODULES=y",
+              "CONFIG_MODVERSIONS=y",
+              "CONFIG_MODULE_UNLOAD=y",
+              "# CONFIG_MODULE_FORCE_LOAD is not set",
+              "# CONFIG_MODULE_FORCE_UNLOAD is not set",
+          }
+          absent = sorted(required_cfg - cfg_lines)
+          if absent:
+              raise SystemExit("ERROR: final module config gate failed: " + ", ".join(absent))
+
+          sym_a = art / "08-build-a-Module.symvers"
+          sym_b = art / "12-build-b-Module.symvers"
+          if not sym_a.is_file() or sym_a.stat().st_size == 0:
+              raise SystemExit("ERROR: Build A Module.symvers evidence missing")
+          if not sym_b.is_file() or sym_b.stat().st_size == 0:
+              raise SystemExit("ERROR: Build B Module.symvers evidence missing")
+          if sym_a.read_bytes() != sym_b.read_bytes():
+              raise SystemExit("ERROR: final Module.symvers reproducibility gate failed")
+
+          eff = art / "05-effective-build-config.txt"
+          with eff.open("a", encoding="utf-8") as handle:
+              handle.write(
+                  "\nP6V10_V3_CONFIG_MODULES=YES\n"
+                  "P6V10_V3_CONFIG_MODVERSIONS=YES\n"
+                  "P6V10_V3_CONFIG_MODULE_UNLOAD=YES\n"
+                  "P6V10_V3_CONFIG_MODULE_FORCE_LOAD=NO\n"
+                  "P6V10_V3_CONFIG_MODULE_FORCE_UNLOAD=NO\n"
+                  "P6V10_V3_MODULE_SYMVERS_REPRODUCIBLE=YES\n"
+                  "P6V10_V3_BOOT_IMAGE_CREATED=NO\n"
+                  "P6V10_V3_BOOTABILITY_CLAIM=NONE\n"
+              )
+
+          prov = art / "15-provenance.txt"
+          with prov.open("a", encoding="utf-8") as handle:
+              handle.write(
+                  "\nP6V10_V3_TRIGGER=P8_V1_STOCK_MODULE_CONTRACT_MISMATCH\n"
+                  f"P6V10_V3_P8_RUN_ID={env['P6V10_V3_P8_RUN_ID']}\n"
+                  f"P6V10_V3_PARENT_RUN_ID={env['P6V10_V3_PARENT_RUN_ID']}\n"
+                  f"P6V10_V3_REFERENCE_REF={env['P6V10_V3_REFERENCE_REF']}\n"
+                  f"P6V10_V3_REFERENCE_WORKFLOW_BLOB={env['P6V10_V3_REFERENCE_WORKFLOW_BLOB']}\n"
+                  "P6V10_V3_STOCK_MODULE_CONTRACT=PASS\n"
+                  "P6V10_V3_MODULE_SYMVERS_REPRODUCIBLE=YES\n"
+                  "P6V10_V3_BOOT_IMAGE_CREATED=NO\n"
+                  "P6V10_V3_BOOTABILITY_CLAIM=NONE\n"
+                  "P6V10_V3_NEXT_GATE=P8_V2_REGIONAL_MODULE_ABI_AUDIT\n"
+              )
+
+          restore_manifest = art / "source-restore-kit" / "manifest.json"
+          if restore_manifest.is_file():
+              manifest = json.loads(restore_manifest.read_text(encoding="utf-8"))
+              manifest["p6_v10_v3_stock_module_contract"] = {
+                  "trigger": "P8_V1_STOCK_MODULE_CONTRACT_MISMATCH",
+                  "modules": True,
+                  "modversions": True,
+                  "module_unload": True,
+                  "module_force_load": False,
+                  "module_force_unload": False,
+                  "module_symvers_reproducible": True,
+                  "boot_image_created": False,
+                  "bootability_claim": "NONE",
+                  "next_gate": "P8_V2_REGIONAL_MODULE_ABI_AUDIT",
+              }
+              restore_manifest.write_text(
+                  json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+                  encoding="utf-8",
+              )
+
+          build_a = art / "build-a"
+          if not build_a.is_dir():
+              raise SystemExit("ERROR: build-a package missing")
+          shutil.copy2(sym_a, build_a / "Module.symvers")
+          shutil.copy2(eff, build_a / "EFFECTIVE-BUILD-CONFIG.txt")
+
+          release_file = art / "P6V10-V3-kernel-release.txt"
+          if not release_file.is_file():
+              raise SystemExit("ERROR: generated kernel-release evidence missing")
+          release = release_file.read_text(encoding="utf-8").strip()
+          if not release or "%" in release:
+              raise SystemExit(f"ERROR: invalid generated release evidence: {release!r}")
+          if release != env["STOCK_KERNEL_RELEASE"]:
+              raise SystemExit(
+                  f"ERROR: generated release {release!r} != stock {env['STOCK_KERNEL_RELEASE']!r}"
+              )
+
+          restore = art / "source-restore-kit"
+          if restore.is_dir():
+              files = [
+                  restore / "manifest.json",
+                  restore / "p5i-to-p6-source-compat.patch",
+              ]
+              if not all(path.is_file() for path in files):
+                  raise SystemExit("ERROR: source restore kit incomplete")
+              lines = [
+                  f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}"
+                  for path in files
+              ]
+              (restore / "SHA256SUMS").write_text(
+                  "\n".join(lines) + "\n", encoding="utf-8"
+              )
+
+          build_files = [
+              build_a / "Image",
+              build_a / "veux.dtb",
+              build_a / "veux-5.4.274.base.config",
+              build_a / "EFFECTIVE-BUILD-CONFIG.txt",
+              build_a / "Module.symvers",
+          ]
+          if not all(path.is_file() and path.stat().st_size > 0 for path in build_files):
+              raise SystemExit("ERROR: v3 build-a package incomplete")
+          build_lines = [
+              f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}"
+              for path in build_files
+          ]
+          (build_a / "SHA256SUMS").write_text(
+              "\n".join(build_lines) + "\n", encoding="utf-8"
+          )
+
+          result = art / "P6V10-V3-RESULT.txt"
+          result.write_text(
+              "\n".join(
+                  [
+                      "P6V10_V3_RESULT=PASS",
+                      "P6V10_V3_DELTA=RESTORE_STOCK_LOADABLE_MODULE_CONTRACT",
+                      f"P6V10_V3_KERNEL_RELEASE={release}",
+                      "P6V10_V3_CONFIG_MODULES=Y",
+                      "P6V10_V3_CONFIG_MODVERSIONS=Y",
+                      "P6V10_V3_CONFIG_MODULE_UNLOAD=Y",
+                      "P6V10_V3_CONFIG_MODULE_FORCE_LOAD=N",
+                      "P6V10_V3_CONFIG_MODULE_FORCE_UNLOAD=N",
+                      "P6V10_V3_MODULE_SYMVERS_BUILD_A=PASS",
+                      "P6V10_V3_MODULE_SYMVERS_BUILD_B=PASS",
+                      "P6V10_V3_MODULE_SYMVERS_REPRODUCIBLE=YES",
+                      "P6V10_V3_KERNEL_RELEASE_SOURCE=MAKE_KERNELRELEASE",
+                      "P6V10_V3_BOOT_IMAGE_CREATED=NO",
+                      "P6V10_V3_FLASHING_PERFORMED=NO",
+                      "P6V10_V3_BOOTABILITY_CLAIM=NONE",
+                      "P6V10_V3_EEA_5_4_289_COMPATIBILITY=NOT_CLAIMED",
+                      "P6V10_V3_NEXT_GATE=P8_V2_REGIONAL_MODULE_ABI_AUDIT",
+                  ]
+              )
+              + "\n",
+              encoding="utf-8",
+          )
+
+          closure = art / "P6V10-V3-SHA256SUMS"
+          entries = []
+          for path in sorted(art.rglob("*")):
+              if not path.is_file() or path == closure:
+                  continue
+              rel = path.relative_to(art).as_posix()
+              entries.append(f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {rel}")
+          closure.write_text("\n".join(entries) + "\n", encoding="utf-8")
+
+          print("P6V10_V3_REPLAY_AND_MODULE_CONTRACT=PASS")
+          print(f"P6V10_V3_KERNEL_RELEASE={release}")
+          print("P6V10_V3_MODULE_SYMVERS_REPRODUCIBLE=YES")
+          print("P6V10_V3_BOOT_IMAGE_CREATED=NO")
+          print("P6V10_V3_BOOTABILITY_CLAIM=NONE")
+          print("P6V10_V3_NEXT_GATE=P8_V2_REGIONAL_MODULE_ABI_AUDIT")
+          PY
+
+      - name: Verify P6-v10-v3 artifact closure
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ARTIFACT_DIR="$GITHUB_WORKSPACE/clean-gen1-p6"
+          test -d "$ARTIFACT_DIR"
+          test -s "$ARTIFACT_DIR/P6V10-V3-RESULT.txt"
+          test -s "$ARTIFACT_DIR/P6V10-V3-SHA256SUMS"
+          test -s "$ARTIFACT_DIR/P6V10-V3-kernel-release.txt"
+          test -s "$ARTIFACT_DIR/build-a/Image"
+          test -s "$ARTIFACT_DIR/build-a/Module.symvers"
+          test -s "$ARTIFACT_DIR/08-build-a-Module.symvers"
+          test -s "$ARTIFACT_DIR/12-build-b-Module.symvers"
+
+          grep -Fxq 'P6V10_V3_RESULT=PASS' "$ARTIFACT_DIR/P6V10-V3-RESULT.txt"
+          grep -Fxq 'P6V10_V3_CONFIG_MODULES=Y' "$ARTIFACT_DIR/P6V10-V3-RESULT.txt"
+          grep -Fxq 'P6V10_V3_CONFIG_MODVERSIONS=Y' "$ARTIFACT_DIR/P6V10-V3-RESULT.txt"
+          grep -Fxq 'P6V10_V3_CONFIG_MODULE_UNLOAD=Y' "$ARTIFACT_DIR/P6V10-V3-RESULT.txt"
+          grep -Fxq 'P6V10_V3_MODULE_SYMVERS_REPRODUCIBLE=YES' "$ARTIFACT_DIR/P6V10-V3-RESULT.txt"
+          grep -Fxq 'P6V10_V3_BOOT_IMAGE_CREATED=NO' "$ARTIFACT_DIR/P6V10-V3-RESULT.txt"
+          grep -Fxq 'P6V10_V3_BOOTABILITY_CLAIM=NONE' "$ARTIFACT_DIR/P6V10-V3-RESULT.txt"
+
+          test "$(cat "$ARTIFACT_DIR/P6V10-V3-kernel-release.txt")" = \
+            '5.4.274-qgki-g82179e362f33'
+
+          (
+            cd "$ARTIFACT_DIR"
+            sha256sum -c P6V10-V3-SHA256SUMS
+          ) | tee "$RUNNER_TEMP/p6v10-v3-sha256-check.txt"
+
+          echo "P6V10_V3_FINAL_ARTIFACT_GATE=PASS"
+
+      - name: Upload P6-v10-v3 stock module contract build
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ env.P6_V10_V3_ARTIFACT }}-${{ github.run_id }}
+          path: clean-gen1-p6/
+          if-no-files-found: error
+          retention-days: 30
