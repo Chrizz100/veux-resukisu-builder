@@ -1,0 +1,848 @@
+name: CLEAN GEN1 P8 v7 - VEUX 5.4.274 QCOM conflict provenance audit
+
+'on':
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: clean-gen1-p8v7-veux-5-4-274-qcom-conflict-provenance
+  cancel-in-progress: false
+
+env:
+  TARGET_REGION_COUNT: '8'
+  TARGET_REGION_IDS: china,global,india,indonesia,japan,russia,taiwan,turkey
+  EEA_INCLUDED: 'NO'
+
+  P8V6_R2_RUN_ID: '33720177910'
+  P8V6_R2_ARTIFACT: clean-gen1-p8v6r2-veux-5.4.274-qcom-source-provenance-33720177910
+  P8V6_R2_ARTIFACT_DIGEST: bde526ecf77d5dd291c737db1fe036656c137e0f8fea828d3fcc6173951d2671
+
+  VENDOR_REPO: dereference23/kernel_xiaomi_sm6375
+  VENDOR_TAG_20240619: '20240619'
+  VENDOR_20240619_SHA: b2b7a3bbc36d120ee523ebc8d68e0f13a97df632
+
+  QCOM_5_4_268_BASE: 01f564dfc631489d652fe1fdacb8f096e31390d6
+  QCOM_5_4_274_MERGE: 13dd90963a13d7ed0aa628748fe521e328fa93af
+  QCOM_5_4_274_SECOND_PARENT: f60d08db833bc56f054420abe0c16e8ca60fb1a0
+
+  LATER_PUBLIC_TAG: '20240819'
+  LATER_PUBLIC_TAG_SHA: 494122af9e9875662d3113496b437652af466f7d
+  EXPECTED_LATER_PUBLIC_TAG_SUBLEVEL: '280'
+
+  EXPECTED_VENDOR_VS_QCOM268_MERGE_BASE: 9ed4117589b7526d841b543c99d9c666358a9fbc
+  EXPECTED_VENDOR_VS_20240819_MERGE_BASE: 2ade12f6b103f186b167d6f327d24afc7419ae4c
+  EXPECTED_QCOM274_VS_20240819_MERGE_BASE: 02194073f2cad4fa8642d4546a4b74c77b7e363a
+
+  EXPECTED_P8V6_DELTA_SHA256: 8a185e5e471b1e5857baaaeac0c460f3b6b674c4468ded1ee44b017b29d086f2
+  EXPECTED_P8V6_DELTA_BYTES: '18465771'
+  EXPECTED_P8V6_DELTA_CHANGED_FILE_COUNT: '743'
+  EXPECTED_P8V6_CONFLICT_COUNT: '4'
+
+jobs:
+  conflict-provenance:
+    name: Four-file source-lineage provenance without conflict resolution
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      WORK_DIR: ${{ github.workspace }}/p8v7
+      REPO_DIR: ${{ github.workspace }}/p8v7/repo
+      P8V6_DIR: ${{ github.workspace }}/p8v7/p8v6r2
+      EVIDENCE_DIR: ${{ github.workspace }}/p8v7/evidence
+      FILE_DIR: ${{ github.workspace }}/p8v7/file-versions
+
+    steps:
+      - name: Initialize green scientific-negative audit
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$WORK_DIR"
+          mkdir -p "$REPO_DIR" "$P8V6_DIR" "$EVIDENCE_DIR" "$FILE_DIR"
+
+          cat > "$EVIDENCE_DIR/00-plan.txt" <<'EOF'
+          CLEAN GEN1 P8-v7 - four-file QCOM conflict provenance audit
+
+          Parent:
+          P8-v6 r2 run 33720177910 is technically GREEN and completed its
+          scientific test. Its result is the explicit negative finding
+          QCOM_5_4_274_DELTA_REPLAY_CONFLICT.
+
+          P8-v6 r2 facts:
+          - exact QCOM 5.4.268 -> 5.4.274 first-parent delta:
+            SHA-256 8a185e5e471b1e5857baaaeac0c460f3b6b674c4468ded1ee44b017b29d086f2
+          - 18,465,771 bytes
+          - 743 changed files
+          - 4 unresolved three-way conflicts:
+              include/linux/timer.h
+              mm/mlock.c
+              mm/mprotect.c
+              mm/pgsize_migration.c
+          - manual conflict resolution performed: NO
+          - stock-config replay/build/CRC stages were correctly skipped.
+
+          P8-v7 purpose:
+          - preserve that green scientific-negative result;
+          - prove repository lineage relationships around the four conflicts;
+          - capture exact file blobs at:
+              VEUX 20240619
+              QCOM 5.4.268 first-parent base
+              QCOM 5.4.274 merge result
+              public 20240819 tag
+          - reproduce the four conflicts with git merge-file in OUTPUT-ONLY mode;
+          - determine whether the later public 20240819 file is byte-identical
+            to either conflict side or represents a distinct later state.
+
+          Explicitly NOT allowed:
+          - manual conflict resolution;
+          - selecting "ours" or "theirs" as a fix;
+          - copying 20240819 file content into a 5.4.274 tree;
+          - source patch;
+          - defconfig patch;
+          - kernel build;
+          - CRC/vermagic patch;
+          - boot image;
+          - flashable ZIP;
+          - device access/flashing;
+          - P9 authorization.
+
+          A later tag is evidence only. It is not automatically a valid
+          5.4.274 conflict resolution, especially if its lineage is divergent
+          or its kernel SUBLEVEL is not 274.
+          EOF
+
+      - name: Download authenticated green P8-v6 r2 evidence
+        uses: actions/download-artifact@v7
+        with:
+          name: ${{ env.P8V6_R2_ARTIFACT }}
+          path: ${{ env.P8V6_DIR }}
+          github-token: ${{ github.token }}
+          run-id: ${{ env.P8V6_R2_RUN_ID }}
+
+      - name: Authenticate P8-v6 r2 scientific-negative parent
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test -s "$P8V6_DIR/SHA256SUMS"
+          (
+            cd "$P8V6_DIR"
+            sha256sum -c SHA256SUMS
+          ) > "$EVIDENCE_DIR/01-parent-sha256.txt"
+
+          grep -Fxq 'P8V6_RESULT=QCOM_5_4_274_DELTA_REPLAY_CONFLICT' \
+            "$P8V6_DIR/P8V6-RESULT.txt"
+          grep -Fxq 'P8V6_RETRY=R2' \
+            "$P8V6_DIR/P8V6-RESULT.txt"
+          grep -Fxq 'P8V6_MANUAL_CONFLICT_RESOLUTION_PERFORMED=NO' \
+            "$P8V6_DIR/P8V6-RESULT.txt"
+          grep -Fxq 'P8V6_KERNEL_CHANGE_AUTHORIZED=NO' \
+            "$P8V6_DIR/P8V6-RESULT.txt"
+          grep -Fxq 'P8V6_P9_RELEASE_AUTHORIZED=NO' \
+            "$P8V6_DIR/P8V6-RESULT.txt"
+
+          grep -Fxq "QCOM_DELTA_SHA256=$EXPECTED_P8V6_DELTA_SHA256" \
+            "$P8V6_DIR/03-qcom-delta-identity.txt"
+          grep -Fxq "QCOM_DELTA_BYTES=$EXPECTED_P8V6_DELTA_BYTES" \
+            "$P8V6_DIR/03-qcom-delta-identity.txt"
+          grep -Fxq "QCOM_DELTA_CHANGED_FILE_COUNT=$EXPECTED_P8V6_DELTA_CHANGED_FILE_COUNT" \
+            "$P8V6_DIR/03-qcom-delta-identity.txt"
+
+          cat > "$EVIDENCE_DIR/01-expected-conflicts.txt" <<'EOF'
+          include/linux/timer.h
+          mm/mlock.c
+          mm/mprotect.c
+          mm/pgsize_migration.c
+          EOF
+
+          sort "$P8V6_DIR/03-delta-conflicts.txt" \
+            > "$EVIDENCE_DIR/01-parent-conflicts.sorted.txt"
+          sort "$EVIDENCE_DIR/01-expected-conflicts.txt" \
+            > "$EVIDENCE_DIR/01-expected-conflicts.sorted.txt"
+
+          cmp \
+            "$EVIDENCE_DIR/01-parent-conflicts.sorted.txt" \
+            "$EVIDENCE_DIR/01-expected-conflicts.sorted.txt"
+
+          test "$(wc -l < "$EVIDENCE_DIR/01-parent-conflicts.sorted.txt")" \
+            = "$EXPECTED_P8V6_CONFLICT_COUNT"
+
+          {
+            echo "P8V7_PARENT_AUTH=PASS"
+            echo "P8V6_R2_RUN_ID=$P8V6_R2_RUN_ID"
+            echo "P8V6_R2_ARTIFACT_DIGEST=$P8V6_R2_ARTIFACT_DIGEST"
+            echo "P8V6_R2_JOB_REQUIRED_STATUS=SUCCESS"
+            echo "P8V6_R2_SCIENTIFIC_RESULT=QCOM_5_4_274_DELTA_REPLAY_CONFLICT"
+            echo "P8V6_R2_CONFLICT_COUNT=4"
+            echo "P8V6_R2_MANUAL_CONFLICT_RESOLUTION=NO"
+          } > "$EVIDENCE_DIR/01-parent-auth.txt"
+
+      - name: Initialize public repository object database
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git init -q "$REPO_DIR"
+          git -C "$REPO_DIR" remote add origin \
+            "https://github.com/$VENDOR_REPO.git"
+
+          for ref in \
+            "$VENDOR_20240619_SHA" \
+            "$QCOM_5_4_268_BASE" \
+            "$QCOM_5_4_274_MERGE" \
+            "$QCOM_5_4_274_SECOND_PARENT" \
+            "$LATER_PUBLIC_TAG_SHA" \
+            "$EXPECTED_VENDOR_VS_QCOM268_MERGE_BASE" \
+            "$EXPECTED_VENDOR_VS_20240819_MERGE_BASE" \
+            "$EXPECTED_QCOM274_VS_20240819_MERGE_BASE"
+          do
+            git -C "$REPO_DIR" fetch -q --no-tags --depth=1 origin "$ref"
+            git -C "$REPO_DIR" cat-file -e "$ref^{commit}"
+          done
+
+          test "$(
+            git -C "$REPO_DIR" show \
+              "$VENDOR_20240619_SHA:Makefile" \
+              | awk '/^SUBLEVEL = / {print $3; exit}'
+          )" = 268
+
+          test "$(
+            git -C "$REPO_DIR" show \
+              "$QCOM_5_4_268_BASE:Makefile" \
+              | awk '/^SUBLEVEL = / {print $3; exit}'
+          )" = 268
+
+          test "$(
+            git -C "$REPO_DIR" show \
+              "$QCOM_5_4_274_MERGE:Makefile" \
+              | awk '/^SUBLEVEL = / {print $3; exit}'
+          )" = 274
+
+          test "$(
+            git -C "$REPO_DIR" show \
+              "$LATER_PUBLIC_TAG_SHA:Makefile" \
+              | awk '/^SUBLEVEL = / {print $3; exit}'
+          )" = "$EXPECTED_LATER_PUBLIC_TAG_SUBLEVEL"
+
+      - name: Authenticate public tags and divergence relationships
+        shell: bash
+        env:
+          GH_API_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          api() {
+            curl \
+              --fail --location --silent --show-error \
+              --retry 5 --retry-delay 2 --retry-all-errors \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer $GH_API_TOKEN" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "$1"
+          }
+
+          tags_url="https://api.github.com/repos/$VENDOR_REPO/git/refs/tags"
+          api "$tags_url" > "$EVIDENCE_DIR/02-tags.json"
+
+          python3 - \
+            "$EVIDENCE_DIR/02-tags.json" \
+            "$EVIDENCE_DIR/02-tag-window.json" \
+            "$EVIDENCE_DIR/02-tag-window.txt" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          source, json_out, text_out = map(Path, sys.argv[1:])
+          tags = json.loads(source.read_text(encoding="utf-8"))
+
+          mapping = {}
+          for item in tags:
+              ref = item["ref"]
+              if not ref.startswith("refs/tags/"):
+                  continue
+              name = ref.split("/", 2)[2]
+              mapping[name] = item["object"]["sha"]
+
+          expected = {
+              "20240619": "b2b7a3bbc36d120ee523ebc8d68e0f13a97df632",
+              "20240819": "494122af9e9875662d3113496b437652af466f7d",
+          }
+          for name, sha in expected.items():
+              if mapping.get(name) != sha:
+                  raise SystemExit(
+                      f"public tag drift {name}: {mapping.get(name)!r}"
+                  )
+
+          chronological = sorted(
+              name for name in mapping
+              if name.isdigit() and len(name) == 8
+          )
+          between = [
+              name for name in chronological
+              if "20240619" < name < "20240819"
+          ]
+          if between:
+              raise SystemExit(
+                  f"unexpected public tags between 20240619 and 20240819: {between}"
+              )
+
+          result = {
+              "tag_20240619": expected["20240619"],
+              "tag_20240819": expected["20240819"],
+              "public_tags_strictly_between": between,
+              "public_tag_gap_count": len(between),
+          }
+          json_out.write_text(
+              json.dumps(result, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          text_out.write_text(
+              "\n".join([
+                  "P8V7_PUBLIC_TAG_WINDOW=PASS",
+                  "TAG_20240619_SHA=b2b7a3bbc36d120ee523ebc8d68e0f13a97df632",
+                  "TAG_20240819_SHA=494122af9e9875662d3113496b437652af466f7d",
+                  "PUBLIC_TAGS_STRICTLY_BETWEEN_20240619_AND_20240819=0",
+              ]) + "\n",
+              encoding="utf-8",
+          )
+          PY
+
+          compare() {
+            local left="$1"
+            local right="$2"
+            local output="$3"
+            api \
+              "https://api.github.com/repos/$VENDOR_REPO/compare/${left}...${right}" \
+              > "$output"
+          }
+
+          compare \
+            "$VENDOR_20240619_SHA" \
+            "$QCOM_5_4_268_BASE" \
+            "$EVIDENCE_DIR/02-compare-vendor-vs-qcom268.json"
+
+          compare \
+            "$VENDOR_20240619_SHA" \
+            "$LATER_PUBLIC_TAG_SHA" \
+            "$EVIDENCE_DIR/02-compare-vendor-vs-20240819.json"
+
+          compare \
+            "$QCOM_5_4_274_MERGE" \
+            "$LATER_PUBLIC_TAG_SHA" \
+            "$EVIDENCE_DIR/02-compare-qcom274-vs-20240819.json"
+
+          python3 - \
+            "$EVIDENCE_DIR/02-compare-vendor-vs-qcom268.json" \
+            "$EVIDENCE_DIR/02-compare-vendor-vs-20240819.json" \
+            "$EVIDENCE_DIR/02-compare-qcom274-vs-20240819.json" \
+            "$EVIDENCE_DIR/02-lineage.json" \
+            "$EVIDENCE_DIR/02-lineage.txt" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          p1, p2, p3, json_out, text_out = map(Path, sys.argv[1:])
+          a = json.loads(p1.read_text(encoding="utf-8"))
+          b = json.loads(p2.read_text(encoding="utf-8"))
+          c = json.loads(p3.read_text(encoding="utf-8"))
+
+          checks = [
+              (
+                  "vendor_vs_qcom268",
+                  a,
+                  "9ed4117589b7526d841b543c99d9c666358a9fbc",
+              ),
+              (
+                  "vendor_vs_20240819",
+                  b,
+                  "2ade12f6b103f186b167d6f327d24afc7419ae4c",
+              ),
+              (
+                  "qcom274_vs_20240819",
+                  c,
+                  "02194073f2cad4fa8642d4546a4b74c77b7e363a",
+              ),
+          ]
+
+          result = {}
+          for name, payload, expected_base in checks:
+              status = payload.get("status")
+              merge_base = payload.get("merge_base_commit", {}).get("sha")
+              if status != "diverged":
+                  raise SystemExit(
+                      f"{name}: expected diverged, got {status!r}"
+                  )
+              if merge_base != expected_base:
+                  raise SystemExit(
+                      f"{name}: merge-base drift {merge_base!r}"
+                  )
+              result[name] = {
+                  "status": status,
+                  "merge_base": merge_base,
+                  "ahead_by": payload.get("ahead_by"),
+                  "behind_by": payload.get("behind_by"),
+              }
+
+          json_out.write_text(
+              json.dumps(result, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          text_out.write_text(
+              "\n".join([
+                  "P8V7_LINEAGE_AUTH=PASS",
+                  "VENDOR_20240619_VS_QCOM268_STATUS=DIVERGED",
+                  "VENDOR_20240619_VS_QCOM268_MERGE_BASE=9ed4117589b7526d841b543c99d9c666358a9fbc",
+                  "VENDOR_20240619_VS_20240819_STATUS=DIVERGED",
+                  "VENDOR_20240619_VS_20240819_MERGE_BASE=2ade12f6b103f186b167d6f327d24afc7419ae4c",
+                  "QCOM274_VS_20240819_STATUS=DIVERGED",
+                  "QCOM274_VS_20240819_MERGE_BASE=02194073f2cad4fa8642d4546a4b74c77b7e363a",
+                  "LATER_TAG_IS_SAFE_AUTOMATIC_5_4_274_RESOLUTION=NO",
+              ]) + "\n",
+              encoding="utf-8",
+          )
+          PY
+
+      - name: Capture exact four-file versions and reproduce conflicts output-only
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cat > "$EVIDENCE_DIR/03-conflict-files.txt" <<'EOF'
+          include/linux/timer.h
+          mm/mlock.c
+          mm/mprotect.c
+          mm/pgsize_migration.c
+          EOF
+
+          python3 - \
+            "$REPO_DIR" \
+            "$EVIDENCE_DIR/03-conflict-files.txt" \
+            "$FILE_DIR" \
+            "$EVIDENCE_DIR/03-file-provenance.json" \
+            "$EVIDENCE_DIR/03-file-provenance.tsv" \
+            "$EVIDENCE_DIR/03-conflict-reproduction.txt" <<'PY'
+          import csv
+          import hashlib
+          import json
+          import subprocess
+          import sys
+          from pathlib import Path
+
+          repo = Path(sys.argv[1])
+          files_path = Path(sys.argv[2])
+          output_dir = Path(sys.argv[3])
+          json_out = Path(sys.argv[4])
+          tsv_out = Path(sys.argv[5])
+          conflict_out = Path(sys.argv[6])
+
+          refs = {
+              "vendor_20240619": "b2b7a3bbc36d120ee523ebc8d68e0f13a97df632",
+              "qcom_5_4_268": "01f564dfc631489d652fe1fdacb8f096e31390d6",
+              "qcom_5_4_274": "13dd90963a13d7ed0aa628748fe521e328fa93af",
+              "public_20240819": "494122af9e9875662d3113496b437652af466f7d",
+          }
+          files = [
+              line.strip()
+              for line in files_path.read_text(encoding="utf-8").splitlines()
+              if line.strip()
+          ]
+          if files != [
+              "include/linux/timer.h",
+              "mm/mlock.c",
+              "mm/mprotect.c",
+              "mm/pgsize_migration.c",
+          ]:
+              raise SystemExit(f"conflict file drift: {files}")
+
+          def run(*args, check=True, text=False):
+              return subprocess.run(
+                  args,
+                  cwd=repo,
+                  check=check,
+                  capture_output=True,
+                  text=text,
+              )
+
+          result = {
+              "files": {},
+              "conflict_count": 0,
+              "manual_resolution_performed": False,
+              "later_public_tag_sublevel": 280,
+              "later_tag_patch_authorized": False,
+          }
+          rows = []
+          conflict_lines = []
+
+          for path in files:
+              safe = path.replace("/", "__")
+              versions = {}
+              for label, ref in refs.items():
+                  proc = run(
+                      "git", "show", f"{ref}:{path}",
+                      check=False,
+                  )
+                  exists = proc.returncode == 0
+                  if not exists:
+                      versions[label] = {
+                          "exists": False,
+                          "sha256": None,
+                          "git_blob_sha": None,
+                          "bytes": 0,
+                      }
+                      continue
+
+                  data = proc.stdout
+                  target = output_dir / f"{safe}.{label}"
+                  target.write_bytes(data)
+
+                  blob = run(
+                      "git", "rev-parse", f"{ref}:{path}",
+                      text=True,
+                  ).stdout.strip()
+
+                  versions[label] = {
+                      "exists": True,
+                      "sha256": hashlib.sha256(data).hexdigest(),
+                      "git_blob_sha": blob,
+                      "bytes": len(data),
+                  }
+
+              # pgsize_migration.c is an add/add conflict: the file is absent in
+              # QCOM 5.4.268 but exists independently in both vendor and QCOM 274.
+              if path == "mm/pgsize_migration.c":
+                  if versions["qcom_5_4_268"]["exists"]:
+                      raise SystemExit(
+                          "pgsize_migration.c unexpectedly exists in QCOM 5.4.268"
+                      )
+                  ours = (output_dir / f"{safe}.vendor_20240619").read_bytes()
+                  theirs = (output_dir / f"{safe}.qcom_5_4_274").read_bytes()
+                  conflict = ours != theirs
+                  merge_mode = "ADD_ADD"
+                  merge_exit = 1 if conflict else 0
+                  merge_output = (
+                      b"<<<<<<< VENDOR_20240619\n"
+                      + ours
+                      + b"=======\n"
+                      + theirs
+                      + b">>>>>>> QCOM_5_4_274\n"
+                      if conflict
+                      else ours
+                  )
+              else:
+                  for label in (
+                      "vendor_20240619",
+                      "qcom_5_4_268",
+                      "qcom_5_4_274",
+                  ):
+                      if not versions[label]["exists"]:
+                          raise SystemExit(f"{path}: missing {label}")
+
+                  ours_path = output_dir / f"{safe}.vendor_20240619"
+                  base_path = output_dir / f"{safe}.qcom_5_4_268"
+                  theirs_path = output_dir / f"{safe}.qcom_5_4_274"
+
+                  proc = subprocess.run(
+                      [
+                          "git", "merge-file", "--diff3", "-p",
+                          str(ours_path), str(base_path), str(theirs_path),
+                      ],
+                      cwd=repo,
+                      capture_output=True,
+                  )
+                  merge_exit = proc.returncode
+                  merge_output = proc.stdout
+                  conflict = merge_exit == 1
+                  if merge_exit not in (0, 1):
+                      raise SystemExit(
+                          f"{path}: git merge-file failed rc={merge_exit}: "
+                          + proc.stderr.decode("utf-8", "replace")
+                      )
+                  merge_mode = "THREE_WAY"
+
+              merge_target = output_dir / f"{safe}.merge-preview.txt"
+              merge_target.write_bytes(merge_output)
+
+              if not conflict:
+                  raise SystemExit(
+                      f"{path}: expected reproducible conflict but merge was clean"
+                  )
+
+              result["conflict_count"] += 1
+
+              later = versions["public_20240819"]
+              vendor = versions["vendor_20240619"]
+              q274 = versions["qcom_5_4_274"]
+
+              later_equals_vendor = (
+                  later["exists"] == vendor["exists"]
+                  and later["sha256"] == vendor["sha256"]
+              )
+              later_equals_q274 = (
+                  later["exists"] == q274["exists"]
+                  and later["sha256"] == q274["sha256"]
+              )
+
+              if later_equals_vendor:
+                  later_class = "EQUALS_VENDOR_20240619"
+              elif later_equals_q274:
+                  later_class = "EQUALS_QCOM_5_4_274"
+              else:
+                  later_class = "DISTINCT_LATER_PUBLIC_STATE"
+
+              result["files"][path] = {
+                  "merge_mode": merge_mode,
+                  "merge_exit": merge_exit,
+                  "conflict_reproduced": conflict,
+                  "versions": versions,
+                  "later_public_state_class": later_class,
+                  "later_public_tag_is_5_4_274": False,
+                  "automatic_resolution_authorized": False,
+              }
+
+              conflict_lines.extend([
+                  f"FILE={path}",
+                  f"MERGE_MODE={merge_mode}",
+                  "CONFLICT_REPRODUCED=YES",
+                  f"LATER_PUBLIC_STATE_CLASS={later_class}",
+                  "LATER_PUBLIC_TAG_SUBLEVEL=280",
+                  "AUTOMATIC_RESOLUTION_AUTHORIZED=NO",
+                  "",
+              ])
+
+              for label, meta in versions.items():
+                  rows.append({
+                      "file": path,
+                      "version": label,
+                      "exists": "YES" if meta["exists"] else "NO",
+                      "bytes": meta["bytes"],
+                      "sha256": meta["sha256"] or "",
+                      "git_blob_sha": meta["git_blob_sha"] or "",
+                  })
+
+          if result["conflict_count"] != 4:
+              raise SystemExit(
+                  f"expected four reproduced conflicts, got {result['conflict_count']}"
+              )
+
+          json_out.write_text(
+              json.dumps(result, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+
+          with tsv_out.open("w", encoding="utf-8", newline="") as handle:
+              fields = [
+                  "file", "version", "exists", "bytes", "sha256", "git_blob_sha"
+              ]
+              writer = csv.DictWriter(
+                  handle, fieldnames=fields, delimiter="\t"
+              )
+              writer.writeheader()
+              writer.writerows(rows)
+
+          conflict_out.write_text(
+              "P8V7_CONFLICT_REPRODUCTION=PASS\n"
+              "CONFLICT_COUNT=4\n"
+              + "\n".join(conflict_lines)
+              + "MANUAL_CONFLICT_RESOLUTION_PERFORMED=NO\n"
+              "LATER_TAG_PATCH_AUTHORIZED=NO\n",
+              encoding="utf-8",
+          )
+          PY
+
+          grep -Fxq 'P8V7_CONFLICT_REPRODUCTION=PASS' \
+            "$EVIDENCE_DIR/03-conflict-reproduction.txt"
+          grep -Fxq 'CONFLICT_COUNT=4' \
+            "$EVIDENCE_DIR/03-conflict-reproduction.txt"
+          grep -Fxq 'MANUAL_CONFLICT_RESOLUTION_PERFORMED=NO' \
+            "$EVIDENCE_DIR/03-conflict-reproduction.txt"
+          grep -Fxq 'LATER_TAG_PATCH_AUTHORIZED=NO' \
+            "$EVIDENCE_DIR/03-conflict-reproduction.txt"
+
+      - name: Classify source-provenance evidence without selecting a fix
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - \
+            "$EVIDENCE_DIR/02-tag-window.json" \
+            "$EVIDENCE_DIR/02-lineage.json" \
+            "$EVIDENCE_DIR/03-file-provenance.json" \
+            "$EVIDENCE_DIR/P8V7-RESULT.json" \
+            "$EVIDENCE_DIR/P8V7-RESULT.txt" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          tags_path, lineage_path, files_path, json_out, text_out = map(
+              Path, sys.argv[1:]
+          )
+          tags = json.loads(tags_path.read_text(encoding="utf-8"))
+          lineage = json.loads(lineage_path.read_text(encoding="utf-8"))
+          files = json.loads(files_path.read_text(encoding="utf-8"))
+
+          if tags["public_tag_gap_count"] != 0:
+              raise SystemExit("unexpected release tag exists in audit window")
+          if files["conflict_count"] != 4:
+              raise SystemExit("four-file conflict proof not preserved")
+
+          for key, item in lineage.items():
+              if item["status"] != "diverged":
+                  raise SystemExit(f"lineage changed for {key}")
+
+          later_classes = {
+              path: entry["later_public_state_class"]
+              for path, entry in files["files"].items()
+          }
+
+          result = {
+              "stage": "CLEAN_GEN1_P8_V7_QCOM_CONFLICT_PROVENANCE_AUDIT",
+              "result": "CONFLICT_PROVENANCE_COLLECTED_NO_RESOLUTION_AUTHORIZED",
+              "parent_run": 33720177910,
+              "parent_job_green": True,
+              "parent_scientific_result": "QCOM_5_4_274_DELTA_REPLAY_CONFLICT",
+              "qcom_delta_changed_files": 743,
+              "conflict_count": 4,
+              "conflict_files": sorted(files["files"]),
+              "public_release_window": {
+                  "from_tag": "20240619",
+                  "from_sublevel": 268,
+                  "strictly_intermediate_public_tag_count": 0,
+                  "next_tag": "20240819",
+                  "next_tag_sublevel": 280,
+              },
+              "lineage": lineage,
+              "later_public_file_states": later_classes,
+              "interpretation": (
+                  "The four conflicts are reproducible source-lineage conflicts. "
+                  "The next public tag is 5.4.280 and is on a divergent lineage, "
+                  "so its file contents are evidence only and cannot be treated "
+                  "as an automatic 5.4.274 resolution."
+              ),
+              "safety": {
+                  "manual_conflict_resolution_performed": False,
+                  "ours_selected_as_fix": False,
+                  "theirs_selected_as_fix": False,
+                  "later_tag_content_selected_as_fix": False,
+                  "source_patch_applied": False,
+                  "defconfig_patch_applied": False,
+                  "kernel_build_performed": False,
+                  "crc_patched": False,
+                  "vermagic_patched": False,
+                  "boot_image_created": False,
+                  "flashable_zip_created": False,
+                  "device_accessed": False,
+                  "flashing_performed": False,
+                  "device_compatibility_proven": False,
+                  "kernel_change_authorized": False,
+                  "p9_release_authorized": False,
+              },
+              "next_gate": (
+                  "P8V8_IDENTIFY_PUBLIC_5_4_274_VEUX_LINEAGE_CANDIDATE_OR_STOP"
+              ),
+          }
+
+          json_out.write_text(
+              json.dumps(result, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          text_out.write_text(
+              "\n".join([
+                  "P8V7_RESULT=CONFLICT_PROVENANCE_COLLECTED_NO_RESOLUTION_AUTHORIZED",
+                  "P8V6_R2_PARENT_JOB_GREEN=YES",
+                  "P8V6_R2_PARENT_SCIENTIFIC_RESULT=QCOM_5_4_274_DELTA_REPLAY_CONFLICT",
+                  "QCOM_DELTA_CHANGED_FILE_COUNT=743",
+                  "CONFLICT_COUNT=4",
+                  "PUBLIC_TAG_20240619_SUBLEVEL=268",
+                  "PUBLIC_TAGS_STRICTLY_BETWEEN_20240619_AND_20240819=0",
+                  "PUBLIC_TAG_20240819_SUBLEVEL=280",
+                  "VENDOR_20240619_VS_20240819_LINEAGE=DIVERGED",
+                  "QCOM274_VS_20240819_LINEAGE=DIVERGED",
+                  "MANUAL_CONFLICT_RESOLUTION_PERFORMED=NO",
+                  "OURS_SELECTED_AS_FIX=NO",
+                  "THEIRS_SELECTED_AS_FIX=NO",
+                  "LATER_TAG_CONTENT_SELECTED_AS_FIX=NO",
+                  "SOURCE_PATCH_APPLIED=NO",
+                  "DEFCONFIG_PATCH_APPLIED=NO",
+                  "KERNEL_BUILD_PERFORMED=NO",
+                  "CRC_PATCHED=NO",
+                  "VERMAGIC_PATCHED=NO",
+                  "BOOT_IMAGE_CREATED=NO",
+                  "FLASHABLE_ZIP_CREATED=NO",
+                  "DEVICE_ACCESSED=NO",
+                  "FLASHING_PERFORMED=NO",
+                  "DEVICE_COMPATIBILITY_PROVEN=NO",
+                  "KERNEL_CHANGE_AUTHORIZED=NO",
+                  "P9_RELEASE_AUTHORIZED=NO",
+                  "NEXT_GATE=P8V8_IDENTIFY_PUBLIC_5_4_274_VEUX_LINEAGE_CANDIDATE_OR_STOP",
+              ]) + "\n",
+              encoding="utf-8",
+          )
+          PY
+
+          grep -Fxq \
+            'P8V7_RESULT=CONFLICT_PROVENANCE_COLLECTED_NO_RESOLUTION_AUTHORIZED' \
+            "$EVIDENCE_DIR/P8V7-RESULT.txt"
+          grep -Fxq 'P8V6_R2_PARENT_JOB_GREEN=YES' \
+            "$EVIDENCE_DIR/P8V7-RESULT.txt"
+          grep -Fxq 'CONFLICT_COUNT=4' \
+            "$EVIDENCE_DIR/P8V7-RESULT.txt"
+          grep -Fxq 'MANUAL_CONFLICT_RESOLUTION_PERFORMED=NO' \
+            "$EVIDENCE_DIR/P8V7-RESULT.txt"
+          grep -Fxq 'KERNEL_BUILD_PERFORMED=NO' \
+            "$EVIDENCE_DIR/P8V7-RESULT.txt"
+          grep -Fxq 'P9_RELEASE_AUTHORIZED=NO' \
+            "$EVIDENCE_DIR/P8V7-RESULT.txt"
+
+      - name: Close immutable green P8-v7 evidence package
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          mkdir -p "$EVIDENCE_DIR"
+
+          {
+            echo "JOB_STATUS=${{ job.status }}"
+            echo "P8V7_TARGET_REGION_COUNT=8"
+            echo "P8V7_TARGET_REGION_IDS=$TARGET_REGION_IDS"
+            echo "P8V7_EEA_INCLUDED=NO"
+            echo "P8V7_PARENT_P8V6_R2_RUN_ID=$P8V6_R2_RUN_ID"
+            echo "P8V7_PARENT_P8V6_R2_REQUIRED_JOB_STATUS=SUCCESS"
+            echo "P8V7_PARENT_P8V6_R2_SCIENTIFIC_RESULT=QCOM_5_4_274_DELTA_REPLAY_CONFLICT"
+            echo "P8V7_MANUAL_CONFLICT_RESOLUTION_PERFORMED=NO"
+            echo "P8V7_SOURCE_PATCH_APPLIED=NO"
+            echo "P8V7_DEFCONFIG_PATCH_APPLIED=NO"
+            echo "P8V7_KERNEL_BUILD_PERFORMED=NO"
+            echo "P8V7_CRC_PATCHED=NO"
+            echo "P8V7_VERMAGIC_PATCHED=NO"
+            echo "P8V7_BOOT_IMAGE_CREATED=NO"
+            echo "P8V7_FLASHABLE_ZIP_CREATED=NO"
+            echo "P8V7_DEVICE_ACCESSED=NO"
+            echo "P8V7_FLASHING_PERFORMED=NO"
+            echo "P8V7_DEVICE_COMPATIBILITY_PROVEN=NO"
+            echo "P8V7_KERNEL_CHANGE_AUTHORIZED=NO"
+            echo "P8V7_P9_RELEASE_AUTHORIZED=NO"
+          } > "$EVIDENCE_DIR/99-job-end-state.txt"
+
+          (
+            cd "$EVIDENCE_DIR" || exit 1
+            find . -type f \
+              ! -name 'FILES.txt' \
+              ! -name 'SHA256SUMS' \
+              ! -name 'SHA256SUMS.verify.txt' \
+              -printf '%P\n' | sort > FILES.txt
+            while IFS= read -r file; do
+              sha256sum "$file"
+            done < FILES.txt > SHA256SUMS
+            sha256sum -c SHA256SUMS > SHA256SUMS.verify.txt
+          )
+          exit 0
+
+      - name: Upload P8-v7 conflict provenance evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: clean-gen1-p8v7-veux-5.4.274-qcom-conflict-provenance-${{ github.run_id }}
+          path: ${{ env.EVIDENCE_DIR }}/
+          if-no-files-found: error
+          retention-days: 90
