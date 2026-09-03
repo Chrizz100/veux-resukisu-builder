@@ -1,0 +1,722 @@
+name: CLEAN GEN1 P8 v8 - VEUX 5.4.274 public lineage candidate audit
+
+'on':
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: clean-gen1-p8v8-veux-5-4-274-public-lineage-candidate
+  cancel-in-progress: false
+
+env:
+  TARGET_REGION_COUNT: '8'
+  TARGET_REGION_IDS: china,global,india,indonesia,japan,russia,taiwan,turkey
+  EEA_INCLUDED: 'NO'
+
+  P8V7_RUN_ID: '33721117592'
+  P8V7_ARTIFACT: clean-gen1-p8v7-veux-5.4.274-qcom-conflict-provenance-33721117592
+  P8V7_ARTIFACT_DIGEST: bb1207284e60817ab872f01f72cab984d7f2887e1e57b95199b76d9d97c72c5c
+
+  VENDOR_REPO: dereference23/kernel_xiaomi_sm6375
+  VENDOR_20240619_SHA: b2b7a3bbc36d120ee523ebc8d68e0f13a97df632
+  LATER_PUBLIC_TAG: '20240819'
+  LATER_PUBLIC_TAG_SHA: 494122af9e9875662d3113496b437652af466f7d
+  LATER_PUBLIC_TAG_SUBLEVEL: '280'
+
+  TARGET_SUBLEVEL: '274'
+  MIN_COVERAGE_SUBLEVEL: '268'
+  INITIAL_FETCH_DEPTH: '256'
+  MAX_FETCH_DEPTH: '16384'
+
+jobs:
+  public-lineage-candidate:
+    name: Identify a public first-parent VEUX 5.4.274 state or stop
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      WORK_DIR: ${{ github.workspace }}/p8v8
+      REPO_DIR: ${{ github.workspace }}/p8v8/repo
+      P8V7_DIR: ${{ github.workspace }}/p8v8/p8v7
+      EVIDENCE_DIR: ${{ github.workspace }}/p8v8/evidence
+
+    steps:
+      - name: Initialize evidence-only lineage search
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$WORK_DIR"
+          mkdir -p "$REPO_DIR" "$P8V7_DIR" "$EVIDENCE_DIR"
+
+          cat > "$EVIDENCE_DIR/00-plan.txt" <<'EOF'
+          CLEAN GEN1 P8-v8 - public 5.4.274 VEUX lineage candidate audit
+
+          Parent P8-v7:
+          - GitHub job success;
+          - scientific result:
+            CONFLICT_PROVENANCE_COLLECTED_NO_RESOLUTION_AUTHORIZED;
+          - four QCOM 5.4.268 -> 5.4.274 replay conflicts are reproducible;
+          - no manual conflict resolution was authorized;
+          - 20240819 is the next public tag after 20240619 and is Linux 5.4.280;
+          - 20240619, QCOM 5.4.274 and 20240819 are divergent lineages.
+
+          Purpose:
+          Search the FIRST-PARENT history leading to the public 20240819 tag
+          for the newest integrated state whose Makefile SUBLEVEL is exactly
+          274. This avoids selecting either side of the four P8-v7 conflicts.
+
+          A candidate is evidence only. It must:
+          - be a real first-parent ancestor of public tag 20240819;
+          - have Makefile SUBLEVEL=274;
+          - contain arch/arm64/configs/veux_defconfig;
+          - contain no conflict markers in the four P8-v7 conflict files.
+
+          If the fetched history reaches SUBLEVEL <=268 without any first-parent
+          5.4.274 state, the scientific result is STOP: no public first-parent
+          5.4.274 lineage candidate was found in this release lineage.
+
+          Explicit prohibitions:
+          - no merge conflict resolution;
+          - no "ours"/"theirs" selection;
+          - no source patch;
+          - no defconfig patch;
+          - no ReSukiSU/SUSFS restore;
+          - no kernel build;
+          - no CRC/vermagic patch;
+          - no boot image;
+          - no flashable ZIP;
+          - no device access/flashing;
+          - no compatibility claim;
+          - no P9 authorization.
+
+          A negative scientific result must still finish GREEN when the audit
+          completed as designed.
+          EOF
+
+      - name: Download green P8-v7 evidence
+        uses: actions/download-artifact@v7
+        with:
+          name: ${{ env.P8V7_ARTIFACT }}
+          path: ${{ env.P8V7_DIR }}
+          github-token: ${{ github.token }}
+          run-id: ${{ env.P8V7_RUN_ID }}
+
+      - name: Authenticate green P8-v7 parent
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test -s "$P8V7_DIR/SHA256SUMS"
+          (
+            cd "$P8V7_DIR"
+            sha256sum -c SHA256SUMS
+          ) > "$EVIDENCE_DIR/01-parent-sha256.txt"
+
+          grep -Fxq \
+            'P8V7_RESULT=CONFLICT_PROVENANCE_COLLECTED_NO_RESOLUTION_AUTHORIZED' \
+            "$P8V7_DIR/P8V7-RESULT.txt"
+          grep -Fxq 'JOB_STATUS=success' \
+            "$P8V7_DIR/99-job-end-state.txt"
+          grep -Fxq 'CONFLICT_COUNT=4' \
+            "$P8V7_DIR/P8V7-RESULT.txt"
+          grep -Fxq 'PUBLIC_TAG_20240619_SUBLEVEL=268' \
+            "$P8V7_DIR/P8V7-RESULT.txt"
+          grep -Fxq 'PUBLIC_TAG_20240819_SUBLEVEL=280' \
+            "$P8V7_DIR/P8V7-RESULT.txt"
+          grep -Fxq 'PUBLIC_TAGS_STRICTLY_BETWEEN_20240619_AND_20240819=0' \
+            "$P8V7_DIR/P8V7-RESULT.txt"
+          grep -Fxq 'MANUAL_CONFLICT_RESOLUTION_PERFORMED=NO' \
+            "$P8V7_DIR/P8V7-RESULT.txt"
+          grep -Fxq 'KERNEL_BUILD_PERFORMED=NO' \
+            "$P8V7_DIR/P8V7-RESULT.txt"
+          grep -Fxq 'P9_RELEASE_AUTHORIZED=NO' \
+            "$P8V7_DIR/P8V7-RESULT.txt"
+
+          test -s "$P8V7_DIR/03-file-provenance.json"
+
+          {
+            echo "P8V8_PARENT_AUTH=PASS"
+            echo "P8V7_RUN_ID=$P8V7_RUN_ID"
+            echo "P8V7_ARTIFACT_DIGEST=$P8V7_ARTIFACT_DIGEST"
+            echo "P8V7_JOB_STATUS=SUCCESS"
+            echo "P8V7_SCIENTIFIC_RESULT=CONFLICT_PROVENANCE_COLLECTED_NO_RESOLUTION_AUTHORIZED"
+            echo "P8V7_CONFLICT_COUNT=4"
+          } > "$EVIDENCE_DIR/01-parent-auth.txt"
+
+      - name: Fetch public 20240819 first-parent history progressively
+        id: discover
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git init -q "$REPO_DIR"
+          git -C "$REPO_DIR" remote add origin \
+            "https://github.com/$VENDOR_REPO.git"
+
+          git -C "$REPO_DIR" fetch -q \
+            --filter=blob:none \
+            --no-tags \
+            --depth="$INITIAL_FETCH_DEPTH" \
+            origin \
+            "$LATER_PUBLIC_TAG_SHA:refs/remotes/origin/p8v8-later"
+
+          cat > "$RUNNER_TEMP/p8v8-scan-lineage.py" <<'PY'
+          import json
+          import subprocess
+          import sys
+          from pathlib import Path
+
+          repo = Path(sys.argv[1])
+          later = sys.argv[2]
+          target = int(sys.argv[3])
+          coverage = int(sys.argv[4])
+          output = Path(sys.argv[5])
+
+          def run(*args, check=True):
+              return subprocess.run(
+                  args,
+                  cwd=repo,
+                  check=check,
+                  capture_output=True,
+                  text=True,
+              )
+
+          def show_sublevel(commit):
+              proc = run("git", "show", f"{commit}:Makefile", check=False)
+              if proc.returncode != 0:
+                  return None
+              for line in proc.stdout.splitlines():
+                  if line.startswith("SUBLEVEL = "):
+                      return int(line.split("=", 1)[1].strip())
+              return None
+
+          chain = run(
+              "git", "rev-list", "--first-parent", later
+          ).stdout.splitlines()
+          if not chain:
+              raise SystemExit("empty first-parent chain")
+
+          current_sublevel = show_sublevel(chain[0])
+          oldest_sublevel = show_sublevel(chain[-1])
+          if current_sublevel != 280:
+              raise SystemExit(
+                  f"later public tag sublevel drift: {current_sublevel}"
+              )
+
+          # Inspect only commits that changed Makefile to map public version
+          # transitions. This avoids treating merged side-branch version commits
+          # as an integrated first-parent state.
+          makefile_changes = run(
+              "git", "log", "--first-parent", "--format=%H",
+              later, "--", "Makefile"
+          ).stdout.splitlines()
+
+          transitions = []
+          for commit in makefile_changes:
+              sublevel = show_sublevel(commit)
+              if sublevel is None:
+                  continue
+              subject = run(
+                  "git", "show", "-s", "--format=%s", commit
+              ).stdout.strip()
+              transitions.append({
+                  "commit": commit,
+                  "sublevel": sublevel,
+                  "subject": subject,
+              })
+
+          # Find the newest actual first-parent commit whose tree still reports
+          # SUBLEVEL 274. Normally this is the first parent of the first later
+          # version transition above 274.
+          candidate = None
+          candidate_reason = None
+
+          if current_sublevel == target:
+              candidate = chain[0]
+              candidate_reason = "LATER_TAG_ITSELF_TARGET_SUBLEVEL"
+          else:
+              for item in transitions:
+                  if item["sublevel"] <= target:
+                      continue
+                  parent_proc = run(
+                      "git", "show", "-s", "--format=%P", item["commit"]
+                  )
+                  parents = parent_proc.stdout.strip().split()
+                  if not parents:
+                      continue
+                  first_parent = parents[0]
+                  parent_sublevel = show_sublevel(first_parent)
+                  if parent_sublevel == target:
+                      candidate = first_parent
+                      candidate_reason = (
+                          "LAST_FIRST_PARENT_STATE_BEFORE_HIGHER_SUBLEVEL_TRANSITION"
+                      )
+                      break
+
+          candidate_on_first_parent = False
+          if candidate is not None:
+              candidate_on_first_parent = candidate in set(chain)
+              if not candidate_on_first_parent:
+                  raise SystemExit(
+                      "discovered target candidate is not on first-parent chain"
+                  )
+              if show_sublevel(candidate) != target:
+                  raise SystemExit("candidate sublevel changed unexpectedly")
+
+          if candidate is not None:
+              status = "CANDIDATE_FOUND"
+          elif oldest_sublevel is not None and oldest_sublevel <= coverage:
+              status = "WINDOW_COVERED_NO_CANDIDATE"
+          else:
+              shallow = run(
+                  "git", "rev-parse", "--is-shallow-repository"
+              ).stdout.strip() == "true"
+              status = "NEED_DEEPEN" if shallow else "HISTORY_EXHAUSTED_NO_CANDIDATE"
+
+          result = {
+              "status": status,
+              "first_parent_commit_count": len(chain),
+              "current_sublevel": current_sublevel,
+              "oldest_fetched_sublevel": oldest_sublevel,
+              "makefile_transition_count": len(transitions),
+              "makefile_transitions": transitions,
+              "candidate_commit": candidate,
+              "candidate_reason": candidate_reason,
+              "candidate_on_first_parent": candidate_on_first_parent,
+          }
+          output.write_text(
+              json.dumps(result, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          PY
+
+          depth="$INITIAL_FETCH_DEPTH"
+          round=1
+          while :; do
+            python3 "$RUNNER_TEMP/p8v8-scan-lineage.py" \
+              "$REPO_DIR" \
+              refs/remotes/origin/p8v8-later \
+              "$TARGET_SUBLEVEL" \
+              "$MIN_COVERAGE_SUBLEVEL" \
+              "$EVIDENCE_DIR/02-lineage-scan.json"
+
+            status="$(
+              jq -r '.status' "$EVIDENCE_DIR/02-lineage-scan.json"
+            )"
+
+            {
+              echo "ROUND=$round"
+              echo "REQUESTED_DEPTH=$depth"
+              echo "STATUS=$status"
+              echo "FIRST_PARENT_COMMIT_COUNT=$(
+                jq -r '.first_parent_commit_count' \
+                  "$EVIDENCE_DIR/02-lineage-scan.json"
+              )"
+              echo "OLDEST_FETCHED_SUBLEVEL=$(
+                jq -r '.oldest_fetched_sublevel' \
+                  "$EVIDENCE_DIR/02-lineage-scan.json"
+              )"
+            } >> "$EVIDENCE_DIR/02-fetch-rounds.txt"
+
+            if [ "$status" != "NEED_DEEPEN" ]; then
+              break
+            fi
+
+            if [ "$depth" -ge "$MAX_FETCH_DEPTH" ]; then
+              echo "::error::History coverage still insufficient at max depth"
+              exit 41
+            fi
+
+            deepen="$depth"
+            git -C "$REPO_DIR" fetch -q \
+              --filter=blob:none \
+              --no-tags \
+              --deepen="$deepen" \
+              origin \
+              "$LATER_PUBLIC_TAG_SHA:refs/remotes/origin/p8v8-later"
+
+            depth=$((depth * 2))
+            round=$((round + 1))
+          done
+
+          final_status="$(
+            jq -r '.status' "$EVIDENCE_DIR/02-lineage-scan.json"
+          )"
+          candidate="$(
+            jq -r '.candidate_commit // empty' \
+              "$EVIDENCE_DIR/02-lineage-scan.json"
+          )"
+
+          {
+            echo "P8V8_LINEAGE_SEARCH=PASS"
+            echo "SEARCH_STATUS=$final_status"
+            echo "CANDIDATE_COMMIT=${candidate:-NONE}"
+            echo "MANUAL_CONFLICT_RESOLUTION_PERFORMED=NO"
+            echo "SOURCE_PATCH_APPLIED=NO"
+          } > "$EVIDENCE_DIR/02-lineage-search.txt"
+
+          echo "status=$final_status" >> "$GITHUB_OUTPUT"
+          echo "candidate=$candidate" >> "$GITHUB_OUTPUT"
+
+      - name: Authenticate candidate VEUX identity and four conflict-file states
+        id: candidate
+        if: steps.discover.outputs.status == 'CANDIDATE_FOUND'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          candidate="${{ steps.discover.outputs.candidate }}"
+          test -n "$candidate"
+
+          git -C "$REPO_DIR" cat-file -e "$candidate^{commit}"
+
+          sublevel="$(
+            git -C "$REPO_DIR" show "$candidate:Makefile" \
+              | awk '/^SUBLEVEL = / {print $3; exit}'
+          )"
+          test "$sublevel" = "$TARGET_SUBLEVEL"
+
+          git -C "$REPO_DIR" rev-list \
+            --first-parent refs/remotes/origin/p8v8-later \
+            | grep -Fxq "$candidate"
+
+          git -C "$REPO_DIR" cat-file -e \
+            "$candidate:arch/arm64/configs/veux_defconfig"
+
+          git -C "$REPO_DIR" ls-tree -r --name-only "$candidate" \
+            | grep -i 'veux' \
+            > "$EVIDENCE_DIR/03-candidate-veux-paths.txt"
+          test -s "$EVIDENCE_DIR/03-candidate-veux-paths.txt"
+
+          {
+            echo "CANDIDATE_COMMIT=$candidate"
+            echo "CANDIDATE_SUBLEVEL=$sublevel"
+            echo "CANDIDATE_SUBJECT=$(
+              git -C "$REPO_DIR" show -s --format=%s "$candidate"
+            )"
+            echo "CANDIDATE_COMMITTER_DATE=$(
+              git -C "$REPO_DIR" show -s --format=%cI "$candidate"
+            )"
+            echo "CANDIDATE_TREE=$(
+              git -C "$REPO_DIR" show -s --format=%T "$candidate"
+            )"
+            echo "CANDIDATE_FIRST_PARENT=$(
+              git -C "$REPO_DIR" show -s --format=%P "$candidate" \
+                | awk '{print $1}'
+            )"
+            echo "CANDIDATE_ON_20240819_FIRST_PARENT=YES"
+            echo "CANDIDATE_VEUX_DEFCONFIG_PRESENT=YES"
+          } > "$EVIDENCE_DIR/03-candidate-identity.txt"
+
+          python3 - \
+            "$REPO_DIR" \
+            "$candidate" \
+            "$P8V7_DIR/03-file-provenance.json" \
+            "$EVIDENCE_DIR/03-candidate-conflict-files.json" \
+            "$EVIDENCE_DIR/03-candidate-conflict-files.tsv" \
+            "$EVIDENCE_DIR/03-candidate-conflict-files.txt" <<'PY'
+          import csv
+          import hashlib
+          import json
+          import subprocess
+          import sys
+          from pathlib import Path
+
+          repo = Path(sys.argv[1])
+          candidate = sys.argv[2]
+          parent_path = Path(sys.argv[3])
+          json_out = Path(sys.argv[4])
+          tsv_out = Path(sys.argv[5])
+          text_out = Path(sys.argv[6])
+
+          parent = json.loads(parent_path.read_text(encoding="utf-8"))
+          paths = sorted(parent["files"])
+          expected = [
+              "include/linux/timer.h",
+              "mm/mlock.c",
+              "mm/mprotect.c",
+              "mm/pgsize_migration.c",
+          ]
+          if paths != expected:
+              raise SystemExit(f"P8-v7 conflict file drift: {paths}")
+
+          def run(*args, check=True):
+              return subprocess.run(
+                  args,
+                  cwd=repo,
+                  check=check,
+                  capture_output=True,
+              )
+
+          rows = []
+          result = {}
+          marker_tokens = (b"<<<<<<<", b"=======", b">>>>>>>")
+
+          for path in paths:
+              proc = run("git", "show", f"{candidate}:{path}", check=False)
+              if proc.returncode != 0:
+                  raise SystemExit(
+                      f"candidate lacks required conflict file: {path}"
+                  )
+              data = proc.stdout
+              if any(token in data for token in marker_tokens):
+                  raise SystemExit(
+                      f"candidate contains merge conflict marker: {path}"
+                  )
+
+              sha256 = hashlib.sha256(data).hexdigest()
+              blob = run(
+                  "git", "rev-parse", f"{candidate}:{path}"
+              ).stdout.decode().strip()
+
+              parent_versions = parent["files"][path]["versions"]
+              classes = []
+              for label, meta in parent_versions.items():
+                  if meta["exists"] and meta["sha256"] == sha256:
+                      classes.append(label)
+
+              if classes:
+                  state_class = "EQUALS_" + "_AND_".join(sorted(classes)).upper()
+              else:
+                  state_class = "DISTINCT_PUBLIC_5_4_274_STATE"
+
+              result[path] = {
+                  "candidate_blob_sha": blob,
+                  "candidate_sha256": sha256,
+                  "candidate_bytes": len(data),
+                  "state_class": state_class,
+                  "conflict_markers_present": False,
+                  "automatic_patch_authorized": False,
+              }
+              rows.append({
+                  "file": path,
+                  "candidate_blob_sha": blob,
+                  "candidate_sha256": sha256,
+                  "candidate_bytes": len(data),
+                  "state_class": state_class,
+              })
+
+          json_out.write_text(
+              json.dumps(result, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          with tsv_out.open("w", encoding="utf-8", newline="") as handle:
+              fields = [
+                  "file", "candidate_blob_sha", "candidate_sha256",
+                  "candidate_bytes", "state_class",
+              ]
+              writer = csv.DictWriter(
+                  handle, fieldnames=fields, delimiter="\t"
+              )
+              writer.writeheader()
+              writer.writerows(rows)
+
+          lines = [
+              "P8V8_CANDIDATE_CONFLICT_FILE_AUDIT=PASS",
+              "CONFLICT_FILE_COUNT=4",
+              "CONFLICT_MARKERS_PRESENT=NO",
+              "AUTOMATIC_PATCH_AUTHORIZED=NO",
+          ]
+          for row in rows:
+              lines.extend([
+                  f"FILE={row['file']}",
+                  f"STATE_CLASS={row['state_class']}",
+              ])
+          text_out.write_text(
+              "\n".join(lines) + "\n",
+              encoding="utf-8",
+          )
+          PY
+
+          grep -Fxq 'P8V8_CANDIDATE_CONFLICT_FILE_AUDIT=PASS' \
+            "$EVIDENCE_DIR/03-candidate-conflict-files.txt"
+          grep -Fxq 'CONFLICT_MARKERS_PRESENT=NO' \
+            "$EVIDENCE_DIR/03-candidate-conflict-files.txt"
+          grep -Fxq 'AUTOMATIC_PATCH_AUTHORIZED=NO' \
+            "$EVIDENCE_DIR/03-candidate-conflict-files.txt"
+
+          echo "result=PASS" >> "$GITHUB_OUTPUT"
+
+      - name: Record no-candidate scientific stop
+        if: steps.discover.outputs.status == 'WINDOW_COVERED_NO_CANDIDATE' || steps.discover.outputs.status == 'HISTORY_EXHAUSTED_NO_CANDIDATE'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          {
+            echo "P8V8_NO_CANDIDATE_EVIDENCE=PASS"
+            echo "SEARCH_STATUS=${{ steps.discover.outputs.status }}"
+            echo "TARGET_SUBLEVEL=$TARGET_SUBLEVEL"
+            echo "HISTORY_COVERAGE_REACHED_MIN_SUBLEVEL=$MIN_COVERAGE_SUBLEVEL"
+            echo "PUBLIC_FIRST_PARENT_5_4_274_CANDIDATE_FOUND=NO"
+            echo "SOURCE_PATCH_APPLIED=NO"
+            echo "KERNEL_BUILD_PERFORMED=NO"
+          } > "$EVIDENCE_DIR/03-no-candidate.txt"
+
+      - name: Build final green scientific classification
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          status="${{ steps.discover.outputs.status }}"
+          candidate="${{ steps.discover.outputs.candidate }}"
+
+          case "$status" in
+            CANDIDATE_FOUND)
+              test "${{ steps.candidate.outputs.result }}" = "PASS"
+              result="PUBLIC_FIRST_PARENT_5_4_274_VEUX_CANDIDATE_IDENTIFIED_NO_BUILD_AUTHORIZED"
+              next_gate="P8V9_REVIEW_AND_BASELINE_BUILD_IDENTIFIED_PUBLIC_5_4_274_CANDIDATE"
+              ;;
+            WINDOW_COVERED_NO_CANDIDATE|HISTORY_EXHAUSTED_NO_CANDIDATE)
+              result="NO_PUBLIC_FIRST_PARENT_5_4_274_VEUX_CANDIDATE_STOP"
+              next_gate="STOP_PUBLIC_SOURCE_PROVENANCE_INSUFFICIENT"
+              candidate="NONE"
+              ;;
+            *)
+              echo "::error::Unexpected lineage-search status: $status"
+              exit 52
+              ;;
+          esac
+
+          {
+            echo "P8V8_RESULT=$result"
+            echo "P8V7_PARENT_RUN_ID=$P8V7_RUN_ID"
+            echo "P8V7_PARENT_REQUIRED_STATUS=SUCCESS"
+            echo "PUBLIC_LINEAGE_SEARCH_STATUS=$status"
+            echo "PUBLIC_5_4_274_CANDIDATE_COMMIT=$candidate"
+            echo "MANUAL_CONFLICT_RESOLUTION_PERFORMED=NO"
+            echo "OURS_SELECTED_AS_FIX=NO"
+            echo "THEIRS_SELECTED_AS_FIX=NO"
+            echo "SOURCE_PATCH_APPLIED=NO"
+            echo "DEFCONFIG_PATCH_APPLIED=NO"
+            echo "RESUKISU_SUSFS_RESTORE_PERFORMED=NO"
+            echo "KERNEL_BUILD_PERFORMED=NO"
+            echo "CRC_PATCHED=NO"
+            echo "VERMAGIC_PATCHED=NO"
+            echo "BOOT_IMAGE_CREATED=NO"
+            echo "FLASHABLE_ZIP_CREATED=NO"
+            echo "DEVICE_ACCESSED=NO"
+            echo "FLASHING_PERFORMED=NO"
+            echo "DEVICE_COMPATIBILITY_PROVEN=NO"
+            echo "KERNEL_CHANGE_AUTHORIZED=NO"
+            echo "P9_RELEASE_AUTHORIZED=NO"
+            echo "NEXT_GATE=$next_gate"
+          } > "$EVIDENCE_DIR/P8V8-RESULT.txt"
+
+          python3 - \
+            "$EVIDENCE_DIR/P8V8-RESULT.txt" \
+            "$EVIDENCE_DIR/02-lineage-scan.json" \
+            "$EVIDENCE_DIR/P8V8-RESULT.json" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          text_path, scan_path, output = map(Path, sys.argv[1:])
+          values = {}
+          for line in text_path.read_text(encoding="utf-8").splitlines():
+              if "=" in line:
+                  key, value = line.split("=", 1)
+                  values[key] = value
+
+          scan = json.loads(scan_path.read_text(encoding="utf-8"))
+
+          result = {
+              "stage": "CLEAN_GEN1_P8_V8_PUBLIC_5_4_274_LINEAGE_CANDIDATE_AUDIT",
+              "result": values["P8V8_RESULT"],
+              "parent_run": 33721117592,
+              "parent_required_status": "SUCCESS",
+              "lineage_search": scan,
+              "candidate_commit": (
+                  None
+                  if values["PUBLIC_5_4_274_CANDIDATE_COMMIT"] == "NONE"
+                  else values["PUBLIC_5_4_274_CANDIDATE_COMMIT"]
+              ),
+              "safety": {
+                  "manual_conflict_resolution_performed": False,
+                  "ours_selected_as_fix": False,
+                  "theirs_selected_as_fix": False,
+                  "source_patch_applied": False,
+                  "defconfig_patch_applied": False,
+                  "resukisu_susfs_restore_performed": False,
+                  "kernel_build_performed": False,
+                  "crc_patched": False,
+                  "vermagic_patched": False,
+                  "boot_image_created": False,
+                  "flashable_zip_created": False,
+                  "device_accessed": False,
+                  "flashing_performed": False,
+                  "device_compatibility_proven": False,
+                  "kernel_change_authorized": False,
+                  "p9_release_authorized": False,
+              },
+              "next_gate": values["NEXT_GATE"],
+          }
+          output.write_text(
+              json.dumps(result, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          PY
+
+          grep -Fxq 'P8V7_PARENT_REQUIRED_STATUS=SUCCESS' \
+            "$EVIDENCE_DIR/P8V8-RESULT.txt"
+          grep -Fxq 'MANUAL_CONFLICT_RESOLUTION_PERFORMED=NO' \
+            "$EVIDENCE_DIR/P8V8-RESULT.txt"
+          grep -Fxq 'KERNEL_BUILD_PERFORMED=NO' \
+            "$EVIDENCE_DIR/P8V8-RESULT.txt"
+          grep -Fxq 'P9_RELEASE_AUTHORIZED=NO' \
+            "$EVIDENCE_DIR/P8V8-RESULT.txt"
+
+      - name: Close immutable P8-v8 evidence package
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          mkdir -p "$EVIDENCE_DIR"
+
+          {
+            echo "JOB_STATUS=${{ job.status }}"
+            echo "P8V8_TARGET_REGION_COUNT=8"
+            echo "P8V8_TARGET_REGION_IDS=$TARGET_REGION_IDS"
+            echo "P8V8_EEA_INCLUDED=NO"
+            echo "P8V8_PARENT_P8V7_RUN_ID=$P8V7_RUN_ID"
+            echo "P8V8_PARENT_P8V7_REQUIRED_STATUS=SUCCESS"
+            echo "P8V8_MANUAL_CONFLICT_RESOLUTION_PERFORMED=NO"
+            echo "P8V8_SOURCE_PATCH_APPLIED=NO"
+            echo "P8V8_DEFCONFIG_PATCH_APPLIED=NO"
+            echo "P8V8_RESUKISU_SUSFS_RESTORE_PERFORMED=NO"
+            echo "P8V8_KERNEL_BUILD_PERFORMED=NO"
+            echo "P8V8_CRC_PATCHED=NO"
+            echo "P8V8_VERMAGIC_PATCHED=NO"
+            echo "P8V8_BOOT_IMAGE_CREATED=NO"
+            echo "P8V8_FLASHABLE_ZIP_CREATED=NO"
+            echo "P8V8_DEVICE_ACCESSED=NO"
+            echo "P8V8_FLASHING_PERFORMED=NO"
+            echo "P8V8_DEVICE_COMPATIBILITY_PROVEN=NO"
+            echo "P8V8_KERNEL_CHANGE_AUTHORIZED=NO"
+            echo "P8V8_P9_RELEASE_AUTHORIZED=NO"
+          } > "$EVIDENCE_DIR/99-job-end-state.txt"
+
+          (
+            cd "$EVIDENCE_DIR" || exit 1
+            find . -type f \
+              ! -name 'FILES.txt' \
+              ! -name 'SHA256SUMS' \
+              ! -name 'SHA256SUMS.verify.txt' \
+              -printf '%P\n' | sort > FILES.txt
+            while IFS= read -r file; do
+              sha256sum "$file"
+            done < FILES.txt > SHA256SUMS
+            sha256sum -c SHA256SUMS > SHA256SUMS.verify.txt
+          )
+          exit 0
+
+      - name: Upload P8-v8 public lineage evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: clean-gen1-p8v8-veux-5.4.274-public-lineage-candidate-${{ github.run_id }}
+          path: ${{ env.EVIDENCE_DIR }}/
+          if-no-files-found: error
+          retention-days: 90
