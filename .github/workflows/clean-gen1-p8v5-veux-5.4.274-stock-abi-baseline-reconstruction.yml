@@ -1,0 +1,981 @@
+name: CLEAN GEN1 P8 v5 - VEUX 5.4.274 stock ABI baseline reconstruction
+
+'on':
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: clean-gen1-p8v5-veux-5-4-274-stock-abi-baseline
+  cancel-in-progress: false
+
+env:
+  TARGET_KERNEL_VERSION: '5.4.274'
+  STOCK_KERNEL_RELEASE: 5.4.274-qgki-g82179e362f33
+  TARGET_REGION_COUNT: '8'
+  TARGET_REGION_IDS: china,global,india,indonesia,japan,russia,taiwan,turkey
+  EEA_INCLUDED: 'NO'
+
+  P8V4_RUN_ID: '33715851349'
+  P8V4_ARTIFACT: clean-gen1-p8v4-veux-5.4.274-stock-module-abi-root-cause-33715851349
+  P8V4_ARTIFACT_DIGEST: a6bc6c381502428a368bb2110ea520da1a8d9b6c6dadd1e276ade616348bfe16
+
+  P8V3_R4_RUN_ID: '33714473183'
+  P8V3_R4_ARTIFACT: clean-gen1-p8v3r4-veux-5.4.274-normal-boot-module-crc-proof-33714473183
+  P8V3_R4_ARTIFACT_DIGEST: 02b2d90fb53a0bc6d5f4e34efee0ae884f8735bbd72b24ed70f399afb815a115
+
+  VENDOR_REPO: dereference23/kernel_xiaomi_sm6375
+  VENDOR_TAG: '20240619'
+  EXPECTED_VENDOR_SHA: b2b7a3bbc36d120ee523ebc8d68e0f13a97df632
+
+  STOCK_CLANG_REPO: https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86
+  STOCK_CLANG_PREBUILT_COMMIT: 4c6fbc28d3b078a5308894fc175f962bb26a5718
+  STOCK_CLANG_DIRNAME: clang-r383902b1
+  STOCK_CLANG_BUILD: '6877366'
+  STOCK_CLANG_REV: r383902b1
+  STOCK_CLANG_VERSION: '11.0.2'
+  STOCK_LLVM_COMMIT: b397f81060ce6d701042b782172ed13bee898b79
+
+  EXPECTED_STOCK_CONFIG_SHA256: 334536114ee2c11287bc73c20a18073bc4fcc4d59656991e43a16bb917c7c868
+  EXPECTED_OLD_CANDIDATE_MODULE_LAYOUT_CRC: '0x0221efb9'
+  EXPECTED_STOCK_GKI_MODULE_LAYOUT_CRC: '0x1e5b7ab7'
+  EXPECTED_STOCK_QGKI_MODULE_LAYOUT_CRC: '0x945d02f2'
+
+  EXPECTED_R4_KERNEL_MISMATCH_COUNT: '9456'
+  EXPECTED_R4_UNRESOLVED_IMPORT_COUNT: '1251'
+  EXPECTED_R4_KNOWN_FAILURE_PAIR_COUNT: '10707'
+  EXPECTED_R4_GKI_KNOWN_FAILURE_PAIR_COUNT: '8783'
+  EXPECTED_R4_QGKI_KNOWN_FAILURE_PAIR_COUNT: '1924'
+
+  KBUILD_BUILD_USER: builder
+  KBUILD_BUILD_HOST: pangu-build-component-vendor-345942-54r9t-tw0tk-tq90c
+  KBUILD_BUILD_TIMESTAMP: Thu Dec 5 14:47:59 UTC 2024
+  KBUILD_BUILD_VERSION: '1'
+  SOURCE_DATE_EPOCH: '1733410079'
+  BASELINE_EFFECTIVE_KCFLAGS: -D__ANDROID_COMMON_KERNEL__
+
+jobs:
+  stock-abi-baseline:
+    name: Pristine vendor source plus stock config and stock clang
+    runs-on: ubuntu-24.04
+    timeout-minutes: 220
+    env:
+      WORK_DIR: ${{ github.workspace }}/p8v5
+      KERNEL_DIR: ${{ github.workspace }}/p8v5/kernel
+      OUT_DIR: ${{ github.workspace }}/p8v5/out
+      P8V4_DIR: ${{ github.workspace }}/p8v5/p8v4
+      R4_DIR: ${{ github.workspace }}/p8v5/r4
+      TOOLCHAIN_DIR: ${{ github.workspace }}/p8v5/toolchain
+      ARTIFACT_DIR: ${{ github.workspace }}/p8v5/artifact
+
+    steps:
+      - name: Initialize evidence-only baseline reconstruction
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$WORK_DIR"
+          mkdir -p \
+            "$KERNEL_DIR" "$OUT_DIR" "$P8V4_DIR" "$R4_DIR" \
+            "$TOOLCHAIN_DIR" "$ARTIFACT_DIR"
+
+          cat > "$ARTIFACT_DIR/00-plan.txt" <<'EOF'
+          CLEAN GEN1 P8-v5 - VEUX 5.4.274 stock ABI baseline reconstruction
+
+          Purpose:
+          - test whether the pristine public VEUX vendor source can reproduce the
+            stock module ABI when replayed with the authenticated stock IKCONFIG,
+            exact stock Android clang generation and the already-used
+            __ANDROID_COMMON_KERNEL__ KCFLAGS input;
+          - compare that baseline against the exact 10,707 stock import/CRC pairs
+            which failed against the P8-v3 ReSukiSU/SUSFS candidate in R4;
+          - classify the result separately for the two stock module_layout families.
+
+          This is NOT a release-candidate build.
+          The pristine baseline intentionally contains no ReSukiSU/SUSFS restore.
+
+          Parent facts:
+          - P8-v4 authenticated stock IKCONFIG SHA-256
+            334536114ee2c11287bc73c20a18073bc4fcc4d59656991e43a16bb917c7c868.
+          - P8-v4 proved the P8-v3 candidate config differs from stock in 1,017 keys.
+          - P8-v4 proved stock clang r383902b1/11.0.2 differs from candidate
+            clang r416183b/12.0.5.
+          - R4 has 9,456 candidate-vmlinux CRC mismatches plus 1,251 unresolved
+            imports = 10,707 known failing module/symbol pairs.
+          - Stock module_layout families:
+              GKI   0x1e5b7ab7
+              QGKI  0x945d02f2
+            Old P8-v3 candidate:
+                    0x0221efb9
+
+          Fail-closed policy:
+          - no P6 source restore;
+          - no ReSukiSU/SUSFS;
+          - no source patch;
+          - no defconfig patch;
+          - no CRC patch;
+          - no vermagic patch;
+          - no force-load;
+          - no boot image;
+          - no flashable ZIP;
+          - no device access or flashing;
+          - no device compatibility claim;
+          - no P9 authorization.
+
+          Interpretation:
+          - matching one complete R4 known-failure family is evidence that stock
+            config/toolchain plus this public source can reproduce that family's
+            previously failing CRC contract;
+          - it is NOT yet a full 17,647-import compatibility proof, because the
+            6,914 imports that matched the old candidate are not all enumerated
+            in the R4 failure lists;
+          - if neither family matches, source/build provenance remains open.
+          EOF
+
+      - name: Install build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            bc bison build-essential ca-certificates cpio curl flex git jq \
+            kmod libelf-dev libncurses-dev libssl-dev patch python3 rsync \
+            unzip xz-utils zstd
+
+      - name: Download P8-v4 root-cause evidence
+        uses: actions/download-artifact@v7
+        with:
+          name: ${{ env.P8V4_ARTIFACT }}
+          path: ${{ env.P8V4_DIR }}
+          github-token: ${{ github.token }}
+          run-id: ${{ env.P8V4_RUN_ID }}
+
+      - name: Download P8-v3 r4 stock CRC evidence
+        uses: actions/download-artifact@v7
+        with:
+          name: ${{ env.P8V3_R4_ARTIFACT }}
+          path: ${{ env.R4_DIR }}
+          github-token: ${{ github.token }}
+          run-id: ${{ env.P8V3_R4_RUN_ID }}
+
+      - name: Authenticate parent artifacts and config-linked failure evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          for dir in "$P8V4_DIR" "$R4_DIR"; do
+            test -s "$dir/SHA256SUMS"
+            (
+              cd "$dir"
+              sha256sum -c SHA256SUMS
+            )
+          done > "$ARTIFACT_DIR/01-parent-sha256.txt"
+
+          grep -Fxq \
+            'P8V4_RESULT=ROOT_CAUSE_EVIDENCE_COLLECTED_NO_FIX_AUTHORIZED' \
+            "$P8V4_DIR/P8V4-ROOT-CAUSE-ASSESSMENT.txt"
+          grep -Fxq 'R4_REAL_STATIC_STOCK_CRC_INCOMPATIBILITY_PROVEN=YES' \
+            "$P8V4_DIR/P8V4-ROOT-CAUSE-ASSESSMENT.txt"
+          grep -Fxq 'CONFIG_DIFFERENCE_COUNT=1017' \
+            "$P8V4_DIR/P8V4-ROOT-CAUSE-ASSESSMENT.txt"
+          grep -Fxq 'TOOLCHAIN_IDENTITY_MATCH=NO' \
+            "$P8V4_DIR/P8V4-ROOT-CAUSE-ASSESSMENT.txt"
+          grep -Fxq 'KERNEL_CHANGE_AUTHORIZED=NO' \
+            "$P8V4_DIR/P8V4-ROOT-CAUSE-ASSESSMENT.txt"
+
+          test -s "$P8V4_DIR/06-stock.config"
+          test "$(sha256sum "$P8V4_DIR/06-stock.config" | awk '{print $1}')" \
+            = "$EXPECTED_STOCK_CONFIG_SHA256"
+
+          test -s "$R4_DIR/P8V3R4-GLOBAL-NORMAL-BOOT-STOCK-CRC.json"
+          test -s "$R4_DIR/P8V3R4-GLOBAL-NORMAL-BOOT-STOCK-CRC.txt"
+          grep -Fxq 'P8V3_R4_GLOBAL_NORMAL_BOOT_STOCK_SYMBOL_CRC_PROOF=FAIL' \
+            "$R4_DIR/P8V3R4-GLOBAL-NORMAL-BOOT-STOCK-CRC.txt"
+
+          python3 - \
+            "$P8V4_DIR/07-config-diff.tsv" \
+            "$R4_DIR/P8V3R4-GLOBAL-NORMAL-BOOT-STOCK-CRC.json" \
+            "$ARTIFACT_DIR/01-config-linked-failure-evidence.json" \
+            "$ARTIFACT_DIR/01-config-linked-failure-evidence.txt" <<'PY'
+          import collections
+          import csv
+          import json
+          import sys
+          from pathlib import Path
+
+          diff_path, r4_path, json_out, text_out = map(Path, sys.argv[1:])
+
+          diffs = {}
+          with diff_path.open(encoding="utf-8") as handle:
+              for row in csv.DictReader(handle, delimiter="\t"):
+                  diffs[row["config_key"]] = (row["stock"], row["candidate"])
+
+          expected_diffs = {
+              "CONFIG_CFI_CLANG": ("y", "n"),
+              "CONFIG_CFI_CLANG_SHADOW": ("y", "<ABSENT>"),
+              "CONFIG_STACKPROTECTOR": ("y", "n"),
+              "CONFIG_STACKPROTECTOR_STRONG": ("y", "<ABSENT>"),
+              "CONFIG_TRACEPOINTS": ("y", "<ABSENT>"),
+              "CONFIG_TRACING": ("y", "<ABSENT>"),
+              "CONFIG_BPF_EVENTS": ("y", "<ABSENT>"),
+              "CONFIG_FUNCTION_ERROR_INJECTION": ("y", "<ABSENT>"),
+          }
+          for key, expected in expected_diffs.items():
+              actual = diffs.get(key)
+              if actual != expected:
+                  raise SystemExit(
+                      f"unexpected P8-v4 config delta {key}: {actual!r} != {expected!r}"
+                  )
+
+          r4 = json.loads(r4_path.read_text(encoding="utf-8"))
+          if len(r4["kernel_mismatches"]) != 9456:
+              raise SystemExit("R4 kernel mismatch count drift")
+          if len(r4["unresolved_imports"]) != 1251:
+              raise SystemExit("R4 unresolved count drift")
+
+          unresolved = collections.Counter(
+              item["symbol"] for item in r4["unresolved_imports"]
+          )
+          required_counts = {
+              "__stack_chk_fail": 239,
+              "__stack_chk_guard": 239,
+              "__cfi_slowpath": 145,
+          }
+          for symbol, count in required_counts.items():
+              if unresolved[symbol] != count:
+                  raise SystemExit(
+                      f"unexpected unresolved count {symbol}: {unresolved[symbol]}"
+                  )
+
+          result = {
+              "stage": "P8V5_CONFIG_LINKED_FAILURE_EVIDENCE",
+              "proven_config_differences": {
+                  key: {"stock": value[0], "old_candidate": value[1]}
+                  for key, value in expected_diffs.items()
+              },
+              "r4_unresolved_symbol_occurrences": {
+                  "__stack_chk_fail": unresolved["__stack_chk_fail"],
+                  "__stack_chk_guard": unresolved["__stack_chk_guard"],
+                  "__cfi_slowpath": unresolved["__cfi_slowpath"],
+              },
+              "interpretation": (
+                  "These observations justify a controlled stock-config/toolchain "
+                  "baseline test. They do not authorize patching CRCs or low-level code."
+              ),
+              "kernel_change_authorized": False,
+          }
+          json_out.write_text(
+              json.dumps(result, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          text_out.write_text(
+              "\n".join([
+                  "P8V5_CONFIG_LINKED_FAILURE_EVIDENCE=PASS",
+                  "STOCK_CONFIG_CFI_CLANG=Y",
+                  "OLD_CANDIDATE_CONFIG_CFI_CLANG=N",
+                  "STOCK_CONFIG_STACKPROTECTOR=Y",
+                  "OLD_CANDIDATE_CONFIG_STACKPROTECTOR=N",
+                  "STOCK_CONFIG_TRACEPOINTS=Y",
+                  "OLD_CANDIDATE_CONFIG_TRACEPOINTS=ABSENT",
+                  "R4_UNRESOLVED___STACK_CHK_FAIL=239",
+                  "R4_UNRESOLVED___STACK_CHK_GUARD=239",
+                  "R4_UNRESOLVED___CFI_SLOWPATH=145",
+                  "BASELINE_TEST_AUTHORIZED=YES",
+                  "KERNEL_CHANGE_AUTHORIZED=NO",
+              ]) + "\n",
+              encoding="utf-8",
+          )
+          PY
+
+      - name: Checkout pristine public VEUX vendor source
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ env.VENDOR_REPO }}
+          ref: ${{ env.VENDOR_TAG }}
+          path: p8v5/kernel
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Authenticate pristine source and prove no ReSukiSU restore
+        shell: bash
+        working-directory: ${{ env.KERNEL_DIR }}
+        run: |
+          set -euo pipefail
+
+          test "$(git rev-parse HEAD)" = "$EXPECTED_VENDOR_SHA"
+          test -z "$(git status --porcelain)"
+          test ! -e KernelSU
+          test ! -e drivers/kernelsu
+
+          {
+            echo "P8V5_PRISTINE_VENDOR_SOURCE=PASS"
+            echo "VENDOR_REPO=$VENDOR_REPO"
+            echo "VENDOR_TAG=$VENDOR_TAG"
+            echo "VENDOR_COMMIT=$(git rev-parse HEAD)"
+            echo "RESUKISU_PRESENT=NO"
+            echo "SUSFS_RESTORE_PERFORMED=NO"
+            echo "SOURCE_PATCH_APPLIED=NO"
+          } > "$ARTIFACT_DIR/02-source-provenance.txt"
+
+      - name: Install exact stock Android clang r383902b1
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          archive="$RUNNER_TEMP/$STOCK_CLANG_DIRNAME.tar.gz"
+          url="${STOCK_CLANG_REPO}/+archive/${STOCK_CLANG_PREBUILT_COMMIT}/${STOCK_CLANG_DIRNAME}.tar.gz"
+
+          curl --fail --location --silent --show-error \
+            --retry 8 --retry-delay 3 --retry-all-errors \
+            "$url" -o "$archive"
+
+          sha256sum "$archive" > "$ARTIFACT_DIR/03-stock-clang-archive.sha256"
+          tar -xzf "$archive" -C "$TOOLCHAIN_DIR"
+
+          test -x "$TOOLCHAIN_DIR/bin/clang"
+          test -x "$TOOLCHAIN_DIR/bin/ld.lld"
+          test -s "$TOOLCHAIN_DIR/manifest_${STOCK_CLANG_BUILD}.xml"
+
+          "$TOOLCHAIN_DIR/bin/clang" --version \
+            > "$ARTIFACT_DIR/03-stock-clang-version.txt"
+          "$TOOLCHAIN_DIR/bin/ld.lld" --version \
+            >> "$ARTIFACT_DIR/03-stock-clang-version.txt"
+
+          grep -Fq \
+            "Android (${STOCK_CLANG_BUILD} based on ${STOCK_CLANG_REV}) clang version ${STOCK_CLANG_VERSION}" \
+            "$ARTIFACT_DIR/03-stock-clang-version.txt"
+          grep -Fq "$STOCK_LLVM_COMMIT" \
+            "$ARTIFACT_DIR/03-stock-clang-version.txt"
+
+          for tool in \
+            clang ld.lld llvm-ar llvm-nm llvm-objcopy llvm-objdump \
+            llvm-readelf llvm-size llvm-strip
+          do
+            test -x "$TOOLCHAIN_DIR/bin/$tool"
+          done
+
+          {
+            echo "P8V5_STOCK_CLANG_AUTH=PASS"
+            echo "STOCK_CLANG_PREBUILT_COMMIT=$STOCK_CLANG_PREBUILT_COMMIT"
+            echo "STOCK_CLANG_BUILD=$STOCK_CLANG_BUILD"
+            echo "STOCK_CLANG_REV=$STOCK_CLANG_REV"
+            echo "STOCK_CLANG_VERSION=$STOCK_CLANG_VERSION"
+            echo "STOCK_LLVM_COMMIT=$STOCK_LLVM_COMMIT"
+          } > "$ARTIFACT_DIR/03-stock-clang-auth.txt"
+
+      - name: Replay authenticated stock IKCONFIG without editing source
+        shell: bash
+        working-directory: ${{ env.KERNEL_DIR }}
+        run: |
+          set -euo pipefail
+          export PATH="$TOOLCHAIN_DIR/bin:$PATH"
+
+          rm -rf "$OUT_DIR"
+          mkdir -p "$OUT_DIR"
+          cp "$P8V4_DIR/06-stock.config" "$OUT_DIR/.config"
+          cp "$P8V4_DIR/06-stock.config" "$ARTIFACT_DIR/04-stock-input.config"
+
+          make O="$OUT_DIR" \
+            ARCH=arm64 CC=clang LD=ld.lld LLVM=1 LLVM_IAS=1 \
+            olddefconfig \
+            2>&1 | tee "$ARTIFACT_DIR/04-olddefconfig.log"
+
+          cp "$OUT_DIR/.config" "$ARTIFACT_DIR/04-replayed.config"
+
+          python3 - \
+            "$ARTIFACT_DIR/04-stock-input.config" \
+            "$ARTIFACT_DIR/04-replayed.config" \
+            "$ARTIFACT_DIR/04-config-replay-diff.tsv" \
+            "$ARTIFACT_DIR/04-config-replay.json" \
+            "$ARTIFACT_DIR/04-config-replay.txt" <<'PY'
+          import json
+          import re
+          import sys
+          from pathlib import Path
+
+          source_path, replay_path, diff_path, json_out, text_out = map(
+              Path, sys.argv[1:]
+          )
+
+          def parse(path):
+              result = {}
+              for raw in path.read_text(encoding="utf-8").splitlines():
+                  if raw.startswith("CONFIG_") and "=" in raw:
+                      key, value = raw.split("=", 1)
+                      result[key] = value
+                      continue
+                  match = re.fullmatch(
+                      r"# (CONFIG_[A-Za-z0-9_]+) is not set", raw
+                  )
+                  if match:
+                      result[match.group(1)] = "n"
+              return result
+
+          source = parse(source_path)
+          replay = parse(replay_path)
+          keys = sorted(set(source) | set(replay))
+          rows = []
+          for key in keys:
+              left = source.get(key, "<ABSENT>")
+              right = replay.get(key, "<ABSENT>")
+              if left != right:
+                  rows.append((key, left, right))
+
+          with diff_path.open("w", encoding="utf-8") as handle:
+              handle.write("config_key\tstock_input\treplayed\n")
+              for key, left, right in rows:
+                  handle.write(f"{key}\t{left}\t{right}\n")
+
+          critical = [
+              "CONFIG_MODULES",
+              "CONFIG_MODVERSIONS",
+              "CONFIG_MODULE_UNLOAD",
+              "CONFIG_MODULE_FORCE_LOAD",
+              "CONFIG_MODULE_FORCE_UNLOAD",
+              "CONFIG_MODULE_SIG",
+              "CONFIG_CFI_CLANG",
+              "CONFIG_CFI_CLANG_SHADOW",
+              "CONFIG_CFI_PERMISSIVE",
+              "CONFIG_STACKPROTECTOR",
+              "CONFIG_STACKPROTECTOR_STRONG",
+              "CONFIG_TRACEPOINTS",
+              "CONFIG_TRACING",
+              "CONFIG_EVENT_TRACING",
+              "CONFIG_BPF_EVENTS",
+              "CONFIG_FUNCTION_ERROR_INJECTION",
+              "CONFIG_LOCALVERSION",
+              "CONFIG_LOCALVERSION_AUTO",
+          ]
+          critical_states = {
+              key: {
+                  "stock_input": source.get(key, "<ABSENT>"),
+                  "replayed": replay.get(key, "<ABSENT>"),
+                  "matches": source.get(key, "<ABSENT>") == replay.get(key, "<ABSENT>"),
+              }
+              for key in critical
+          }
+
+          required_replayed = {
+              "CONFIG_MODULES": "y",
+              "CONFIG_MODVERSIONS": "y",
+              "CONFIG_MODULE_UNLOAD": "y",
+              "CONFIG_MODULE_FORCE_LOAD": "n",
+              "CONFIG_MODULE_FORCE_UNLOAD": "n",
+              "CONFIG_MODULE_SIG": "n",
+              "CONFIG_CFI_CLANG": "y",
+              "CONFIG_CFI_CLANG_SHADOW": "y",
+              "CONFIG_CFI_PERMISSIVE": "n",
+              "CONFIG_STACKPROTECTOR": "y",
+              "CONFIG_STACKPROTECTOR_STRONG": "y",
+              "CONFIG_TRACEPOINTS": "y",
+              "CONFIG_TRACING": "y",
+              "CONFIG_EVENT_TRACING": "y",
+              "CONFIG_BPF_EVENTS": "y",
+              "CONFIG_FUNCTION_ERROR_INJECTION": "y",
+              "CONFIG_LOCALVERSION": "\"-qgki\"",
+              "CONFIG_LOCALVERSION_AUTO": "y",
+          }
+          for key, expected in required_replayed.items():
+              actual = replay.get(key, "<ABSENT>")
+              if actual != expected:
+                  raise SystemExit(
+                      f"critical stock replay state changed {key}: {actual!r}"
+                  )
+
+          result = {
+              "stock_input_key_count": len(source),
+              "replayed_key_count": len(replay),
+              "semantic_identity": not rows,
+              "semantic_difference_count": len(rows),
+              "critical_states": critical_states,
+              "critical_stock_states_preserved": True,
+              "source_file_modified": False,
+          }
+          json_out.write_text(
+              json.dumps(result, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          text_out.write_text(
+              "\n".join([
+                  "P8V5_STOCK_CONFIG_REPLAY=PASS",
+                  f"STOCK_INPUT_CONFIG_KEY_COUNT={len(source)}",
+                  f"REPLAYED_CONFIG_KEY_COUNT={len(replay)}",
+                  f"SEMANTIC_CONFIG_IDENTITY={'YES' if not rows else 'NO'}",
+                  f"SEMANTIC_CONFIG_DIFFERENCE_COUNT={len(rows)}",
+                  "CRITICAL_STOCK_CONFIG_STATES_PRESERVED=YES",
+                  "SOURCE_FILE_MODIFIED=NO",
+              ]) + "\n",
+              encoding="utf-8",
+          )
+          PY
+
+          test -z "$(git status --porcelain)"
+
+      - name: Build pristine stock-provenance ABI baseline
+        shell: bash
+        working-directory: ${{ env.KERNEL_DIR }}
+        timeout-minutes: 150
+        run: |
+          set -euo pipefail
+          export PATH="$TOOLCHAIN_DIR/bin:$PATH"
+
+          test "$(git rev-parse HEAD)" = "$EXPECTED_VENDOR_SHA"
+          test -z "$(git status --porcelain)"
+
+          baseline_release="$(
+            make -s O="$OUT_DIR" \
+              ARCH=arm64 CC=clang LD=ld.lld LLVM=1 LLVM_IAS=1 \
+              kernelrelease
+          )"
+          printf '%s\n' "$baseline_release" \
+            > "$ARTIFACT_DIR/05-baseline-kernelrelease.txt"
+
+          set +e
+          make -j"$(nproc)" \
+            O="$OUT_DIR" \
+            ARCH=arm64 \
+            CC=clang LD=ld.lld LLVM=1 LLVM_IAS=1 \
+            KCFLAGS="$BASELINE_EFFECTIVE_KCFLAGS" \
+            Image modules \
+            2>&1 | tee "$ARTIFACT_DIR/05-baseline-build.log"
+          build_rc="${PIPESTATUS[0]}"
+          set -e
+
+          {
+            echo "P8V5_BASELINE_BUILD_EXIT_CODE=$build_rc"
+            echo "P8V5_BASELINE_EFFECTIVE_KCFLAGS=$BASELINE_EFFECTIVE_KCFLAGS"
+            echo "P8V5_BASELINE_KERNEL_RELEASE=$baseline_release"
+            echo "P8V5_STOCK_KERNEL_RELEASE=$STOCK_KERNEL_RELEASE"
+            if [ "$baseline_release" = "$STOCK_KERNEL_RELEASE" ]; then
+              echo "P8V5_BASELINE_KERNEL_RELEASE_MATCH=YES"
+            else
+              echo "P8V5_BASELINE_KERNEL_RELEASE_MATCH=NO"
+            fi
+          } > "$ARTIFACT_DIR/05-baseline-build-state.txt"
+
+          test "$build_rc" -eq 0
+          test -s "$OUT_DIR/arch/arm64/boot/Image"
+          test -s "$OUT_DIR/vmlinux"
+          test -s "$OUT_DIR/System.map"
+          test -s "$OUT_DIR/Module.symvers"
+
+          cp "$OUT_DIR/Module.symvers" "$ARTIFACT_DIR/05-baseline-Module.symvers"
+          cp "$OUT_DIR/.config" "$ARTIFACT_DIR/05-baseline-final.config"
+
+          sha256sum \
+            "$OUT_DIR/arch/arm64/boot/Image" \
+            "$OUT_DIR/vmlinux" \
+            "$OUT_DIR/System.map" \
+            "$OUT_DIR/Module.symvers" \
+            "$OUT_DIR/.config" \
+            > "$ARTIFACT_DIR/05-baseline-core.sha256"
+
+          find "$OUT_DIR" -type f -name '*.ko' -print0 | sort -z \
+            | xargs -0 -r sha256sum \
+            > "$ARTIFACT_DIR/05-baseline-modules.sha256"
+
+          test -z "$(git status --porcelain)"
+
+      - name: Compare baseline against all R4 known-failing CRC pairs
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - \
+            "$OUT_DIR/Module.symvers" \
+            "$R4_DIR/P8V3R4-GLOBAL-NORMAL-BOOT-STOCK-CRC.json" \
+            "$ARTIFACT_DIR/06-known-failure-pair-results.tsv" \
+            "$ARTIFACT_DIR/06-baseline-crc-proof.json" \
+            "$ARTIFACT_DIR/06-baseline-crc-proof.txt" <<'PY'
+          import collections
+          import csv
+          import json
+          import sys
+          from pathlib import Path
+
+          symvers_path, r4_path, tsv_out, json_out, text_out = map(
+              Path, sys.argv[1:]
+          )
+
+          vmlinux = {}
+          provider_symbols = {}
+          for number, raw in enumerate(
+              symvers_path.read_text(encoding="utf-8").splitlines(), 1
+          ):
+              if not raw.strip():
+                  continue
+              fields = raw.split()
+              if len(fields) < 3:
+                  raise SystemExit(f"bad Module.symvers line {number}: {raw!r}")
+              crc, symbol, provider = fields[:3]
+              normalized = f"0x{int(crc, 16):08x}"
+              target = vmlinux if provider == "vmlinux" else provider_symbols
+              previous = target.get(symbol)
+              if previous is not None and previous != normalized:
+                  raise SystemExit(
+                      f"conflicting CRC for {symbol}: {previous} / {normalized}"
+                  )
+              target[symbol] = normalized
+
+          if "module_layout" not in vmlinux:
+              raise SystemExit("baseline Module.symvers lacks module_layout")
+          if len(vmlinux) < 500:
+              raise SystemExit(f"suspicious vmlinux export count: {len(vmlinux)}")
+
+          r4 = json.loads(r4_path.read_text(encoding="utf-8"))
+          kernel_mismatches = r4["kernel_mismatches"]
+          unresolved = r4["unresolved_imports"]
+          if len(kernel_mismatches) != 9456:
+              raise SystemExit("R4 kernel mismatch count drift")
+          if len(unresolved) != 1251:
+              raise SystemExit("R4 unresolved count drift")
+
+          pairs = []
+          for old_class, source in (
+              ("OLD_CANDIDATE_CRC_MISMATCH", kernel_mismatches),
+              ("OLD_CANDIDATE_UNRESOLVED", unresolved),
+          ):
+              for item in source:
+                  module = item["module"]
+                  family = (
+                      "GKI"
+                      if ":lib/modules/5.4-gki/" in module
+                      else "QGKI"
+                  )
+                  key = (module, item["symbol"])
+                  pairs.append({
+                      "key": key,
+                      "old_class": old_class,
+                      "family": family,
+                      "module": module,
+                      "symbol": item["symbol"],
+                      "stock_required_crc": item["stock_required_crc"],
+                  })
+
+          if len(pairs) != 10707:
+              raise SystemExit(f"unexpected known-failure pair count: {len(pairs)}")
+          if len({item["key"] for item in pairs}) != 10707:
+              raise SystemExit("duplicate module/symbol pair in R4 failure set")
+
+          family_input_counts = collections.Counter(
+              item["family"] for item in pairs
+          )
+          if family_input_counts != collections.Counter(
+              {"GKI": 8783, "QGKI": 1924}
+          ):
+              raise SystemExit(
+                  f"unexpected R4 failure family counts: {family_input_counts}"
+              )
+
+          counters = collections.defaultdict(collections.Counter)
+          rows = []
+          for item in pairs:
+              actual = vmlinux.get(item["symbol"])
+              if actual is None:
+                  result = "MISSING"
+              elif actual == item["stock_required_crc"]:
+                  result = "MATCH"
+              else:
+                  result = "MISMATCH"
+              counters[item["family"]][result] += 1
+              rows.append({
+                  **{k: v for k, v in item.items() if k != "key"},
+                  "baseline_vmlinux_crc": actual or "",
+                  "baseline_result": result,
+              })
+
+          with tsv_out.open("w", encoding="utf-8", newline="") as handle:
+              fieldnames = [
+                  "family",
+                  "old_class",
+                  "module",
+                  "symbol",
+                  "stock_required_crc",
+                  "baseline_vmlinux_crc",
+                  "baseline_result",
+              ]
+              writer = csv.DictWriter(
+                  handle, fieldnames=fieldnames, delimiter="\t"
+              )
+              writer.writeheader()
+              writer.writerows(rows)
+
+          module_layout = vmlinux["module_layout"]
+          if module_layout == "0x1e5b7ab7":
+              layout_family = "GKI"
+          elif module_layout == "0x945d02f2":
+              layout_family = "QGKI"
+          else:
+              layout_family = "NONE"
+
+          gki = counters["GKI"]
+          qgki = counters["QGKI"]
+          gki_full = (
+              gki["MATCH"] == 8783
+              and gki["MISMATCH"] == 0
+              and gki["MISSING"] == 0
+          )
+          qgki_full = (
+              qgki["MATCH"] == 1924
+              and qgki["MISMATCH"] == 0
+              and qgki["MISSING"] == 0
+          )
+
+          if gki_full and qgki_full:
+              raise SystemExit(
+                  "impossible classification: both distinct module_layout families fully matched"
+              )
+
+          if gki_full:
+              classification = "GKI_KNOWN_FAILURE_SET_FULL_MATCH"
+              next_gate = "P8V6_FULL_GKI_17647_IMPORT_CONTRACT_PROOF"
+          elif qgki_full:
+              classification = "QGKI_KNOWN_FAILURE_SET_FULL_MATCH"
+              next_gate = "P8V6_FULL_QGKI_17647_IMPORT_CONTRACT_PROOF"
+          elif layout_family != "NONE":
+              classification = (
+                  f"{layout_family}_LAYOUT_MATCH_BUT_KNOWN_FAILURE_SET_INCOMPLETE"
+              )
+              next_gate = "P8V6_SOURCE_BUILD_PROVENANCE_DIFFERENTIAL"
+          else:
+              classification = "NO_STOCK_LAYOUT_FAMILY_MATCH"
+              next_gate = "P8V6_SOURCE_BUILD_PROVENANCE_DIFFERENTIAL"
+
+          result = {
+              "stage": "CLEAN_GEN1_P8_V5_STOCK_ABI_BASELINE_RECONSTRUCTION",
+              "baseline_vmlinux_export_count": len(vmlinux),
+              "baseline_module_provider_symbol_count": len(provider_symbols),
+              "baseline_module_layout_crc": module_layout,
+              "baseline_module_layout_family": layout_family,
+              "old_candidate_module_layout_crc": "0x0221efb9",
+              "stock_gki_module_layout_crc": "0x1e5b7ab7",
+              "stock_qgki_module_layout_crc": "0x945d02f2",
+              "known_failure_pair_count": len(pairs),
+              "families": {
+                  "GKI": {
+                      "input_pairs": 8783,
+                      "match": gki["MATCH"],
+                      "mismatch": gki["MISMATCH"],
+                      "missing": gki["MISSING"],
+                      "full_match": gki_full,
+                  },
+                  "QGKI": {
+                      "input_pairs": 1924,
+                      "match": qgki["MATCH"],
+                      "mismatch": qgki["MISMATCH"],
+                      "missing": qgki["MISSING"],
+                      "full_match": qgki_full,
+                  },
+              },
+              "classification": classification,
+              "full_17647_import_contract_proven": False,
+              "device_compatibility_proven": False,
+              "kernel_change_authorized": False,
+              "p9_release_authorized": False,
+              "next_gate": next_gate,
+          }
+          json_out.write_text(
+              json.dumps(result, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+
+          text_out.write_text(
+              "\n".join([
+                  "P8V5_BASELINE_CRC_ANALYSIS=PASS",
+                  f"BASELINE_VMLINUX_EXPORT_COUNT={len(vmlinux)}",
+                  f"BASELINE_MODULE_PROVIDER_SYMBOL_COUNT={len(provider_symbols)}",
+                  f"BASELINE_MODULE_LAYOUT_CRC={module_layout}",
+                  f"BASELINE_MODULE_LAYOUT_FAMILY={layout_family}",
+                  "OLD_CANDIDATE_MODULE_LAYOUT_CRC=0x0221efb9",
+                  "STOCK_GKI_MODULE_LAYOUT_CRC=0x1e5b7ab7",
+                  "STOCK_QGKI_MODULE_LAYOUT_CRC=0x945d02f2",
+                  "KNOWN_FAILURE_PAIR_COUNT=10707",
+                  f"GKI_MATCH={gki['MATCH']}",
+                  f"GKI_MISMATCH={gki['MISMATCH']}",
+                  f"GKI_MISSING={gki['MISSING']}",
+                  f"GKI_KNOWN_FAILURE_SET_FULL_MATCH={'YES' if gki_full else 'NO'}",
+                  f"QGKI_MATCH={qgki['MATCH']}",
+                  f"QGKI_MISMATCH={qgki['MISMATCH']}",
+                  f"QGKI_MISSING={qgki['MISSING']}",
+                  f"QGKI_KNOWN_FAILURE_SET_FULL_MATCH={'YES' if qgki_full else 'NO'}",
+                  f"P8V5_CLASSIFICATION={classification}",
+                  "FULL_17647_IMPORT_CONTRACT_PROVEN=NO",
+                  "DEVICE_COMPATIBILITY_PROVEN=NO",
+                  "KERNEL_CHANGE_AUTHORIZED=NO",
+                  "P9_RELEASE_AUTHORIZED=NO",
+                  f"NEXT_GATE={next_gate}",
+              ]) + "\n",
+              encoding="utf-8",
+          )
+          PY
+
+      - name: Build final P8-v5 assessment
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - \
+            "$ARTIFACT_DIR/04-config-replay.json" \
+            "$ARTIFACT_DIR/06-baseline-crc-proof.json" \
+            "$ARTIFACT_DIR/P8V5-RESULT.json" \
+            "$ARTIFACT_DIR/P8V5-RESULT.txt" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          replay_path, proof_path, json_out, text_out = map(
+              Path, sys.argv[1:]
+          )
+          replay = json.loads(replay_path.read_text(encoding="utf-8"))
+          proof = json.loads(proof_path.read_text(encoding="utf-8"))
+
+          classification = proof["classification"]
+          result = {
+              "stage": "CLEAN_GEN1_P8_V5_STOCK_ABI_BASELINE_RECONSTRUCTION",
+              "result": classification,
+              "pristine_vendor_source": True,
+              "stock_clang_used": True,
+              "stock_ikconfig_replayed": True,
+              "stock_ikconfig_semantic_identity_after_olddefconfig": replay[
+                  "semantic_identity"
+              ],
+              "stock_ikconfig_semantic_difference_count": replay[
+                  "semantic_difference_count"
+              ],
+              "critical_stock_config_states_preserved": replay[
+                  "critical_stock_states_preserved"
+              ],
+              "baseline_module_layout_crc": proof["baseline_module_layout_crc"],
+              "baseline_module_layout_family": proof[
+                  "baseline_module_layout_family"
+              ],
+              "known_failure_pair_count": 10707,
+              "gki": proof["families"]["GKI"],
+              "qgki": proof["families"]["QGKI"],
+              "scope_limit": (
+                  "Only the 10,707 pairs known to fail against P8-v3 R4 are "
+                  "retested here; the complete 17,647-import stock contract is "
+                  "not yet proven."
+              ),
+              "safety": {
+                  "p6_restore_performed": False,
+                  "resukisu_present": False,
+                  "susfs_restore_performed": False,
+                  "source_patch_applied": False,
+                  "defconfig_patch_applied": False,
+                  "crc_patched": False,
+                  "vermagic_patched": False,
+                  "force_load_enabled": False,
+                  "boot_image_created": False,
+                  "flashable_zip_created": False,
+                  "device_accessed": False,
+                  "flashing_performed": False,
+                  "device_boot_failure_proven": False,
+                  "device_compatibility_proven": False,
+                  "kernel_change_authorized": False,
+                  "p9_release_authorized": False,
+              },
+              "next_gate": proof["next_gate"],
+          }
+          json_out.write_text(
+              json.dumps(result, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+
+          text_out.write_text(
+              "\n".join([
+                  f"P8V5_RESULT={classification}",
+                  "PRISTINE_VENDOR_SOURCE=YES",
+                  "STOCK_CLANG_USED=YES",
+                  "STOCK_IKCONFIG_REPLAYED=YES",
+                  (
+                      "STOCK_IKCONFIG_SEMANTIC_IDENTITY_AFTER_OLDDEFCONFIG="
+                      + ("YES" if replay["semantic_identity"] else "NO")
+                  ),
+                  (
+                      "STOCK_IKCONFIG_SEMANTIC_DIFFERENCE_COUNT="
+                      + str(replay["semantic_difference_count"])
+                  ),
+                  "CRITICAL_STOCK_CONFIG_STATES_PRESERVED=YES",
+                  f"BASELINE_MODULE_LAYOUT_CRC={proof['baseline_module_layout_crc']}",
+                  f"BASELINE_MODULE_LAYOUT_FAMILY={proof['baseline_module_layout_family']}",
+                  f"GKI_KNOWN_FAILURE_SET_FULL_MATCH={'YES' if proof['families']['GKI']['full_match'] else 'NO'}",
+                  f"QGKI_KNOWN_FAILURE_SET_FULL_MATCH={'YES' if proof['families']['QGKI']['full_match'] else 'NO'}",
+                  "FULL_17647_IMPORT_CONTRACT_PROVEN=NO",
+                  "P6_RESTORE_PERFORMED=NO",
+                  "RESUKISU_PRESENT=NO",
+                  "SUSFS_RESTORE_PERFORMED=NO",
+                  "SOURCE_PATCH_APPLIED=NO",
+                  "DEFCONFIG_PATCH_APPLIED=NO",
+                  "CRC_PATCHED=NO",
+                  "VERMAGIC_PATCHED=NO",
+                  "FORCE_LOAD_ENABLED=NO",
+                  "BOOT_IMAGE_CREATED=NO",
+                  "FLASHABLE_ZIP_CREATED=NO",
+                  "DEVICE_ACCESSED=NO",
+                  "FLASHING_PERFORMED=NO",
+                  "DEVICE_BOOT_FAILURE_PROVEN=NO",
+                  "DEVICE_COMPATIBILITY_PROVEN=NO",
+                  "KERNEL_CHANGE_AUTHORIZED=NO",
+                  "P9_RELEASE_AUTHORIZED=NO",
+                  f"NEXT_GATE={proof['next_gate']}",
+              ]) + "\n",
+              encoding="utf-8",
+          )
+          PY
+
+      - name: Close immutable P8-v5 evidence package
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          mkdir -p "$ARTIFACT_DIR"
+
+          {
+            echo "JOB_STATUS=${{ job.status }}"
+            echo "P8V5_TARGET_REGION_COUNT=8"
+            echo "P8V5_TARGET_REGION_IDS=$TARGET_REGION_IDS"
+            echo "P8V5_EEA_INCLUDED=NO"
+            echo "P8V5_PARENT_P8V4_RUN_ID=$P8V4_RUN_ID"
+            echo "P8V5_PARENT_P8V3_R4_RUN_ID=$P8V3_R4_RUN_ID"
+            echo "P8V5_PRISTINE_VENDOR_SOURCE=YES"
+            echo "P8V5_P6_RESTORE_PERFORMED=NO"
+            echo "P8V5_RESUKISU_PRESENT=NO"
+            echo "P8V5_SUSFS_RESTORE_PERFORMED=NO"
+            echo "P8V5_SOURCE_PATCH_APPLIED=NO"
+            echo "P8V5_DEFCONFIG_PATCH_APPLIED=NO"
+            echo "P8V5_CRC_PATCHED=NO"
+            echo "P8V5_VERMAGIC_PATCHED=NO"
+            echo "P8V5_FORCE_LOAD_ENABLED=NO"
+            echo "P8V5_BOOT_IMAGE_CREATED=NO"
+            echo "P8V5_FLASHABLE_ZIP_CREATED=NO"
+            echo "P8V5_DEVICE_ACCESSED=NO"
+            echo "P8V5_FLASHING_PERFORMED=NO"
+            echo "P8V5_DEVICE_COMPATIBILITY_PROVEN=NO"
+            echo "P8V5_KERNEL_CHANGE_AUTHORIZED=NO"
+            echo "P8V5_P9_RELEASE_AUTHORIZED=NO"
+          } > "$ARTIFACT_DIR/99-job-end-state.txt"
+
+          (
+            cd "$ARTIFACT_DIR" || exit 1
+            find . -type f \
+              ! -name 'FILES.txt' \
+              ! -name 'SHA256SUMS' \
+              ! -name 'SHA256SUMS.verify.txt' \
+              -printf '%P\n' | sort > FILES.txt
+            while IFS= read -r file; do
+              sha256sum "$file"
+            done < FILES.txt > SHA256SUMS
+            sha256sum -c SHA256SUMS > SHA256SUMS.verify.txt
+          )
+          exit 0
+
+      - name: Upload P8-v5 stock ABI baseline evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: clean-gen1-p8v5-veux-5.4.274-stock-abi-baseline-${{ github.run_id }}
+          path: ${{ env.ARTIFACT_DIR }}/
+          if-no-files-found: error
+          retention-days: 90
