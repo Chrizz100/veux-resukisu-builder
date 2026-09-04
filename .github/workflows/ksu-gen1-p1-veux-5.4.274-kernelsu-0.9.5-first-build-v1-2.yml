@@ -1,0 +1,918 @@
+name: KSU GEN1 P1 - VEUX 5.4.274 KernelSU 0.9.5 First Build v1
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ksu-gen1-p1-veux-5-4-274-kernelsu-0-9-5-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  BASE_REPOSITORY: dereference23/kernel_xiaomi_sm6375
+  BASE_COMMIT: b2b7a3bbc36d120ee523ebc8d68e0f13a97df632
+  BASE_TREE: 1783b5008fc971b795ccaa374efe97aa996eef49
+  BASE_VERSION: 5.4.268
+
+  ANDROID_COMMON_REPO: https://android.googlesource.com/kernel/common
+  ANDROID_TAG: android11-5.4.274_r00
+  ANDROID_TAG_OBJECT: b5141f9d31a3d1875523c9e1ae0d4587c144d149
+  ANDROID_COMMIT: 181edea14ae07024cc87699f3cd49116e6f8fbb3
+  ANDROID_TREE: 0485f492b920bf72f7f623a0df2aa3c5d7661a9c
+  TARGET_VERSION: 5.4.274
+  EXPECTED_P0_MERGE_COMMIT: 763f39fff62ff914200a9ac6e7e2336fdf29a6f2
+  EXPECTED_P0_MERGE_TREE: a50206971cf1d1eddc259f3aba3d63f87e7ec706
+
+  KSU_REPOSITORY: https://github.com/tiann/KernelSU.git
+  KSU_COMMIT: b766b98513b5a7eb33bc1c4a76b5702bf1288f07
+  KSU_EXPECTED_VERSION: "11872"
+
+  CLANG_REPO_COMMIT: aa2e4a514a6c85eebcc4a27149eaf9244e951a1e
+  CLANG_DIR: clang-r416183b
+  EXPECTED_TOOLCHAIN_TREE_SHA256: ed560f80e2009206b25cb963c8810faecdad06b18b75cc563ef2c9b900355a1f
+  EXPECTED_CLANG_SHA256: b2ce016755bddbab76549895bca07b1dc8d14a3e315b8b3567097fef04eadae1
+  EXPECTED_LLD_SHA256: 51dc9705420c136f583478ac08a3258cd970710296928b3bf24dc3ee2e6208e3
+
+  KBUILD_BUILD_USER: clean-gen1
+  KBUILD_BUILD_HOST: github-actions
+  KBUILD_BUILD_TIMESTAMP: Thu Apr 18 11:05:25 UTC 2024
+
+jobs:
+  p1-ksu-only-first-build:
+    name: P1 - KernelSU 0.9.5 only - Image + dtbs
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+
+    steps:
+      - name: 01 - Checkout exact fresh VEUX base
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ env.BASE_REPOSITORY }}
+          ref: ${{ env.BASE_COMMIT }}
+          path: kernel
+          fetch-depth: 0
+          filter: blob:none
+
+      - name: 02 - Initialize P1 evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$GITHUB_WORKSPACE/evidence"
+          mkdir -p "$GITHUB_WORKSPACE/evidence"
+          {
+            echo "WORKFLOW=KSU-GEN1-P1-VEUX-5.4.274-KERNELSU-0.9.5-FIRST-BUILD-v1"
+            echo "PURPOSE=Reconstruct proven P0, replace inherited vendor KernelSU with official KernelSU 0.9.5, compile Image plus dtbs"
+            echo "DEVICE=VEUX"
+            echo "TARGET_KERNEL=$TARGET_VERSION"
+            echo "KSU_COMMIT=$KSU_COMMIT"
+            echo "KSU_EXPECTED_VERSION=$KSU_EXPECTED_VERSION"
+            echo "SUSFS_INTEGRATION=ABSENT"
+            echo "RESUKISU_INTEGRATION=ABSENT"
+            echo "P6_REPRODUCIBILITY=NOT_PERFORMED_IN_P1"
+            echo "BOOT_IMAGE=NOT_CREATED"
+            echo "FLASHING=NOT_PERFORMED"
+          } > "$GITHUB_WORKSPACE/evidence/00-CONTRACT.txt"
+          echo "STAGE=INITIALIZED" > "$GITHUB_WORKSPACE/evidence/STAGE.txt"
+
+      - name: 03 - Install build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "STAGE=DEPENDENCIES" > "$GITHUB_WORKSPACE/evidence/STAGE.txt"
+          sudo apt-get update
+          sudo apt-get install -y \
+            bc \
+            bison \
+            build-essential \
+            ca-certificates \
+            cpio \
+            curl \
+            flex \
+            git \
+            libelf-dev \
+            libssl-dev \
+            python3 \
+            rsync \
+            xz-utils \
+            zstd
+
+      - name: 04 - Authenticate exact VEUX 5.4.268 base
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "STAGE=BASE_AUTH" > "$GITHUB_WORKSPACE/evidence/STAGE.txt"
+          cd "$GITHUB_WORKSPACE/kernel"
+
+          test "$(git rev-parse HEAD)" = "$BASE_COMMIT"
+          test "$(git rev-parse HEAD^{tree})" = "$BASE_TREE"
+          test -z "$(git status --porcelain)"
+          test "$(make -s kernelversion)" = "$BASE_VERSION"
+          test -f arch/arm64/configs/veux_defconfig
+          test -f arch/arm64/boot/dts/vendor/xiaomi/veux.dts
+          test -d drivers/kernelsu
+          test -f drivers/kernelsu/Kconfig
+          test -f drivers/kernelsu/Makefile
+
+          {
+            echo "BASE_COMMIT=$(git rev-parse HEAD)"
+            echo "BASE_TREE=$(git rev-parse HEAD^{tree})"
+            echo "BASE_VERSION=$(make -s kernelversion)"
+            echo "VEUX_DEFCONFIG=PRESENT"
+            echo "VEUX_DTS=PRESENT"
+            echo "INHERITED_VENDOR_KSU=PRESENT"
+          } > "$GITHUB_WORKSPACE/evidence/01-BASE-AUTH.txt"
+
+      - name: 05 - Fetch and authenticate Android 5.4.274 target
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "STAGE=ANDROID_TARGET" > "$GITHUB_WORKSPACE/evidence/STAGE.txt"
+          cd "$GITHUB_WORKSPACE/kernel"
+
+          git remote remove android >/dev/null 2>&1 || true
+          git remote add android "$ANDROID_COMMON_REPO"
+          git fetch --no-tags android "refs/tags/${ANDROID_TAG}:refs/tags/${ANDROID_TAG}"
+
+          tag_object="$(git rev-parse "refs/tags/${ANDROID_TAG}")"
+          tag_commit="$(git rev-parse "refs/tags/${ANDROID_TAG}^{}")"
+          tag_type="$(git cat-file -t "refs/tags/${ANDROID_TAG}")"
+          target_tree="$(git rev-parse "${ANDROID_COMMIT}^{tree}")"
+
+          test "$tag_type" = "tag"
+          test "$tag_object" = "$ANDROID_TAG_OBJECT"
+          test "$tag_commit" = "$ANDROID_COMMIT"
+          test "$target_tree" = "$ANDROID_TREE"
+          test -n "$(git merge-base "$BASE_COMMIT" "$ANDROID_COMMIT")"
+
+          {
+            echo "ANDROID_TAG=$ANDROID_TAG"
+            echo "ANDROID_TAG_OBJECT=$tag_object"
+            echo "ANDROID_COMMIT=$tag_commit"
+            echo "ANDROID_TREE=$target_tree"
+          } > "$GITHUB_WORKSPACE/evidence/02-ANDROID-TARGET.txt"
+
+      - name: 06 - Reconstruct proven deterministic P0 5.4.274 merge
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "STAGE=P0_RECONSTRUCTION" > "$GITHUB_WORKSPACE/evidence/STAGE.txt"
+          cd "$GITHUB_WORKSPACE/kernel"
+
+          git config user.name "VEUX Clean Baseline"
+          git config user.email "veux-clean-baseline@users.noreply.github.com"
+
+          git merge --no-commit --no-ff "$ANDROID_COMMIT"
+          test "$(make -s kernelversion)" = "$TARGET_VERSION"
+          test -f arch/arm64/configs/veux_defconfig
+          test -f arch/arm64/boot/dts/vendor/xiaomi/veux.dts
+          test -f drivers/kernelsu/Kconfig
+
+          export GIT_AUTHOR_DATE="2024-04-18T11:05:25Z"
+          export GIT_COMMITTER_DATE="2024-04-18T11:05:25Z"
+          git commit -m "CLEAN BASELINE: merge android11-5.4.274_r00 into VEUX 5.4.268"
+
+          merge_commit="$(git rev-parse HEAD)"
+          merge_tree="$(git rev-parse HEAD^{tree})"
+          parent1="$(git rev-parse HEAD^1)"
+          parent2="$(git rev-parse HEAD^2)"
+
+          test "$parent1" = "$BASE_COMMIT"
+          test "$parent2" = "$ANDROID_COMMIT"
+          test "$merge_commit" = "$EXPECTED_P0_MERGE_COMMIT"
+          test "$merge_tree" = "$EXPECTED_P0_MERGE_TREE"
+          test -z "$(git status --porcelain)"
+
+          {
+            echo "PROVEN_P0_RECONSTRUCTION_METHOD=PASS"
+            echo "P0_MERGE_COMMIT=$merge_commit"
+            echo "P0_MERGE_TREE=$merge_tree"
+            echo "P0_PARENT1=$parent1"
+            echo "P0_PARENT2=$parent2"
+            echo "P0_KERNEL_VERSION=$(make -s kernelversion)"
+          } > "$GITHUB_WORKSPACE/evidence/03-P0-RECONSTRUCTION.txt"
+
+      - name: 07 - Inventory inherited vendor KernelSU
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "STAGE=LEGACY_KSU_INVENTORY" > "$GITHUB_WORKSPACE/evidence/STAGE.txt"
+          cd "$GITHUB_WORKSPACE/kernel"
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib
+          import re
+
+          root = Path("drivers/kernelsu")
+          if not root.is_dir():
+              raise SystemExit("drivers/kernelsu is missing before P1 replacement")
+
+          files = sorted(p for p in root.rglob("*") if p.is_file())
+          if not files:
+              raise SystemExit("inherited drivers/kernelsu is empty")
+
+          makefile = (root / "Makefile").read_text(encoding="utf-8", errors="replace")
+          m = re.search(r"-DKSU_VERSION=([0-9]+)", makefile)
+          embedded = m.group(1) if m else "UNKNOWN"
+
+          h = hashlib.sha256()
+          for p in files:
+              rel = p.relative_to(root).as_posix().encode()
+              h.update(rel + b"\0")
+              h.update(p.read_bytes())
+
+          out = Path.cwd().parent / "evidence" / "04-LEGACY-KSU-INVENTORY.txt"
+          out.write_text(
+              "INHERITED_VENDOR_KSU=PRESENT\n"
+              f"INHERITED_VENDOR_KSU_FILES={len(files)}\n"
+              f"INHERITED_VENDOR_KSU_EMBEDDED_VERSION={embedded}\n"
+              f"INHERITED_VENDOR_KSU_CONTENT_DIGEST={h.hexdigest()}\n"
+              "P1_ACTION=REMOVE_AND_REPLACE_WITH_OFFICIAL_KSU_0.9.5\n",
+              encoding="utf-8",
+          )
+          PY
+
+          grep -Fq 'obj-$(CONFIG_KSU) += kernelsu/' drivers/Makefile
+          grep -Fq 'source "drivers/kernelsu/Kconfig"' drivers/Kconfig
+
+      - name: 08 - Snapshot existing external KernelSU manual-hook contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "STAGE=HOOK_CONTRACT_SNAPSHOT" > "$GITHUB_WORKSPACE/evidence/STAGE.txt"
+          cd "$GITHUB_WORKSPACE/kernel"
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib
+          import re
+
+          roots = [Path("fs"), Path("kernel"), Path("security"), Path("drivers/input"), Path("include")]
+          symbol_re = re.compile(r"\bksu_[A-Za-z0-9_]+\b")
+          symbols = set()
+          files_with_symbols = set()
+
+          for root in roots:
+              if not root.exists():
+                  continue
+              for path in root.rglob("*"):
+                  if not path.is_file():
+                      continue
+                  if path.parts[:2] == ("drivers", "kernelsu") or "kernelsu" in path.parts:
+                      continue
+                  text = path.read_text(encoding="utf-8", errors="ignore")
+                  found = set(symbol_re.findall(text))
+                  if found:
+                      symbols.update(found)
+                      files_with_symbols.add(path)
+
+          expected = {
+              "ksu_execveat_hook",
+              "ksu_handle_devpts",
+              "ksu_handle_execveat",
+              "ksu_handle_execveat_sucompat",
+              "ksu_handle_faccessat",
+              "ksu_handle_stat",
+              "ksu_handle_vfs_read",
+              "ksu_vfs_read_hook",
+          }
+          if symbols != expected:
+              raise SystemExit(f"external KernelSU hook symbol mismatch: got={sorted(symbols)!r}")
+
+          evidence = Path.cwd().parent / "evidence"
+          (evidence / "05-EXTERNAL-KSU-SYMBOLS.txt").write_text(
+              "\n".join(sorted(symbols)) + "\n", encoding="utf-8"
+          )
+
+          lines = []
+          for path in sorted(files_with_symbols, key=lambda p: p.as_posix()):
+              digest = hashlib.sha256(path.read_bytes()).hexdigest()
+              lines.append(f"{digest}  {path.as_posix()}")
+          (evidence / "05-HOOK-SOURCE-FILES.sha256").write_text(
+              "\n".join(lines) + "\n", encoding="utf-8"
+          )
+          (evidence / "05-HOOK-CONTRACT.txt").write_text(
+              f"EXTERNAL_KSU_SYMBOL_COUNT={len(symbols)}\n"
+              f"HOOK_SOURCE_FILE_COUNT={len(files_with_symbols)}\n"
+              "EXTERNAL_KSU_SYMBOL_CONTRACT=PASS\n",
+              encoding="utf-8",
+          )
+          PY
+
+          test -s "$GITHUB_WORKSPACE/evidence/05-HOOK-SOURCE-FILES.sha256"
+          sha256sum -c "$GITHUB_WORKSPACE/evidence/05-HOOK-SOURCE-FILES.sha256"
+
+      - name: 09 - Fetch official KernelSU 0.9.5 source with full history
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "STAGE=OFFICIAL_KSU_FETCH" > "$GITHUB_WORKSPACE/evidence/STAGE.txt"
+          cd "$GITHUB_WORKSPACE/kernel"
+
+          rm -rf KernelSU
+          git clone --filter=blob:none --no-checkout "$KSU_REPOSITORY" KernelSU
+          git -C KernelSU checkout --detach "$KSU_COMMIT"
+          test "$(git -C KernelSU rev-parse HEAD)" = "$KSU_COMMIT"
+          test -z "$(git -C KernelSU status --porcelain)"
+
+          mkdir -p .git/info
+          touch .git/info/exclude
+          grep -Fxq '/KernelSU/' .git/info/exclude || echo '/KernelSU/' >> .git/info/exclude
+
+          {
+            echo "OFFICIAL_KSU_FETCH=PASS"
+            echo "KSU_HEAD=$(git -C KernelSU rev-parse HEAD)"
+            echo "KSU_TREE=$(git -C KernelSU rev-parse HEAD^{tree})"
+          } > "$GITHUB_WORKSPACE/evidence/06-OFFICIAL-KSU-FETCH.txt"
+
+      - name: 10 - Authenticate official KernelSU 0.9.5 identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "STAGE=OFFICIAL_KSU_AUTH" > "$GITHUB_WORKSPACE/evidence/STAGE.txt"
+          cd "$GITHUB_WORKSPACE/kernel"
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import os
+          import subprocess
+
+          expected_head = os.environ["KSU_COMMIT"]
+          expected_version = int(os.environ["KSU_EXPECTED_VERSION"])
+
+          def git(*args: str) -> str:
+              return subprocess.check_output(["git", "-C", "KernelSU", *args], text=True).strip()
+
+          head = git("rev-parse", "HEAD")
+          if head != expected_head:
+              raise SystemExit(f"KernelSU HEAD mismatch: {head}")
+
+          count = int(git("rev-list", "--count", "HEAD"))
+          calculated = 10000 + count + 200
+          if calculated != expected_version:
+              raise SystemExit(
+                  f"KernelSU version mismatch: git_count={count} calculated={calculated} expected={expected_version}"
+              )
+
+          kconfig = Path("KernelSU/kernel/Kconfig").read_text(encoding="utf-8", errors="replace")
+          makefile = Path("KernelSU/kernel/Makefile").read_text(encoding="utf-8", errors="replace")
+          if "depends on OVERLAY_FS" not in kconfig:
+              raise SystemExit("official KernelSU Kconfig OVERLAY_FS contract missing")
+          if "obj-$(CONFIG_KSU) += kernelsu.o" not in makefile:
+              raise SystemExit("official KernelSU Makefile CONFIG_KSU contract missing")
+          if "KSU_GIT_VERSION" not in makefile or "git rev-list --count HEAD" not in makefile:
+              raise SystemExit("official KernelSU version derivation contract missing")
+
+          out = Path.cwd().parent / "evidence" / "07-OFFICIAL-KSU-IDENTITY.txt"
+          out.write_text(
+              f"KSU_HEAD={head}\n"
+              f"KSU_GIT_COUNT={count}\n"
+              f"KSU_CALCULATED_VERSION={calculated}\n"
+              f"KSU_EXPECTED_VERSION={expected_version}\n"
+              "OFFICIAL_KSU_0.9.5_PIN=PASS\n",
+              encoding="utf-8",
+          )
+          PY
+
+      - name: 11 - Prove official KSU satisfies existing VEUX hook API
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "STAGE=KSU_API_CONTRACT" > "$GITHUB_WORKSPACE/evidence/STAGE.txt"
+          cd "$GITHUB_WORKSPACE/kernel"
+
+          grep -RhoE '\bksu_[A-Za-z0-9_]+' KernelSU/kernel 2>/dev/null \
+            | LC_ALL=C sort -u > "$GITHUB_WORKSPACE/evidence/08-OFFICIAL-KSU-SYMBOLS.txt"
+
+          : > "$GITHUB_WORKSPACE/evidence/08-MISSING-KSU-SYMBOLS.txt"
+          while IFS= read -r symbol; do
+            [[ -n "$symbol" ]] || continue
+            if ! grep -Fxq "$symbol" "$GITHUB_WORKSPACE/evidence/08-OFFICIAL-KSU-SYMBOLS.txt"; then
+              echo "$symbol" >> "$GITHUB_WORKSPACE/evidence/08-MISSING-KSU-SYMBOLS.txt"
+            fi
+          done < "$GITHUB_WORKSPACE/evidence/05-EXTERNAL-KSU-SYMBOLS.txt"
+
+          test ! -s "$GITHUB_WORKSPACE/evidence/08-MISSING-KSU-SYMBOLS.txt"
+          echo "OFFICIAL_KSU_EXTERNAL_HOOK_API=PASS" > "$GITHUB_WORKSPACE/evidence/08-KSU-API-GATE.txt"
+
+      - name: 12 - Remove inherited vendor KernelSU source
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "STAGE=LEGACY_KSU_REMOVAL" > "$GITHUB_WORKSPACE/evidence/STAGE.txt"
+          cd "$GITHUB_WORKSPACE/kernel"
+
+          test -d drivers/kernelsu
+          rm -rf drivers/kernelsu
+          test ! -e drivers/kernelsu
+          test ! -L drivers/kernelsu
+
+          {
+            echo "LEGACY_VENDOR_KSU_REMOVED=YES"
+            echo "LEGACY_VENDOR_KSU_REPLACEMENT_GATE=PASS"
+          } > "$GITHUB_WORKSPACE/evidence/09-LEGACY-KSU-REMOVAL.txt"
+
+      - name: 13 - Integrate only official KernelSU 0.9.5
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "STAGE=OFFICIAL_KSU_INTEGRATION" > "$GITHUB_WORKSPACE/evidence/STAGE.txt"
+          cd "$GITHUB_WORKSPACE/kernel"
+
+          ln -s ../KernelSU/kernel drivers/kernelsu
+          test -L drivers/kernelsu
+          test "$(readlink drivers/kernelsu)" = "../KernelSU/kernel"
+          test "$(realpath drivers/kernelsu)" = "$(realpath KernelSU/kernel)"
+
+          makefile_count="$(grep -Ec '^[[:space:]]*obj-\$\(CONFIG_KSU\)[[:space:]]*\+=[[:space:]]*kernelsu/[[:space:]]*$' drivers/Makefile || true)"
+          kconfig_count="$(grep -Fc 'source "drivers/kernelsu/Kconfig"' drivers/Kconfig || true)"
+          test "$makefile_count" -eq 1
+          test "$kconfig_count" -eq 1
+
+          sha256sum -c "$GITHUB_WORKSPACE/evidence/05-HOOK-SOURCE-FILES.sha256"
+
+          {
+            echo "KSU_DRIVER_MODE=BUILT_IN_SOURCE_SYMLINK"
+            echo "KSU_SYMLINK=drivers/kernelsu -> ../KernelSU/kernel"
+            echo "DRIVERS_MAKEFILE_KSU_ENTRY_COUNT=$makefile_count"
+            echo "DRIVERS_KCONFIG_KSU_ENTRY_COUNT=$kconfig_count"
+            echo "EXTERNAL_HOOK_SOURCE_FILES_UNCHANGED=YES"
+            echo "OFFICIAL_KSU_ONLY_INTEGRATION=PASS"
+          } > "$GITHUB_WORKSPACE/evidence/10-KSU-INTEGRATION.txt"
+
+      - name: 14 - Gate out ReSukiSU and SUSFS integration
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "STAGE=FORBIDDEN_INTEGRATION_GATE" > "$GITHUB_WORKSPACE/evidence/STAGE.txt"
+          cd "$GITHUB_WORKSPACE/kernel"
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          roots = [Path("fs"), Path("kernel"), Path("security"), Path("include"), Path("KernelSU/kernel")]
+          pattern = re.compile(r"susfs|sus_path|sus_mount|open_redirect|resukisu", re.IGNORECASE)
+          hits = []
+
+          for root in roots:
+              if not root.exists():
+                  continue
+              for path in root.rglob("*"):
+                  if not path.is_file():
+                      continue
+                  if "drivers/kernelsu" in path.as_posix():
+                      continue
+                  text = path.read_text(encoding="utf-8", errors="ignore")
+                  if pattern.search(text):
+                      hits.append(path.as_posix())
+
+          evidence = Path.cwd().parent / "evidence"
+          (evidence / "11-FORBIDDEN-INTEGRATION-HITS.txt").write_text(
+              "\n".join(sorted(set(hits))) + ("\n" if hits else ""), encoding="utf-8"
+          )
+          if hits:
+              raise SystemExit(f"unexpected SUSFS/ReSukiSU source references: {sorted(set(hits))[:20]!r}")
+          (evidence / "11-FORBIDDEN-INTEGRATION-GATE.txt").write_text(
+              "RESUKISU_INTEGRATION=ABSENT\n"
+              "SUSFS_INTEGRATION=ABSENT\n"
+              "P1_ROOT_LAYER=OFFICIAL_KERNELSU_0.9.5_ONLY\n",
+              encoding="utf-8",
+          )
+          PY
+
+      - name: 15 - Download pinned Android clang-r416183b
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "STAGE=TOOLCHAIN_DOWNLOAD" > "$GITHUB_WORKSPACE/evidence/STAGE.txt"
+
+          toolchain_root="$GITHUB_WORKSPACE/toolchain/$CLANG_DIR"
+          archive="$RUNNER_TEMP/${CLANG_DIR}.tar.gz"
+          url="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/${CLANG_REPO_COMMIT}/${CLANG_DIR}.tar.gz"
+
+          rm -rf "$GITHUB_WORKSPACE/toolchain"
+          mkdir -p "$toolchain_root"
+          curl --fail --location --retry 4 --retry-delay 2 --retry-all-errors \
+            -H 'Cache-Control: no-cache' "$url" -o "$archive"
+          test -s "$archive"
+          tar -xzf "$archive" -C "$toolchain_root"
+          test -x "$toolchain_root/bin/clang"
+          test -x "$toolchain_root/bin/ld.lld"
+
+          {
+            echo "TOOLCHAIN_REPO_COMMIT=$CLANG_REPO_COMMIT"
+            echo "TOOLCHAIN_DIR=$CLANG_DIR"
+            echo "RAW_ARCHIVE_SHA256=$(sha256sum "$archive" | awk '{print $1}')"
+            echo "RAW_ARCHIVE_SHA_IS_IDENTITY_GATE=NO"
+          } > "$GITHUB_WORKSPACE/evidence/12-TOOLCHAIN-DOWNLOAD.txt"
+
+      - name: 16 - Authenticate pinned toolchain content and binaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "STAGE=TOOLCHAIN_AUTH" > "$GITHUB_WORKSPACE/evidence/STAGE.txt"
+
+          python3 - "$GITHUB_WORKSPACE/toolchain/$CLANG_DIR" "$GITHUB_WORKSPACE/evidence/13-TOOLCHAIN-TREE.tsv" <<'PY'
+          import hashlib
+          import os
+          import stat
+          import sys
+          from pathlib import Path
+
+          root = Path(sys.argv[1]).resolve()
+          output = Path(sys.argv[2])
+          rows = []
+
+          for path in sorted(root.rglob("*"), key=lambda p: p.relative_to(root).as_posix()):
+              rel = path.relative_to(root).as_posix()
+              st = path.lstat()
+              mode = stat.S_IMODE(st.st_mode)
+              if path.is_symlink():
+                  rows.append(f"L\t{mode:04o}\t{rel}\t{os.readlink(path)}")
+              elif path.is_dir():
+                  rows.append(f"D\t{mode:04o}\t{rel}")
+              elif path.is_file():
+                  h = hashlib.sha256()
+                  with path.open("rb") as f:
+                      for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                          h.update(chunk)
+                  rows.append(f"F\t{mode:04o}\t{rel}\t{st.st_size}\t{h.hexdigest()}")
+              else:
+                  rows.append(f"O\t{mode:04o}\t{rel}")
+
+          output.write_text("\n".join(rows) + "\n", encoding="utf-8")
+          PY
+
+          tree_sha="$(sha256sum "$GITHUB_WORKSPACE/evidence/13-TOOLCHAIN-TREE.tsv" | awk '{print $1}')"
+          clang_sha="$(sha256sum "$GITHUB_WORKSPACE/toolchain/$CLANG_DIR/bin/clang" | awk '{print $1}')"
+          lld_sha="$(sha256sum "$GITHUB_WORKSPACE/toolchain/$CLANG_DIR/bin/ld.lld" | awk '{print $1}')"
+
+          {
+            echo "TREE_SHA256=$tree_sha"
+            echo "CLANG_SHA256=$clang_sha"
+            echo "LLD_SHA256=$lld_sha"
+          } > "$GITHUB_WORKSPACE/evidence/13-TOOLCHAIN-HASHES.txt"
+
+          test "$tree_sha" = "$EXPECTED_TOOLCHAIN_TREE_SHA256"
+          test "$clang_sha" = "$EXPECTED_CLANG_SHA256"
+          test "$lld_sha" = "$EXPECTED_LLD_SHA256"
+
+          "$GITHUB_WORKSPACE/toolchain/$CLANG_DIR/bin/clang" --version \
+            | tee "$GITHUB_WORKSPACE/evidence/13-CLANG-VERSION.txt"
+          "$GITHUB_WORKSPACE/toolchain/$CLANG_DIR/bin/ld.lld" --version \
+            | tee "$GITHUB_WORKSPACE/evidence/13-LLD-VERSION.txt"
+          grep -q 'r416183b' "$GITHUB_WORKSPACE/evidence/13-CLANG-VERSION.txt"
+
+          echo "PINNED_CLANG_LLD_GATES=PASS" > "$GITHUB_WORKSPACE/evidence/13-TOOLCHAIN-GATE.txt"
+
+      - name: 17 - Configure VEUX defconfig with pinned toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "STAGE=DEFCONFIG" > "$GITHUB_WORKSPACE/evidence/STAGE.txt"
+          cd "$GITHUB_WORKSPACE/kernel"
+
+          export PATH="$GITHUB_WORKSPACE/toolchain/$CLANG_DIR/bin:$PATH"
+          export KCFLAGS="-D__ANDROID_COMMON_KERNEL__"
+          rm -rf out-p1
+
+          make O=out-p1 ARCH=arm64 LLVM=1 veux_defconfig \
+            2>&1 | tee "$GITHUB_WORKSPACE/evidence/14-DEFCONFIG.log"
+          test -s out-p1/.config
+
+          {
+            echo "SOURCE_DEFCONFIG_SHA256=$(sha256sum arch/arm64/configs/veux_defconfig | awk '{print $1}')"
+            echo "INITIAL_CONFIG_SHA256=$(sha256sum out-p1/.config | awk '{print $1}')"
+          } > "$GITHUB_WORKSPACE/evidence/14-DEFCONFIG-HASHES.txt"
+
+      - name: 18 - Enable only KernelSU and keep manual-hook kernel policy
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "STAGE=KSU_ONLY_CONFIG" > "$GITHUB_WORKSPACE/evidence/STAGE.txt"
+          cd "$GITHUB_WORKSPACE/kernel"
+
+          export PATH="$GITHUB_WORKSPACE/toolchain/$CLANG_DIR/bin:$PATH"
+          export KCFLAGS="-D__ANDROID_COMMON_KERNEL__"
+
+          scripts/config --file out-p1/.config \
+            -e KSU \
+            -d MODULES \
+            -d KPROBES \
+            -d KPROBE_EVENTS
+
+          make O=out-p1 ARCH=arm64 LLVM=1 olddefconfig \
+            2>&1 | tee "$GITHUB_WORKSPACE/evidence/15-OLDDEFCONFIG.log"
+
+          echo "KSU_ONLY_CONFIG_MUTATION=COMPLETE" > "$GITHUB_WORKSPACE/evidence/15-CONFIG-MUTATION.txt"
+
+      - name: 19 - Gate resolved KSU-only configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "STAGE=CONFIG_GATE" > "$GITHUB_WORKSPACE/evidence/STAGE.txt"
+          cd "$GITHUB_WORKSPACE/kernel"
+
+          grep -Fxq 'CONFIG_KSU=y' out-p1/.config
+          grep -Fxq 'CONFIG_HAVE_KPROBES=y' out-p1/.config
+          grep -Fxq '# CONFIG_MODULES is not set' out-p1/.config
+          grep -Fxq 'CONFIG_OVERLAY_FS=y' out-p1/.config
+          grep -Fxq 'CONFIG_KALLSYMS=y' out-p1/.config
+
+          if grep -q '^CONFIG_KPROBES=' out-p1/.config; then
+            echo "CONFIG_KPROBES unexpectedly enabled" >&2
+            exit 1
+          fi
+          if grep -q '^CONFIG_KPROBE_EVENTS=' out-p1/.config; then
+            echo "CONFIG_KPROBE_EVENTS unexpectedly enabled" >&2
+            exit 1
+          fi
+          if grep -Eq '^CONFIG_KSU_SUSFS=' out-p1/.config; then
+            echo "Unexpected CONFIG_KSU_SUSFS found" >&2
+            exit 1
+          fi
+
+          {
+            echo "CONFIG_KSU=y"
+            echo "CONFIG_MODULES=n"
+            echo "CONFIG_KPROBES=n_or_unavailable"
+            echo "CONFIG_KPROBE_EVENTS=n_or_unavailable"
+            echo "CONFIG_OVERLAY_FS=y"
+            echo "CONFIG_KALLSYMS=y"
+            echo "CONFIG_KSU_SUSFS=ABSENT"
+            echo "KSU_ONLY_CONFIG_GATE=PASS"
+            echo "GENERATED_CONFIG_SHA256=$(sha256sum out-p1/.config | awk '{print $1}')"
+          } > "$GITHUB_WORKSPACE/evidence/16-CONFIG-GATE.txt"
+
+      - name: 20 - Final prebuild manual-hook and source integrity gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "STAGE=PREBUILD_GATE" > "$GITHUB_WORKSPACE/evidence/STAGE.txt"
+          cd "$GITHUB_WORKSPACE/kernel"
+
+          test "$(make -s kernelversion)" = "$TARGET_VERSION"
+          test -L drivers/kernelsu
+          test "$(realpath drivers/kernelsu)" = "$(realpath KernelSU/kernel)"
+          test "$(git -C KernelSU rev-parse HEAD)" = "$KSU_COMMIT"
+          sha256sum -c "$GITHUB_WORKSPACE/evidence/05-HOOK-SOURCE-FILES.sha256"
+
+          while IFS= read -r symbol; do
+            [[ -n "$symbol" ]] || continue
+            grep -RqsE "\b${symbol}\b" fs kernel security drivers/input include --exclude-dir=kernelsu
+            grep -RqsE "\b${symbol}\b" KernelSU/kernel
+          done < "$GITHUB_WORKSPACE/evidence/05-EXTERNAL-KSU-SYMBOLS.txt"
+
+          export PATH="$GITHUB_WORKSPACE/toolchain/$CLANG_DIR/bin:$PATH"
+          export KCFLAGS="-D__ANDROID_COMMON_KERNEL__"
+          make -s O=out-p1 ARCH=arm64 LLVM=1 kernelrelease \
+            | tee "$GITHUB_WORKSPACE/evidence/17-KERNELRELEASE.txt"
+
+          {
+            echo "KERNEL_VERSION=$(make -s kernelversion)"
+            echo "KERNEL_RELEASE=$(cat "$GITHUB_WORKSPACE/evidence/17-KERNELRELEASE.txt")"
+            echo "EXTERNAL_HOOK_SOURCE_FILES_UNCHANGED=YES"
+            echo "MANUAL_HOOK_SYMBOL_CONTRACT=8_OF_8"
+            echo "PREBUILD_GATE=PASS"
+          } > "$GITHUB_WORKSPACE/evidence/17-PREBUILD-GATE.txt"
+
+      - name: 21 - Full KSU-only compile Image plus dtbs
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "STAGE=BUILD_IMAGE_DTBS" > "$GITHUB_WORKSPACE/evidence/STAGE.txt"
+          cd "$GITHUB_WORKSPACE/kernel"
+
+          export PATH="$GITHUB_WORKSPACE/toolchain/$CLANG_DIR/bin:$PATH"
+          export KCFLAGS="-D__ANDROID_COMMON_KERNEL__"
+
+          echo "Starting KSU GEN1 P1 VEUX 5.4.274 KernelSU 0.9.5 Image + dtbs build"
+          echo "Threads: $(nproc)"
+          df -h "$GITHUB_WORKSPACE"
+
+          make -j"$(nproc)" O=out-p1 ARCH=arm64 LLVM=1 Image dtbs \
+            2>&1 | tee "$GITHUB_WORKSPACE/evidence/18-BUILD.log"
+
+      - name: 22 - Verify canonical Image and DTB outputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "STAGE=OUTPUT_GATE" > "$GITHUB_WORKSPACE/evidence/STAGE.txt"
+          cd "$GITHUB_WORKSPACE/kernel"
+
+          image="out-p1/arch/arm64/boot/Image"
+          vmlinux="out-p1/vmlinux"
+          system_map="out-p1/System.map"
+          config="out-p1/.config"
+
+          test -s "$image"
+          test -s "$vmlinux"
+          test -s "$system_map"
+          test -s "$config"
+
+          find out-p1/arch/arm64/boot/dts -type f -name '*.dtb' -print \
+            | LC_ALL=C sort > "$GITHUB_WORKSPACE/evidence/19-DTB-LIST.txt"
+          test -s "$GITHUB_WORKSPACE/evidence/19-DTB-LIST.txt"
+
+          veux_dtb="$(find out-p1/arch/arm64/boot/dts -type f -name 'veux*.dtb' -print | LC_ALL=C sort | head -n1)"
+          test -n "$veux_dtb"
+          test -s "$veux_dtb"
+
+          sha256sum "$image" "$vmlinux" "$system_map" "$config" "$veux_dtb" \
+            > "$GITHUB_WORKSPACE/evidence/19-BUILD-OUTPUT-SHA256.txt"
+
+          cp "$image" "$GITHUB_WORKSPACE/evidence/Image"
+          cp "$config" "$GITHUB_WORKSPACE/evidence/veux-5.4.274-kernelsu-0.9.5.config"
+          cp "$system_map" "$GITHUB_WORKSPACE/evidence/System.map"
+          cp "$veux_dtb" "$GITHUB_WORKSPACE/evidence/veux.dtb"
+
+          {
+            echo "IMAGE_BYTES=$(stat -c '%s' "$image")"
+            echo "DTB_COUNT=$(wc -l < "$GITHUB_WORKSPACE/evidence/19-DTB-LIST.txt" | tr -d ' ')"
+            echo "VEUX_DTB=$veux_dtb"
+            echo "CANONICAL_IMAGE_DTBS_BUILD=PASS"
+          } > "$GITHUB_WORKSPACE/evidence/19-OUTPUT-GATE.txt"
+
+      - name: 23 - Prove KernelSU is linked into final vmlinux
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "STAGE=LINKED_KSU_GATE" > "$GITHUB_WORKSPACE/evidence/STAGE.txt"
+          cd "$GITHUB_WORKSPACE/kernel"
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          system_map = Path("out-p1/System.map").read_text(encoding="utf-8", errors="replace")
+          required = [
+              "kernelsu_init",
+              "ksu_handle_execveat",
+              "ksu_handle_execveat_sucompat",
+              "ksu_handle_faccessat",
+              "ksu_handle_stat",
+              "ksu_handle_vfs_read",
+              "ksu_handle_devpts",
+          ]
+          missing = [s for s in required if not re.search(rf"[\t ]{re.escape(s)}$", system_map, re.MULTILINE)]
+          if missing:
+              raise SystemExit(f"linked KernelSU symbols missing: {missing!r}")
+
+          evidence = Path.cwd().parent / "evidence"
+          (evidence / "20-LINKED-KSU-SYMBOLS.txt").write_text(
+              "\n".join(required) + "\n", encoding="utf-8"
+          )
+          (evidence / "20-LINKED-KSU-GATE.txt").write_text(
+              "LINKED_KSU_POSITIVE_GATE=PASS\n"
+              f"LINKED_KSU_REQUIRED_SYMBOLS={len(required)}\n",
+              encoding="utf-8",
+          )
+          PY
+
+          grep -F -- "-- KernelSU version: $KSU_EXPECTED_VERSION" "$GITHUB_WORKSPACE/evidence/18-BUILD.log"
+
+      - name: 24 - Prove SUSFS is not linked or configured
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "STAGE=LINKED_SUSFS_ZERO_GATE" > "$GITHUB_WORKSPACE/evidence/STAGE.txt"
+          cd "$GITHUB_WORKSPACE/kernel"
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          system_map = Path("out-p1/System.map").read_text(encoding="utf-8", errors="replace")
+          config = Path("out-p1/.config").read_text(encoding="utf-8", errors="replace")
+
+          map_hits = sorted(set(re.findall(r"\b(?:susfs|sus_[A-Za-z0-9_]+)[A-Za-z0-9_]*\b", system_map, re.I)))
+          config_hits = [line for line in config.splitlines() if "SUSFS" in line.upper()]
+
+          evidence = Path.cwd().parent / "evidence"
+          (evidence / "21-LINKED-SUSFS-HITS.txt").write_text(
+              "SYSTEM_MAP_HITS=" + repr(map_hits) + "\n" +
+              "CONFIG_HITS=" + repr(config_hits) + "\n",
+              encoding="utf-8",
+          )
+          if map_hits or config_hits:
+              raise SystemExit(f"unexpected SUSFS linkage/config: map={map_hits!r} config={config_hits!r}")
+
+          (evidence / "21-LINKED-SUSFS-GATE.txt").write_text(
+              "LINKED_SUSFS_ZERO_GATE=PASS\n"
+              "SUSFS_LINKED_SYMBOL_COUNT=0\n"
+              "SUSFS_CONFIG_LINE_COUNT=0\n",
+              encoding="utf-8",
+          )
+          PY
+
+      - name: 25 - Record successful P1 build provenance without P6 reproducibility
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "STAGE=P1_PROVENANCE" > "$GITHUB_WORKSPACE/evidence/STAGE.txt"
+          cd "$GITHUB_WORKSPACE/kernel"
+
+          image="out-p1/arch/arm64/boot/Image"
+          vmlinux="out-p1/vmlinux"
+          system_map="out-p1/System.map"
+          config="out-p1/.config"
+
+          {
+            echo "P1_KERNEL_VERSION=$(make -s kernelversion)"
+            echo "P1_KERNEL_RELEASE=$(cat "$GITHUB_WORKSPACE/evidence/17-KERNELRELEASE.txt")"
+            echo "P1_P0_MERGE_COMMIT=$(git rev-parse HEAD)"
+            echo "P1_P0_MERGE_TREE=$(git rev-parse HEAD^{tree})"
+            echo "P1_KSU_HEAD=$(git -C KernelSU rev-parse HEAD)"
+            echo "P1_KSU_VERSION=$KSU_EXPECTED_VERSION"
+            echo "P1_IMAGE_BYTES=$(stat -c '%s' "$image")"
+            echo "P1_IMAGE_SHA256=$(sha256sum "$image" | awk '{print $1}')"
+            echo "P1_VMLINUX_SHA256=$(sha256sum "$vmlinux" | awk '{print $1}')"
+            echo "P1_SYSTEM_MAP_SHA256=$(sha256sum "$system_map" | awk '{print $1}')"
+            echo "P1_CONFIG_SHA256=$(sha256sum "$config" | awk '{print $1}')"
+            echo "P1_KSU_ONLY_FULL_BUILD=PASS"
+            echo "P6_REPRODUCIBILITY_NOT_PREMATURE=PASS"
+            echo "REPRODUCIBILITY_RUN_COUNT=1"
+            echo "BOOT_IMAGE_CREATED=NO"
+            echo "FLASHABLE_ZIP_CREATED=NO"
+            echo "DEVICE_ACCESSED=NO"
+            echo "FLASHING_PERFORMED=NO"
+          } > "$GITHUB_WORKSPACE/evidence/22-P1-BUILD-PROVENANCE.txt"
+
+      - name: 26 - Write final checkpoint status
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/evidence"
+
+          if [ "${{ job.status }}" = "success" ]; then
+            technical_pass="YES"
+            checkpoint="KSU-GEN1-P1-KSU-ONLY-COMPILE-PASS"
+            proven="YES"
+          else
+            technical_pass="NO"
+            checkpoint="KSU-GEN1-P1-NOT-REACHED"
+            proven="NO"
+          fi
+
+          {
+            echo "JOB_STATUS=${{ job.status }}"
+            echo "RUN_ID=$GITHUB_RUN_ID"
+            echo "RUN_ATTEMPT=$GITHUB_RUN_ATTEMPT"
+            echo "TECHNICAL_PASS=$technical_pass"
+            echo "CHECKPOINT=$checkpoint"
+            echo "PROVEN=$proven"
+            echo "NEXT_IF_PASS=KSU GEN1 P2 - SUSFS 2.3 Foundation"
+            echo "NEXT_IF_FAIL=Repair only the concrete P1 failure"
+          } > "$GITHUB_WORKSPACE/evidence/98-FINAL-STATUS.txt"
+
+          echo "STAGE=FINAL_STATUS" > "$GITHUB_WORKSPACE/evidence/STAGE.txt"
+
+      - name: 27 - Close self-excluding evidence manifest
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          evidence="$GITHUB_WORKSPACE/evidence"
+          mkdir -p "$evidence"
+
+          echo "EVIDENCE_ALWAYS=PASS" >> "$evidence/98-FINAL-STATUS.txt"
+          echo "MANIFEST_SELF_EXCLUDE=PASS" >> "$evidence/98-FINAL-STATUS.txt"
+
+          rm -f "$evidence/SHA256SUMS"
+          (
+            cd "$evidence"
+            find . -type f ! -name SHA256SUMS -printf '%P\0' \
+              | LC_ALL=C sort -z \
+              | xargs -0 sha256sum > SHA256SUMS
+
+            if grep -Eq '[[:space:]]SHA256SUMS$' SHA256SUMS; then
+              echo "ERROR: evidence manifest contains itself" >&2
+              exit 1
+            fi
+            sha256sum -c SHA256SUMS
+          )
+
+          {
+            echo "# KSU GEN1 P1"
+            echo
+            cat "$evidence/98-FINAL-STATUS.txt"
+            if [ -f "$evidence/22-P1-BUILD-PROVENANCE.txt" ]; then
+              echo
+              echo '```text'
+              cat "$evidence/22-P1-BUILD-PROVENANCE.txt"
+              echo '```'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 28 - Upload P1 build and evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ksu-gen1-p1-veux-5.4.274-kernelsu-0.9.5-v1-${{ github.run_id }}
+          path: evidence/
+          retention-days: 14
+          if-no-files-found: error
