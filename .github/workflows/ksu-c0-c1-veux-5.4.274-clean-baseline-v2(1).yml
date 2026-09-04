@@ -1,0 +1,644 @@
+name: KSU C0-C1 VEUX 5.4.274 clean baseline v2
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  BASE_REPO: https://github.com/dereference23/kernel_xiaomi_sm6375.git
+  BASE_COMMIT: b2b7a3bbc36d120ee523ebc8d68e0f13a97df632
+  BASE_TREE: 1783b5008fc971b795ccaa374efe97aa996eef49
+  BASE_VERSION: 5.4.268
+  ANDROID_COMMON_REPO: https://android.googlesource.com/kernel/common
+  ANDROID_TAG: android11-5.4.274_r00
+  ANDROID_TAG_OBJECT: b5141f9d31a3d1875523c9e1ae0d4587c144d149
+  ANDROID_COMMIT: 181edea14ae07024cc87699f3cd49116e6f8fbb3
+  ANDROID_TREE: 0485f492b920bf72f7f623a0df2aa3c5d7661a9c
+  TARGET_VERSION: 5.4.274
+  CLANG_REPO_COMMIT: aa2e4a514a6c85eebcc4a27149eaf9244e951a1e
+  CLANG_DIR: clang-r416183b
+  KBUILD_BUILD_USER: clean-gen1
+  KBUILD_BUILD_HOST: github-actions
+  KBUILD_BUILD_TIMESTAMP: Thu Apr 18 11:05:25 UTC 2024
+  C1_V1_REFERENCE_RUN_ID: '33834249916'
+  EXPECTED_C1_MERGE_COMMIT: 763f39fff62ff914200a9ac6e7e2336fdf29a6f2
+  EXPECTED_C1_MERGE_TREE: a50206971cf1d1eddc259f3aba3d63f87e7ec706
+  EXPECTED_C1_IMAGE_BYTES: '29706752'
+  EXPECTED_C1_IMAGE_SHA256: e58901610d82c69b04dcc33c4fd3d14e6c0bb05615b307789c7ef204a373a6c5
+  EXPECTED_C1_VMLINUX_SHA256: d3179cd62d847ed2367af1abad5090f3fa9e7ae05243b9f96c71bcf47b280e47
+  EXPECTED_C1_SYSTEM_MAP_SHA256: 78780bc64b8baf0f08e547151130bad672c9133567697b50518acba1f552d2ed
+  EXPECTED_C1_CONFIG_SHA256: 4a053522cbad0715a74613f75ad3fc132c84d0604a7ab60d72b8d88800bc08ee
+  EXPECTED_C1_VEUX_DTB_BYTES: '275689'
+  EXPECTED_C1_VEUX_DTB_SHA256: 42728a6f3d48ae35ac6be4b14ea51bc8a323e77baec2ee544827487378f99d37
+  EXPECTED_C1_TOOLCHAIN_ARCHIVE_SHA256: f7fb55060ea743a7f006f128ea71c75dfd0ebf713eb3672cc3522de6feab7f1b
+  EXPECTED_C1_CLANG_SHA256: b2ce016755bddbab76549895bca07b1dc8d14a3e315b8b3567097fef04eadae1
+  EXPECTED_C1_LLD_SHA256: 51dc9705420c136f583478ac08a3258cd970710296928b3bf24dc3ee2e6208e3
+
+jobs:
+  clean-baseline:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+
+    steps:
+      - name: Initialize compact evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/evidence"
+          printf '%s\n' 'STAGE=INITIALIZED' > "$GITHUB_WORKSPACE/evidence/STAGE.txt"
+          {
+            echo 'WORKFLOW=KSU-C0-C1-VEUX-5.4.274-CLEAN-BASELINE-v2'
+            echo 'PURPOSE=Fresh VEUX source plus official Android 5.4.274 baseline; no new root manager integration'
+            echo 'CHECKPOINT_TARGET=C1-CANDIDATE'
+            echo 'P2_V5_OLD_ATTEMPT=NOT_USED'
+            echo "C1_V1_REFERENCE_RUN_ID=$C1_V1_REFERENCE_RUN_ID"
+            echo 'C1_V2_SCOPE=EVIDENCE_MANIFEST_REPAIR_PLUS_CROSS_RUN_GUARD'
+            echo 'DEVICE_TEST=NOT_PERFORMED'
+            echo 'BOOT_IMAGE=NOT_CREATED'
+            echo 'FLASHING=NOT_PERFORMED'
+          } > "$GITHUB_WORKSPACE/evidence/CONTRACT.txt"
+
+      - name: Install build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo 'STAGE=DEPENDENCIES' > "$GITHUB_WORKSPACE/evidence/STAGE.txt"
+          sudo apt-get update
+          sudo apt-get install -y \
+            bc \
+            bison \
+            build-essential \
+            ca-certificates \
+            cpio \
+            curl \
+            flex \
+            git \
+            libelf-dev \
+            libssl-dev \
+            python3 \
+            rsync \
+            xz-utils \
+            zstd
+
+      - name: C0 checkout exact fresh VEUX 5.4.268 source
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo 'STAGE=C0_BASE_SOURCE' > "$GITHUB_WORKSPACE/evidence/STAGE.txt"
+
+          rm -rf "$GITHUB_WORKSPACE/kernel"
+          git init "$GITHUB_WORKSPACE/kernel"
+          git -C "$GITHUB_WORKSPACE/kernel" remote add origin "$BASE_REPO"
+          git -C "$GITHUB_WORKSPACE/kernel" fetch --no-tags origin "$BASE_COMMIT"
+          git -C "$GITHUB_WORKSPACE/kernel" checkout --detach FETCH_HEAD
+
+          cd "$GITHUB_WORKSPACE/kernel"
+
+          test "$(git rev-parse HEAD)" = "$BASE_COMMIT"
+          test -z "$(git status --porcelain)"
+
+          VERSION=$(awk '$1=="VERSION" && $2=="=" {print $3; exit}' Makefile)
+          PATCHLEVEL=$(awk '$1=="PATCHLEVEL" && $2=="=" {print $3; exit}' Makefile)
+          SUBLEVEL=$(awk '$1=="SUBLEVEL" && $2=="=" {print $3; exit}' Makefile)
+          KVER="${VERSION}.${PATCHLEVEL}.${SUBLEVEL}"
+          test "$KVER" = "$BASE_VERSION"
+
+          test -f arch/arm64/boot/dts/vendor/xiaomi/veux.dts
+          test -f arch/arm64/configs/veux_defconfig
+
+          # This exact OEM base is known to carry legacy KernelSU source.
+          # C0/C1 must NOT remove or enable it; removal is a later isolated phase.
+          test -f drivers/kernelsu/Kconfig
+          grep -q '^config KSU$' drivers/kernelsu/Kconfig
+          grep -q 'kernelsu/Kconfig' drivers/Kconfig
+          grep -Fq 'obj-$(CONFIG_KSU) += kernelsu/' drivers/Makefile
+
+          RESOLVED_BASE_TREE=$(git rev-parse HEAD^{tree})
+          test "$RESOLVED_BASE_TREE" = "$BASE_TREE"
+          LEGACY_KSU_TREE_BEFORE=$(git rev-parse HEAD:drivers/kernelsu)
+          LEGACY_KSU_FILES=$(find drivers/kernelsu -type f | wc -l | tr -d ' ')
+
+          {
+            echo 'C0_BASE_SOURCE=PASS'
+            echo "BASE_REPO=$BASE_REPO"
+            echo "BASE_COMMIT=$BASE_COMMIT"
+            echo "BASE_TREE=$RESOLVED_BASE_TREE"
+            echo "LEGACY_KSU_TREE_BEFORE=$LEGACY_KSU_TREE_BEFORE"
+            echo "BASE_VERSION=$KVER"
+            echo 'VEUX_DTS=PRESENT'
+            echo 'VEUX_DEFCONFIG=PRESENT'
+            echo 'INHERITED_LEGACY_KSU_SOURCE=PRESENT_EXPECTED'
+            echo "INHERITED_LEGACY_KSU_FILE_COUNT=$LEGACY_KSU_FILES"
+            echo 'LEGACY_KSU_ACTION=CARRY_INERT_ONLY_DO_NOT_MODIFY_IN_C1'
+          } > "$GITHUB_WORKSPACE/evidence/C0-SOURCE-PROVENANCE.txt"
+
+      - name: C0 fetch and authenticate official Android 5.4.274 target
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo 'STAGE=C0_ANDROID_TARGET' > "$GITHUB_WORKSPACE/evidence/STAGE.txt"
+          cd "$GITHUB_WORKSPACE/kernel"
+
+          git remote add android "$ANDROID_COMMON_REPO"
+          git fetch --no-tags android \
+            "refs/tags/${ANDROID_TAG}:refs/tags/${ANDROID_TAG}"
+
+          TAG_OBJECT=$(git rev-parse "refs/tags/${ANDROID_TAG}")
+          TAG_COMMIT=$(git rev-parse "refs/tags/${ANDROID_TAG}^{}")
+          TAG_TYPE=$(git cat-file -t "refs/tags/${ANDROID_TAG}")
+          TARGET_TREE=$(git rev-parse "${ANDROID_COMMIT}^{tree}")
+
+          test "$TAG_TYPE" = 'tag'
+          test "$TAG_OBJECT" = "$ANDROID_TAG_OBJECT"
+          test "$TAG_COMMIT" = "$ANDROID_COMMIT"
+          test "$TARGET_TREE" = "$ANDROID_TREE"
+
+          COMMON_BASE=$(git merge-base "$BASE_COMMIT" "$ANDROID_COMMIT")
+          test -n "$COMMON_BASE"
+
+          {
+            echo 'C0_ANDROID_TARGET=PASS'
+            echo "ANDROID_COMMON_REPO=$ANDROID_COMMON_REPO"
+            echo "ANDROID_TAG=$ANDROID_TAG"
+            echo "ANDROID_TAG_OBJECT=$TAG_OBJECT"
+            echo "ANDROID_COMMIT=$TAG_COMMIT"
+            echo "ANDROID_TREE=$TARGET_TREE"
+            echo "COMMON_ANCESTOR=$COMMON_BASE"
+          } > "$GITHUB_WORKSPACE/evidence/C0-ANDROID-TARGET.txt"
+
+      - name: C1 create deterministic clean VEUX 5.4.274 merge
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo 'STAGE=C1_DETERMINISTIC_MERGE' > "$GITHUB_WORKSPACE/evidence/STAGE.txt"
+          cd "$GITHUB_WORKSPACE/kernel"
+
+          git config user.name 'VEUX Clean Baseline'
+          git config user.email 'veux-clean-baseline@users.noreply.github.com'
+
+          set +e
+          git merge --no-commit --no-ff "$ANDROID_COMMIT"
+          MERGE_RC=$?
+          set -e
+
+          if [ "$MERGE_RC" -ne 0 ]; then
+            {
+              echo "MERGE_RC=$MERGE_RC"
+              echo 'CONFLICTS_BEGIN'
+              git diff --name-only --diff-filter=U
+              echo 'CONFLICTS_END'
+            } > "$GITHUB_WORKSPACE/evidence/C1-MERGE-FAILURE.txt"
+            exit 31
+          fi
+
+          VERSION=$(awk '$1=="VERSION" && $2=="=" {print $3; exit}' Makefile)
+          PATCHLEVEL=$(awk '$1=="PATCHLEVEL" && $2=="=" {print $3; exit}' Makefile)
+          SUBLEVEL=$(awk '$1=="SUBLEVEL" && $2=="=" {print $3; exit}' Makefile)
+          KVER="${VERSION}.${PATCHLEVEL}.${SUBLEVEL}"
+
+          test "$KVER" = "$TARGET_VERSION"
+          test -f arch/arm64/boot/dts/vendor/xiaomi/veux.dts
+          test -f arch/arm64/configs/veux_defconfig
+          test -f drivers/kernelsu/Kconfig
+
+          export GIT_AUTHOR_DATE='2024-04-18T11:05:25Z'
+          export GIT_COMMITTER_DATE='2024-04-18T11:05:25Z'
+          git commit -m 'CLEAN BASELINE: merge android11-5.4.274_r00 into VEUX 5.4.268'
+
+          MERGE_COMMIT=$(git rev-parse HEAD)
+          MERGE_TREE=$(git rev-parse HEAD^{tree})
+          PARENT1=$(git rev-parse HEAD^1)
+          PARENT2=$(git rev-parse HEAD^2)
+          LEGACY_KSU_TREE_AFTER=$(git rev-parse HEAD:drivers/kernelsu)
+          LEGACY_KSU_TREE_BEFORE=$(git rev-parse "$BASE_COMMIT:drivers/kernelsu")
+
+          test "$PARENT1" = "$BASE_COMMIT"
+          test "$PARENT2" = "$ANDROID_COMMIT"
+          test "$LEGACY_KSU_TREE_AFTER" = "$LEGACY_KSU_TREE_BEFORE"
+          test "$MERGE_COMMIT" = "$EXPECTED_C1_MERGE_COMMIT"
+          test "$MERGE_TREE" = "$EXPECTED_C1_MERGE_TREE"
+          test -z "$(git status --porcelain)"
+
+          git diff --name-status "$BASE_COMMIT" HEAD > "$GITHUB_WORKSPACE/evidence/C1-BASE-TO-TARGET-NAME-STATUS.txt"
+          git diff --stat "$BASE_COMMIT" HEAD > "$GITHUB_WORKSPACE/evidence/C1-BASE-TO-TARGET-STAT.txt"
+
+          {
+            echo 'C1_DETERMINISTIC_MERGE=PASS'
+            echo "TARGET_VERSION=$KVER"
+            echo "MERGE_COMMIT=$MERGE_COMMIT"
+            echo "MERGE_TREE=$MERGE_TREE"
+            echo "PARENT1_BASE=$PARENT1"
+            echo "PARENT2_ANDROID=$PARENT2"
+            echo 'WORKTREE_CLEAN=YES'
+            echo "LEGACY_KSU_TREE_BEFORE=$LEGACY_KSU_TREE_BEFORE"
+            echo "LEGACY_KSU_TREE_AFTER=$LEGACY_KSU_TREE_AFTER"
+            echo 'INHERITED_LEGACY_KSU_SOURCE=PRESENT_BYTE_IDENTICAL_DIRECTORY_TREE'
+          } > "$GITHUB_WORKSPACE/evidence/C1-SOURCE-IDENTITY.txt"
+
+      - name: C1 download exact pinned Android clang-r416183b
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo 'STAGE=C1_TOOLCHAIN' > "$GITHUB_WORKSPACE/evidence/STAGE.txt"
+
+          TOOLCHAIN_ROOT="$GITHUB_WORKSPACE/toolchain/$CLANG_DIR"
+          ARCHIVE="$RUNNER_TEMP/${CLANG_DIR}.tar.gz"
+          URL="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/${CLANG_REPO_COMMIT}/${CLANG_DIR}.tar.gz"
+
+          rm -rf "$GITHUB_WORKSPACE/toolchain"
+          mkdir -p "$TOOLCHAIN_ROOT"
+
+          curl --fail --location --retry 3 "$URL" -o "$ARCHIVE"
+          test -s "$ARCHIVE"
+          tar -xzf "$ARCHIVE" -C "$TOOLCHAIN_ROOT"
+
+          test -x "$TOOLCHAIN_ROOT/bin/clang"
+          test -x "$TOOLCHAIN_ROOT/bin/ld.lld"
+
+          ARCHIVE_SHA256=$(sha256sum "$ARCHIVE" | awk '{print $1}')
+          CLANG_SHA256=$(sha256sum "$TOOLCHAIN_ROOT/bin/clang" | awk '{print $1}')
+          LLD_SHA256=$(sha256sum "$TOOLCHAIN_ROOT/bin/ld.lld" | awk '{print $1}')
+
+          test "$ARCHIVE_SHA256" = "$EXPECTED_C1_TOOLCHAIN_ARCHIVE_SHA256"
+          test "$CLANG_SHA256" = "$EXPECTED_C1_CLANG_SHA256"
+          test "$LLD_SHA256" = "$EXPECTED_C1_LLD_SHA256"
+
+          {
+            echo 'C1_TOOLCHAIN=PASS'
+            echo "CLANG_REPO_COMMIT=$CLANG_REPO_COMMIT"
+            echo "CLANG_DIRECTORY=$CLANG_DIR"
+            echo "ARCHIVE_SHA256=$ARCHIVE_SHA256"
+            echo "CLANG_BINARY_SHA256=$CLANG_SHA256"
+            echo "LLD_BINARY_SHA256=$LLD_SHA256"
+            echo 'CLANG_VERSION_BEGIN'
+            "$TOOLCHAIN_ROOT/bin/clang" --version
+            echo 'CLANG_VERSION_END'
+            echo 'LLD_VERSION_BEGIN'
+            "$TOOLCHAIN_ROOT/bin/ld.lld" --version
+            echo 'LLD_VERSION_END'
+          } > "$GITHUB_WORKSPACE/evidence/C1-TOOLCHAIN.txt"
+
+          rm -f "$ARCHIVE"
+
+      - name: C1 configure VEUX and prove root manager inactive
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo 'STAGE=C1_CONFIGURE' > "$GITHUB_WORKSPACE/evidence/STAGE.txt"
+          cd "$GITHUB_WORKSPACE/kernel"
+
+          export PATH="$GITHUB_WORKSPACE/toolchain/$CLANG_DIR/bin:$PATH"
+          export KCFLAGS='-D__ANDROID_COMMON_KERNEL__'
+          export KBUILD_BUILD_USER
+          export KBUILD_BUILD_HOST
+          export KBUILD_BUILD_TIMESTAMP
+
+          rm -rf out
+          make O=out ARCH=arm64 LLVM=1 veux_defconfig \
+            2>&1 | tee "$GITHUB_WORKSPACE/evidence/config.log"
+
+          test -s out/.config
+          grep -q '^CONFIG_ARCH_QCOM=y$' out/.config
+          grep -q '^CONFIG_ARCH_HOLI=y$' out/.config
+          grep -q '^CONFIG_ARCH_BLAIR=y$' out/.config
+          grep -q '^CONFIG_WT_QGKI=y$' out/.config
+          grep -q '^CONFIG_LTO_CLANG=y$' out/.config
+          grep -q '^CONFIG_BUILD_ARM64_UNCOMPRESSED_KERNEL=y$' out/.config
+
+          if grep -Eq '^CONFIG_KSU=(y|m)$' out/.config; then
+            echo 'ERROR: inherited legacy KernelSU became active' >&2
+            exit 41
+          fi
+          if grep -q '^CONFIG_KSU_DEBUG=y$' out/.config; then
+            echo 'ERROR: inherited legacy KernelSU debug became active' >&2
+            exit 42
+          fi
+
+          CONFIG_SHA_BEFORE=$(sha256sum out/.config | awk '{print $1}')
+          KERNEL_RELEASE=$(make -s O=out ARCH=arm64 LLVM=1 kernelrelease)
+
+          cp out/.config "$GITHUB_WORKSPACE/evidence/final.config"
+          {
+            echo 'C1_CONFIGURE=PASS'
+            echo "KERNEL_RELEASE=$KERNEL_RELEASE"
+            echo "CONFIG_SHA256_BEFORE_BUILD=$CONFIG_SHA_BEFORE"
+            echo 'CONFIG_KSU_ACTIVE=NO'
+            echo 'CONFIG_KSU_DEBUG_ACTIVE=NO'
+            echo 'INHERITED_LEGACY_KSU_SOURCE=PRESENT_BUT_INERT'
+          } > "$GITHUB_WORKSPACE/evidence/C1-CONFIG-AUDIT.txt"
+
+      - name: C1 full build Image dtbs vmlinux System.map
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo 'STAGE=C1_FULL_BUILD' > "$GITHUB_WORKSPACE/evidence/STAGE.txt"
+          cd "$GITHUB_WORKSPACE/kernel"
+
+          export PATH="$GITHUB_WORKSPACE/toolchain/$CLANG_DIR/bin:$PATH"
+          export KCFLAGS='-D__ANDROID_COMMON_KERNEL__'
+          export KBUILD_BUILD_USER
+          export KBUILD_BUILD_HOST
+          export KBUILD_BUILD_TIMESTAMP
+
+          make -j"$(nproc)" O=out ARCH=arm64 LLVM=1 Image dtbs \
+            2>&1 | tee "$GITHUB_WORKSPACE/evidence/build.log"
+
+          IMAGE=out/arch/arm64/boot/Image
+          VMLINUX=out/vmlinux
+          SYSTEM_MAP=out/System.map
+          DTB=out/arch/arm64/boot/dts/vendor/xiaomi/veux.dtb
+
+          test -s "$IMAGE"
+          test -s "$VMLINUX"
+          test -s "$SYSTEM_MAP"
+          test -s "$DTB"
+          test -s out/.config
+
+          CONFIG_SHA_BEFORE=$(awk -F= '/^CONFIG_SHA256_BEFORE_BUILD=/{print $2}' "$GITHUB_WORKSPACE/evidence/C1-CONFIG-AUDIT.txt")
+          CONFIG_SHA_AFTER=$(sha256sum out/.config | awk '{print $1}')
+          test "$CONFIG_SHA_BEFORE" = "$CONFIG_SHA_AFTER"
+
+          out/scripts/dtc/dtc -I dtb -O dts -o /dev/null "$DTB"
+
+          IMAGE_SHA=$(sha256sum "$IMAGE" | awk '{print $1}')
+          VMLINUX_SHA=$(sha256sum "$VMLINUX" | awk '{print $1}')
+          SYSTEM_MAP_SHA=$(sha256sum "$SYSTEM_MAP" | awk '{print $1}')
+          DTB_SHA=$(sha256sum "$DTB" | awk '{print $1}')
+          IMAGE_BYTES=$(stat -c '%s' "$IMAGE")
+          VMLINUX_BYTES=$(stat -c '%s' "$VMLINUX")
+          SYSTEM_MAP_BYTES=$(stat -c '%s' "$SYSTEM_MAP")
+          DTB_BYTES=$(stat -c '%s' "$DTB")
+
+          # C1-v2 is a packaging repair, not a source/build change. Fail closed
+          # if the independently rebuilt outputs differ from the successful v1 run.
+          test "$IMAGE_BYTES" = "$EXPECTED_C1_IMAGE_BYTES"
+          test "$IMAGE_SHA" = "$EXPECTED_C1_IMAGE_SHA256"
+          test "$VMLINUX_SHA" = "$EXPECTED_C1_VMLINUX_SHA256"
+          test "$SYSTEM_MAP_SHA" = "$EXPECTED_C1_SYSTEM_MAP_SHA256"
+          test "$CONFIG_SHA_AFTER" = "$EXPECTED_C1_CONFIG_SHA256"
+          test "$DTB_BYTES" = "$EXPECTED_C1_VEUX_DTB_BYTES"
+          test "$DTB_SHA" = "$EXPECTED_C1_VEUX_DTB_SHA256"
+
+          {
+            echo 'C1_FULL_BUILD=PASS'
+            echo 'C1_V1_CROSS_RUN_BUILD_IDENTITY=PASS'
+            echo "C1_V1_REFERENCE_RUN_ID=$C1_V1_REFERENCE_RUN_ID"
+            echo "IMAGE_BYTES=$IMAGE_BYTES"
+            echo "IMAGE_SHA256=$IMAGE_SHA"
+            echo "VMLINUX_BYTES=$VMLINUX_BYTES"
+            echo "VMLINUX_SHA256=$VMLINUX_SHA"
+            echo "SYSTEM_MAP_BYTES=$SYSTEM_MAP_BYTES"
+            echo "SYSTEM_MAP_SHA256=$SYSTEM_MAP_SHA"
+            echo "CONFIG_SHA256=$CONFIG_SHA_AFTER"
+            echo "VEUX_DTB_BYTES=$DTB_BYTES"
+            echo "VEUX_DTB_SHA256=$DTB_SHA"
+            echo 'VEUX_DTB_PARSE=PASS'
+            echo 'CONFIG_BYTE_IDENTICAL_PRE_POST=YES'
+          } > "$GITHUB_WORKSPACE/evidence/C1-BUILD-IDENTITY.txt"
+
+      - name: C1 audit diagnostics and linked root-manager state
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo 'STAGE=C1_LINKED_AUDIT' > "$GITHUB_WORKSPACE/evidence/STAGE.txt"
+          cd "$GITHUB_WORKSPACE/kernel"
+
+          BUILD_LOG="$GITHUB_WORKSPACE/evidence/build.log"
+          SYSTEM_MAP=out/System.map
+
+          ERROR_COUNT=$(grep -Eic '(^|[[:space:]])(fatal )?error:' "$BUILD_LOG" || true)
+          WARNING_COUNT=$(grep -Eic '(^|[[:space:]])warning:' "$BUILD_LOG" || true)
+
+          grep -Ei '(^|[[:space:]])(fatal )?error:' "$BUILD_LOG" \
+            > "$GITHUB_WORKSPACE/evidence/BUILD-ERRORS.txt" || true
+          grep -Ei '(^|[[:space:]])warning:' "$BUILD_LOG" \
+            > "$GITHUB_WORKSPACE/evidence/BUILD-WARNINGS.txt" || true
+
+          test "$ERROR_COUNT" -eq 0
+
+          KSU_SYMBOL_COUNT=$(grep -Ec '[[:space:]]ksu_[A-Za-z0-9_]*$' "$SYSTEM_MAP" || true)
+          SUSFS_SYMBOL_COUNT=$(grep -Ec '[[:space:]]susfs_[A-Za-z0-9_]*$' "$SYSTEM_MAP" || true)
+
+          if [ "$KSU_SYMBOL_COUNT" -ne 0 ]; then
+            grep -E '[[:space:]]ksu_[A-Za-z0-9_]*$' "$SYSTEM_MAP" \
+              > "$GITHUB_WORKSPACE/evidence/UNEXPECTED-KSU-SYMBOLS.txt" || true
+            exit 51
+          fi
+          if [ "$SUSFS_SYMBOL_COUNT" -ne 0 ]; then
+            grep -E '[[:space:]]susfs_[A-Za-z0-9_]*$' "$SYSTEM_MAP" \
+              > "$GITHUB_WORKSPACE/evidence/UNEXPECTED-SUSFS-SYMBOLS.txt" || true
+            exit 52
+          fi
+
+          {
+            echo 'C1_DIAGNOSTICS_AND_LINKED_AUDIT=PASS'
+            echo "COMPILER_ERROR_COUNT=$ERROR_COUNT"
+            echo "COMPILER_WARNING_COUNT=$WARNING_COUNT"
+            echo "LINKED_KSU_SYMBOL_COUNT=$KSU_SYMBOL_COUNT"
+            echo "LINKED_SUSFS_SYMBOL_COUNT=$SUSFS_SYMBOL_COUNT"
+            echo 'ACTIVE_ROOT_MANAGER=NONE'
+            echo 'INHERITED_LEGACY_KSU_SOURCE=PRESENT_DISABLED'
+            echo 'WARNING_PROFILE=OBSERVED_ONLY_C2_MUST_REPRODUCE'
+          } > "$GITHUB_WORKSPACE/evidence/C1-LINKED-AUDIT.txt"
+
+      - name: Close C1 candidate checkpoint
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo 'STAGE=C1_CANDIDATE_CLOSED' > "$GITHUB_WORKSPACE/evidence/STAGE.txt"
+
+          # Success artifact stays compact. Full logs are retained only on failure.
+          rm -f "$GITHUB_WORKSPACE/evidence/config.log" "$GITHUB_WORKSPACE/evidence/build.log"
+
+          {
+            echo 'CHECKPOINT=KSU-C1-CANDIDATE'
+            echo 'C0_SOURCE_PROVENANCE=PASS'
+            echo 'C0_ANDROID_TARGET_AUTHENTICATION=PASS'
+            echo 'C1_DETERMINISTIC_MERGE=PASS'
+            echo 'C1_TOOLCHAIN=PASS'
+            echo 'C1_CONFIGURE=PASS'
+            echo 'C1_FULL_BUILD=PASS'
+            echo 'C1_V1_CROSS_RUN_BUILD_IDENTITY=PASS'
+            echo 'C1_LINKED_ROOT_MANAGER_STATE=PASS'
+            echo 'ACTIVE_ROOT_MANAGER=NONE'
+            echo 'INHERITED_LEGACY_KSU_SOURCE=PRESENT_DISABLED'
+            echo 'SUSFS_LINKED=NO'
+            echo 'C2_REPRODUCIBILITY=REQUIRED_NOT_YET_RUN'
+            echo 'PROVEN=NO'
+            echo 'DEVICE_TEST=NOT_PERFORMED'
+            echo 'BOOT_IMAGE=NOT_CREATED'
+            echo 'FLASHING=NOT_PERFORMED'
+          } > "$GITHUB_WORKSPACE/evidence/C1-CHECKPOINT.txt"
+
+      - name: Preserve failure evidence
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set +e
+          mkdir -p "$GITHUB_WORKSPACE/evidence"
+
+          {
+            echo "JOB_STATUS=${{ job.status }}"
+            echo "RUN_ID=${{ github.run_id }}"
+            echo "RUN_ATTEMPT=${{ github.run_attempt }}"
+            echo "WORKFLOW_SHA=${{ github.sha }}"
+            if [ -f "$GITHUB_WORKSPACE/evidence/STAGE.txt" ]; then
+              cat "$GITHUB_WORKSPACE/evidence/STAGE.txt"
+            fi
+          } > "$GITHUB_WORKSPACE/evidence/JOB-STATUS.txt"
+
+          if [ -d "$GITHUB_WORKSPACE/kernel/.git" ]; then
+            {
+              cd "$GITHUB_WORKSPACE/kernel" || exit 0
+              echo "HEAD=$(git rev-parse HEAD 2>/dev/null)"
+              echo "TREE=$(git rev-parse HEAD^{tree} 2>/dev/null)"
+              echo 'STATUS_BEGIN'
+              git status --porcelain 2>/dev/null
+              echo 'STATUS_END'
+            } > "$GITHUB_WORKSPACE/evidence/FAILURE-GIT-STATE.txt"
+          fi
+
+          if [ ! -f "$GITHUB_WORKSPACE/evidence/C1-CHECKPOINT.txt" ]; then
+            {
+              echo 'CHECKPOINT=KSU-C1-CANDIDATE-NOT-REACHED'
+              echo 'PROVEN=NO'
+              echo 'ACTION=STOP_AND_AUDIT_FAILURE_EVIDENCE'
+            } > "$GITHUB_WORKSPACE/evidence/FAILURE-CONTEXT.txt"
+          fi
+
+      - name: Finalize and verify evidence manifest
+        id: evidence_manifest
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          python3 - <<'PY'
+          from __future__ import annotations
+
+          import hashlib
+          import os
+          from pathlib import Path
+
+          root = Path("evidence")
+          manifest = root / "SHA256SUMS"
+          status_file = root / "MANIFEST-STATUS.txt"
+          manifest.unlink(missing_ok=True)
+          status_file.unlink(missing_ok=True)
+
+          def digest(path: Path) -> str:
+              return hashlib.sha256(path.read_bytes()).hexdigest()
+
+          def write_manifest() -> dict[str, str]:
+              files = sorted(
+                  p for p in root.iterdir()
+                  if p.is_file() and p.name != manifest.name
+              )
+              if not files:
+                  raise RuntimeError("evidence directory contains no files")
+              expected = {p.name: digest(p) for p in files}
+              lines = [f"{expected[p.name]}  {p.name}" for p in files]
+              tmp = Path(os.environ["RUNNER_TEMP"]) / "C1-SHA256SUMS.tmp"
+              tmp.write_text("\n".join(lines) + "\n", encoding="utf-8")
+              os.replace(tmp, manifest)
+              return expected
+
+          def verify(expected: dict[str, str]) -> None:
+              listed: dict[str, str] = {}
+              for lineno, raw in enumerate(
+                  manifest.read_text(encoding="utf-8").splitlines(), 1
+              ):
+                  if not raw.strip():
+                      continue
+                  try:
+                      value, name = raw.split("  ", 1)
+                  except ValueError as exc:
+                      raise RuntimeError(
+                          f"malformed SHA256SUMS line {lineno}: {raw!r}"
+                      ) from exc
+                  if name == manifest.name:
+                      raise RuntimeError("SHA256SUMS contains a self-reference")
+                  if "/" in name or "\\" in name or name in {".", ".."}:
+                      raise RuntimeError(f"non-basename manifest path: {name!r}")
+                  if name in listed:
+                      raise RuntimeError(f"duplicate manifest entry: {name}")
+                  listed[name] = value
+              if listed != expected:
+                  raise RuntimeError("manifest file set/digests differ from evidence set")
+              for name, value in listed.items():
+                  if digest(root / name) != value:
+                      raise RuntimeError(f"manifest verification failed for {name}")
+
+          try:
+              # First pass validates the algorithm without a PASS claim.
+              status_file.write_text(
+                  "EVIDENCE_MANIFEST_STATUS=PENDING\n"
+                  "SELF_REFERENCE_ALLOWED=NO\n"
+                  "ENTRY_PATH_MODE=BASENAME\n",
+                  encoding="utf-8",
+              )
+              verify(write_manifest())
+
+              # Only after the first verification do we claim PASS, then rebuild
+              # and verify the final manifest so the PASS status itself is hashed.
+              status_file.write_text(
+                  "EVIDENCE_MANIFEST_STATUS=PASS\n"
+                  "SELF_REFERENCE_ALLOWED=NO\n"
+                  "ENTRY_PATH_MODE=BASENAME\n",
+                  encoding="utf-8",
+              )
+              expected = write_manifest()
+              verify(expected)
+          except Exception as exc:
+              manifest.unlink(missing_ok=True)
+              status_file.write_text(
+                  "EVIDENCE_MANIFEST_STATUS=FAIL\n"
+                  f"ERROR={type(exc).__name__}: {exc}\n",
+                  encoding="utf-8",
+              )
+              raise
+
+          print(
+              f"EVIDENCE_MANIFEST=PASS FILES={len(expected)} "
+              "SELF_REFERENCE=NO PATH_MODE=BASENAME"
+          )
+          PY
+
+      - name: Upload compact C0-C1 evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: ksu-c0-c1-veux-5.4.274-clean-baseline-v2-${{ github.run_id }}
+          path: evidence/
+          retention-days: 14
+          if-no-files-found: error
+
+      - name: Publish summary
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set +e
+          {
+            echo '## KSU C0-C1 VEUX 5.4.274 clean baseline v2'
+            echo
+            if [ "${{ job.status }}" = "success" ] && [ -f "$GITHUB_WORKSPACE/evidence/C1-CHECKPOINT.txt" ]; then
+              echo '**Result: C1-CANDIDATE created.**'
+              echo
+              echo 'No new KernelSU, ReSukiSU, or SUSFS code was integrated.'
+              echo 'The inherited OEM KernelSU source remains present but must be disabled and unlinked.'
+              echo
+              echo '```text'
+              cat "$GITHUB_WORKSPACE/evidence/C1-CHECKPOINT.txt"
+              echo '```'
+            else
+              echo '**Result: STOPPED before C1-CANDIDATE.**'
+              echo
+              echo 'Inspect the compact evidence artifact. Do not continue to C2.'
+              echo
+              echo '```text'
+              cat "$GITHUB_WORKSPACE/evidence/JOB-STATUS.txt" 2>/dev/null || true
+              echo '```'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
