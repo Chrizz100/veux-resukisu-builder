@@ -1,0 +1,710 @@
+name: KSU C2 VEUX 5.4.274 clean baseline reproducibility v2
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  BASE_REPO: https://github.com/dereference23/kernel_xiaomi_sm6375.git
+  BASE_COMMIT: b2b7a3bbc36d120ee523ebc8d68e0f13a97df632
+  BASE_TREE: 1783b5008fc971b795ccaa374efe97aa996eef49
+  BASE_VERSION: 5.4.268
+  ANDROID_COMMON_REPO: https://android.googlesource.com/kernel/common
+  ANDROID_TAG: android11-5.4.274_r00
+  ANDROID_TAG_OBJECT: b5141f9d31a3d1875523c9e1ae0d4587c144d149
+  ANDROID_COMMIT: 181edea14ae07024cc87699f3cd49116e6f8fbb3
+  ANDROID_TREE: 0485f492b920bf72f7f623a0df2aa3c5d7661a9c
+  TARGET_VERSION: 5.4.274
+  CLANG_REPO_COMMIT: aa2e4a514a6c85eebcc4a27149eaf9244e951a1e
+  CLANG_DIR: clang-r416183b
+  KBUILD_BUILD_USER: clean-gen1
+  KBUILD_BUILD_HOST: github-actions
+  KBUILD_BUILD_TIMESTAMP: Thu Apr 18 11:05:25 UTC 2024
+  C1_V3_REFERENCE_RUN_ID: '33862506115'
+  C2_V1_FAILED_RUN_ID: '33867211262'
+  C1_V3_REFERENCE_ARTIFACT_DIGEST: ea394a7b65225f461bf4a1091d60c3beea3959b62fb044bea6f36d0b51e69508
+  EXPECTED_MERGE_COMMIT: 763f39fff62ff914200a9ac6e7e2336fdf29a6f2
+  EXPECTED_MERGE_TREE: a50206971cf1d1eddc259f3aba3d63f87e7ec706
+  EXPECTED_LEGACY_KSU_TREE: fd046786b1c3b2bf5566e546c50ea23933cb2ec3
+  EXPECTED_IMAGE_BYTES: '29706752'
+  EXPECTED_IMAGE_SHA256: e58901610d82c69b04dcc33c4fd3d14e6c0bb05615b307789c7ef204a373a6c5
+  EXPECTED_VMLINUX_SHA256: d3179cd62d847ed2367af1abad5090f3fa9e7ae05243b9f96c71bcf47b280e47
+  EXPECTED_SYSTEM_MAP_SHA256: 78780bc64b8baf0f08e547151130bad672c9133567697b50518acba1f552d2ed
+  EXPECTED_CONFIG_SHA256: 4a053522cbad0715a74613f75ad3fc132c84d0604a7ab60d72b8d88800bc08ee
+  EXPECTED_VEUX_DTB_BYTES: '275689'
+  EXPECTED_VEUX_DTB_SHA256: 42728a6f3d48ae35ac6be4b14ea51bc8a323e77baec2ee544827487378f99d37
+  EXPECTED_TOOLCHAIN_TREE_SHA256: ed560f80e2009206b25cb963c8810faecdad06b18b75cc563ef2c9b900355a1f
+  EXPECTED_CLANG_SHA256: b2ce016755bddbab76549895bca07b1dc8d14a3e315b8b3567097fef04eadae1
+  EXPECTED_LLD_SHA256: 51dc9705420c136f583478ac08a3258cd970710296928b3bf24dc3ee2e6208e3
+
+jobs:
+  reproducibility:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - name: Initialize C2 evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$GITHUB_WORKSPACE/evidence"
+          mkdir -p "$GITHUB_WORKSPACE/evidence"
+          echo 'STAGE=INITIALIZED' > "$GITHUB_WORKSPACE/evidence/STAGE.txt"
+          {
+            echo 'WORKFLOW=KSU-C2-VEUX-5.4.274-CLEAN-BASELINE-REPRODUCIBILITY-v2'
+            echo 'CHECKPOINT_TARGET=CLEAN-BASE-PROVEN'
+            echo "C1_V3_REFERENCE_RUN_ID=$C1_V3_REFERENCE_RUN_ID"
+            echo "C2_V1_FAILED_RUN_ID=$C2_V1_FAILED_RUN_ID"
+            echo 'C2_V1_FAILURE_CLASS=TOOLCHAIN_MANIFEST_NORMALIZATION_ORDER_MISMATCH'
+            echo 'C2_V2_REPAIR=USE_EXACT_C1_V3_TOOLCHAIN_TREE_SERIALIZER_AND_STAGE_EACH_IDENTITY_GATE'
+            echo "C1_V3_REFERENCE_ARTIFACT_DIGEST=$C1_V3_REFERENCE_ARTIFACT_DIGEST"
+            echo 'C1_ARTIFACT_AS_BUILD_INPUT=NO'
+            echo 'OLD_MODIFIED_REPOSITORY_AS_SOURCE=NO'
+            echo 'BUILD_A_AND_B_REQUIRED=YES'
+            echo 'FULL_OUT_DELETE_BETWEEN_BUILDS=REQUIRED'
+            echo 'SOURCE_IMMUTABILITY=REQUIRED'
+            echo 'DEVICE_TEST=NOT_PERFORMED'
+            echo 'BOOT_IMAGE=NOT_CREATED'
+            echo 'FLASHING=NOT_PERFORMED'
+          } > "$GITHUB_WORKSPACE/evidence/CONTRACT.txt"
+
+      - name: Install build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo 'STAGE=DEPENDENCIES' > "$GITHUB_WORKSPACE/evidence/STAGE.txt"
+          sudo apt-get update
+          sudo apt-get install -y bc bison build-essential ca-certificates cpio curl flex git \
+            libelf-dev libssl-dev python3 rsync xz-utils zstd
+
+      - name: C2 independent two-build reproducibility audit
+        shell: bash
+        run: |
+          set -euo pipefail
+          E="$GITHUB_WORKSPACE/evidence"
+          K="$GITHUB_WORKSPACE/kernel"
+          TC="$GITHUB_WORKSPACE/toolchain/$CLANG_DIR"
+          A="$RUNNER_TEMP/c2-build-A"
+          B="$RUNNER_TEMP/c2-build-B"
+          stage() { echo "STAGE=$1" > "$E/STAGE.txt"; }
+          kver() {
+            awk '$1=="VERSION" && $2=="=" {v=$3}
+                 $1=="PATCHLEVEL" && $2=="=" {p=$3}
+                 $1=="SUBLEVEL" && $2=="=" {s=$3}
+                 END {print v "." p "." s}' Makefile
+          }
+
+          # Toolchain serializer MUST match C1-v3 exactly because its manifest SHA
+          # is an authenticated cross-run content identity.
+          cat > "$RUNNER_TEMP/c2-toolchain-tree.py" <<'PY'
+          import hashlib
+          import os
+          import stat
+          import sys
+          from pathlib import Path
+
+          root = Path(sys.argv[1]).resolve()
+          output = Path(sys.argv[2])
+          rows = []
+
+          for path in sorted(
+              root.rglob("*"),
+              key=lambda p: p.relative_to(root).as_posix(),
+          ):
+              rel = path.relative_to(root).as_posix()
+              st = path.lstat()
+              mode = stat.S_IMODE(st.st_mode)
+
+              if path.is_symlink():
+                  rows.append(f"L\t{mode:04o}\t{rel}\t{os.readlink(path)}")
+              elif path.is_dir():
+                  rows.append(f"D\t{mode:04o}\t{rel}")
+              elif path.is_file():
+                  h = hashlib.sha256()
+                  with path.open("rb") as f:
+                      for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                          h.update(chunk)
+                  rows.append(
+                      f"F\t{mode:04o}\t{rel}\t{st.st_size}\t{h.hexdigest()}"
+                  )
+              else:
+                  rows.append(f"O\t{mode:04o}\t{rel}")
+
+          output.write_text("\n".join(rows) + "\n", encoding="utf-8")
+          PY
+
+          # Source immutability has a separate serializer. Its hash is compared
+          # only within this run; it must not redefine the pinned toolchain format.
+          cat > "$RUNNER_TEMP/c2-source-tree.py" <<'PY'
+          import hashlib
+          import os
+          import stat
+          import sys
+          from pathlib import Path
+
+          root = Path(sys.argv[1]).resolve()
+          output = Path(sys.argv[2])
+          excluded = {".git", "out"}
+          paths = []
+
+          for dirpath, dirnames, filenames in os.walk(
+              root, topdown=True, followlinks=False
+          ):
+              directory = Path(dirpath)
+              if directory == root:
+                  dirnames[:] = sorted(
+                      name for name in dirnames if name not in excluded
+                  )
+              else:
+                  dirnames[:] = sorted(dirnames)
+
+              paths.extend(directory / name for name in dirnames)
+              paths.extend(directory / name for name in sorted(filenames))
+
+          rows = []
+          for path in sorted(
+              paths,
+              key=lambda p: p.relative_to(root).as_posix(),
+          ):
+              rel = path.relative_to(root).as_posix()
+              st = path.lstat()
+              mode = stat.S_IMODE(st.st_mode)
+
+              if path.is_symlink():
+                  rows.append(f"L\t{mode:04o}\t{rel}\t{os.readlink(path)}")
+              elif path.is_dir():
+                  rows.append(f"D\t{mode:04o}\t{rel}")
+              elif path.is_file():
+                  h = hashlib.sha256()
+                  with path.open("rb") as f:
+                      for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                          h.update(chunk)
+                  rows.append(
+                      f"F\t{mode:04o}\t{rel}\t{st.st_size}\t{h.hexdigest()}"
+                  )
+              else:
+                  rows.append(f"O\t{mode:04o}\t{rel}")
+
+          output.write_text("\n".join(rows) + "\n", encoding="utf-8")
+          PY
+
+          cat > "$RUNNER_TEMP/c2-dtb-manifest.py" <<'PY'
+          import hashlib,sys
+          from pathlib import Path
+          root=Path(sys.argv[1]); out=Path(sys.argv[2]); rows=[]
+          for p in sorted(root.rglob("*.dtb"),key=lambda x:x.relative_to(root).as_posix()):
+              rows.append(f"{hashlib.sha256(p.read_bytes()).hexdigest()}  {p.stat().st_size}  {p.relative_to(root).as_posix()}")
+          if not rows: raise SystemExit("no DTBs captured")
+          out.write_text("\n".join(rows)+"\n",encoding="utf-8")
+          PY
+
+          stage SOURCE_PROVENANCE
+          rm -rf "$K"
+          git init "$K"
+          git -C "$K" remote add origin "$BASE_REPO"
+          git -C "$K" fetch --no-tags origin "$BASE_COMMIT"
+          git -C "$K" checkout --detach FETCH_HEAD
+          cd "$K"
+          test "$(git rev-parse HEAD)" = "$BASE_COMMIT"
+          test "$(git rev-parse HEAD^{tree})" = "$BASE_TREE"
+          test "$(kver)" = "$BASE_VERSION"
+          test -f arch/arm64/boot/dts/vendor/xiaomi/veux.dts
+          test -f arch/arm64/configs/veux_defconfig
+          test -f drivers/kernelsu/Kconfig
+          grep -q '^config KSU$' drivers/kernelsu/Kconfig
+          grep -q 'kernelsu/Kconfig' drivers/Kconfig
+          grep -Fq 'obj-$(CONFIG_KSU) += kernelsu/' drivers/Makefile
+          test "$(git rev-parse HEAD:drivers/kernelsu)" = "$EXPECTED_LEGACY_KSU_TREE"
+          test -z "$(git status --porcelain --untracked-files=all)"
+          {
+            echo 'SOURCE_PROVENANCE=PASS'
+            echo "BASE_COMMIT=$(git rev-parse HEAD)"
+            echo "BASE_TREE=$(git rev-parse HEAD^{tree})"
+            echo "BASE_VERSION=$(kver)"
+            echo "LEGACY_KSU_TREE=$(git rev-parse HEAD:drivers/kernelsu)"
+          } > "$E/C2-SOURCE-PROVENANCE.txt"
+
+          stage ANDROID_TARGET_AUTH
+          git remote add android "$ANDROID_COMMON_REPO"
+          git fetch --no-tags android "refs/tags/${ANDROID_TAG}:refs/tags/${ANDROID_TAG}"
+          test "$(git cat-file -t "refs/tags/${ANDROID_TAG}")" = tag
+          test "$(git rev-parse "refs/tags/${ANDROID_TAG}")" = "$ANDROID_TAG_OBJECT"
+          test "$(git rev-parse "refs/tags/${ANDROID_TAG}^{}")" = "$ANDROID_COMMIT"
+          test "$(git rev-parse "${ANDROID_COMMIT}^{tree}")" = "$ANDROID_TREE"
+          COMMON_BASE=$(git merge-base "$BASE_COMMIT" "$ANDROID_COMMIT")
+          test -n "$COMMON_BASE"
+          {
+            echo 'ANDROID_TARGET_AUTH=PASS'
+            echo "ANDROID_TAG=$ANDROID_TAG"
+            echo "ANDROID_TAG_OBJECT=$ANDROID_TAG_OBJECT"
+            echo "ANDROID_COMMIT=$ANDROID_COMMIT"
+            echo "ANDROID_TREE=$ANDROID_TREE"
+            echo "COMMON_ANCESTOR=$COMMON_BASE"
+          } > "$E/C2-ANDROID-TARGET.txt"
+
+          stage DETERMINISTIC_MERGE
+          git config user.name 'VEUX Clean Baseline'
+          git config user.email 'veux-clean-baseline@users.noreply.github.com'
+          set +e
+          git merge --no-commit --no-ff "$ANDROID_COMMIT"
+          MERGE_RC=$?
+          set -e
+          if [ "$MERGE_RC" -ne 0 ]; then
+            { echo "MERGE_RC=$MERGE_RC"; git diff --name-only --diff-filter=U; } > "$E/C2-MERGE-FAILURE.txt"
+            exit 31
+          fi
+          test "$(kver)" = "$TARGET_VERSION"
+          export GIT_AUTHOR_DATE='2024-04-18T11:05:25Z'
+          export GIT_COMMITTER_DATE='2024-04-18T11:05:25Z'
+          git commit -m 'CLEAN BASELINE: merge android11-5.4.274_r00 into VEUX 5.4.268'
+          test "$(git rev-parse HEAD)" = "$EXPECTED_MERGE_COMMIT"
+          test "$(git rev-parse HEAD^{tree})" = "$EXPECTED_MERGE_TREE"
+          test "$(git rev-parse HEAD^1)" = "$BASE_COMMIT"
+          test "$(git rev-parse HEAD^2)" = "$ANDROID_COMMIT"
+          test "$(git rev-parse HEAD:drivers/kernelsu)" = "$EXPECTED_LEGACY_KSU_TREE"
+          test -z "$(git status --porcelain --untracked-files=all)"
+          {
+            echo 'DETERMINISTIC_MERGE=PASS'
+            echo "MERGE_COMMIT=$(git rev-parse HEAD)"
+            echo "MERGE_TREE=$(git rev-parse HEAD^{tree})"
+            echo "LEGACY_KSU_TREE=$(git rev-parse HEAD:drivers/kernelsu)"
+          } > "$E/C2-MERGE-IDENTITY.txt"
+
+          stage TOOLCHAIN_CONTENT_IDENTITY
+          rm -rf "$GITHUB_WORKSPACE/toolchain"
+          mkdir -p "$TC"
+          ARCHIVE="$RUNNER_TEMP/${CLANG_DIR}-c2.tar.gz"
+          URL="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/${CLANG_REPO_COMMIT}/${CLANG_DIR}.tar.gz"
+          curl --fail --location --retry 4 --retry-delay 2 --retry-all-errors \
+            -H 'Cache-Control: no-cache' "$URL" -o "$ARCHIVE"
+          test -s "$ARCHIVE"
+          tar -xzf "$ARCHIVE" -C "$TC"
+          test -x "$TC/bin/clang"
+          test -x "$TC/bin/ld.lld"
+          RAW_SHA=$(sha256sum "$ARCHIVE"|awk '{print $1}')
+          CLANG_SHA=$(sha256sum "$TC/bin/clang"|awk '{print $1}')
+          LLD_SHA=$(sha256sum "$TC/bin/ld.lld"|awk '{print $1}')
+          python3 "$RUNNER_TEMP/c2-toolchain-tree.py" \
+            "$TC" "$E/C2-TOOLCHAIN-TREE.tsv"
+          TREE_SHA=$(sha256sum "$E/C2-TOOLCHAIN-TREE.tsv"|awk '{print $1}')
+
+          {
+            echo 'TOOLCHAIN_MEASUREMENTS=RECORDED_BEFORE_GATES'
+            echo 'TOOLCHAIN_TREE_SERIALIZER=C1_V3_EXACT_FORMAT'
+            echo "CLANG_REPO_COMMIT=$CLANG_REPO_COMMIT"
+            echo "RAW_ARCHIVE_SHA256_INFORMATIONAL=$RAW_SHA"
+            echo 'RAW_ARCHIVE_SHA_IS_IDENTITY_GATE=NO'
+            echo "MEASURED_TOOLCHAIN_TREE_SHA256=$TREE_SHA"
+            echo "EXPECTED_TOOLCHAIN_TREE_SHA256=$EXPECTED_TOOLCHAIN_TREE_SHA256"
+            echo "MEASURED_CLANG_SHA256=$CLANG_SHA"
+            echo "EXPECTED_CLANG_SHA256=$EXPECTED_CLANG_SHA256"
+            echo "MEASURED_LLD_SHA256=$LLD_SHA"
+            echo "EXPECTED_LLD_SHA256=$EXPECTED_LLD_SHA256"
+          } > "$E/C2-TOOLCHAIN-MEASUREMENTS.txt"
+
+          stage TOOLCHAIN_TREE_GATE
+          test "$TREE_SHA" = "$EXPECTED_TOOLCHAIN_TREE_SHA256"
+          echo 'TOOLCHAIN_TREE_GATE=PASS' > "$E/C2-TOOLCHAIN-TREE-GATE.txt"
+
+          stage TOOLCHAIN_CLANG_GATE
+          test "$CLANG_SHA" = "$EXPECTED_CLANG_SHA256"
+          echo 'TOOLCHAIN_CLANG_GATE=PASS' > "$E/C2-TOOLCHAIN-CLANG-GATE.txt"
+
+          stage TOOLCHAIN_LLD_GATE
+          test "$LLD_SHA" = "$EXPECTED_LLD_SHA256"
+          echo 'TOOLCHAIN_LLD_GATE=PASS' > "$E/C2-TOOLCHAIN-LLD-GATE.txt"
+
+          {
+            echo 'TOOLCHAIN_CONTENT_IDENTITY=PASS'
+            echo 'TOOLCHAIN_TREE_SERIALIZER=C1_V3_EXACT_FORMAT'
+            echo "CLANG_REPO_COMMIT=$CLANG_REPO_COMMIT"
+            echo "RAW_ARCHIVE_SHA256_INFORMATIONAL=$RAW_SHA"
+            echo 'RAW_ARCHIVE_SHA_IS_IDENTITY_GATE=NO'
+            echo "TOOLCHAIN_TREE_SHA256=$TREE_SHA"
+            echo "CLANG_SHA256=$CLANG_SHA"
+            echo "LLD_SHA256=$LLD_SHA"
+            echo 'CLANG_VERSION_BEGIN'
+            "$TC/bin/clang" --version
+            echo 'CLANG_VERSION_END'
+            echo 'LLD_VERSION_BEGIN'
+            "$TC/bin/ld.lld" --version
+            echo 'LLD_VERSION_END'
+          } > "$E/C2-TOOLCHAIN-IDENTITY.txt"
+          rm -f "$ARCHIVE"
+
+          stage SOURCE_IDENTITY_BASELINE
+          python3 "$RUNNER_TEMP/c2-source-tree.py" "$K" "$RUNNER_TEMP/source-0.tsv"
+          SOURCE0=$(sha256sum "$RUNNER_TEMP/source-0.tsv"|awk '{print $1}')
+          test -n "$SOURCE0"
+          {
+            echo 'SOURCE_IDENTITY_BASELINE=PASS'
+            echo "SOURCE_FS_DIGEST=$SOURCE0"
+            echo 'SOURCE_DIGEST_EXCLUDES=.git,out'
+            echo 'SOURCE_TREE_SERIALIZER=C2_INTERNAL_GLOBAL_PATH_ORDER'
+            echo "HEAD=$(git rev-parse HEAD)"
+            echo "TREE=$(git rev-parse HEAD^{tree})"
+          } > "$E/C2-SOURCE-IMMUTABILITY-BASELINE.txt"
+
+          export PATH="$TC/bin:$PATH"
+          export KCFLAGS='-D__ANDROID_COMMON_KERNEL__'
+          export KBUILD_BUILD_USER KBUILD_BUILD_HOST KBUILD_BUILD_TIMESTAMP
+
+          build_one() {
+            label="$1"; snap="$2"
+            test ! -e out
+            make O=out ARCH=arm64 LLVM=1 veux_defconfig 2>&1 | tee "$E/config-${label}.log"
+            test -s out/.config
+            grep -q '^CONFIG_ARCH_QCOM=y$' out/.config
+            grep -q '^CONFIG_ARCH_HOLI=y$' out/.config
+            grep -q '^CONFIG_ARCH_BLAIR=y$' out/.config
+            grep -q '^CONFIG_WT_QGKI=y$' out/.config
+            grep -q '^CONFIG_LTO_CLANG=y$' out/.config
+            grep -q '^CONFIG_BUILD_ARM64_UNCOMPRESSED_KERNEL=y$' out/.config
+            ! grep -Eq '^CONFIG_KSU=(y|m)$' out/.config
+            ! grep -q '^CONFIG_KSU_DEBUG=y$' out/.config
+            CFG0=$(sha256sum out/.config|awk '{print $1}')
+            REL=$(make -s O=out ARCH=arm64 LLVM=1 kernelrelease)
+            make -j"$(nproc)" O=out ARCH=arm64 LLVM=1 Image dtbs 2>&1 | tee "$E/build-${label}.log"
+            IMG=out/arch/arm64/boot/Image
+            VML=out/vmlinux
+            MAP=out/System.map
+            DTB=out/arch/arm64/boot/dts/vendor/xiaomi/veux.dtb
+            test -s "$IMG"; test -s "$VML"; test -s "$MAP"; test -s "$DTB"; test -s out/.config
+            CFG=$(sha256sum out/.config|awk '{print $1}')
+            test "$CFG0" = "$CFG"
+            out/scripts/dtc/dtc -I dtb -O dts -o /dev/null "$DTB"
+            ERR=$(grep -Eic '(^|[[:space:]])(fatal )?error:' "$E/build-${label}.log" || true)
+            WARN=$(grep -Eic '(^|[[:space:]])warning:' "$E/build-${label}.log" || true)
+            test "$ERR" -eq 0
+            grep -Ei '(^|[[:space:]])warning:' "$E/build-${label}.log" | LC_ALL=C sort > "$E/BUILD-WARNINGS-${label}.sorted.txt" || true
+            KSU=$(grep -Ec '[[:space:]]ksu_[A-Za-z0-9_]*$' "$MAP" || true)
+            SUS=$(grep -Ec '[[:space:]]susfs_[A-Za-z0-9_]*$' "$MAP" || true)
+            test "$KSU" -eq 0; test "$SUS" -eq 0
+            IBS=$(stat -c '%s' "$IMG"); ISH=$(sha256sum "$IMG"|awk '{print $1}')
+            VSH=$(sha256sum "$VML"|awk '{print $1}')
+            MSH=$(sha256sum "$MAP"|awk '{print $1}')
+            DBS=$(stat -c '%s' "$DTB"); DSH=$(sha256sum "$DTB"|awk '{print $1}')
+            test "$IBS" = "$EXPECTED_IMAGE_BYTES"
+            test "$ISH" = "$EXPECTED_IMAGE_SHA256"
+            test "$VSH" = "$EXPECTED_VMLINUX_SHA256"
+            test "$MSH" = "$EXPECTED_SYSTEM_MAP_SHA256"
+            test "$CFG" = "$EXPECTED_CONFIG_SHA256"
+            test "$DBS" = "$EXPECTED_VEUX_DTB_BYTES"
+            test "$DSH" = "$EXPECTED_VEUX_DTB_SHA256"
+            rm -rf "$snap"; mkdir -p "$snap/dtb-tree"
+            cp "$IMG" "$snap/Image"; cp "$VML" "$snap/vmlinux"; cp "$MAP" "$snap/System.map"
+            cp out/.config "$snap/.config"; cp "$DTB" "$snap/veux.dtb"
+            rsync -a --prune-empty-dirs --include='*/' --include='*.dtb' --exclude='*' \
+              out/arch/arm64/boot/dts/ "$snap/dtb-tree/"
+            python3 "$RUNNER_TEMP/c2-dtb-manifest.py" "$snap/dtb-tree" "$E/DTB-MANIFEST-${label}.txt"
+            DMH=$(sha256sum "$E/DTB-MANIFEST-${label}.txt"|awk '{print $1}')
+            DMC=$(wc -l < "$E/DTB-MANIFEST-${label}.txt"|tr -d ' ')
+            python3 "$RUNNER_TEMP/c2-source-tree.py" "$K" "$RUNNER_TEMP/source-${label}.tsv"
+            SRC=$(sha256sum "$RUNNER_TEMP/source-${label}.tsv"|awk '{print $1}')
+            test "$SRC" = "$SOURCE0"
+            test -z "$(git status --porcelain --untracked-files=all)"
+            {
+              echo "BUILD_${label}=PASS"
+              echo "BUILD_${label}_C1_V3_REFERENCE_IDENTITY=PASS"
+              echo "KERNEL_RELEASE=$REL"
+              echo "IMAGE_BYTES=$IBS"
+              echo "IMAGE_SHA256=$ISH"
+              echo "VMLINUX_SHA256=$VSH"
+              echo "SYSTEM_MAP_SHA256=$MSH"
+              echo "CONFIG_SHA256=$CFG"
+              echo "VEUX_DTB_BYTES=$DBS"
+              echo "VEUX_DTB_SHA256=$DSH"
+              echo "ALL_DTB_COUNT=$DMC"
+              echo "ALL_DTB_MANIFEST_SHA256=$DMH"
+              echo "COMPILER_ERROR_COUNT=$ERR"
+              echo "COMPILER_WARNING_COUNT=$WARN"
+              echo "LINKED_KSU_SYMBOL_COUNT=$KSU"
+              echo "LINKED_SUSFS_SYMBOL_COUNT=$SUS"
+              echo "SOURCE_FS_DIGEST_AFTER_${label}=$SRC"
+            } > "$E/C2-BUILD-${label}.txt"
+          }
+
+          stage BUILD_A
+          rm -rf out
+          test ! -e out
+          build_one A "$A"
+
+          stage FULL_OUT_DELETE
+          rm -rf out
+          test ! -e out
+          python3 "$RUNNER_TEMP/c2-source-tree.py" "$K" "$RUNNER_TEMP/source-delete.tsv"
+          SOURCE_DELETE=$(sha256sum "$RUNNER_TEMP/source-delete.tsv"|awk '{print $1}')
+          test "$SOURCE_DELETE" = "$SOURCE0"
+          test "$(git rev-parse HEAD)" = "$EXPECTED_MERGE_COMMIT"
+          test "$(git rev-parse HEAD^{tree})" = "$EXPECTED_MERGE_TREE"
+          test "$(git rev-parse HEAD:drivers/kernelsu)" = "$EXPECTED_LEGACY_KSU_TREE"
+          test -z "$(git status --porcelain --untracked-files=all)"
+          {
+            echo 'FULL_OUT_DELETE_BETWEEN_BUILDS=PASS'
+            echo 'OUT_EXISTS_AFTER_DELETE=NO'
+            echo "SOURCE_FS_DIGEST_AFTER_DELETE=$SOURCE_DELETE"
+          } > "$E/C2-OUT-DELETE-GATE.txt"
+
+          stage BUILD_B
+          build_one B "$B"
+
+          stage REPRODUCIBILITY_CLOSURE
+          cmp -s "$A/Image" "$B/Image"
+          cmp -s "$A/vmlinux" "$B/vmlinux"
+          cmp -s "$A/System.map" "$B/System.map"
+          cmp -s "$A/.config" "$B/.config"
+          cmp -s "$A/veux.dtb" "$B/veux.dtb"
+          cmp -s "$E/DTB-MANIFEST-A.txt" "$E/DTB-MANIFEST-B.txt"
+          diff -qr "$A/dtb-tree" "$B/dtb-tree" > "$E/DTB-TREE-DIFF.txt"
+          test ! -s "$E/DTB-TREE-DIFF.txt"
+          cmp -s "$E/BUILD-WARNINGS-A.sorted.txt" "$E/BUILD-WARNINGS-B.sorted.txt"
+
+          for key in IMAGE_SHA256 VMLINUX_SHA256 SYSTEM_MAP_SHA256 CONFIG_SHA256 VEUX_DTB_SHA256 ALL_DTB_MANIFEST_SHA256; do
+            VA=$(awk -F= -v k="$key" '$1==k {print $2}' "$E/C2-BUILD-A.txt")
+            VB=$(awk -F= -v k="$key" '$1==k {print $2}' "$E/C2-BUILD-B.txt")
+            test -n "$VA"; test "$VA" = "$VB"
+          done
+          REL_A=$(awk -F= '$1=="KERNEL_RELEASE" {print $2}' "$E/C2-BUILD-A.txt")
+          REL_B=$(awk -F= '$1=="KERNEL_RELEASE" {print $2}' "$E/C2-BUILD-B.txt")
+          test "$REL_A" = "$REL_B"
+          WARN_A=$(wc -l < "$E/BUILD-WARNINGS-A.sorted.txt"|tr -d ' ')
+          WARN_B=$(wc -l < "$E/BUILD-WARNINGS-B.sorted.txt"|tr -d ' ')
+          test "$WARN_A" = "$WARN_B"
+          SRC_A=$(awk -F= '$1=="SOURCE_FS_DIGEST_AFTER_A" {print $2}' "$E/C2-BUILD-A.txt")
+          SRC_B=$(awk -F= '$1=="SOURCE_FS_DIGEST_AFTER_B" {print $2}' "$E/C2-BUILD-B.txt")
+          test "$SOURCE0" = "$SRC_A"; test "$SOURCE0" = "$SOURCE_DELETE"; test "$SOURCE0" = "$SRC_B"
+          test "$(git rev-parse HEAD)" = "$EXPECTED_MERGE_COMMIT"
+          test "$(git rev-parse HEAD^{tree})" = "$EXPECTED_MERGE_TREE"
+          test "$(git rev-parse HEAD:drivers/kernelsu)" = "$EXPECTED_LEGACY_KSU_TREE"
+          test -z "$(git status --porcelain --untracked-files=all)"
+
+          {
+            echo 'BUILD_A_B_IDENTICAL=PASS'
+            echo 'C1_V3_REFERENCE_IDENTITY=PASS'
+            echo 'SOURCE_IMMUTABILITY=PASS'
+            echo 'ROOT_MANAGER_STATE=PASS'
+            echo 'FULL_OUT_DELETE_BETWEEN_BUILDS=PASS'
+            echo 'IMAGE_CMP=PASS'
+            echo 'VMLINUX_CMP=PASS'
+            echo 'SYSTEM_MAP_CMP=PASS'
+            echo 'CONFIG_CMP=PASS'
+            echo 'VEUX_DTB_CMP=PASS'
+            echo 'ALL_DTB_MANIFEST_CMP=PASS'
+            echo 'ALL_DTB_TREE_DIFF=PASS'
+            echo 'SORTED_WARNING_PROFILE_CMP=PASS'
+            echo "KERNEL_RELEASE=$REL_A"
+            echo "SOURCE_FS_DIGEST=$SOURCE0"
+            echo "SORTED_WARNING_LINE_COUNT=$WARN_A"
+            echo 'ACTIVE_ROOT_MANAGER=NONE'
+            echo 'INHERITED_LEGACY_KSU_SOURCE=PRESENT_DISABLED'
+            echo 'SUSFS_LINKED=NO'
+          } > "$E/C2-REPRODUCIBILITY-CLOSURE.txt"
+
+          stage C2_TECHNICAL_GATES_CLOSED
+          grep -q '^SOURCE_PROVENANCE=PASS$' "$E/C2-SOURCE-PROVENANCE.txt"
+          grep -q '^ANDROID_TARGET_AUTH=PASS$' "$E/C2-ANDROID-TARGET.txt"
+          grep -q '^DETERMINISTIC_MERGE=PASS$' "$E/C2-MERGE-IDENTITY.txt"
+          grep -q '^TOOLCHAIN_TREE_GATE=PASS$' "$E/C2-TOOLCHAIN-TREE-GATE.txt"
+          grep -q '^TOOLCHAIN_CLANG_GATE=PASS$' "$E/C2-TOOLCHAIN-CLANG-GATE.txt"
+          grep -q '^TOOLCHAIN_LLD_GATE=PASS$' "$E/C2-TOOLCHAIN-LLD-GATE.txt"
+          grep -q '^TOOLCHAIN_CONTENT_IDENTITY=PASS$' "$E/C2-TOOLCHAIN-IDENTITY.txt"
+          grep -q '^BUILD_A=PASS$' "$E/C2-BUILD-A.txt"
+          grep -q '^FULL_OUT_DELETE_BETWEEN_BUILDS=PASS$' "$E/C2-OUT-DELETE-GATE.txt"
+          grep -q '^BUILD_B=PASS$' "$E/C2-BUILD-B.txt"
+          grep -q '^BUILD_A_B_IDENTICAL=PASS$' "$E/C2-REPRODUCIBILITY-CLOSURE.txt"
+          grep -q '^C1_V3_REFERENCE_IDENTITY=PASS$' "$E/C2-REPRODUCIBILITY-CLOSURE.txt"
+          grep -q '^SOURCE_IMMUTABILITY=PASS$' "$E/C2-REPRODUCIBILITY-CLOSURE.txt"
+          grep -q '^ROOT_MANAGER_STATE=PASS$' "$E/C2-REPRODUCIBILITY-CLOSURE.txt"
+
+          rm -f "$E/config-A.log" "$E/build-A.log" "$E/config-B.log" "$E/build-B.log"
+          {
+            echo 'C2_TECHNICAL_GATES=PASS'
+            echo 'PROMOTION_PENDING_EVIDENCE_MANIFEST=YES'
+            echo 'SOURCE_PROVENANCE=PASS'
+            echo 'ANDROID_TARGET_AUTH=PASS'
+            echo 'DETERMINISTIC_MERGE=PASS'
+            echo 'TOOLCHAIN_TREE_GATE=PASS'
+            echo 'TOOLCHAIN_CLANG_GATE=PASS'
+            echo 'TOOLCHAIN_LLD_GATE=PASS'
+            echo 'TOOLCHAIN_CONTENT_IDENTITY=PASS'
+            echo 'BUILD_A=PASS'
+            echo 'FULL_OUT_DELETE_BETWEEN_BUILDS=PASS'
+            echo 'BUILD_B=PASS'
+            echo 'BUILD_A_B_IDENTICAL=PASS'
+            echo 'C1_V3_REFERENCE_IDENTITY=PASS'
+            echo 'SOURCE_IMMUTABILITY=PASS'
+            echo 'ROOT_MANAGER_STATE=PASS'
+            echo 'ACTIVE_ROOT_MANAGER=NONE'
+            echo 'INHERITED_LEGACY_KSU_SOURCE=PRESENT_DISABLED'
+            echo 'SUSFS_LINKED=NO'
+            echo 'DEVICE_TEST=NOT_PERFORMED'
+            echo 'BOOT_IMAGE=NOT_CREATED'
+            echo 'FLASHING=NOT_PERFORMED'
+          } > "$E/C2-TECHNICAL-GATES.txt"
+
+      - name: Preserve C2 failure context
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set +e
+          E="$GITHUB_WORKSPACE/evidence"
+          mkdir -p "$E"
+          {
+            echo "JOB_STATUS=${{ job.status }}"
+            echo "RUN_ID=${{ github.run_id }}"
+            echo "RUN_ATTEMPT=${{ github.run_attempt }}"
+            echo "WORKFLOW_SHA=${{ github.sha }}"
+            [ -f "$E/STAGE.txt" ] && cat "$E/STAGE.txt"
+          } > "$E/JOB-STATUS.txt"
+          if [ -d "$GITHUB_WORKSPACE/kernel/.git" ]; then
+            {
+              cd "$GITHUB_WORKSPACE/kernel" || exit 0
+              echo "HEAD=$(git rev-parse HEAD 2>/dev/null)"
+              echo "TREE=$(git rev-parse HEAD^{tree} 2>/dev/null)"
+              echo "LEGACY_KSU_TREE=$(git rev-parse HEAD:drivers/kernelsu 2>/dev/null)"
+              echo 'STATUS_BEGIN'
+              git status --porcelain --untracked-files=all 2>/dev/null
+              echo 'STATUS_END'
+            } > "$E/C2-END-GIT-STATE.txt"
+          fi
+          if [ ! -f "$E/C2-TECHNICAL-GATES.txt" ]; then
+            {
+              echo 'CHECKPOINT=CLEAN-BASE-PROVEN-NOT-REACHED'
+              echo 'PROVEN=NO'
+              echo 'ACTION=STOP_AND_AUDIT_FAILURE_EVIDENCE'
+            } > "$E/FAILURE-CONTEXT.txt"
+          fi
+
+      - name: Finalize evidence manifest and checkpoint
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          python3 - <<'PY'
+          import hashlib, os
+          from pathlib import Path
+
+          root=Path("evidence")
+          manifest=root/"SHA256SUMS"
+          status=root/"MANIFEST-STATUS.txt"
+          checkpoint=root/"C2-CHECKPOINT.txt"
+          manifest.unlink(missing_ok=True)
+          status.unlink(missing_ok=True)
+          checkpoint.unlink(missing_ok=True)
+
+          technical=root/"C2-TECHNICAL-GATES.txt"
+          passed=technical.is_file() and "C2_TECHNICAL_GATES=PASS" in technical.read_text(encoding="utf-8",errors="replace")
+
+          def sha(p): return hashlib.sha256(p.read_bytes()).hexdigest()
+          def write_manifest():
+              files=sorted(x for x in root.iterdir() if x.is_file() and x.name!=manifest.name)
+              if not files: raise RuntimeError("no evidence files")
+              expected={x.name:sha(x) for x in files}
+              tmp=Path(os.environ["RUNNER_TEMP"])/"C2-SHA256SUMS.tmp"
+              tmp.write_text("".join(f"{expected[x.name]}  {x.name}\n" for x in files),encoding="utf-8")
+              os.replace(tmp,manifest)
+              return expected
+          def verify(expected):
+              listed={}
+              for n,line in enumerate(manifest.read_text(encoding="utf-8").splitlines(),1):
+                  if not line.strip(): continue
+                  try: value,name=line.split("  ",1)
+                  except ValueError as e: raise RuntimeError(f"malformed line {n}") from e
+                  if name==manifest.name: raise RuntimeError("self-reference")
+                  if "/" in name or "\\" in name or name in {".",".."}: raise RuntimeError(f"non-basename: {name}")
+                  if name in listed: raise RuntimeError(f"duplicate: {name}")
+                  listed[name]=value
+              if listed!=expected: raise RuntimeError("manifest set/digest mismatch")
+              for name,value in listed.items():
+                  if sha(root/name)!=value: raise RuntimeError(f"verification failed: {name}")
+
+          try:
+              status.write_text("EVIDENCE_MANIFEST_STATUS=PENDING\nSELF_REFERENCE_ALLOWED=NO\nENTRY_PATH_MODE=BASENAME\n",encoding="utf-8")
+              if passed:
+                  checkpoint.write_text(
+                      "CHECKPOINT=CLEAN-BASE-PROVEN\n"
+                      "C2_REPRODUCIBILITY=PASS\n"
+                      "PROVEN=YES\n"
+                      "SOURCE_PROVENANCE=PASS\n"
+                      "ANDROID_TARGET_AUTH=PASS\n"
+                      "DETERMINISTIC_MERGE=PASS\n"
+                      "TOOLCHAIN_CONTENT_IDENTITY=PASS\n"
+                      "BUILD_A=PASS\n"
+                      "FULL_OUT_DELETE_BETWEEN_BUILDS=PASS\n"
+                      "BUILD_B=PASS\n"
+                      "BUILD_A_B_IDENTICAL=PASS\n"
+                      "C1_V3_REFERENCE_IDENTITY=PASS\n"
+                      "SOURCE_IMMUTABILITY=PASS\n"
+                      "ROOT_MANAGER_STATE=PASS\n"
+                      "ACTIVE_ROOT_MANAGER=NONE\n"
+                      "INHERITED_LEGACY_KSU_SOURCE=PRESENT_DISABLED\n"
+                      "SUSFS_LINKED=NO\n"
+                      "DEVICE_TEST=NOT_PERFORMED\n"
+                      "BOOT_IMAGE=NOT_CREATED\n"
+                      "FLASHING=NOT_PERFORMED\n"
+                      "NEXT_STAGE=C3_LEGACY_KSU_SOURCE_REMOVAL\n",
+                      encoding="utf-8")
+              else:
+                  checkpoint.write_text(
+                      "CHECKPOINT=CLEAN-BASE-PROVEN-NOT-REACHED\n"
+                      "C2_REPRODUCIBILITY=FAIL_OR_INCOMPLETE\n"
+                      "PROVEN=NO\nNEXT_STAGE=BLOCKED\n",encoding="utf-8")
+              verify(write_manifest())
+              status.write_text("EVIDENCE_MANIFEST_STATUS=PASS\nSELF_REFERENCE_ALLOWED=NO\nENTRY_PATH_MODE=BASENAME\n",encoding="utf-8")
+              expected=write_manifest()
+              verify(expected)
+          except Exception as e:
+              manifest.unlink(missing_ok=True)
+              status.write_text(f"EVIDENCE_MANIFEST_STATUS=FAIL\nERROR={type(e).__name__}: {e}\n",encoding="utf-8")
+              checkpoint.write_text(
+                  "CHECKPOINT=CLEAN-BASE-PROVEN-NOT-REACHED\n"
+                  "C2_REPRODUCIBILITY=FAIL_OR_INCOMPLETE\n"
+                  "PROVEN=NO\nNEXT_STAGE=BLOCKED\n",encoding="utf-8")
+              raise
+          print(f"EVIDENCE_MANIFEST=PASS FILES={len(expected)} TECHNICAL_PASS={'YES' if passed else 'NO'}")
+          PY
+          grep -q '^EVIDENCE_MANIFEST_STATUS=PASS$' evidence/MANIFEST-STATUS.txt
+          grep -q '^CHECKPOINT=CLEAN-BASE-PROVEN$' evidence/C2-CHECKPOINT.txt
+          grep -q '^PROVEN=YES$' evidence/C2-CHECKPOINT.txt
+
+      - name: Upload compact C2 evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: ksu-c2-veux-5.4.274-clean-baseline-reproducibility-v2-${{ github.run_id }}
+          path: evidence/
+          retention-days: 14
+          if-no-files-found: error
+
+      - name: Publish C2 summary
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set +e
+          E="$GITHUB_WORKSPACE/evidence"
+          SUCCESS=0
+          if [ "${{ job.status }}" = success ] \
+             && [ -f "$E/C2-CHECKPOINT.txt" ] \
+             && grep -q '^CHECKPOINT=CLEAN-BASE-PROVEN$' "$E/C2-CHECKPOINT.txt" \
+             && grep -q '^PROVEN=YES$' "$E/C2-CHECKPOINT.txt" \
+             && grep -q '^EVIDENCE_MANIFEST_STATUS=PASS$' "$E/MANIFEST-STATUS.txt"; then
+            SUCCESS=1
+          fi
+          {
+            echo '## KSU C2 VEUX 5.4.274 clean baseline reproducibility v2'
+            echo
+            echo '```text'
+            [ -f "$E/C2-CHECKPOINT.txt" ] && cat "$E/C2-CHECKPOINT.txt" || {
+              echo 'CHECKPOINT=CLEAN-BASE-PROVEN-NOT-REACHED'
+              echo 'PROVEN=NO'
+            }
+            echo '```'
+            echo
+            if [ "$SUCCESS" -eq 1 ]; then
+              echo 'C2 passed. CLEAN-BASE-PROVEN is closed; C3 may start.'
+            else
+              echo 'C2 did not close. C3 is blocked; audit the uploaded evidence.'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
