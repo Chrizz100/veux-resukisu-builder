@@ -1,0 +1,261 @@
+name: KSU C1 toolchain content identity audit v1
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  TOOLCHAIN_REPO: https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86
+  TOOLCHAIN_COMMIT: aa2e4a514a6c85eebcc4a27149eaf9244e951a1e
+  TOOLCHAIN_DIR: clang-r416183b
+  EXPECTED_V1_CLANG_SHA256: b2ce016755bddbab76549895bca07b1dc8d14a3e315b8b3567097fef04eadae1
+  EXPECTED_V1_LLD_SHA256: 51dc9705420c136f583478ac08a3258cd970710296928b3bf24dc3ee2e6208e3
+
+jobs:
+  toolchain-content-identity:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    steps:
+      - name: Initialize evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$GITHUB_WORKSPACE/evidence" "$RUNNER_TEMP/toolchain-audit"
+          mkdir -p "$GITHUB_WORKSPACE/evidence" "$RUNNER_TEMP/toolchain-audit"
+          {
+            echo "WORKFLOW=KSU-C1-TOOLCHAIN-CONTENT-IDENTITY-AUDIT-V1"
+            echo "TOOLCHAIN_COMMIT=${TOOLCHAIN_COMMIT}"
+            echo "TOOLCHAIN_DIR=${TOOLCHAIN_DIR}"
+            echo "RAW_ARCHIVE_SHA_IS_IDENTITY_GATE=NO"
+            echo "EXTRACTED_CONTENT_IS_IDENTITY_GATE=YES"
+          } > "$GITHUB_WORKSPACE/evidence/AUDIT-CONTRACT.txt"
+
+      - name: Download toolchain twice and compare content
+        shell: bash
+        run: |
+          set +e
+          bash <<'AUDIT'
+          set -Eeuo pipefail
+
+          ROOT="$RUNNER_TEMP/toolchain-audit"
+          EVIDENCE="$GITHUB_WORKSPACE/evidence"
+          URL="${TOOLCHAIN_REPO}/+archive/${TOOLCHAIN_COMMIT}/${TOOLCHAIN_DIR}.tar.gz"
+
+          download_one() {
+            local label="$1"
+            local archive="$ROOT/${label}.tar.gz"
+            local dest="$ROOT/${label}"
+
+            mkdir -p "$dest"
+            curl --fail --location --retry 4 --retry-delay 2 --retry-all-errors \
+              -H 'Cache-Control: no-cache' "$URL" -o "$archive"
+
+            test -s "$archive"
+            tar -xzf "$archive" -C "$dest"
+            test -x "$dest/bin/clang"
+            test -x "$dest/bin/ld.lld"
+
+            sha256sum "$archive" | awk '{print $1}' > "$EVIDENCE/ARCHIVE-${label}.sha256"
+            sha256sum "$dest/bin/clang" | awk '{print $1}' > "$EVIDENCE/CLANG-${label}.sha256"
+            sha256sum "$dest/bin/ld.lld" | awk '{print $1}' > "$EVIDENCE/LLD-${label}.sha256"
+            "$dest/bin/clang" --version > "$EVIDENCE/CLANG-${label}.version.txt"
+            "$dest/bin/ld.lld" --version > "$EVIDENCE/LLD-${label}.version.txt"
+          }
+
+          download_one A
+          sleep 2
+          download_one B
+
+          create_manifest() {
+            local root="$1"
+            local output="$2"
+            python3 - "$root" "$output" <<'PY'
+          import hashlib
+          import os
+          import stat
+          import sys
+          from pathlib import Path
+
+          root = Path(sys.argv[1]).resolve()
+          output = Path(sys.argv[2])
+          rows = []
+
+          for path in sorted(root.rglob("*"), key=lambda p: p.relative_to(root).as_posix()):
+              rel = path.relative_to(root).as_posix()
+              st = path.lstat()
+              mode = stat.S_IMODE(st.st_mode)
+              if path.is_symlink():
+                  rows.append(f"L\t{mode:04o}\t{rel}\t{os.readlink(path)}")
+              elif path.is_dir():
+                  rows.append(f"D\t{mode:04o}\t{rel}")
+              elif path.is_file():
+                  h = hashlib.sha256()
+                  with path.open("rb") as f:
+                      for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                          h.update(chunk)
+                  rows.append(f"F\t{mode:04o}\t{rel}\t{st.st_size}\t{h.hexdigest()}")
+              else:
+                  rows.append(f"O\t{mode:04o}\t{rel}")
+
+          output.write_text("\n".join(rows) + "\n", encoding="utf-8")
+          PY
+          }
+
+          create_manifest "$ROOT/A" "$EVIDENCE/TREE-A.tsv"
+          create_manifest "$ROOT/B" "$EVIDENCE/TREE-B.tsv"
+
+          sha256sum "$EVIDENCE/TREE-A.tsv" | awk '{print $1}' > "$EVIDENCE/TREE-A.sha256"
+          sha256sum "$EVIDENCE/TREE-B.tsv" | awk '{print $1}' > "$EVIDENCE/TREE-B.sha256"
+
+          ARCHIVE_A="$(cat "$EVIDENCE/ARCHIVE-A.sha256")"
+          ARCHIVE_B="$(cat "$EVIDENCE/ARCHIVE-B.sha256")"
+          CLANG_A="$(cat "$EVIDENCE/CLANG-A.sha256")"
+          CLANG_B="$(cat "$EVIDENCE/CLANG-B.sha256")"
+          LLD_A="$(cat "$EVIDENCE/LLD-A.sha256")"
+          LLD_B="$(cat "$EVIDENCE/LLD-B.sha256")"
+          TREE_A="$(cat "$EVIDENCE/TREE-A.sha256")"
+          TREE_B="$(cat "$EVIDENCE/TREE-B.sha256")"
+          failures=0
+
+          if cmp -s "$EVIDENCE/TREE-A.tsv" "$EVIDENCE/TREE-B.tsv"; then
+            TREE_IDENTICAL=YES
+            : > "$EVIDENCE/TREE.diff"
+          else
+            TREE_IDENTICAL=NO
+            diff -u "$EVIDENCE/TREE-A.tsv" "$EVIDENCE/TREE-B.tsv" > "$EVIDENCE/TREE.diff" || true
+            failures=$((failures + 1))
+          fi
+
+          if [ "$CLANG_A" != "$CLANG_B" ]; then
+            echo "FAIL: clang differs between download A and B" >> "$EVIDENCE/GATE-FAILURES.txt"
+            failures=$((failures + 1))
+          fi
+          if [ "$LLD_A" != "$LLD_B" ]; then
+            echo "FAIL: ld.lld differs between download A and B" >> "$EVIDENCE/GATE-FAILURES.txt"
+            failures=$((failures + 1))
+          fi
+          if [ "$CLANG_A" != "$EXPECTED_V1_CLANG_SHA256" ]; then
+            echo "FAIL: clang differs from known C1-v1 executable" >> "$EVIDENCE/GATE-FAILURES.txt"
+            failures=$((failures + 1))
+          fi
+          if [ "$LLD_A" != "$EXPECTED_V1_LLD_SHA256" ]; then
+            echo "FAIL: ld.lld differs from known C1-v1 executable" >> "$EVIDENCE/GATE-FAILURES.txt"
+            failures=$((failures + 1))
+          fi
+          if ! cmp -s "$EVIDENCE/CLANG-A.version.txt" "$EVIDENCE/CLANG-B.version.txt"; then
+            echo "FAIL: clang --version differs" >> "$EVIDENCE/GATE-FAILURES.txt"
+            failures=$((failures + 1))
+          fi
+          if ! cmp -s "$EVIDENCE/LLD-A.version.txt" "$EVIDENCE/LLD-B.version.txt"; then
+            echo "FAIL: ld.lld --version differs" >> "$EVIDENCE/GATE-FAILURES.txt"
+            failures=$((failures + 1))
+          fi
+
+          {
+            echo "ARCHIVE_A_SHA256=${ARCHIVE_A}"
+            echo "ARCHIVE_B_SHA256=${ARCHIVE_B}"
+            if [ "$ARCHIVE_A" = "$ARCHIVE_B" ]; then
+              echo "RAW_ARCHIVE_BYTE_IDENTICAL=YES"
+            else
+              echo "RAW_ARCHIVE_BYTE_IDENTICAL=NO"
+            fi
+            echo "RAW_ARCHIVE_SHA_IS_IDENTITY_GATE=NO"
+            echo "CLANG_A_SHA256=${CLANG_A}"
+            echo "CLANG_B_SHA256=${CLANG_B}"
+            echo "LLD_A_SHA256=${LLD_A}"
+            echo "LLD_B_SHA256=${LLD_B}"
+            echo "TREE_A_SHA256=${TREE_A}"
+            echo "TREE_B_SHA256=${TREE_B}"
+            echo "TREE_IDENTICAL=${TREE_IDENTICAL}"
+          } > "$EVIDENCE/MEASUREMENTS.txt"
+
+          if [ "$failures" -ne 0 ]; then
+            {
+              echo "TOOLCHAIN_CONTENT_IDENTITY=FAIL"
+              echo "FAILURE_COUNT=${failures}"
+            } > "$EVIDENCE/RESULT.txt"
+            exit 1
+          fi
+
+          {
+            echo "TOOLCHAIN_CONTENT_IDENTITY=PASS"
+            echo "TWO_INDEPENDENT_DOWNLOADS=PASS"
+            echo "EXTRACTED_TREE_IDENTITY=PASS"
+            echo "KNOWN_C1_V1_CLANG_IDENTITY=PASS"
+            echo "KNOWN_C1_V1_LLD_IDENTITY=PASS"
+            echo "C1_V3_TREE_SHA256=${TREE_A}"
+          } > "$EVIDENCE/RESULT.txt"
+          AUDIT
+
+          rc=$?
+          echo "$rc" > "$GITHUB_WORKSPACE/evidence/AUDIT.exit-code"
+          exit "$rc"
+
+      - name: Close evidence manifest
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          EVIDENCE="$GITHUB_WORKSPACE/evidence"
+          mkdir -p "$EVIDENCE"
+          {
+            echo "JOB_STATUS=${{ job.status }}"
+            echo "RUN_ID=${GITHUB_RUN_ID}"
+            echo "RUN_ATTEMPT=${GITHUB_RUN_ATTEMPT}"
+            echo "AUDIT_EXIT_CODE=$(cat "$EVIDENCE/AUDIT.exit-code" 2>/dev/null || echo UNKNOWN)"
+          } > "$EVIDENCE/FAILURE-CONTEXT.txt"
+
+          rm -f "$EVIDENCE/SHA256SUMS"
+          (
+            cd "$EVIDENCE"
+            find . -maxdepth 1 -type f ! -name SHA256SUMS -printf '%f\0' |
+              sort -z |
+              xargs -0 sha256sum > SHA256SUMS
+            if grep -Eq '[[:space:]]SHA256SUMS$' SHA256SUMS; then
+              echo "ERROR: manifest contains itself" >&2
+              exit 1
+            fi
+            if awk '{print $2}' SHA256SUMS | grep -q '/'; then
+              echo "ERROR: manifest contains paths" >&2
+              exit 1
+            fi
+            sha256sum -c SHA256SUMS
+          )
+
+      - name: Upload compact evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ksu-c1-toolchain-content-identity-v1-${{ github.run_id }}
+          path: evidence/
+          retention-days: 14
+          if-no-files-found: error
+
+      - name: Summary
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "# KSU C1 toolchain content identity audit"
+            if grep -q '^TOOLCHAIN_CONTENT_IDENTITY=PASS$' evidence/RESULT.txt 2>/dev/null; then
+              echo
+              echo "**PASS**"
+              echo
+              echo '```text'
+              cat evidence/MEASUREMENTS.txt
+              cat evidence/RESULT.txt
+              echo '```'
+            else
+              echo
+              echo "**FAIL — C1-v3 nicht starten.**"
+              echo
+              echo '```text'
+              cat evidence/MEASUREMENTS.txt 2>/dev/null || true
+              cat evidence/GATE-FAILURES.txt 2>/dev/null || true
+              echo '```'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
