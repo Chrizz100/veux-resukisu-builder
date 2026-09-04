@@ -1,0 +1,1095 @@
+name: KSU C2 VEUX 5.4.274 parallel reproducibility diagnostic v4
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  BASE_REPO: https://github.com/dereference23/kernel_xiaomi_sm6375.git
+  BASE_COMMIT: b2b7a3bbc36d120ee523ebc8d68e0f13a97df632
+  BASE_TREE: 1783b5008fc971b795ccaa374efe97aa996eef49
+  BASE_VERSION: 5.4.268
+
+  ANDROID_COMMON_REPO: https://android.googlesource.com/kernel/common
+  ANDROID_TAG: android11-5.4.274_r00
+  ANDROID_TAG_OBJECT: b5141f9d31a3d1875523c9e1ae0d4587c144d149
+  ANDROID_COMMIT: 181edea14ae07024cc87699f3cd49116e6f8fbb3
+  ANDROID_TREE: 0485f492b920bf72f7f623a0df2aa3c5d7661a9c
+  TARGET_VERSION: 5.4.274
+
+  TOOLCHAIN_COMMIT: aa2e4a514a6c85eebcc4a27149eaf9244e951a1e
+  TOOLCHAIN_DIR: clang-r416183b
+  EXPECTED_TOOLCHAIN_TREE_SHA256: ed560f80e2009206b25cb963c8810faecdad06b18b75cc563ef2c9b900355a1f
+  EXPECTED_CLANG_SHA256: b2ce016755bddbab76549895bca07b1dc8d14a3e315b8b3567097fef04eadae1
+  EXPECTED_LLD_SHA256: 51dc9705420c136f583478ac08a3258cd970710296928b3bf24dc3ee2e6208e3
+
+  EXPECTED_MERGE_COMMIT: 763f39fff62ff914200a9ac6e7e2336fdf29a6f2
+  EXPECTED_MERGE_TREE: a50206971cf1d1eddc259f3aba3d63f87e7ec706
+  EXPECTED_LEGACY_KSU_TREE: fd046786b1c3b2bf5566e546c50ea23933cb2ec3
+
+  C1_V3_REFERENCE_RUN_ID: '33862506115'
+  C1_V3_REFERENCE_ARTIFACT_DIGEST: ea394a7b65225f461bf4a1091d60c3beea3959b62fb044bea6f36d0b51e69508
+  EXPECTED_IMAGE_BYTES: '29706752'
+  EXPECTED_IMAGE_SHA256: e58901610d82c69b04dcc33c4fd3d14e6c0bb05615b307789c7ef204a373a6c5
+  EXPECTED_VMLINUX_BYTES: '512405976'
+  EXPECTED_VMLINUX_SHA256: d3179cd62d847ed2367af1abad5090f3fa9e7ae05243b9f96c71bcf47b280e47
+  EXPECTED_SYSTEM_MAP_BYTES: '9206077'
+  EXPECTED_SYSTEM_MAP_SHA256: 78780bc64b8baf0f08e547151130bad672c9133567697b50518acba1f552d2ed
+  EXPECTED_CONFIG_SHA256: 4a053522cbad0715a74613f75ad3fc132c84d0604a7ab60d72b8d88800bc08ee
+  EXPECTED_VEUX_DTB_BYTES: '275689'
+  EXPECTED_VEUX_DTB_SHA256: 42728a6f3d48ae35ac6be4b14ea51bc8a323e77baec2ee544827487378f99d37
+
+  KBUILD_BUILD_USER: clean-gen1
+  KBUILD_BUILD_HOST: github-actions
+  KBUILD_BUILD_TIMESTAMP: Thu Apr 18 11:05:25 UTC 2024
+
+jobs:
+  build:
+    name: Build ${{ matrix.label }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        label: [A, B]
+
+    steps:
+      - name: Initialize producer evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          E="$GITHUB_WORKSPACE/evidence"
+          rm -rf "$E"
+          mkdir -p "$E"
+          echo "STAGE=INITIALIZED_${{ matrix.label }}" > "$E/STAGE.txt"
+          {
+            echo 'WORKFLOW=KSU-C2-VEUX-5.4.274-PARALLEL-REPRO-DIAGNOSTIC-v4'
+            echo "PRODUCER=${{ matrix.label }}"
+            echo 'C2_V3_FAILURE_STAGE=BUILD_A_IMAGE_SHA_GATE'
+            echo 'C2_V3_IMAGE_BYTES_MATCH_C1=YES'
+            echo 'C2_V3_CONFIG_MATCH_C1=YES'
+            echo 'C2_V3_VEUX_DTB_MATCH_C1=YES'
+            echo 'C2_V3_CORE_BINARY_HASH_DRIFT=YES'
+            echo 'V4_POLICY=HISTORICAL_C1_CORE_HASHES_MEASURE_ONLY_IN_PRODUCERS'
+            echo 'V4_POLICY=STRUCTURAL_GATES_REMAIN_FAIL_CLOSED'
+            echo 'V4_POLICY=A_AND_B_RUN_IN_PARALLEL'
+            echo 'V4_POLICY=CLEAN_BASE_PROVEN_ONLY_IN_AGGREGATOR'
+            echo 'C1_ARTIFACT_AS_BUILD_INPUT=NO'
+            echo 'OLD_MODIFIED_REPOSITORY_AS_SOURCE=NO'
+            echo 'DEVICE_TEST=NOT_PERFORMED'
+            echo 'BOOT_IMAGE=NOT_CREATED'
+            echo 'FLASHING=NOT_PERFORMED'
+          } > "$E/CONTRACT.txt"
+
+      - name: Install dependencies and capture host identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          E="$GITHUB_WORKSPACE/evidence"
+          echo "STAGE=HOST_AND_DEPENDENCIES_${{ matrix.label }}" > "$E/STAGE.txt"
+
+          {
+            echo "RUNNER_OS=${RUNNER_OS:-UNKNOWN}"
+            echo "RUNNER_ARCH=${RUNNER_ARCH:-UNKNOWN}"
+            echo "ImageOS=${ImageOS:-UNKNOWN}"
+            echo "ImageVersion=${ImageVersion:-UNKNOWN}"
+            echo "RUNNER_NAME=${RUNNER_NAME:-UNKNOWN}"
+            echo "RUNNER_ENVIRONMENT=${RUNNER_ENVIRONMENT:-UNKNOWN}"
+            echo "NPROC=$(nproc)"
+            echo "ONLINE_CPUS=$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo UNKNOWN)"
+            echo 'UNAME_BEGIN'
+            uname -a
+            echo 'UNAME_END'
+            echo 'OS_RELEASE_BEGIN'
+            cat /etc/os-release 2>/dev/null || true
+            echo 'OS_RELEASE_END'
+            echo 'ENV_RELEVANT_BEGIN'
+            env | LC_ALL=C sort | grep -E '^(Image|RUNNER_|KBUILD_|SOURCE_DATE_EPOCH|TZ=|LANG=|LC_)' || true
+            echo 'ENV_RELEVANT_END'
+          } > "$E/HOST-IDENTITY.txt"
+
+          sudo apt-get update
+          sudo apt-get install -y \
+            bc bison build-essential ca-certificates cpio curl flex git \
+            libelf-dev libssl-dev python3 rsync xz-utils zstd
+
+          {
+            echo 'TOOL_VERSIONS_BEGIN'
+            make --version | head -n1 || true
+            gcc --version | head -n1 || true
+            ld --version | head -n1 || true
+            as --version | head -n1 || true
+            ar --version | head -n1 || true
+            git --version || true
+            python3 --version || true
+            ldd --version | head -n1 || true
+            echo 'TOOL_VERSIONS_END'
+            echo 'SELECTED_PACKAGES_BEGIN'
+            dpkg-query -W -f='${Package}\t${Version}\n' \
+              make binutils gcc libc6 coreutils perl python3 rsync 2>/dev/null \
+              | LC_ALL=C sort || true
+            echo 'SELECTED_PACKAGES_END'
+          } >> "$E/HOST-IDENTITY.txt"
+
+      - name: Reconstruct exact fresh source merge and toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          E="$GITHUB_WORKSPACE/evidence"
+          K="$GITHUB_WORKSPACE/kernel"
+          TC="$GITHUB_WORKSPACE/toolchain/$TOOLCHAIN_DIR"
+          stage() { echo "STAGE=$1_${{ matrix.label }}" > "$E/STAGE.txt"; }
+          kver() {
+            awk '$1=="VERSION" && $2=="=" {v=$3}
+                 $1=="PATCHLEVEL" && $2=="=" {p=$3}
+                 $1=="SUBLEVEL" && $2=="=" {s=$3}
+                 END {print v "." p "." s}' Makefile
+          }
+
+          cat > "$RUNNER_TEMP/toolchain-tree.py" <<'PY'
+          import hashlib
+          import os
+          import stat
+          import sys
+          from pathlib import Path
+
+          root = Path(sys.argv[1]).resolve()
+          output = Path(sys.argv[2])
+          rows = []
+          for path in sorted(
+              root.rglob("*"),
+              key=lambda p: p.relative_to(root).as_posix(),
+          ):
+              rel = path.relative_to(root).as_posix()
+              st = path.lstat()
+              mode = stat.S_IMODE(st.st_mode)
+              if path.is_symlink():
+                  rows.append(f"L\t{mode:04o}\t{rel}\t{os.readlink(path)}")
+              elif path.is_dir():
+                  rows.append(f"D\t{mode:04o}\t{rel}")
+              elif path.is_file():
+                  h = hashlib.sha256()
+                  with path.open("rb") as f:
+                      for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                          h.update(chunk)
+                  rows.append(f"F\t{mode:04o}\t{rel}\t{st.st_size}\t{h.hexdigest()}")
+              else:
+                  rows.append(f"O\t{mode:04o}\t{rel}")
+          output.write_text("\n".join(rows) + "\n", encoding="utf-8")
+          PY
+
+          cat > "$RUNNER_TEMP/source-tree.py" <<'PY'
+          import hashlib
+          import os
+          import stat
+          import sys
+          from pathlib import Path
+
+          root = Path(sys.argv[1]).resolve()
+          output = Path(sys.argv[2])
+          excluded = {".git", "out"}
+          rows = []
+          for dp, dns, fns in os.walk(root, topdown=True, followlinks=False):
+              d = Path(dp)
+              if d == root:
+                  dns[:] = sorted(x for x in dns if x not in excluded)
+              else:
+                  dns[:] = sorted(dns)
+              for name in dns + sorted(fns):
+                  p = d / name
+                  rel = p.relative_to(root).as_posix()
+                  st = p.lstat()
+                  mode = stat.S_IMODE(st.st_mode)
+                  if p.is_symlink():
+                      rows.append(f"L\t{mode:04o}\t{rel}\t{os.readlink(p)}")
+                  elif p.is_dir():
+                      rows.append(f"D\t{mode:04o}\t{rel}")
+                  elif p.is_file():
+                      h = hashlib.sha256()
+                      with p.open("rb") as f:
+                          for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                              h.update(chunk)
+                      rows.append(f"F\t{mode:04o}\t{rel}\t{st.st_size}\t{h.hexdigest()}")
+                  else:
+                      rows.append(f"O\t{mode:04o}\t{rel}")
+          output.write_text("\n".join(rows) + "\n", encoding="utf-8")
+          PY
+
+          stage SOURCE_PROVENANCE
+          rm -rf "$K"
+          git init "$K"
+          git -C "$K" remote add origin "$BASE_REPO"
+          git -C "$K" fetch --no-tags origin "$BASE_COMMIT"
+          git -C "$K" checkout --detach FETCH_HEAD
+          cd "$K"
+
+          test "$(git rev-parse HEAD)" = "$BASE_COMMIT"
+          test "$(git rev-parse HEAD^{tree})" = "$BASE_TREE"
+          test "$(kver)" = "$BASE_VERSION"
+          test -f arch/arm64/boot/dts/vendor/xiaomi/veux.dts
+          test -f arch/arm64/configs/veux_defconfig
+          test -f drivers/kernelsu/Kconfig
+          grep -q '^config KSU$' drivers/kernelsu/Kconfig
+          grep -q 'kernelsu/Kconfig' drivers/Kconfig
+          grep -Fq 'obj-$(CONFIG_KSU) += kernelsu/' drivers/Makefile
+          test "$(git rev-parse HEAD:drivers/kernelsu)" = "$EXPECTED_LEGACY_KSU_TREE"
+          test -z "$(git status --porcelain --untracked-files=all)"
+
+          {
+            echo 'SOURCE_PROVENANCE=PASS'
+            echo "BASE_COMMIT=$(git rev-parse HEAD)"
+            echo "BASE_TREE=$(git rev-parse HEAD^{tree})"
+            echo "BASE_VERSION=$(kver)"
+            echo "LEGACY_KSU_TREE=$(git rev-parse HEAD:drivers/kernelsu)"
+          } > "$E/SOURCE-PROVENANCE.txt"
+
+          stage ANDROID_TARGET_AUTH
+          git remote add android "$ANDROID_COMMON_REPO"
+          git fetch --no-tags android "refs/tags/${ANDROID_TAG}:refs/tags/${ANDROID_TAG}"
+          test "$(git cat-file -t "refs/tags/${ANDROID_TAG}")" = tag
+          test "$(git rev-parse "refs/tags/${ANDROID_TAG}")" = "$ANDROID_TAG_OBJECT"
+          test "$(git rev-parse "refs/tags/${ANDROID_TAG}^{}")" = "$ANDROID_COMMIT"
+          test "$(git rev-parse "${ANDROID_COMMIT}^{tree}")" = "$ANDROID_TREE"
+          COMMON_BASE=$(git merge-base "$BASE_COMMIT" "$ANDROID_COMMIT")
+          test -n "$COMMON_BASE"
+
+          {
+            echo 'ANDROID_TARGET_AUTH=PASS'
+            echo "ANDROID_TAG_OBJECT=$ANDROID_TAG_OBJECT"
+            echo "ANDROID_COMMIT=$ANDROID_COMMIT"
+            echo "ANDROID_TREE=$ANDROID_TREE"
+            echo "COMMON_ANCESTOR=$COMMON_BASE"
+          } > "$E/ANDROID-TARGET.txt"
+
+          stage DETERMINISTIC_MERGE
+          git config user.name 'VEUX Clean Baseline'
+          git config user.email 'veux-clean-baseline@users.noreply.github.com'
+          set +e
+          git merge --no-commit --no-ff "$ANDROID_COMMIT"
+          MERGE_RC=$?
+          set -e
+          if [ "$MERGE_RC" -ne 0 ]; then
+            {
+              echo "MERGE_RC=$MERGE_RC"
+              echo 'CONFLICTS_BEGIN'
+              git diff --name-only --diff-filter=U
+              echo 'CONFLICTS_END'
+            } > "$E/MERGE-FAILURE.txt"
+            exit 31
+          fi
+
+          test "$(kver)" = "$TARGET_VERSION"
+          export GIT_AUTHOR_DATE='2024-04-18T11:05:25Z'
+          export GIT_COMMITTER_DATE='2024-04-18T11:05:25Z'
+          git commit -m 'CLEAN BASELINE: merge android11-5.4.274_r00 into VEUX 5.4.268'
+
+          test "$(git rev-parse HEAD)" = "$EXPECTED_MERGE_COMMIT"
+          test "$(git rev-parse HEAD^{tree})" = "$EXPECTED_MERGE_TREE"
+          test "$(git rev-parse HEAD^1)" = "$BASE_COMMIT"
+          test "$(git rev-parse HEAD^2)" = "$ANDROID_COMMIT"
+          test "$(git rev-parse HEAD:drivers/kernelsu)" = "$EXPECTED_LEGACY_KSU_TREE"
+          test -z "$(git status --porcelain --untracked-files=all)"
+
+          {
+            echo 'DETERMINISTIC_MERGE=PASS'
+            echo "MERGE_COMMIT=$(git rev-parse HEAD)"
+            echo "MERGE_TREE=$(git rev-parse HEAD^{tree})"
+            echo "LEGACY_KSU_TREE=$(git rev-parse HEAD:drivers/kernelsu)"
+          } > "$E/MERGE-IDENTITY.txt"
+
+          stage TOOLCHAIN_CONTENT
+          rm -rf "$GITHUB_WORKSPACE/toolchain"
+          mkdir -p "$TC"
+          ARCHIVE="$RUNNER_TEMP/${TOOLCHAIN_DIR}-${{ matrix.label }}.tar.gz"
+          URL="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/${TOOLCHAIN_COMMIT}/${TOOLCHAIN_DIR}.tar.gz"
+          curl --fail --location --retry 4 --retry-delay 2 --retry-all-errors \
+            -H 'Cache-Control: no-cache' "$URL" -o "$ARCHIVE"
+          test -s "$ARCHIVE"
+          tar -xzf "$ARCHIVE" -C "$TC"
+          test -x "$TC/bin/clang"
+          test -x "$TC/bin/ld.lld"
+
+          RAW_SHA=$(sha256sum "$ARCHIVE" | awk '{print $1}')
+          CLANG_SHA=$(sha256sum "$TC/bin/clang" | awk '{print $1}')
+          LLD_SHA=$(sha256sum "$TC/bin/ld.lld" | awk '{print $1}')
+          python3 "$RUNNER_TEMP/toolchain-tree.py" "$TC" "$E/TOOLCHAIN-TREE.tsv"
+          TREE_SHA=$(sha256sum "$E/TOOLCHAIN-TREE.tsv" | awk '{print $1}')
+
+          {
+            echo 'TOOLCHAIN_CONTENT_IDENTITY=PENDING'
+            echo "TOOLCHAIN_COMMIT=$TOOLCHAIN_COMMIT"
+            echo "RAW_ARCHIVE_SHA256_INFORMATIONAL=$RAW_SHA"
+            echo 'RAW_ARCHIVE_SHA_IS_IDENTITY_GATE=NO'
+            echo 'NORMALIZATION_ALGORITHM=C1_V3_GLOBAL_SORTED_Rglob_RELATIVE_PATH'
+            echo "TOOLCHAIN_TREE_SHA256=$TREE_SHA"
+            echo "EXPECTED_TOOLCHAIN_TREE_SHA256=$EXPECTED_TOOLCHAIN_TREE_SHA256"
+            echo "CLANG_SHA256=$CLANG_SHA"
+            echo "EXPECTED_CLANG_SHA256=$EXPECTED_CLANG_SHA256"
+            echo "LLD_SHA256=$LLD_SHA"
+            echo "EXPECTED_LLD_SHA256=$EXPECTED_LLD_SHA256"
+          } > "$E/TOOLCHAIN-IDENTITY.txt"
+
+          stage TOOLCHAIN_TREE_GATE
+          test "$TREE_SHA" = "$EXPECTED_TOOLCHAIN_TREE_SHA256"
+          echo 'TOOLCHAIN_TREE_GATE=PASS' >> "$E/TOOLCHAIN-IDENTITY.txt"
+
+          stage CLANG_GATE
+          test "$CLANG_SHA" = "$EXPECTED_CLANG_SHA256"
+          echo 'CLANG_GATE=PASS' >> "$E/TOOLCHAIN-IDENTITY.txt"
+
+          stage LLD_GATE
+          test "$LLD_SHA" = "$EXPECTED_LLD_SHA256"
+          echo 'LLD_GATE=PASS' >> "$E/TOOLCHAIN-IDENTITY.txt"
+
+          {
+            echo 'TOOLCHAIN_CONTENT_IDENTITY=PASS'
+            echo 'CLANG_VERSION_BEGIN'
+            "$TC/bin/clang" --version
+            echo 'CLANG_VERSION_END'
+            echo 'LLD_VERSION_BEGIN'
+            "$TC/bin/ld.lld" --version
+            echo 'LLD_VERSION_END'
+          } >> "$E/TOOLCHAIN-IDENTITY.txt"
+          rm -f "$ARCHIVE"
+
+          stage SOURCE_IDENTITY_BASELINE
+          python3 "$RUNNER_TEMP/source-tree.py" "$K" "$RUNNER_TEMP/source-before.tsv"
+          SOURCE_BEFORE=$(sha256sum "$RUNNER_TEMP/source-before.tsv" | awk '{print $1}')
+          test -n "$SOURCE_BEFORE"
+          {
+            echo 'SOURCE_IDENTITY_BASELINE=PASS'
+            echo "SOURCE_FS_DIGEST=$SOURCE_BEFORE"
+            echo 'SOURCE_DIGEST_EXCLUDES=.git,out'
+          } > "$E/SOURCE-IMMUTABILITY.txt"
+
+      - name: Build producer and capture pre-gate diagnostics
+        shell: bash
+        run: |
+          set -euo pipefail
+          E="$GITHUB_WORKSPACE/evidence"
+          K="$GITHUB_WORKSPACE/kernel"
+          TC="$GITHUB_WORKSPACE/toolchain/$TOOLCHAIN_DIR"
+          label='${{ matrix.label }}'
+          stage() { echo "STAGE=$1_${label}" > "$E/STAGE.txt"; }
+
+          cat > "$RUNNER_TEMP/source-tree.py" <<'PY'
+          import hashlib
+          import os
+          import stat
+          import sys
+          from pathlib import Path
+
+          root = Path(sys.argv[1]).resolve()
+          output = Path(sys.argv[2])
+          excluded = {".git", "out"}
+          rows = []
+          for dp, dns, fns in os.walk(root, topdown=True, followlinks=False):
+              d = Path(dp)
+              if d == root:
+                  dns[:] = sorted(x for x in dns if x not in excluded)
+              else:
+                  dns[:] = sorted(dns)
+              for name in dns + sorted(fns):
+                  p = d / name
+                  rel = p.relative_to(root).as_posix()
+                  st = p.lstat()
+                  mode = stat.S_IMODE(st.st_mode)
+                  if p.is_symlink():
+                      rows.append(f"L\t{mode:04o}\t{rel}\t{os.readlink(p)}")
+                  elif p.is_dir():
+                      rows.append(f"D\t{mode:04o}\t{rel}")
+                  elif p.is_file():
+                      h = hashlib.sha256()
+                      with p.open("rb") as f:
+                          for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                              h.update(chunk)
+                      rows.append(f"F\t{mode:04o}\t{rel}\t{st.st_size}\t{h.hexdigest()}")
+                  else:
+                      rows.append(f"O\t{mode:04o}\t{rel}")
+          output.write_text("\n".join(rows) + "\n", encoding="utf-8")
+          PY
+
+          cat > "$RUNNER_TEMP/chunk-manifest.py" <<'PY'
+          import hashlib
+          import sys
+          from pathlib import Path
+
+          src = Path(sys.argv[1])
+          out = Path(sys.argv[2])
+          chunk_size = 1024 * 1024
+          rows = []
+          with src.open("rb") as f:
+              idx = 0
+              offset = 0
+              while True:
+                  chunk = f.read(chunk_size)
+                  if not chunk:
+                      break
+                  rows.append(
+                      f"{idx}\t{offset}\t{len(chunk)}\t{hashlib.sha256(chunk).hexdigest()}"
+                  )
+                  idx += 1
+                  offset += len(chunk)
+          out.write_text("\n".join(rows) + "\n", encoding="utf-8")
+          PY
+
+          cat > "$RUNNER_TEMP/dtb-manifest.py" <<'PY'
+          import hashlib
+          import sys
+          from pathlib import Path
+
+          root = Path(sys.argv[1])
+          out = Path(sys.argv[2])
+          rows = []
+          for p in sorted(root.rglob("*.dtb"), key=lambda x: x.relative_to(root).as_posix()):
+              rows.append(
+                  f"{hashlib.sha256(p.read_bytes()).hexdigest()}  "
+                  f"{p.stat().st_size}  {p.relative_to(root).as_posix()}"
+              )
+          if not rows:
+              raise SystemExit("no DTBs found")
+          out.write_text("\n".join(rows) + "\n", encoding="utf-8")
+          PY
+
+          cd "$K"
+          export PATH="$TC/bin:$PATH"
+          export KCFLAGS='-D__ANDROID_COMMON_KERNEL__'
+          export KBUILD_BUILD_USER KBUILD_BUILD_HOST KBUILD_BUILD_TIMESTAMP
+
+          rm -rf out
+          test ! -e out
+
+          stage CONFIGURE
+          make O=out ARCH=arm64 LLVM=1 veux_defconfig \
+            2>&1 | tee "$E/config-${label}.log"
+
+          test -s out/.config
+          CONFIG_SHA_PRE=$(sha256sum out/.config | awk '{print $1}')
+          {
+            echo "PRODUCER=$label"
+            echo "CONFIG_SHA256_PRE_BUILD=$CONFIG_SHA_PRE"
+            for key in \
+              CONFIG_ARCH_QCOM CONFIG_ARCH_HOLI CONFIG_ARCH_BLAIR \
+              CONFIG_WT_QGKI CONFIG_LTO_CLANG \
+              CONFIG_BUILD_ARM64_UNCOMPRESSED_KERNEL CONFIG_KSU CONFIG_KSU_DEBUG; do
+              line=$(grep -E "^${key}(=| is not set)" out/.config | head -n1 || true)
+              if [ -n "$line" ]; then echo "$line"; else echo "${key}=MISSING"; fi
+            done
+          } > "$E/CONFIG-STATE.txt"
+
+          stage CONFIG_STRUCTURAL_GATE
+          grep -q '^CONFIG_ARCH_QCOM=y$' out/.config
+          grep -q '^CONFIG_ARCH_HOLI=y$' out/.config
+          grep -q '^CONFIG_ARCH_BLAIR=y$' out/.config
+          grep -q '^CONFIG_WT_QGKI=y$' out/.config
+          grep -q '^CONFIG_LTO_CLANG=y$' out/.config
+          grep -q '^CONFIG_BUILD_ARM64_UNCOMPRESSED_KERNEL=y$' out/.config
+          ! grep -Eq '^CONFIG_KSU=(y|m)$' out/.config
+          ! grep -q '^CONFIG_KSU_DEBUG=y$' out/.config
+          test "$CONFIG_SHA_PRE" = "$EXPECTED_CONFIG_SHA256"
+          echo 'CONFIG_STRUCTURAL_GATE=PASS' >> "$E/CONFIG-STATE.txt"
+
+          stage PRE_BUILD_METADATA
+          {
+            echo "PRODUCER=$label"
+            echo "NPROC=$(nproc)"
+            echo "KERNEL_RELEASE_PRE=$(make -s O=out ARCH=arm64 LLVM=1 kernelrelease)"
+            echo "KBUILD_BUILD_USER=$KBUILD_BUILD_USER"
+            echo "KBUILD_BUILD_HOST=$KBUILD_BUILD_HOST"
+            echo "KBUILD_BUILD_TIMESTAMP=$KBUILD_BUILD_TIMESTAMP"
+            echo "KCFLAGS=$KCFLAGS"
+            echo "KBUILD_BUILD_VERSION=${KBUILD_BUILD_VERSION:-UNSET}"
+            echo "SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH:-UNSET}"
+          } > "$E/BUILD-ENVIRONMENT.txt"
+
+          stage COMPILE
+          set +e
+          timeout --signal=TERM --kill-after=60s 36m \
+            make -j"$(nproc)" O=out ARCH=arm64 LLVM=1 Image dtbs \
+            2>&1 | tee "$E/build-${label}.log"
+          BUILD_PIPE_RC=("${PIPESTATUS[@]}")
+          set -e
+          MAKE_RC="${BUILD_PIPE_RC[0]}"
+          TEE_RC="${BUILD_PIPE_RC[1]}"
+          {
+            echo "MAKE_RC=$MAKE_RC"
+            echo "TEE_RC=$TEE_RC"
+          } > "$E/BUILD-RETURN-CODES.txt"
+          test "$TEE_RC" -eq 0
+          test "$MAKE_RC" -eq 0
+
+          IMG=out/arch/arm64/boot/Image
+          VML=out/vmlinux
+          MAP=out/System.map
+          CFG=out/.config
+          DTB=out/arch/arm64/boot/dts/vendor/xiaomi/veux.dtb
+
+          stage OUTPUT_EXISTENCE_GATE
+          test -s "$IMG"
+          test -s "$VML"
+          test -s "$MAP"
+          test -s "$CFG"
+          test -s "$DTB"
+
+          CONFIG_SHA_POST=$(sha256sum "$CFG" | awk '{print $1}')
+          IMAGE_BYTES=$(stat -c '%s' "$IMG")
+          IMAGE_SHA=$(sha256sum "$IMG" | awk '{print $1}')
+          VMLINUX_BYTES=$(stat -c '%s' "$VML")
+          VMLINUX_SHA=$(sha256sum "$VML" | awk '{print $1}')
+          MAP_BYTES=$(stat -c '%s' "$MAP")
+          MAP_SHA=$(sha256sum "$MAP" | awk '{print $1}')
+          DTB_BYTES=$(stat -c '%s' "$DTB")
+          DTB_SHA=$(sha256sum "$DTB" | awk '{print $1}')
+          ERROR_COUNT=$(grep -Eic '(^|[[:space:]])(fatal )?error:' "$E/build-${label}.log" || true)
+          WARNING_COUNT=$(grep -Eic '(^|[[:space:]])warning:' "$E/build-${label}.log" || true)
+          KSU_SYMBOL_COUNT=$(grep -Ec '[[:space:]]ksu_[A-Za-z0-9_]*$' "$MAP" || true)
+          SUSFS_SYMBOL_COUNT=$(grep -Ec '[[:space:]]susfs_[A-Za-z0-9_]*$' "$MAP" || true)
+
+          {
+            echo "PRODUCER=$label"
+            echo 'MEASUREMENT_PHASE=POST_BUILD_PRE_STRUCTURAL_GATE'
+            echo "CONFIG_SHA256_PRE_BUILD=$CONFIG_SHA_PRE"
+            echo "CONFIG_SHA256_POST_BUILD=$CONFIG_SHA_POST"
+            echo "EXPECTED_CONFIG_SHA256=$EXPECTED_CONFIG_SHA256"
+            echo "IMAGE_BYTES=$IMAGE_BYTES"
+            echo "EXPECTED_IMAGE_BYTES=$EXPECTED_IMAGE_BYTES"
+            echo "IMAGE_SHA256=$IMAGE_SHA"
+            echo "EXPECTED_IMAGE_SHA256=$EXPECTED_IMAGE_SHA256"
+            echo "VMLINUX_BYTES=$VMLINUX_BYTES"
+            echo "EXPECTED_VMLINUX_BYTES=$EXPECTED_VMLINUX_BYTES"
+            echo "VMLINUX_SHA256=$VMLINUX_SHA"
+            echo "EXPECTED_VMLINUX_SHA256=$EXPECTED_VMLINUX_SHA256"
+            echo "SYSTEM_MAP_BYTES=$MAP_BYTES"
+            echo "EXPECTED_SYSTEM_MAP_BYTES=$EXPECTED_SYSTEM_MAP_BYTES"
+            echo "SYSTEM_MAP_SHA256=$MAP_SHA"
+            echo "EXPECTED_SYSTEM_MAP_SHA256=$EXPECTED_SYSTEM_MAP_SHA256"
+            echo "VEUX_DTB_BYTES=$DTB_BYTES"
+            echo "EXPECTED_VEUX_DTB_BYTES=$EXPECTED_VEUX_DTB_BYTES"
+            echo "VEUX_DTB_SHA256=$DTB_SHA"
+            echo "EXPECTED_VEUX_DTB_SHA256=$EXPECTED_VEUX_DTB_SHA256"
+            echo "COMPILER_ERROR_COUNT=$ERROR_COUNT"
+            echo "COMPILER_WARNING_COUNT=$WARNING_COUNT"
+            echo "LINKED_KSU_SYMBOL_COUNT=$KSU_SYMBOL_COUNT"
+            echo "LINKED_SUSFS_SYMBOL_COUNT=$SUSFS_SYMBOL_COUNT"
+            if [ "$IMAGE_BYTES" = "$EXPECTED_IMAGE_BYTES" ] && [ "$IMAGE_SHA" = "$EXPECTED_IMAGE_SHA256" ]; then
+              echo 'IMAGE_MATCHES_C1=YES'
+            else
+              echo 'IMAGE_MATCHES_C1=NO'
+            fi
+            if [ "$VMLINUX_BYTES" = "$EXPECTED_VMLINUX_BYTES" ] && [ "$VMLINUX_SHA" = "$EXPECTED_VMLINUX_SHA256" ]; then
+              echo 'VMLINUX_MATCHES_C1=YES'
+            else
+              echo 'VMLINUX_MATCHES_C1=NO'
+            fi
+            if [ "$MAP_BYTES" = "$EXPECTED_SYSTEM_MAP_BYTES" ] && [ "$MAP_SHA" = "$EXPECTED_SYSTEM_MAP_SHA256" ]; then
+              echo 'SYSTEM_MAP_MATCHES_C1=YES'
+            else
+              echo 'SYSTEM_MAP_MATCHES_C1=NO'
+            fi
+            if [ "$CONFIG_SHA_POST" = "$EXPECTED_CONFIG_SHA256" ]; then
+              echo 'CONFIG_MATCHES_C1=YES'
+            else
+              echo 'CONFIG_MATCHES_C1=NO'
+            fi
+            if [ "$DTB_BYTES" = "$EXPECTED_VEUX_DTB_BYTES" ] && [ "$DTB_SHA" = "$EXPECTED_VEUX_DTB_SHA256" ]; then
+              echo 'VEUX_DTB_MATCHES_C1=YES'
+            else
+              echo 'VEUX_DTB_MATCHES_C1=NO'
+            fi
+          } > "$E/OUTPUT-MEASUREMENTS.txt"
+
+          # Diagnostic files are generated before any C1 core-binary classification.
+          grep -Ei '(^|[[:space:]])warning:' "$E/build-${label}.log" \
+            | LC_ALL=C sort > "$E/WARNINGS.sorted.txt" || true
+          grep -Ei '(^|[[:space:]])(fatal )?error:' "$E/build-${label}.log" \
+            > "$E/ERRORS.txt" || true
+
+          python3 "$RUNNER_TEMP/chunk-manifest.py" "$IMG" "$E/IMAGE-CHUNKS.tsv"
+          python3 "$RUNNER_TEMP/chunk-manifest.py" "$VML" "$E/VMLINUX-CHUNKS.tsv"
+          python3 "$RUNNER_TEMP/chunk-manifest.py" "$MAP" "$E/SYSTEM-MAP-CHUNKS.tsv"
+          python3 "$RUNNER_TEMP/dtb-manifest.py" \
+            out/arch/arm64/boot/dts "$E/ALL-DTB-MANIFEST.txt"
+
+          {
+            for f in \
+              out/include/generated/compile.h \
+              out/include/generated/utsrelease.h \
+              out/include/generated/utsversion.h \
+              out/include/config/kernel.release \
+              out/.version; do
+              echo "FILE=$f"
+              if [ -f "$f" ]; then
+                echo "EXISTS=YES"
+                echo "BYTES=$(stat -c '%s' "$f")"
+                echo "SHA256=$(sha256sum "$f" | awk '{print $1}')"
+                echo 'CONTENT_BEGIN'
+                cat "$f"
+                echo
+                echo 'CONTENT_END'
+              else
+                echo 'EXISTS=NO'
+              fi
+            done
+          } > "$E/GENERATED-BUILD-METADATA.txt"
+
+          if command -v llvm-readelf >/dev/null 2>&1; then
+            {
+              echo 'IMAGE_NOT_ELF=EXPECTED'
+              echo 'VMLINUX_NOTES_BEGIN'
+              llvm-readelf -n "$VML" 2>&1 || true
+              echo 'VMLINUX_NOTES_END'
+              echo 'VMLINUX_SECTIONS_BEGIN'
+              llvm-readelf -S "$VML" 2>&1 || true
+              echo 'VMLINUX_SECTIONS_END'
+            } > "$E/LLVM-READELF.txt"
+          fi
+
+          stage STRUCTURAL_POST_BUILD_GATES
+          test "$CONFIG_SHA_PRE" = "$CONFIG_SHA_POST"
+          test "$CONFIG_SHA_POST" = "$EXPECTED_CONFIG_SHA256"
+          test "$ERROR_COUNT" -eq 0
+          test "$KSU_SYMBOL_COUNT" -eq 0
+          test "$SUSFS_SYMBOL_COUNT" -eq 0
+          out/scripts/dtc/dtc -I dtb -O dts -o /dev/null "$DTB"
+          test "$DTB_BYTES" = "$EXPECTED_VEUX_DTB_BYTES"
+          test "$DTB_SHA" = "$EXPECTED_VEUX_DTB_SHA256"
+
+          stage SOURCE_IMMUTABILITY_GATE
+          SOURCE_BEFORE=$(awk -F= '$1=="SOURCE_FS_DIGEST" {print $2}' "$E/SOURCE-IMMUTABILITY.txt")
+          python3 "$RUNNER_TEMP/source-tree.py" "$K" "$RUNNER_TEMP/source-after.tsv"
+          SOURCE_AFTER=$(sha256sum "$RUNNER_TEMP/source-after.tsv" | awk '{print $1}')
+          {
+            echo "SOURCE_FS_DIGEST_AFTER=$SOURCE_AFTER"
+            echo "EXPECTED_SOURCE_FS_DIGEST=$SOURCE_BEFORE"
+          } >> "$E/SOURCE-IMMUTABILITY.txt"
+          test "$SOURCE_AFTER" = "$SOURCE_BEFORE"
+          test "$(git rev-parse HEAD)" = "$EXPECTED_MERGE_COMMIT"
+          test "$(git rev-parse HEAD^{tree})" = "$EXPECTED_MERGE_TREE"
+          test "$(git rev-parse HEAD:drivers/kernelsu)" = "$EXPECTED_LEGACY_KSU_TREE"
+          test -z "$(git status --porcelain --untracked-files=all)"
+          echo 'SOURCE_IMMUTABILITY=PASS' >> "$E/SOURCE-IMMUTABILITY.txt"
+
+          stage PRODUCER_CLOSED
+          {
+            echo "PRODUCER=$label"
+            echo 'PRODUCER_STRUCTURAL_GATES=PASS'
+            echo 'SOURCE_PROVENANCE=PASS'
+            echo 'ANDROID_TARGET_AUTH=PASS'
+            echo 'DETERMINISTIC_MERGE=PASS'
+            echo 'TOOLCHAIN_CONTENT_IDENTITY=PASS'
+            echo 'CONFIG_STRUCTURAL_GATE=PASS'
+            echo 'COMPILE=PASS'
+            echo 'OUTPUT_EXISTENCE_GATE=PASS'
+            echo 'POST_BUILD_STRUCTURAL_GATES=PASS'
+            echo 'SOURCE_IMMUTABILITY=PASS'
+            echo 'ACTIVE_ROOT_MANAGER=NONE'
+            echo 'INHERITED_LEGACY_KSU_SOURCE=PRESENT_DISABLED'
+            echo 'SUSFS_LINKED=NO'
+            echo 'C1_CORE_BINARY_MATCH=MEASURED_NOT_PRODUCER_GATE'
+          } > "$E/PRODUCER-RESULT.txt"
+
+          gzip -9 "$E/config-${label}.log" "$E/build-${label}.log"
+
+      - name: Preserve producer failure context
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set +e
+          E="$GITHUB_WORKSPACE/evidence"
+          mkdir -p "$E"
+          {
+            echo "PRODUCER=${{ matrix.label }}"
+            echo "JOB_STATUS=${{ job.status }}"
+            echo "RUN_ID=${{ github.run_id }}"
+            echo "RUN_ATTEMPT=${{ github.run_attempt }}"
+            echo "WORKFLOW_SHA=${{ github.sha }}"
+            [ -f "$E/STAGE.txt" ] && cat "$E/STAGE.txt"
+          } > "$E/JOB-STATUS.txt"
+
+          if [ -d "$GITHUB_WORKSPACE/kernel/.git" ]; then
+            {
+              cd "$GITHUB_WORKSPACE/kernel" || exit 0
+              echo "HEAD=$(git rev-parse HEAD 2>/dev/null)"
+              echo "TREE=$(git rev-parse HEAD^{tree} 2>/dev/null)"
+              echo "LEGACY_KSU_TREE=$(git rev-parse HEAD:drivers/kernelsu 2>/dev/null)"
+              echo 'STATUS_BEGIN'
+              git status --porcelain --untracked-files=all 2>/dev/null
+              echo 'STATUS_END'
+            } > "$E/END-GIT-STATE.txt"
+          fi
+
+          if [ ! -f "$E/PRODUCER-RESULT.txt" ]; then
+            {
+              echo "PRODUCER=${{ matrix.label }}"
+              echo 'PRODUCER_STRUCTURAL_GATES=FAIL_OR_INCOMPLETE'
+              echo 'CLEAN_BASE_PROVEN=NO'
+            } > "$E/PRODUCER-FAILURE.txt"
+          fi
+
+          for raw in "$E"/config-${{ matrix.label }}.log "$E"/build-${{ matrix.label }}.log; do
+            [ -f "$raw" ] && gzip -9 "$raw"
+          done
+
+      - name: Finalize producer evidence manifest
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE/evidence"
+          rm -f SHA256SUMS MANIFEST-STATUS.txt
+          {
+            echo 'EVIDENCE_MANIFEST_STATUS=PENDING'
+            echo 'SELF_REFERENCE_ALLOWED=NO'
+            echo 'ENTRY_PATH_MODE=BASENAME'
+          } > MANIFEST-STATUS.txt
+
+          find . -maxdepth 1 -type f ! -name SHA256SUMS -printf '%f\n' \
+            | LC_ALL=C sort \
+            | while IFS= read -r f; do sha256sum "$f"; done > SHA256SUMS.tmp
+          mv SHA256SUMS.tmp SHA256SUMS
+
+          if awk '{print $2}' SHA256SUMS | grep -q '/'; then
+            echo 'ERROR: producer manifest contains paths' >&2
+            exit 71
+          fi
+          if awk '{print $2}' SHA256SUMS | grep -qx 'SHA256SUMS'; then
+            echo 'ERROR: producer manifest self-reference' >&2
+            exit 72
+          fi
+
+          sha256sum -c SHA256SUMS
+
+          {
+            echo 'EVIDENCE_MANIFEST_STATUS=PASS'
+            echo 'SELF_REFERENCE_ALLOWED=NO'
+            echo 'ENTRY_PATH_MODE=BASENAME'
+          } > MANIFEST-STATUS.txt
+
+          # Rebuild once so the final manifest includes the final status file.
+          rm -f SHA256SUMS
+          find . -maxdepth 1 -type f ! -name SHA256SUMS -printf '%f\n' \
+            | LC_ALL=C sort \
+            | while IFS= read -r f; do sha256sum "$f"; done > SHA256SUMS.tmp
+          mv SHA256SUMS.tmp SHA256SUMS
+          sha256sum -c SHA256SUMS
+
+      - name: Upload producer evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: ksu-c2-v4-build-${{ matrix.label }}-${{ github.run_id }}
+          path: evidence/
+          retention-days: 14
+          if-no-files-found: error
+
+  aggregate:
+    name: Aggregate A versus B
+    needs: build
+    if: ${{ always() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    steps:
+      - name: Download producer evidence
+        uses: actions/download-artifact@v8
+        with:
+          pattern: ksu-c2-v4-build-*-${{ github.run_id }}
+          path: producer-artifacts
+          merge-multiple: false
+
+      - name: Compare producers and classify C2
+        shell: bash
+        run: |
+          set -euo pipefail
+          E="$GITHUB_WORKSPACE/evidence"
+          rm -rf "$E"
+          mkdir -p "$E"
+          echo 'STAGE=AGGREGATE_DISCOVERY' > "$E/STAGE.txt"
+
+          A_DIR=$(find producer-artifacts -mindepth 1 -maxdepth 1 -type d \
+            -name 'ksu-c2-v4-build-A-*' | head -n1)
+          B_DIR=$(find producer-artifacts -mindepth 1 -maxdepth 1 -type d \
+            -name 'ksu-c2-v4-build-B-*' | head -n1)
+
+          {
+            echo "A_DIR=${A_DIR:-MISSING}"
+            echo "B_DIR=${B_DIR:-MISSING}"
+          } > "$E/PRODUCER-DISCOVERY.txt"
+
+          test -n "$A_DIR"
+          test -n "$B_DIR"
+          test -f "$A_DIR/PRODUCER-RESULT.txt"
+          test -f "$B_DIR/PRODUCER-RESULT.txt"
+          grep -q '^PRODUCER_STRUCTURAL_GATES=PASS$' "$A_DIR/PRODUCER-RESULT.txt"
+          grep -q '^PRODUCER_STRUCTURAL_GATES=PASS$' "$B_DIR/PRODUCER-RESULT.txt"
+          grep -q '^EVIDENCE_MANIFEST_STATUS=PASS$' "$A_DIR/MANIFEST-STATUS.txt"
+          grep -q '^EVIDENCE_MANIFEST_STATUS=PASS$' "$B_DIR/MANIFEST-STATUS.txt"
+
+          echo 'STAGE=AGGREGATE_MEASUREMENTS' > "$E/STAGE.txt"
+
+          getv() {
+            awk -F= -v k="$2" '$1==k {print substr($0,index($0,"=")+1); exit}' "$1"
+          }
+
+          A_OUT="$A_DIR/OUTPUT-MEASUREMENTS.txt"
+          B_OUT="$B_DIR/OUTPUT-MEASUREMENTS.txt"
+          test -f "$A_OUT"
+          test -f "$B_OUT"
+
+          A_IMAGE_BYTES=$(getv "$A_OUT" IMAGE_BYTES)
+          B_IMAGE_BYTES=$(getv "$B_OUT" IMAGE_BYTES)
+          A_IMAGE_SHA=$(getv "$A_OUT" IMAGE_SHA256)
+          B_IMAGE_SHA=$(getv "$B_OUT" IMAGE_SHA256)
+
+          A_VMLINUX_BYTES=$(getv "$A_OUT" VMLINUX_BYTES)
+          B_VMLINUX_BYTES=$(getv "$B_OUT" VMLINUX_BYTES)
+          A_VMLINUX_SHA=$(getv "$A_OUT" VMLINUX_SHA256)
+          B_VMLINUX_SHA=$(getv "$B_OUT" VMLINUX_SHA256)
+
+          A_MAP_BYTES=$(getv "$A_OUT" SYSTEM_MAP_BYTES)
+          B_MAP_BYTES=$(getv "$B_OUT" SYSTEM_MAP_BYTES)
+          A_MAP_SHA=$(getv "$A_OUT" SYSTEM_MAP_SHA256)
+          B_MAP_SHA=$(getv "$B_OUT" SYSTEM_MAP_SHA256)
+
+          A_CFG=$(getv "$A_OUT" CONFIG_SHA256_POST_BUILD)
+          B_CFG=$(getv "$B_OUT" CONFIG_SHA256_POST_BUILD)
+          A_DTB_BYTES=$(getv "$A_OUT" VEUX_DTB_BYTES)
+          B_DTB_BYTES=$(getv "$B_OUT" VEUX_DTB_BYTES)
+          A_DTB_SHA=$(getv "$A_OUT" VEUX_DTB_SHA256)
+          B_DTB_SHA=$(getv "$B_OUT" VEUX_DTB_SHA256)
+
+          for v in \
+            "$A_IMAGE_BYTES" "$B_IMAGE_BYTES" "$A_IMAGE_SHA" "$B_IMAGE_SHA" \
+            "$A_VMLINUX_BYTES" "$B_VMLINUX_BYTES" "$A_VMLINUX_SHA" "$B_VMLINUX_SHA" \
+            "$A_MAP_BYTES" "$B_MAP_BYTES" "$A_MAP_SHA" "$B_MAP_SHA" \
+            "$A_CFG" "$B_CFG" "$A_DTB_BYTES" "$B_DTB_BYTES" "$A_DTB_SHA" "$B_DTB_SHA"; do
+            test -n "$v"
+          done
+
+          AB_IMAGE=NO
+          AB_VMLINUX=NO
+          AB_MAP=NO
+          AB_CONFIG=NO
+          AB_DTB=NO
+          AB_DTB_SET=NO
+          AB_WARNINGS=NO
+          AB_METADATA=NO
+
+          [ "$A_IMAGE_BYTES" = "$B_IMAGE_BYTES" ] && [ "$A_IMAGE_SHA" = "$B_IMAGE_SHA" ] && AB_IMAGE=YES
+          [ "$A_VMLINUX_BYTES" = "$B_VMLINUX_BYTES" ] && [ "$A_VMLINUX_SHA" = "$B_VMLINUX_SHA" ] && AB_VMLINUX=YES
+          [ "$A_MAP_BYTES" = "$B_MAP_BYTES" ] && [ "$A_MAP_SHA" = "$B_MAP_SHA" ] && AB_MAP=YES
+          [ "$A_CFG" = "$B_CFG" ] && AB_CONFIG=YES
+          [ "$A_DTB_BYTES" = "$B_DTB_BYTES" ] && [ "$A_DTB_SHA" = "$B_DTB_SHA" ] && AB_DTB=YES
+          cmp -s "$A_DIR/ALL-DTB-MANIFEST.txt" "$B_DIR/ALL-DTB-MANIFEST.txt" && AB_DTB_SET=YES
+          cmp -s "$A_DIR/WARNINGS.sorted.txt" "$B_DIR/WARNINGS.sorted.txt" && AB_WARNINGS=YES
+          cmp -s "$A_DIR/GENERATED-BUILD-METADATA.txt" "$B_DIR/GENERATED-BUILD-METADATA.txt" && AB_METADATA=YES
+
+          C1_IMAGE=NO
+          C1_VMLINUX=NO
+          C1_MAP=NO
+          C1_CONFIG=NO
+          C1_DTB=NO
+
+          [ "$A_IMAGE_BYTES" = "$EXPECTED_IMAGE_BYTES" ] && \
+            [ "$A_IMAGE_SHA" = "$EXPECTED_IMAGE_SHA256" ] && C1_IMAGE=YES
+          [ "$A_VMLINUX_BYTES" = "$EXPECTED_VMLINUX_BYTES" ] && \
+            [ "$A_VMLINUX_SHA" = "$EXPECTED_VMLINUX_SHA256" ] && C1_VMLINUX=YES
+          [ "$A_MAP_BYTES" = "$EXPECTED_SYSTEM_MAP_BYTES" ] && \
+            [ "$A_MAP_SHA" = "$EXPECTED_SYSTEM_MAP_SHA256" ] && C1_MAP=YES
+          [ "$A_CFG" = "$EXPECTED_CONFIG_SHA256" ] && C1_CONFIG=YES
+          [ "$A_DTB_BYTES" = "$EXPECTED_VEUX_DTB_BYTES" ] && \
+            [ "$A_DTB_SHA" = "$EXPECTED_VEUX_DTB_SHA256" ] && C1_DTB=YES
+
+          {
+            echo "A_IMAGE_BYTES=$A_IMAGE_BYTES"
+            echo "B_IMAGE_BYTES=$B_IMAGE_BYTES"
+            echo "A_IMAGE_SHA256=$A_IMAGE_SHA"
+            echo "B_IMAGE_SHA256=$B_IMAGE_SHA"
+            echo "A_VMLINUX_BYTES=$A_VMLINUX_BYTES"
+            echo "B_VMLINUX_BYTES=$B_VMLINUX_BYTES"
+            echo "A_VMLINUX_SHA256=$A_VMLINUX_SHA"
+            echo "B_VMLINUX_SHA256=$B_VMLINUX_SHA"
+            echo "A_SYSTEM_MAP_BYTES=$A_MAP_BYTES"
+            echo "B_SYSTEM_MAP_BYTES=$B_MAP_BYTES"
+            echo "A_SYSTEM_MAP_SHA256=$A_MAP_SHA"
+            echo "B_SYSTEM_MAP_SHA256=$B_MAP_SHA"
+            echo "A_CONFIG_SHA256=$A_CFG"
+            echo "B_CONFIG_SHA256=$B_CFG"
+            echo "A_VEUX_DTB_SHA256=$A_DTB_SHA"
+            echo "B_VEUX_DTB_SHA256=$B_DTB_SHA"
+            echo "AB_IMAGE_IDENTICAL=$AB_IMAGE"
+            echo "AB_VMLINUX_IDENTICAL=$AB_VMLINUX"
+            echo "AB_SYSTEM_MAP_IDENTICAL=$AB_MAP"
+            echo "AB_CONFIG_IDENTICAL=$AB_CONFIG"
+            echo "AB_VEUX_DTB_IDENTICAL=$AB_DTB"
+            echo "AB_ALL_DTB_MANIFEST_IDENTICAL=$AB_DTB_SET"
+            echo "AB_WARNING_PROFILE_IDENTICAL=$AB_WARNINGS"
+            echo "AB_GENERATED_METADATA_IDENTICAL=$AB_METADATA"
+            echo "A_MATCHES_C1_IMAGE=$C1_IMAGE"
+            echo "A_MATCHES_C1_VMLINUX=$C1_VMLINUX"
+            echo "A_MATCHES_C1_SYSTEM_MAP=$C1_MAP"
+            echo "A_MATCHES_C1_CONFIG=$C1_CONFIG"
+            echo "A_MATCHES_C1_VEUX_DTB=$C1_DTB"
+          } > "$E/AB-COMPARISON.txt"
+
+          # Always preserve diagnostic diffs; these are compact text manifests only.
+          diff -u "$A_DIR/IMAGE-CHUNKS.tsv" "$B_DIR/IMAGE-CHUNKS.tsv" \
+            > "$E/IMAGE-CHUNKS.diff" || true
+          diff -u "$A_DIR/VMLINUX-CHUNKS.tsv" "$B_DIR/VMLINUX-CHUNKS.tsv" \
+            > "$E/VMLINUX-CHUNKS.diff" || true
+          diff -u "$A_DIR/SYSTEM-MAP-CHUNKS.tsv" "$B_DIR/SYSTEM-MAP-CHUNKS.tsv" \
+            > "$E/SYSTEM-MAP-CHUNKS.diff" || true
+          diff -u "$A_DIR/GENERATED-BUILD-METADATA.txt" "$B_DIR/GENERATED-BUILD-METADATA.txt" \
+            > "$E/GENERATED-BUILD-METADATA.diff" || true
+          diff -u "$A_DIR/HOST-IDENTITY.txt" "$B_DIR/HOST-IDENTITY.txt" \
+            > "$E/HOST-IDENTITY.diff" || true
+          diff -u "$A_DIR/WARNINGS.sorted.txt" "$B_DIR/WARNINGS.sorted.txt" \
+            > "$E/WARNINGS.diff" || true
+          diff -u "$A_DIR/ALL-DTB-MANIFEST.txt" "$B_DIR/ALL-DTB-MANIFEST.txt" \
+            > "$E/ALL-DTB-MANIFEST.diff" || true
+
+          echo 'STAGE=AGGREGATE_CLASSIFICATION' > "$E/STAGE.txt"
+
+          AB_CORE=NO
+          if [ "$AB_IMAGE" = YES ] && [ "$AB_VMLINUX" = YES ] && \
+             [ "$AB_MAP" = YES ] && [ "$AB_CONFIG" = YES ] && \
+             [ "$AB_DTB" = YES ] && [ "$AB_DTB_SET" = YES ]; then
+            AB_CORE=YES
+          fi
+
+          C1_CORE=NO
+          if [ "$C1_IMAGE" = YES ] && [ "$C1_VMLINUX" = YES ] && \
+             [ "$C1_MAP" = YES ] && [ "$C1_CONFIG" = YES ] && \
+             [ "$C1_DTB" = YES ]; then
+            C1_CORE=YES
+          fi
+
+          if [ "$AB_CORE" = YES ] && [ "$C1_CORE" = YES ]; then
+            {
+              echo 'CHECKPOINT=CLEAN-BASE-PROVEN'
+              echo 'C2_REPRODUCIBILITY=PASS'
+              echo 'CURRENT_ENV_REPRODUCIBLE=PASS'
+              echo 'C1_REFERENCE_IDENTITY=PASS'
+              echo 'PROVEN=YES'
+              echo 'NEXT_STAGE=C3_LEGACY_KSU_SOURCE_REMOVAL'
+            } > "$E/C2-CHECKPOINT.txt"
+          elif [ "$AB_CORE" = YES ] && [ "$C1_CORE" = NO ]; then
+            {
+              echo 'CHECKPOINT=CLEAN-BASE-PROVEN-NOT-REACHED'
+              echo 'C2_REPRODUCIBILITY=INCOMPLETE_REFERENCE_IDENTITY'
+              echo 'CURRENT_ENV_REPRODUCIBLE=PASS'
+              echo 'C1_REFERENCE_DRIFT=YES'
+              echo 'PROVEN=NO'
+              echo 'NEXT_STAGE=BLOCKED_DIAGNOSE_C1_REFERENCE_DRIFT'
+            } > "$E/C2-CHECKPOINT.txt"
+          else
+            {
+              echo 'CHECKPOINT=CLEAN-BASE-PROVEN-NOT-REACHED'
+              echo 'C2_REPRODUCIBILITY=FAIL'
+              echo 'CURRENT_ENV_REPRODUCIBLE=FAIL'
+              echo 'PROVEN=NO'
+              echo 'NEXT_STAGE=BLOCKED_DIAGNOSE_AB_NONDETERMINISM'
+            } > "$E/C2-CHECKPOINT.txt"
+          fi
+
+      - name: Preserve aggregate failure context
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set +e
+          E="$GITHUB_WORKSPACE/evidence"
+          mkdir -p "$E"
+          {
+            echo "JOB_STATUS=${{ job.status }}"
+            echo "RUN_ID=${{ github.run_id }}"
+            echo "RUN_ATTEMPT=${{ github.run_attempt }}"
+            echo "WORKFLOW_SHA=${{ github.sha }}"
+            [ -f "$E/STAGE.txt" ] && cat "$E/STAGE.txt"
+          } > "$E/JOB-STATUS.txt"
+
+          if [ ! -f "$E/C2-CHECKPOINT.txt" ]; then
+            {
+              echo 'CHECKPOINT=CLEAN-BASE-PROVEN-NOT-REACHED'
+              echo 'C2_REPRODUCIBILITY=FAIL_OR_INCOMPLETE'
+              echo 'PROVEN=NO'
+              echo 'NEXT_STAGE=BLOCKED'
+            } > "$E/C2-CHECKPOINT.txt"
+          fi
+
+      - name: Finalize aggregate evidence manifest
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE/evidence"
+          rm -f SHA256SUMS MANIFEST-STATUS.txt
+          {
+            echo 'EVIDENCE_MANIFEST_STATUS=PENDING'
+            echo 'SELF_REFERENCE_ALLOWED=NO'
+            echo 'ENTRY_PATH_MODE=BASENAME'
+          } > MANIFEST-STATUS.txt
+
+          find . -maxdepth 1 -type f ! -name SHA256SUMS -printf '%f\n' \
+            | LC_ALL=C sort \
+            | while IFS= read -r f; do sha256sum "$f"; done > SHA256SUMS.tmp
+          mv SHA256SUMS.tmp SHA256SUMS
+
+          if awk '{print $2}' SHA256SUMS | grep -q '/'; then
+            echo 'ERROR: aggregate manifest contains paths' >&2
+            exit 81
+          fi
+          if awk '{print $2}' SHA256SUMS | grep -qx 'SHA256SUMS'; then
+            echo 'ERROR: aggregate manifest self-reference' >&2
+            exit 82
+          fi
+
+          sha256sum -c SHA256SUMS
+
+          {
+            echo 'EVIDENCE_MANIFEST_STATUS=PASS'
+            echo 'SELF_REFERENCE_ALLOWED=NO'
+            echo 'ENTRY_PATH_MODE=BASENAME'
+          } > MANIFEST-STATUS.txt
+
+          rm -f SHA256SUMS
+          find . -maxdepth 1 -type f ! -name SHA256SUMS -printf '%f\n' \
+            | LC_ALL=C sort \
+            | while IFS= read -r f; do sha256sum "$f"; done > SHA256SUMS.tmp
+          mv SHA256SUMS.tmp SHA256SUMS
+          sha256sum -c SHA256SUMS
+
+      - name: Upload aggregate C2 evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: ksu-c2-v4-aggregate-${{ github.run_id }}
+          path: evidence/
+          retention-days: 14
+          if-no-files-found: error
+
+      - name: Publish C2 v4 summary
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set +e
+          E="$GITHUB_WORKSPACE/evidence"
+          {
+            echo '## KSU C2 v4 parallel reproducibility diagnostic'
+            echo
+            echo '```text'
+            [ -f "$E/C2-CHECKPOINT.txt" ] && cat "$E/C2-CHECKPOINT.txt" || {
+              echo 'CHECKPOINT=CLEAN-BASE-PROVEN-NOT-REACHED'
+              echo 'PROVEN=NO'
+            }
+            echo '```'
+            if [ -f "$E/AB-COMPARISON.txt" ]; then
+              echo
+              echo '### A/B comparison'
+              echo '```text'
+              cat "$E/AB-COMPARISON.txt"
+              echo '```'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
