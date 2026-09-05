@@ -1,0 +1,572 @@
+name: KSU GEN1 P5-v5 PASS GitHub Recovery Backup v1
+
+on:
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: write
+
+concurrency:
+  group: ksu-gen1-p5-v5-pass-backup
+  cancel-in-progress: false
+
+env:
+  REPOSITORY: Chrizz100/veux-resukisu-builder
+  RELEASE_TAG: ksu-gen1-p5-v5-pass-backup-2026-09-05
+  RELEASE_TITLE: KSU GEN1 VEUX P5-v5 PASS Recovery Backup
+  RELEASE_TARGET_SHA: acf8eef72ae4ce8e0ed1dcf2a69aebb2a3ac8500
+
+  P4_RUN_ID: "33939213280"
+  P4_ARTIFACT_ID: "9961487463"
+  P4_ARTIFACT_NAME: ksu-gen1-p4-veux-5.4.274-ksu-0.9.5-susfs-2.3-safe-filename-bridge-v7-33939213280
+  P4_ZIP_SHA256: 881e92958ecc0828245a4a916a1e794adcebf695870eac53ccae264785e2ce9e
+
+  P5_V4_RUN_ID: "33943099824"
+  P5_V4_ARTIFACT_ID: "9962687148"
+  P5_V4_ARTIFACT_NAME: ksu-gen1-p5-veux-5.4.274-ksu-0.9.5-susfs-2.3-active-spoof-uname-dispatch-v4-33943099824
+  P5_V4_ZIP_SHA256: 4d6176bbdf5590d388302604ac89a2bd25dab8e4f4c86aa94d8a7932e36d5cbf
+
+  P5_V5_RUN_ID: "33944423405"
+  P5_V5_ARTIFACT_ID: "9963102120"
+  P5_V5_ARTIFACT_NAME: ksu-gen1-p5-veux-5.4.274-ksu-0.9.5-susfs-2.3-spoof-cmdline-dispatch-v5-33944423405
+  P5_V5_ZIP_SHA256: d1e2c0db910c07dac6a3cb0d7c0af7263ab65425e3e43cae858934385f4d4ab8
+
+  P5_V5_IMAGE_SHA256: e7afccc5c914ef1119390559495c3a3cdc91b5d3395c09b9e479580413440ffb
+  P5_V5_CONFIG_SHA256: fdf56e4222808d307709a51557378cb3b73d55ec294009e2184eb52f24ab0b62
+  P5_V5_DTB_SHA256: 42728a6f3d48ae35ac6be4b14ea51bc8a323e77baec2ee544827487378f99d37
+
+jobs:
+  backup:
+    name: Verify PASS chain and create permanent GitHub Release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+
+    steps:
+      - name: 01 - Initialize backup evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf backup-work backup-evidence
+          mkdir -p backup-work backup-evidence
+
+          {
+            echo "BACKUP_WORKFLOW=KSU-GEN1-P5-V5-PASS-GITHUB-RECOVERY-BACKUP-v1"
+            echo "REPOSITORY=$REPOSITORY"
+            echo "RELEASE_TAG=$RELEASE_TAG"
+            echo "RELEASE_TARGET_SHA=$RELEASE_TARGET_SHA"
+            echo "P4_RUN_ID=$P4_RUN_ID"
+            echo "P5_V4_RUN_ID=$P5_V4_RUN_ID"
+            echo "P5_V5_RUN_ID=$P5_V5_RUN_ID"
+            echo "FULL_BINARY_ARTIFACTS_TO_BACKUP=3"
+            echo "SOURCE_RECOVERY_BUNDLE=YES"
+            echo "RELEASE_DOWNLOAD_REVERIFY=YES"
+          } > backup-evidence/00-CONTRACT.txt
+
+          echo "STAGE=INITIALIZED" > backup-evidence/STAGE.txt
+
+      - name: 02 - Verify gh CLI and target commit
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          echo "STAGE=GITHUB_PREREQUISITES" > backup-evidence/STAGE.txt
+
+          command -v gh
+          gh --version > backup-evidence/01-GH-VERSION.txt
+
+          target="$(
+            gh api "repos/${REPOSITORY}/commits/${RELEASE_TARGET_SHA}" \
+              --jq '.sha'
+          )"
+          test "$target" = "$RELEASE_TARGET_SHA"
+
+          if gh release view "$RELEASE_TAG" \
+            --repo "$REPOSITORY" >/dev/null 2>&1; then
+            echo "Release already exists: $RELEASE_TAG" >&2
+            exit 1
+          fi
+
+          echo "GITHUB_PREREQUISITES=PASS" \
+            > backup-evidence/01-GITHUB-PREREQUISITES.txt
+
+      - name: 03 - Download exact PASS artifacts from GitHub Actions
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          echo "STAGE=DOWNLOAD_PASS_ARTIFACTS" > backup-evidence/STAGE.txt
+          cd backup-work
+
+          download_artifact() {
+            local id="$1"
+            local file="$2"
+            gh api \
+              -H "Accept: application/vnd.github+json" \
+              "repos/${REPOSITORY}/actions/artifacts/${id}/zip" \
+              > "$file"
+            test -s "$file"
+          }
+
+          download_artifact "$P4_ARTIFACT_ID" "${P4_ARTIFACT_NAME}.zip"
+          download_artifact "$P5_V4_ARTIFACT_ID" "${P5_V4_ARTIFACT_NAME}.zip"
+          download_artifact "$P5_V5_ARTIFACT_ID" "${P5_V5_ARTIFACT_NAME}.zip"
+
+          test "$(
+            sha256sum "${P4_ARTIFACT_NAME}.zip" | awk '{print $1}'
+          )" = "$P4_ZIP_SHA256"
+
+          test "$(
+            sha256sum "${P5_V4_ARTIFACT_NAME}.zip" | awk '{print $1}'
+          )" = "$P5_V4_ZIP_SHA256"
+
+          test "$(
+            sha256sum "${P5_V5_ARTIFACT_NAME}.zip" | awk '{print $1}'
+          )" = "$P5_V5_ZIP_SHA256"
+
+          {
+            sha256sum "${P4_ARTIFACT_NAME}.zip"
+            sha256sum "${P5_V4_ARTIFACT_NAME}.zip"
+            sha256sum "${P5_V5_ARTIFACT_NAME}.zip"
+          } > "$GITHUB_WORKSPACE/backup-evidence/02-ACTIONS-ARTIFACT-SHA256SUMS.txt"
+
+          echo "ACTIONS_ARTIFACT_DOWNLOAD_AND_SHA256=PASS" \
+            > "$GITHUB_WORKSPACE/backup-evidence/02-ACTIONS-ARTIFACT-AUTH.txt"
+
+      - name: 04 - Verify every internal artifact manifest and checkpoint
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "STAGE=VERIFY_PASS_CHAIN" > backup-evidence/STAGE.txt
+          cd backup-work
+
+          verify_zip() {
+            local zip="$1"
+            local dir="$2"
+
+            rm -rf "$dir"
+            mkdir -p "$dir"
+            unzip -q "$zip" -d "$dir"
+
+            for sub in evidence restore-kit build-artifacts; do
+              test -s "$dir/$sub/SHA256SUMS"
+              (
+                cd "$dir/$sub"
+                sha256sum -c SHA256SUMS
+              )
+            done
+          }
+
+          verify_zip "${P4_ARTIFACT_NAME}.zip" verify-p4
+          verify_zip "${P5_V4_ARTIFACT_NAME}.zip" verify-p5v4
+          verify_zip "${P5_V5_ARTIFACT_NAME}.zip" verify-p5v5
+
+          grep -Fxq 'TECHNICAL_PASS=YES' \
+            verify-p4/evidence/98-FINAL-STATUS.txt
+          grep -Fxq \
+            'CHECKPOINT=KSU-GEN1-P4-SAFE-STAT-FACCESSAT-FILENAME-BRIDGE-PASS' \
+            verify-p4/evidence/98-FINAL-STATUS.txt
+
+          grep -Fxq 'TECHNICAL_PASS=YES' \
+            verify-p5v4/evidence/98-FINAL-STATUS.txt
+          grep -Fxq \
+            'CHECKPOINT=KSU-GEN1-P5-ACTIVE-SPOOF-UNAME-DISPATCH-PASS' \
+            verify-p5v4/evidence/98-FINAL-STATUS.txt
+          grep -Fxq 'P5_LINKED_BOUNDARY=PASS' \
+            verify-p5v4/evidence/11-P5-LINKED-BOUNDARY.txt
+          grep -Fxq 'P5_RESTORE_KIT=PASS' \
+            verify-p5v4/evidence/12-P5-PROVENANCE.txt
+
+          grep -Fxq 'TECHNICAL_PASS=YES' \
+            verify-p5v5/evidence/98-FINAL-STATUS.txt
+          grep -Fxq \
+            'CHECKPOINT=KSU-GEN1-P5-SPOOF-CMDLINE-DISPATCH-PASS' \
+            verify-p5v5/evidence/98-FINAL-STATUS.txt
+          grep -Fxq 'P5_V5_LINKED_BOUNDARY=PASS' \
+            verify-p5v5/evidence/12-P5V5-LINKED-BOUNDARY.txt
+          grep -Fxq 'P5_V5_RESTORE_KIT=PASS' \
+            verify-p5v5/evidence/13-P5V5-PROVENANCE.txt
+
+          test "$(
+            sha256sum verify-p5v5/build-artifacts/Image | awk '{print $1}'
+          )" = "$P5_V5_IMAGE_SHA256"
+
+          test "$(
+            sha256sum verify-p5v5/build-artifacts/config | awk '{print $1}'
+          )" = "$P5_V5_CONFIG_SHA256"
+
+          test "$(
+            sha256sum verify-p5v5/build-artifacts/veux.dtb | awk '{print $1}'
+          )" = "$P5_V5_DTB_SHA256"
+
+          {
+            echo "P4_V7_CHECKPOINT_AUTH=PASS"
+            echo "P5_V4_CHECKPOINT_AUTH=PASS"
+            echo "P5_V5_CHECKPOINT_AUTH=PASS"
+            echo "P5_V5_IMAGE_AUTH=PASS"
+            echo "P5_V5_CONFIG_AUTH=PASS"
+            echo "P5_V5_DTB_AUTH=PASS"
+            echo "FULL_PASS_CHAIN_AUTH=PASS"
+          } > "$GITHUB_WORKSPACE/backup-evidence/03-PASS-CHAIN-AUTH.txt"
+
+      - name: 05 - Build consolidated source recovery bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "STAGE=BUILD_SOURCE_RECOVERY" > backup-evidence/STAGE.txt
+          cd backup-work
+
+          root="KSU_GEN1_VEUX_P5_V5_SOURCE_RECOVERY"
+          rm -rf "$root"
+          mkdir -p \
+            "$root/P4-v7" \
+            "$root/P5-v4" \
+            "$root/P5-v5"
+
+          cp -a verify-p4/restore-kit \
+            "$root/P4-v7/restore-kit"
+          cp -a verify-p5v4/restore-kit \
+            "$root/P5-v4/restore-kit"
+          cp -a verify-p5v5/restore-kit \
+            "$root/P5-v5/restore-kit"
+
+          cp verify-p4/build-artifacts/SHA256SUMS \
+            "$root/P4-v7/BUILD-SHA256SUMS"
+          cp verify-p5v4/build-artifacts/SHA256SUMS \
+            "$root/P5-v4/BUILD-SHA256SUMS"
+          cp verify-p5v5/build-artifacts/SHA256SUMS \
+            "$root/P5-v5/BUILD-SHA256SUMS"
+
+          cp verify-p4/evidence/98-FINAL-STATUS.txt \
+            "$root/P4-v7/FINAL-STATUS.txt"
+          cp verify-p5v4/evidence/98-FINAL-STATUS.txt \
+            "$root/P5-v4/FINAL-STATUS.txt"
+          cp verify-p5v5/evidence/98-FINAL-STATUS.txt \
+            "$root/P5-v5/FINAL-STATUS.txt"
+
+          cat > "$root/README.txt" <<EOF
+          KSU GEN1 VEUX P5-v5 PASS Recovery
+          ==================================
+
+          Device: VEUX
+          Kernel: Linux 5.4.274
+          KernelSU: official v0.9.5
+          KernelSU commit:
+          b766b98513b5a7eb33bc1c4a76b5702bf1288f07
+
+          SUSFS: v2.3.0
+          SUSFS commit:
+          ec785f47d49f7b3871ca9356f450411020af7017
+
+          PASS chain:
+          P4-v7  run $P4_RUN_ID
+          P5-v4  run $P5_V4_RUN_ID
+          P5-v5  run $P5_V5_RUN_ID
+
+          P5-v5 Image SHA256:
+          $P5_V5_IMAGE_SHA256
+
+          Enabled at P5-v5:
+          - KSU_SUSFS_SPOOF_UNAME
+          - KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG
+
+          Still disabled:
+          - SUS_PATH
+          - SUS_MOUNT
+          - SUS_KSTAT
+          - OPEN_REDIRECT
+          - SUS_MAP
+          - proc maps hooks
+          - namei hooks
+          - namespace hooks
+
+          Recovery:
+          1. Reconstruct exact deterministic P0.
+          2. Apply P4-v7 restore kit.
+          3. Apply P5-v4 restore kit.
+          4. Apply P5-v5 restore kit.
+          5. Verify each included SHA256SUMS/manifest before building.
+
+          This release additionally contains the complete binary Actions
+          artifacts for P4-v7, P5-v4 and P5-v5.
+          EOF
+
+          (
+            cd "$root"
+            find . -type f ! -name SHA256SUMS -printf '%P\0' \
+              | sort -z \
+              | xargs -0 -r sha256sum \
+              > SHA256SUMS
+            sha256sum -c SHA256SUMS
+          )
+
+          zip -q -9 -r \
+            KSU_GEN1_VEUX_P5_V5_SOURCE_RECOVERY_2026-09-05.zip \
+            "$root"
+
+          test -s \
+            KSU_GEN1_VEUX_P5_V5_SOURCE_RECOVERY_2026-09-05.zip
+
+          sha256sum \
+            KSU_GEN1_VEUX_P5_V5_SOURCE_RECOVERY_2026-09-05.zip \
+            > KSU_GEN1_VEUX_P5_V5_SOURCE_RECOVERY_2026-09-05.zip.sha256
+
+          cp \
+            KSU_GEN1_VEUX_P5_V5_SOURCE_RECOVERY_2026-09-05.zip.sha256 \
+            "$GITHUB_WORKSPACE/backup-evidence/04-SOURCE-RECOVERY-SHA256.txt"
+
+          echo "SOURCE_RECOVERY_BUNDLE=PASS" \
+            > "$GITHUB_WORKSPACE/backup-evidence/04-SOURCE-RECOVERY.txt"
+
+      - name: 06 - Create SHA256SUMS and release notes
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "STAGE=PREPARE_RELEASE" > backup-evidence/STAGE.txt
+          cd backup-work
+
+          cat > RECOVERY.txt <<EOF
+          KSU GEN1 VEUX P5-v5 PASS Recovery Backup
+          ========================================
+
+          P4-v7 PASS run: $P4_RUN_ID
+          P5-v4 PASS run: $P5_V4_RUN_ID
+          P5-v5 PASS run: $P5_V5_RUN_ID
+
+          P5-v5 Image SHA256:
+          $P5_V5_IMAGE_SHA256
+
+          P5-v5 Config SHA256:
+          $P5_V5_CONFIG_SHA256
+
+          P5-v5 VEUX DTB SHA256:
+          $P5_V5_DTB_SHA256
+
+          This backup was created only after authenticating all three PASS
+          checkpoints and every internal evidence/restore/build SHA256SUMS.
+
+          No boot image was created by these checkpoints.
+          No device was accessed.
+          No flashing was performed.
+          EOF
+
+          {
+            sha256sum "${P4_ARTIFACT_NAME}.zip"
+            sha256sum "${P5_V4_ARTIFACT_NAME}.zip"
+            sha256sum "${P5_V5_ARTIFACT_NAME}.zip"
+            sha256sum \
+              KSU_GEN1_VEUX_P5_V5_SOURCE_RECOVERY_2026-09-05.zip
+            sha256sum RECOVERY.txt
+          } > RELEASE-SHA256SUMS.txt
+
+          sha256sum -c RELEASE-SHA256SUMS.txt
+
+          cat > release-notes.md <<EOF
+          Permanent recovery checkpoint after successful P5-v5.
+
+          - Device: VEUX
+          - Kernel: Linux 5.4.274
+          - KernelSU: official v0.9.5
+          - SUSFS: v2.3.0
+          - P4-v7 run: $P4_RUN_ID
+          - P5-v4 run: $P5_V4_RUN_ID
+          - P5-v5 run: $P5_V5_RUN_ID
+          - P5-v5 Image SHA-256: \`$P5_V5_IMAGE_SHA256\`
+
+          The release contains all three complete PASS Actions artifacts,
+          a consolidated source recovery bundle, checksums and recovery notes.
+
+          This is a build/recovery checkpoint, not a real-device boot claim.
+          EOF
+
+          echo "RELEASE_PAYLOAD_PREPARED=PASS" \
+            > "$GITHUB_WORKSPACE/backup-evidence/05-RELEASE-PAYLOAD.txt"
+
+      - name: 07 - Create permanent GitHub Release backup
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          echo "STAGE=CREATE_RELEASE" > backup-evidence/STAGE.txt
+          cd backup-work
+
+          gh release create "$RELEASE_TAG" \
+            --repo "$REPOSITORY" \
+            --target "$RELEASE_TARGET_SHA" \
+            --title "$RELEASE_TITLE" \
+            --notes-file release-notes.md \
+            "${P4_ARTIFACT_NAME}.zip#P4-v7 complete PASS artifact" \
+            "${P5_V4_ARTIFACT_NAME}.zip#P5-v4 complete PASS artifact" \
+            "${P5_V5_ARTIFACT_NAME}.zip#P5-v5 complete PASS artifact" \
+            "KSU_GEN1_VEUX_P5_V5_SOURCE_RECOVERY_2026-09-05.zip#Consolidated source recovery" \
+            "RELEASE-SHA256SUMS.txt#Release asset checksums" \
+            "RECOVERY.txt#Recovery metadata"
+
+          gh release view "$RELEASE_TAG" \
+            --repo "$REPOSITORY" \
+            --json tagName,name,isDraft,isPrerelease,url,assets \
+            > "$GITHUB_WORKSPACE/backup-evidence/06-RELEASE.json"
+
+          jq -e \
+            --arg tag "$RELEASE_TAG" \
+            --arg title "$RELEASE_TITLE" \
+            '.tagName == $tag and
+             .name == $title and
+             .isDraft == false and
+             .isPrerelease == false and
+             (.assets | length) == 6' \
+            "$GITHUB_WORKSPACE/backup-evidence/06-RELEASE.json" \
+            >/dev/null
+
+          echo "GITHUB_RELEASE_CREATED=PASS" \
+            > "$GITHUB_WORKSPACE/backup-evidence/06-RELEASE-CREATE.txt"
+
+      - name: 08 - Download release assets and reverify byte identity
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          echo "STAGE=VERIFY_RELEASE_DOWNLOAD" > backup-evidence/STAGE.txt
+          cd backup-work
+
+          rm -rf release-download
+          mkdir release-download
+
+          gh release download "$RELEASE_TAG" \
+            --repo "$REPOSITORY" \
+            --dir release-download
+
+          test "$(
+            sha256sum \
+              "release-download/${P4_ARTIFACT_NAME}.zip" \
+              | awk '{print $1}'
+          )" = "$P4_ZIP_SHA256"
+
+          test "$(
+            sha256sum \
+              "release-download/${P5_V4_ARTIFACT_NAME}.zip" \
+              | awk '{print $1}'
+          )" = "$P5_V4_ZIP_SHA256"
+
+          test "$(
+            sha256sum \
+              "release-download/${P5_V5_ARTIFACT_NAME}.zip" \
+              | awk '{print $1}'
+          )" = "$P5_V5_ZIP_SHA256"
+
+          source_sha="$(
+            awk '{print $1}' \
+              KSU_GEN1_VEUX_P5_V5_SOURCE_RECOVERY_2026-09-05.zip.sha256
+          )"
+
+          test "$(
+            sha256sum \
+              release-download/KSU_GEN1_VEUX_P5_V5_SOURCE_RECOVERY_2026-09-05.zip \
+              | awk '{print $1}'
+          )" = "$source_sha"
+
+          cmp RELEASE-SHA256SUMS.txt \
+            release-download/RELEASE-SHA256SUMS.txt
+          cmp RECOVERY.txt \
+            release-download/RECOVERY.txt
+
+          {
+            echo "P4_RELEASE_ASSET_BYTE_IDENTITY=PASS"
+            echo "P5_V4_RELEASE_ASSET_BYTE_IDENTITY=PASS"
+            echo "P5_V5_RELEASE_ASSET_BYTE_IDENTITY=PASS"
+            echo "SOURCE_RECOVERY_RELEASE_ASSET_BYTE_IDENTITY=PASS"
+            echo "CHECKSUM_RELEASE_ASSET_BYTE_IDENTITY=PASS"
+            echo "RECOVERY_METADATA_RELEASE_ASSET_BYTE_IDENTITY=PASS"
+            echo "RELEASE_DOWNLOAD_REVERIFY=PASS"
+          } > "$GITHUB_WORKSPACE/backup-evidence/07-RELEASE-REVERIFY.txt"
+
+      - name: 09 - Close backup status
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p backup-evidence
+          echo "STAGE=FINAL_STATUS" > backup-evidence/STAGE.txt
+
+          if [ "${{ job.status }}" = "success" ] \
+            && grep -Fxq 'GITHUB_RELEASE_CREATED=PASS' \
+              backup-evidence/06-RELEASE-CREATE.txt 2>/dev/null \
+            && grep -Fxq 'RELEASE_DOWNLOAD_REVERIFY=PASS' \
+              backup-evidence/07-RELEASE-REVERIFY.txt 2>/dev/null; then
+            pass=YES
+            checkpoint=KSU-GEN1-P5-V5-GITHUB-RECOVERY-BACKUP-PASS
+          else
+            pass=NO
+            checkpoint=KSU-GEN1-P5-V5-GITHUB-RECOVERY-BACKUP-FAILED
+          fi
+
+          {
+            echo "JOB_STATUS_AT_CLOSE=${{ job.status }}"
+            echo "BACKUP_PASS=$pass"
+            echo "CHECKPOINT=$checkpoint"
+            echo "RELEASE_TAG=$RELEASE_TAG"
+            echo "RELEASE_TARGET_SHA=$RELEASE_TARGET_SHA"
+            echo "P4_RUN_ID=$P4_RUN_ID"
+            echo "P5_V4_RUN_ID=$P5_V4_RUN_ID"
+            echo "P5_V5_RUN_ID=$P5_V5_RUN_ID"
+            echo "P5_V5_IMAGE_SHA256=$P5_V5_IMAGE_SHA256"
+            echo "FULL_BINARY_ARTIFACTS_BACKED_UP=3"
+            echo "SOURCE_RECOVERY_BUNDLE_BACKED_UP=YES"
+            echo "RELEASE_ASSETS_REDOWNLOADED_AND_REVERIFIED=$pass"
+          } > backup-evidence/98-BACKUP-STATUS.txt
+
+      - name: 10 - Build backup evidence SHA256 manifest
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd backup-evidence
+          rm -f SHA256SUMS
+          find . -type f ! -name SHA256SUMS -printf '%P\0' \
+            | sort -z \
+            | xargs -0 -r sha256sum \
+            > SHA256SUMS
+          test -s SHA256SUMS
+          sha256sum -c SHA256SUMS
+
+      - name: 11 - Upload compact backup evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ksu-gen1-p5-v5-github-recovery-backup-evidence-${{ github.run_id }}
+          path: backup-evidence/
+          retention-days: 90
+          if-no-files-found: error
+
+      - name: 12 - Summary
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          {
+            echo "# KSU GEN1 P5-v5 GitHub Recovery Backup"
+            echo
+            if grep -Fxq 'BACKUP_PASS=YES' \
+              backup-evidence/98-BACKUP-STATUS.txt 2>/dev/null; then
+              echo "**PASS**"
+              echo
+              echo "Permanent release tag:"
+              echo "\`$RELEASE_TAG\`"
+              echo
+              echo "All three binary PASS artifacts and the consolidated"
+              echo "source recovery bundle were downloaded from the release"
+              echo "and reverified byte-for-byte."
+            else
+              echo "**FAIL — do not continue to the next P5 block.**"
+              echo
+              echo '```text'
+              cat backup-evidence/STAGE.txt 2>/dev/null || true
+              cat backup-evidence/98-BACKUP-STATUS.txt 2>/dev/null || true
+              echo '```'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
