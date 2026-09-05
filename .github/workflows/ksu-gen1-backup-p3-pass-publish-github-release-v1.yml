@@ -1,0 +1,379 @@
+name: KSU GEN1 Backup - Publish P3 PASS Recovery Release v1
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: ksu-gen1-p3-pass-backup-release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  P2_RUN_ID: "33930277124"
+  P3_RUN_ID: "33931389793"
+  P2_ARTIFACT_NAME: ksu-gen1-p2-veux-5.4.274-susfs-2.3-foundation-v4-33930277124
+  P3_ARTIFACT_NAME: ksu-gen1-p3-veux-5.4.274-ksu-0.9.5-susfs-2.3-bridge-compile-v1-33931389793
+  P2_WORKFLOW: .github/workflows/ksu-gen1-p2-veux-5.4.274-susfs-2.3-foundation-v4.yml
+  P3_WORKFLOW: .github/workflows/ksu-gen1-p3-veux-5.4.274-kernelsu-0.9.5-susfs-2.3-bridge-compile-v1.yml
+  EXPECTED_P2_WORKFLOW_SHA256: 807a70990e07e7cab3c7b00f778fa4ca7a5b9235c08e3abffc484d781a18f5e9
+  EXPECTED_P3_WORKFLOW_SHA256: ffe0f3d69c4f8aa7fb9afaf168bfb4aa98344f2d4ad98096d4ab2b0317f38589
+  EXPECTED_P2_COMMIT: 4f22e642f73ec6c13f901d7ba39705e1454a8cf6
+  EXPECTED_P2_TREE: 82ed6bcf7ce0cfd3c406f0a9c979397cdd285b5c
+  EXPECTED_P3_IMAGE_SHA256: b5f8e869ee0360c6af52faaa1c86c7161e35bd84dc9655d8e97165ac612a621d
+  EXPECTED_P3_CONFIG_SHA256: 4416cdb68d8a445afb2ce64891174cfb55b9746406ec40962fc819cd591b8316
+  EXPECTED_P3_DTB_SHA256: 42728a6f3d48ae35ac6be4b14ea51bc8a323e77baec2ee544827487378f99d37
+  RELEASE_TAG: ksu-gen1-p3-pass-backup-2026-09-05
+  BACKUP_BASENAME: KSU_GEN1_VEUX_GITHUB_BACKUP_P3_PASS_2026-09-05
+
+jobs:
+  publish-backup:
+    name: Publish immutable P3 PASS recovery backup
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    steps:
+      - name: 01 - Checkout repository metadata
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: 02 - Initialize backup workspace
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf backup-work backup-evidence
+          mkdir -p \
+            backup-work/workflows \
+            backup-work/run-artifacts/P2 \
+            backup-work/run-artifacts/P3 \
+            backup-evidence
+
+          {
+            echo "WORKFLOW=KSU-GEN1-P3-PASS-BACKUP-RELEASE-v1"
+            echo "REPOSITORY=$GITHUB_REPOSITORY"
+            echo "P2_RUN_ID=$P2_RUN_ID"
+            echo "P3_RUN_ID=$P3_RUN_ID"
+            echo "RELEASE_TAG=$RELEASE_TAG"
+            echo "PURPOSE=Permanent GitHub recovery copy of proven P2 and P3 PASS checkpoints"
+          } > backup-evidence/00-CONTRACT.txt
+
+      - name: 03 - Authenticate P2 and P3 GitHub Actions runs
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          p2_conclusion="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$P2_RUN_ID" --jq '.conclusion')"
+          p3_conclusion="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$P3_RUN_ID" --jq '.conclusion')"
+
+          test "$p2_conclusion" = "success"
+          test "$p3_conclusion" = "success"
+
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$P2_RUN_ID/artifacts" \
+            > backup-evidence/01-P2-ARTIFACT-METADATA.json
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$P3_RUN_ID/artifacts" \
+            > backup-evidence/01-P3-ARTIFACT-METADATA.json
+
+          jq -e --arg name "$P2_ARTIFACT_NAME" \
+            '.artifacts | any(.name == $name and .expired == false)' \
+            backup-evidence/01-P2-ARTIFACT-METADATA.json >/dev/null
+          jq -e --arg name "$P3_ARTIFACT_NAME" \
+            '.artifacts | any(.name == $name and .expired == false)' \
+            backup-evidence/01-P3-ARTIFACT-METADATA.json >/dev/null
+
+          {
+            echo "P2_RUN_CONCLUSION=$p2_conclusion"
+            echo "P3_RUN_CONCLUSION=$p3_conclusion"
+            echo "P2_ARTIFACT_AVAILABLE=YES"
+            echo "P3_ARTIFACT_AVAILABLE=YES"
+            echo "RUN_AUTHENTICATION=PASS"
+          } > backup-evidence/01-RUN-AUTH.txt
+
+      - name: 04 - Download exact P2 and P3 artifacts
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          gh run download "$P2_RUN_ID" \
+            --repo "$GITHUB_REPOSITORY" \
+            --name "$P2_ARTIFACT_NAME" \
+            --dir backup-work/run-artifacts/P2
+
+          gh run download "$P3_RUN_ID" \
+            --repo "$GITHUB_REPOSITORY" \
+            --name "$P3_ARTIFACT_NAME" \
+            --dir backup-work/run-artifacts/P3
+
+          test -s backup-work/run-artifacts/P2/evidence/98-FINAL-STATUS.txt
+          test -s backup-work/run-artifacts/P3/evidence/98-FINAL-STATUS.txt
+          test -s backup-work/run-artifacts/P3/build-artifacts/Image
+          test -s backup-work/run-artifacts/P3/restore-kit/manifest.json
+
+      - name: 05 - Verify downloaded artifact manifests and checkpoint identities
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          for stage in P2 P3; do
+            root="backup-work/run-artifacts/$stage"
+            for dir in evidence restore-kit; do
+              test -s "$root/$dir/SHA256SUMS"
+              (
+                cd "$root/$dir"
+                sha256sum -c SHA256SUMS
+              ) > "backup-evidence/02-${stage}-${dir}-SHA256.txt"
+            done
+          done
+
+          test -s backup-work/run-artifacts/P3/build-artifacts/SHA256SUMS
+          (
+            cd backup-work/run-artifacts/P3/build-artifacts
+            sha256sum -c SHA256SUMS
+          ) > backup-evidence/02-P3-build-artifacts-SHA256.txt
+
+          grep -Fxq 'TECHNICAL_PASS=YES' \
+            backup-work/run-artifacts/P2/evidence/98-FINAL-STATUS.txt
+          grep -Fxq 'TECHNICAL_PASS=YES' \
+            backup-work/run-artifacts/P3/evidence/98-FINAL-STATUS.txt
+
+          grep -Fxq "P2_OUTER_COMMIT=$EXPECTED_P2_COMMIT" \
+            backup-work/run-artifacts/P2/evidence/13-P2-SOURCE-CHECKPOINT.txt
+          grep -Fxq "P2_OUTER_TREE=$EXPECTED_P2_TREE" \
+            backup-work/run-artifacts/P2/evidence/13-P2-SOURCE-CHECKPOINT.txt
+
+          test "$(sha256sum backup-work/run-artifacts/P3/build-artifacts/Image | awk '{print $1}')" \
+            = "$EXPECTED_P3_IMAGE_SHA256"
+          test "$(sha256sum backup-work/run-artifacts/P3/build-artifacts/config | awk '{print $1}')" \
+            = "$EXPECTED_P3_CONFIG_SHA256"
+          test "$(sha256sum backup-work/run-artifacts/P3/build-artifacts/veux.dtb | awk '{print $1}')" \
+            = "$EXPECTED_P3_DTB_SHA256"
+
+          jq -e \
+            --arg p2 "$EXPECTED_P2_COMMIT" \
+            --arg tree "$EXPECTED_P2_TREE" \
+            --arg image "$EXPECTED_P3_IMAGE_SHA256" \
+            --arg config "$EXPECTED_P3_CONFIG_SHA256" \
+            '.stage == "KSU-GEN1-P3-v1" and
+             .p2_outer_commit == $p2 and
+             .p2_outer_tree == $tree and
+             .image_sha256 == $image and
+             .config_sha256 == $config and
+             .kernel_build_performed == true and
+             .active_fs_proc_hooks_integrated == false and
+             .device_accessed == false and
+             .flashing_performed == false' \
+            backup-work/run-artifacts/P3/restore-kit/manifest.json \
+            > backup-evidence/02-P3-MANIFEST-AUTH.json
+
+          echo "CHECKPOINT_IDENTITY=PASS" > backup-evidence/02-CHECKPOINT-IDENTITY.txt
+
+      - name: 06 - Copy exact workflow definitions into backup
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s "$P2_WORKFLOW"
+          test -s "$P3_WORKFLOW"
+
+          test "$(sha256sum "$P2_WORKFLOW" | awk '{print $1}')" = "$EXPECTED_P2_WORKFLOW_SHA256"
+          test "$(sha256sum "$P3_WORKFLOW" | awk '{print $1}')" = "$EXPECTED_P3_WORKFLOW_SHA256"
+
+          cp "$P2_WORKFLOW" backup-work/workflows/
+          cp "$P3_WORKFLOW" backup-work/workflows/
+
+          {
+            echo "P2_WORKFLOW_SHA256=$EXPECTED_P2_WORKFLOW_SHA256"
+            echo "P3_WORKFLOW_SHA256=$EXPECTED_P3_WORKFLOW_SHA256"
+            echo "WORKFLOW_DEFINITIONS=PASS"
+          } > backup-evidence/03-WORKFLOWS.txt
+
+      - name: 07 - Write permanent recovery metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cat > backup-work/CHECKPOINTS.txt <<EOF
+          DEVICE=VEUX
+          KERNEL=5.4.274
+          KERNELSU=official normal v0.9.5
+          KERNELSU_COMMIT=b766b98513b5a7eb33bc1c4a76b5702bf1288f07
+          KERNELSU_VERSION=11872
+          SUSFS_VERSION=v2.3.0
+          SUSFS_COMMIT=ec785f47d49f7b3871ca9356f450411020af7017
+
+          P2_PASS_RUN_ID=$P2_RUN_ID
+          P2_OUTER_COMMIT=$EXPECTED_P2_COMMIT
+          P2_OUTER_TREE=$EXPECTED_P2_TREE
+
+          P3_PASS_RUN_ID=$P3_RUN_ID
+          P3_IMAGE_SHA256=$EXPECTED_P3_IMAGE_SHA256
+          P3_CONFIG_SHA256=$EXPECTED_P3_CONFIG_SHA256
+          P3_VEUX_DTB_SHA256=$EXPECTED_P3_DTB_SHA256
+
+          P3_ACTIVE_FS_PROC_HOOKS=NO
+          P3_USER_COMMAND_DISPATCH=NO
+          P3_BOOT_IMAGE_CREATED=NO
+          P3_DEVICE_ACCESSED=NO
+          P3_FLASHING_PERFORMED=NO
+          NEXT_STAGE=P4_CONTROLLED_STAT_FACCESSAT_FILENAME_BRIDGE
+          EOF
+
+          cat > backup-work/README-RECOVERY.md <<'EOF'
+          # KSU GEN1 VEUX P3 PASS Recovery Backup
+
+          This GitHub release is a permanent recovery checkpoint for:
+
+          - VEUX only
+          - Linux 5.4.274
+          - official KernelSU 0.9.5
+          - SUSFS 2.3.0
+
+          It contains the exact P2 and P3 GitHub Actions artifacts plus the P2-v4
+          and P3-v1 workflow definitions.
+
+          P2 is the last dormant SUSFS source checkpoint.
+          P3 is the proven SUSFS core compile/link checkpoint before the active
+          stat/faccessat filename bridge.
+
+          P3 proves Image+dtbs compilation only. It does not prove device boot,
+          flashing, or runtime compatibility.
+
+          For recovery, verify SHA256SUMS first. The exact run IDs, commit/tree
+          identities and build hashes are recorded in CHECKPOINTS.txt.
+          EOF
+
+          cp -a backup-evidence backup-work/evidence
+
+      - name: 08 - Build and verify deterministic backup archive
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          (
+            cd backup-work
+            rm -f SHA256SUMS
+            find . -type f ! -name SHA256SUMS -printf '%P\0' \
+              | sort -z \
+              | xargs -0 -r sha256sum > SHA256SUMS
+            test -s SHA256SUMS
+            sha256sum -c SHA256SUMS
+          )
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import zipfile
+
+          root = Path("backup-work")
+          out = Path(f"{__import__('os').environ['BACKUP_BASENAME']}.zip")
+          fixed = (2026, 9, 5, 0, 0, 0)
+
+          with zipfile.ZipFile(out, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as zf:
+              for p in sorted(root.rglob("*"), key=lambda x: x.relative_to(root).as_posix()):
+                  if not p.is_file():
+                      continue
+                  rel = p.relative_to(root).as_posix()
+                  zi = zipfile.ZipInfo(f"{root.name}/{rel}", fixed)
+                  zi.compress_type = zipfile.ZIP_DEFLATED
+                  zi.external_attr = 0o100644 << 16
+                  zf.writestr(zi, p.read_bytes(), compress_type=zipfile.ZIP_DEFLATED, compresslevel=9)
+          PY
+
+          zip="${BACKUP_BASENAME}.zip"
+          test -s "$zip"
+          unzip -t "$zip" > backup-evidence/04-ZIP-TEST.txt
+          sha="$(sha256sum "$zip" | awk '{print $1}')"
+          printf '%s  %s\n' "$sha" "$zip" > "${zip}.sha256"
+
+          {
+            echo "GITHUB_BACKUP_ZIP=$zip"
+            echo "GITHUB_BACKUP_ZIP_SHA256=$sha"
+            echo "GITHUB_BACKUP_ARCHIVE=PASS"
+          } > backup-evidence/04-BACKUP-IDENTITY.txt
+
+      - name: 09 - Publish or refresh permanent GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          zip="${BACKUP_BASENAME}.zip"
+          sidecar="${zip}.sha256"
+
+          cat > release-notes.md <<EOF
+          # KSU GEN1 VEUX P3 PASS backup
+
+          Proven recovery checkpoint before P4.
+
+          - P2 PASS run: $P2_RUN_ID
+          - P2 commit: $EXPECTED_P2_COMMIT
+          - P2 tree: $EXPECTED_P2_TREE
+          - P3 PASS run: $P3_RUN_ID
+          - P3 Image SHA-256: $EXPECTED_P3_IMAGE_SHA256
+          - P3 config SHA-256: $EXPECTED_P3_CONFIG_SHA256
+          - P3 VEUX DTB SHA-256: $EXPECTED_P3_DTB_SHA256
+
+          No boot image, device access, or flashing was performed in P3.
+          EOF
+
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" \
+              "$zip" "$sidecar" \
+              --clobber \
+              --repo "$GITHUB_REPOSITORY"
+          else
+            gh release create "$RELEASE_TAG" \
+              "$zip" "$sidecar" \
+              --target "$GITHUB_SHA" \
+              --title "KSU GEN1 VEUX P3 PASS Recovery Backup" \
+              --notes-file release-notes.md \
+              --repo "$GITHUB_REPOSITORY"
+          fi
+
+          gh release view "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --json url,tagName,name \
+            > backup-evidence/05-RELEASE.json
+
+          echo "GITHUB_RELEASE_BACKUP=PASS" > backup-evidence/05-RELEASE-STATE.txt
+
+      - name: 10 - Upload backup as Actions artifact too
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ksu-gen1-p3-pass-github-backup-${{ github.run_id }}
+          path: |
+            KSU_GEN1_VEUX_GITHUB_BACKUP_P3_PASS_2026-09-05.zip
+            KSU_GEN1_VEUX_GITHUB_BACKUP_P3_PASS_2026-09-05.zip.sha256
+            backup-evidence/
+          retention-days: 90
+          if-no-files-found: warn
+          compression-level: 0
+
+      - name: 11 - Summary
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "# KSU GEN1 P3 PASS GitHub backup"
+            echo
+            if grep -Fxq 'GITHUB_RELEASE_BACKUP=PASS' backup-evidence/05-RELEASE-STATE.txt 2>/dev/null; then
+              echo "**PASS — permanent GitHub Release backup created/refreshed.**"
+              echo
+              cat backup-evidence/04-BACKUP-IDENTITY.txt
+              echo
+              cat backup-evidence/05-RELEASE.json
+            else
+              echo "**Release publish did not complete.**"
+              echo
+              echo "The backup archive may still be available as this run's Actions artifact."
+              echo "If the release step reports 403, enable Read and write workflow permissions for GITHUB_TOKEN."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
