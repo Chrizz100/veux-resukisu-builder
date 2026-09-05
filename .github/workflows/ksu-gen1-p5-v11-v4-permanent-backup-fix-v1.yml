@@ -1,0 +1,412 @@
+name: KSU GEN1 P5-v11-v4 Permanent Recovery Backup Fix v1
+on:
+  workflow_dispatch:
+permissions:
+  actions: read
+  contents: write
+concurrency:
+  group: ksu-gen1-p5-v11-v4-permanent-backup-fix
+  cancel-in-progress: false
+env:
+  TECHNICAL_RUN_ID: '33957828504'
+  TECHNICAL_ARTIFACT_ID: '9967197644'
+  TECHNICAL_ARTIFACT_NAME: ksu-gen1-p5-veux-5.4.274-ksu-0.9.5-susfs-2.3-sus-path-foundation-v11-v4-33957828504
+  TECHNICAL_ARTIFACT_SHA256: 313735a1f1a3d3e8b6c8b6f26f9d57c0d182804a83a2c232255f581fde5be8cb
+  TECHNICAL_CHECKPOINT: KSU-GEN1-P5-SUS-PATH-FOUNDATION-V11-V4-PASS
+  TECHNICAL_HEAD_SHA: 7271a8e119455898e8d9513279a6ad30848e7850
+  PARENT_BACKUP_TAG: ksu-gen1-p5-v10-pass-backup-33953915705
+  RELEASE_TAG: ksu-gen1-p5-v11-v4-pass-backup-33957828504
+  RELEASE_TITLE: KSU GEN1 VEUX P5-v11-v4 PASS Recovery Backup
+  EXPECTED_IMAGE_SHA256: b607c6ec5d4efdbce5d04fc5c5217e39cb82777d9ee07c52cf1b67a782fa8370
+  EXPECTED_CONFIG_SHA256: db7eb3f5dc69a4fe5965cf69a884835394e227a18d634d4b76dc8c4d77b3e35a
+  EXPECTED_DTB_SHA256: 42728a6f3d48ae35ac6be4b14ea51bc8a323e77baec2ee544827487378f99d37
+jobs:
+  backup-fix:
+    name: P5-v11-v4 - permanent backup fix only
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+    - name: B01 - Initialize backup-only repair evidence
+      shell: bash
+      run: |
+        set -euo pipefail
+        rm -rf backup-work backup-evidence
+        mkdir -p backup-work backup-evidence
+
+        {
+          echo "WORKFLOW=KSU-GEN1-P5-V11-V4-PERMANENT-BACKUP-FIX-v1"
+          echo "MODE=BACKUP_ONLY_NO_KERNEL_REBUILD"
+          echo "SOURCE_TECHNICAL_RUN_ID=$TECHNICAL_RUN_ID"
+          echo "SOURCE_TECHNICAL_ARTIFACT_ID=$TECHNICAL_ARTIFACT_ID"
+          echo "SOURCE_TECHNICAL_ARTIFACT_NAME=$TECHNICAL_ARTIFACT_NAME"
+          echo "SOURCE_TECHNICAL_ARTIFACT_SHA256=$TECHNICAL_ARTIFACT_SHA256"
+          echo "SOURCE_TECHNICAL_CHECKPOINT=$TECHNICAL_CHECKPOINT"
+          echo "SOURCE_TECHNICAL_HEAD_SHA=$TECHNICAL_HEAD_SHA"
+          echo "PARENT_BACKUP_TAG=$PARENT_BACKUP_TAG"
+          echo "RELEASE_TAG=$RELEASE_TAG"
+          echo "RELEASE_TITLE=$RELEASE_TITLE"
+          echo "FUNCTIONAL_CHANGE=NO"
+          echo "KERNEL_BUILD_PERFORMED_IN_THIS_WORKFLOW=NO"
+          echo "BACKUP_B03_FAILURE_REPAIRED=STALE_V11_V2_V11_V3_ASSERTIONS_REMOVED"
+          echo "RELEASE_REDOWNLOAD_REVERIFY=YES"
+        } > backup-evidence/00-CONTRACT.txt
+
+        gh release view "$PARENT_BACKUP_TAG" \
+          --repo "$GITHUB_REPOSITORY" >/dev/null
+
+        if gh release view "$RELEASE_TAG" \
+          --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+          echo "Target release already exists before backup fix: $RELEASE_TAG" >&2
+          exit 1
+        fi
+    - name: B02 - Download exact successful P5-v11-v4 technical artifact
+      shell: bash
+      run: |
+        set -euo pipefail
+        cd backup-work
+
+        meta="$(
+          gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${TECHNICAL_ARTIFACT_ID}"
+        )"
+
+        test "$(jq -r '.id' <<<"$meta")" = "$TECHNICAL_ARTIFACT_ID"
+        test "$(jq -r '.name' <<<"$meta")" = "$TECHNICAL_ARTIFACT_NAME"
+        test "$(jq -r '.expired' <<<"$meta")" = "false"
+        test "$(jq -r '.workflow_run.id' <<<"$meta")" = "$TECHNICAL_RUN_ID"
+        test "$(jq -r '.workflow_run.head_sha' <<<"$meta")" = "$TECHNICAL_HEAD_SHA"
+
+        api_digest="$(jq -r '.digest' <<<"$meta")"
+        test "$api_digest" = "sha256:$TECHNICAL_ARTIFACT_SHA256"
+
+        gh api \
+          -H "Accept: application/vnd.github+json" \
+          "repos/${GITHUB_REPOSITORY}/actions/artifacts/${TECHNICAL_ARTIFACT_ID}/zip" \
+          > "${TECHNICAL_ARTIFACT_NAME}.zip"
+
+        actual_sha="$(
+          sha256sum "${TECHNICAL_ARTIFACT_NAME}.zip" | awk '{print $1}'
+        )"
+        test "$actual_sha" = "$TECHNICAL_ARTIFACT_SHA256"
+
+        {
+          echo "CURRENT_ARTIFACT_ID=$TECHNICAL_ARTIFACT_ID"
+          echo "CURRENT_ARTIFACT_NAME=$TECHNICAL_ARTIFACT_NAME"
+          echo "CURRENT_ARTIFACT_SHA256=$actual_sha"
+          echo "GITHUB_API_DIGEST=$api_digest"
+          echo "CURRENT_ACTIONS_ARTIFACT_AUTH=PASS"
+        } > "$GITHUB_WORKSPACE/backup-evidence/01-CURRENT-ARTIFACT-AUTH.txt"
+    - name: B03 - Verify exact P5-v11-v4 technical PASS manifest
+      shell: bash
+      run: |
+        set -euo pipefail
+        cd backup-work
+
+        rm -rf verify-current
+        mkdir verify-current
+        unzip -q "${TECHNICAL_ARTIFACT_NAME}.zip" -d verify-current
+
+        for dir in evidence restore-kit build-artifacts; do
+          test -s "verify-current/$dir/SHA256SUMS"
+          (
+            cd "verify-current/$dir"
+            sha256sum -c SHA256SUMS
+          )
+        done
+
+        grep -Fxq 'TECHNICAL_PASS=YES' \
+          verify-current/evidence/98-FINAL-STATUS.txt
+        grep -Fxq "CHECKPOINT=$TECHNICAL_CHECKPOINT" \
+          verify-current/evidence/98-FINAL-STATUS.txt
+        grep -Fxq 'KERNEL_BUILD_PERFORMED=YES' \
+          verify-current/evidence/98-FINAL-STATUS.txt
+        grep -Fxq 'P5_V11_V4_LINKED_BOUNDARY=PASS' \
+          verify-current/evidence/22-P5V11V4-LINKED-BOUNDARY.txt
+        grep -Fxq 'P5_V11_V4_RESTORE_KIT=PASS' \
+          verify-current/evidence/23-P5V11V4-PROVENANCE.txt
+        grep -Fxq 'P5_V11_V4_INIT_CRED_BRIDGE=PASS' \
+          verify-current/evidence/23-P5V11V4-PROVENANCE.txt
+
+        test "$(
+          sha256sum verify-current/build-artifacts/Image | awk '{print $1}'
+        )" = "$EXPECTED_IMAGE_SHA256"
+        test "$(
+          sha256sum verify-current/build-artifacts/config | awk '{print $1}'
+        )" = "$EXPECTED_CONFIG_SHA256"
+        test "$(
+          sha256sum verify-current/build-artifacts/veux.dtb | awk '{print $1}'
+        )" = "$EXPECTED_DTB_SHA256"
+
+        jq -e \
+          --arg image "$EXPECTED_IMAGE_SHA256" \
+          --arg cfg "$EXPECTED_CONFIG_SHA256" \
+          --arg dtb "$EXPECTED_DTB_SHA256" \
+          '.stage == "KSU-GEN1-P5-v11-v4" and
+           .kernel_version == "5.4.274" and
+           .kernelsu_head == "b766b98513b5a7eb33bc1c4a76b5702bf1288f07" and
+           .kernelsu_version == 11872 and
+           .susfs_version == "v2.3.0" and
+           .config_ksu_susfs_sus_path == true and
+           .susfs_feature_suboptions_enabled == 4 and
+           .root_only_user_command_dispatch == true and
+           .dispatch_command_count == 10 and
+           .sus_path_dispatch_command_count == 2 and
+           .sus_path_registration_foundation_only == true and
+           .sus_path_add_command_integrated == true and
+           .sus_path_loop_command_integrated == true and
+           .sus_path_loop_credential_strategy == "override_init_cred" and
+           .sus_path_loop_revert_creds == true and
+           .ksu_cred_identifier_in_fs_susfs == false and
+           .init_cred_link_resolved == true and
+           .sus_path_lookup_hook_integrated == false and
+           .sus_path_readdir_hook_integrated == false and
+           .namei_lifetime_fix_required_before_lookup_activation == true and
+           .kstat_generic_fillattr_hook_integrated == true and
+           .kstat_custom_getattr_hook_integrated == true and
+           .kstat_proc_maps_hook_integrated == true and
+           .tif_proc_umounted_bridge_integrated == true and
+           .sus_mount_active == false and
+           .open_redirect_active == false and
+           .sus_map_active == false and
+           .namei_changed == false and
+           .readdir_changed == false and
+           .namespace_changed == false and
+           .kernel_build_performed == true and
+           .image_sha256 == $image and
+           .config_sha256 == $cfg and
+           .veux_dtb_sha256 == $dtb and
+           .device_accessed == false and
+           .flashing_performed == false' \
+          verify-current/restore-kit/manifest.json >/dev/null
+
+        {
+          echo "TECHNICAL_PASS_CHAIN_AUTH=PASS"
+          echo "TECHNICAL_CHECKPOINT=$TECHNICAL_CHECKPOINT"
+          echo "IMAGE_SHA256=$EXPECTED_IMAGE_SHA256"
+          echo "CONFIG_SHA256=$EXPECTED_CONFIG_SHA256"
+          echo "VEUX_DTB_SHA256=$EXPECTED_DTB_SHA256"
+          echo "P5_V11_V4_MANIFEST_AUTH=PASS"
+        } > "$GITHUB_WORKSPACE/backup-evidence/02-PASS-AUTH.txt"
+    - name: B04 - Prepare permanent recovery release payload
+      shell: bash
+      run: |
+        set -euo pipefail
+        cd backup-work
+
+        cp verify-current/restore-kit/manifest.json P5V11V4-MANIFEST.json
+
+        cat > RECOVERY.txt <<EOF
+        KSU GEN1 VEUX P5-v11-v4 PASS Recovery Backup
+        =================================================
+
+        Technical PASS run:
+          $TECHNICAL_RUN_ID
+
+        Technical artifact:
+          $TECHNICAL_ARTIFACT_NAME
+
+        Technical artifact SHA256:
+          $TECHNICAL_ARTIFACT_SHA256
+
+        Technical checkpoint:
+          $TECHNICAL_CHECKPOINT
+
+        Technical source/head SHA:
+          $TECHNICAL_HEAD_SHA
+
+        Parent permanent backup:
+          $PARENT_BACKUP_TAG
+
+        Build identity:
+          Image  $EXPECTED_IMAGE_SHA256
+          Config $EXPECTED_CONFIG_SHA256
+          DTB    $EXPECTED_DTB_SHA256
+
+        P5-v11-v4 scope:
+        - official KernelSU 0.9.5
+        - SUSFS 2.3.0
+        - SUS_PATH registration foundation active
+        - root-only ADD_SUS_PATH + ADD_SUS_PATH_LOOP
+        - SUS_PATH loop uses override_creds(&init_cred)
+        - revert_creds(saved) retained
+        - no namei lookup hook
+        - no readdir hook
+        - no SUS_MOUNT / OPEN_REDIRECT / SUS_MAP
+
+        This backup-fix workflow performs no kernel rebuild and no
+        functional source change. It permanently stores the already
+        successful P5-v11-v4 technical checkpoint.
+        EOF
+
+        {
+          sha256sum "${TECHNICAL_ARTIFACT_NAME}.zip"
+          sha256sum P5V11V4-MANIFEST.json
+          sha256sum RECOVERY.txt
+        } > RELEASE-SHA256SUMS.txt
+        sha256sum -c RELEASE-SHA256SUMS.txt
+
+        cat > release-notes.md <<EOF
+        Permanent recovery checkpoint for the already successful
+        P5-v11-v4 technical run \`$TECHNICAL_RUN_ID\`.
+
+        The original automatic backup job failed only because its
+        B03 verification still contained stale v11-v2/v11-v3
+        assertions. This release does not rebuild or modify the
+        kernel; it backs up the exact authenticated PASS artifact.
+
+        - VEUX / Linux 5.4.274
+        - official KernelSU 0.9.5
+        - SUSFS 2.3.0
+        - SUS_PATH registration foundation
+        - parent backup: \`$PARENT_BACKUP_TAG\`
+        EOF
+
+        echo "RELEASE_PAYLOAD_PREPARED=PASS" \
+          > "$GITHUB_WORKSPACE/backup-evidence/03-RELEASE-PAYLOAD.txt"
+    - name: B05 - Create permanent P5-v11-v4 GitHub Release
+      shell: bash
+      run: |
+        set -euo pipefail
+        cd backup-work
+
+        gh release create "$RELEASE_TAG" \
+          --repo "$GITHUB_REPOSITORY" \
+          --target "$TECHNICAL_HEAD_SHA" \
+          --title "$RELEASE_TITLE" \
+          --notes-file release-notes.md \
+          "${TECHNICAL_ARTIFACT_NAME}.zip#P5-v11-v4 complete PASS artifact" \
+          "P5V11V4-MANIFEST.json#P5-v11-v4 recovery manifest" \
+          "RELEASE-SHA256SUMS.txt#Release checksums" \
+          "RECOVERY.txt#Recovery metadata"
+
+        gh release view "$RELEASE_TAG" \
+          --repo "$GITHUB_REPOSITORY" \
+          --json tagName,name,isDraft,isPrerelease,targetCommitish,url,assets \
+          > "$GITHUB_WORKSPACE/backup-evidence/04-RELEASE.json"
+
+        jq -e \
+          --arg tag "$RELEASE_TAG" \
+          --arg title "$RELEASE_TITLE" \
+          --arg target "$TECHNICAL_HEAD_SHA" \
+          '.tagName == $tag and
+           .name == $title and
+           .isDraft == false and
+           .isPrerelease == false and
+           .targetCommitish == $target and
+           (.assets | length) == 4' \
+          "$GITHUB_WORKSPACE/backup-evidence/04-RELEASE.json" >/dev/null
+
+        {
+          echo "GITHUB_RELEASE_CREATED=PASS"
+          echo "RELEASE_TAG=$RELEASE_TAG"
+          echo "RELEASE_TARGET_SHA=$TECHNICAL_HEAD_SHA"
+        } > "$GITHUB_WORKSPACE/backup-evidence/04-RELEASE-CREATE.txt"
+    - name: B06 - Redownload release assets and verify byte identity
+      shell: bash
+      run: |
+        set -euo pipefail
+        cd backup-work
+
+        rm -rf release-download
+        mkdir release-download
+
+        gh release download "$RELEASE_TAG" \
+          --repo "$GITHUB_REPOSITORY" \
+          --dir release-download
+
+        cmp "${TECHNICAL_ARTIFACT_NAME}.zip" \
+          "release-download/${TECHNICAL_ARTIFACT_NAME}.zip"
+        cmp P5V11V4-MANIFEST.json \
+          release-download/P5V11V4-MANIFEST.json
+        cmp RELEASE-SHA256SUMS.txt \
+          release-download/RELEASE-SHA256SUMS.txt
+        cmp RECOVERY.txt \
+          release-download/RECOVERY.txt
+
+        test "$(
+          sha256sum "release-download/${TECHNICAL_ARTIFACT_NAME}.zip" \
+            | awk '{print $1}'
+        )" = "$TECHNICAL_ARTIFACT_SHA256"
+
+        {
+          echo "TECHNICAL_ARTIFACT_RELEASE_BYTE_IDENTITY=PASS"
+          echo "MANIFEST_RELEASE_BYTE_IDENTITY=PASS"
+          echo "CHECKSUM_RELEASE_BYTE_IDENTITY=PASS"
+          echo "RECOVERY_METADATA_RELEASE_BYTE_IDENTITY=PASS"
+          echo "RELEASE_DOWNLOAD_REVERIFY=PASS"
+        } > "$GITHUB_WORKSPACE/backup-evidence/05-RELEASE-REVERIFY.txt"
+    - name: B07 - Close P5-v11-v4 permanent backup status
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        if grep -Fxq 'TECHNICAL_PASS_CHAIN_AUTH=PASS' \
+             backup-evidence/02-PASS-AUTH.txt 2>/dev/null \
+          && grep -Fxq 'GITHUB_RELEASE_CREATED=PASS' \
+             backup-evidence/04-RELEASE-CREATE.txt 2>/dev/null \
+          && grep -Fxq 'RELEASE_DOWNLOAD_REVERIFY=PASS' \
+             backup-evidence/05-RELEASE-REVERIFY.txt 2>/dev/null; then
+          pass=YES
+          checkpoint=KSU-GEN1-P5-V11-V4-GITHUB-RECOVERY-BACKUP-PASS
+        else
+          pass=NO
+          checkpoint=KSU-GEN1-P5-V11-V4-GITHUB-RECOVERY-BACKUP-FAILED
+        fi
+
+        {
+          echo "BACKUP_PASS=$pass"
+          echo "CHECKPOINT=$checkpoint"
+          echo "TECHNICAL_RUN_ID=$TECHNICAL_RUN_ID"
+          echo "TECHNICAL_ARTIFACT_SHA256=$TECHNICAL_ARTIFACT_SHA256"
+          echo "RELEASE_TAG=$RELEASE_TAG"
+          echo "RELEASE_TARGET_SHA=$TECHNICAL_HEAD_SHA"
+          echo "KERNEL_REBUILD_PERFORMED=NO"
+          echo "FUNCTIONAL_CHANGE_PERFORMED=NO"
+          echo "RELEASE_ASSETS_REDOWNLOADED_AND_REVERIFIED=$pass"
+        } > backup-evidence/98-BACKUP-STATUS.txt
+
+        test "$pass" = YES
+      if: ${{ always() }}
+    - name: B08 - Build backup-fix evidence SHA256 manifest
+      shell: bash
+      run: |
+        set -euo pipefail
+        cd backup-evidence
+        rm -f SHA256SUMS
+        find . -type f ! -name SHA256SUMS -printf '%P\0' \
+          | sort -z \
+          | xargs -0 -r sha256sum \
+          > SHA256SUMS
+        test -s SHA256SUMS
+        sha256sum -c SHA256SUMS
+      if: ${{ always() }}
+    - name: B09 - Upload P5-v11-v4 permanent backup-fix evidence
+      uses: actions/upload-artifact@v7
+      with:
+        name: ksu-gen1-p5-v11-v4-permanent-backup-fix-evidence-${{ github.run_id }}
+        path: backup-evidence/
+        retention-days: 90
+        if-no-files-found: error
+      if: ${{ always() }}
+    - name: B10 - Backup-fix summary
+      shell: bash
+      run: |
+        set -euo pipefail
+        {
+          echo "# P5-v11-v4 permanent backup fix"
+          echo
+          if grep -Fxq 'BACKUP_PASS=YES' \
+               backup-evidence/98-BACKUP-STATUS.txt 2>/dev/null; then
+            echo "**BACKUP PASS**"
+            echo
+            echo "Permanent release:"
+            echo "\`$RELEASE_TAG\`"
+            echo
+            echo "No kernel rebuild or functional source change was performed."
+            echo "The exact technical PASS artifact was re-downloaded and byte-verified."
+          else
+            echo "**BACKUP FAIL — do not continue to P5-v12.**"
+          fi
+        } >> "$GITHUB_STEP_SUMMARY"
+      if: ${{ always() }}
