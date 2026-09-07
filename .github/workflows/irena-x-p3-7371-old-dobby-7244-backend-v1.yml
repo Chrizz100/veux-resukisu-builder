@@ -1,0 +1,334 @@
+name: Irena X 7371 P3 old Dobby backend
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  IRENA_REPO: silvzr/LSP-IrenaX
+  IRENA_COMMIT: da439fbbed506dac6c66074af7fda8982aa4fc6a
+  CURRENT_DOBBY_SHA: dc7b4be06ad6c5dcfb0bb4ca2082b007d69eaed5
+  OLD_DOBBY_REPO: https://github.com/LSPosed/Dobby.git
+  OLD_DOBBY_SHA: 6813ca76ddeafcaece525bf8c6cde7ff4c21d3ce
+  OFFICIAL_RELEASE_SHA256: 99e7aaf54dda0e6fa746c55613483a80620174f255dd05e102713778a9966d2f
+
+jobs:
+  build:
+    name: Build P3 with 7244 Dobby backend
+    runs-on: ubuntu-latest
+    env:
+      CCACHE_COMPILERCHECK: "%compiler% -dumpmachine; %compiler% -dumpversion"
+      CCACHE_NOHASHDIR: "true"
+      CCACHE_HARDLINK: "true"
+      CCACHE_BASEDIR: "${{ github.workspace }}/LSP-IrenaX"
+
+    steps:
+      - name: Checkout pinned Irena X 7371
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.IRENA_REPO }}
+          ref: ${{ env.IRENA_COMMIT }}
+          submodules: recursive
+          fetch-depth: 0
+          path: LSP-IrenaX
+
+      - name: Verify pristine source and current Dobby
+        working-directory: LSP-IrenaX
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$IRENA_COMMIT"
+          test -z "$(git status --porcelain)"
+          test "$(git -C external/dobby rev-parse HEAD)" = "$CURRENT_DOBBY_SHA"
+          test -z "$(git -C external/dobby status --porcelain)"
+
+      - name: Setup Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          log-accepted-android-sdk-licenses: 'false'
+          packages: ''
+
+      - name: Setup ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          max-size: 2G
+          key: irena-x-p3-dobby-${{ runner.os }}
+          restore-keys: irena-x-${{ runner.os }}
+          save: false
+
+      - name: Setup Ninja 1.12.1
+        uses: seanmiddleditch/gha-setup-ninja@master
+        with:
+          version: 1.12.1
+
+      - name: Remove Android bundled CMake
+        shell: bash
+        run: rm -rf "$ANDROID_HOME/cmake"
+
+      - name: Configure Gradle
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.gradle
+          {
+            echo 'org.gradle.caching=true'
+            echo 'org.gradle.parallel=true'
+            echo 'org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8 -XX:+UseParallelGC'
+            echo 'android.native.buildOutput=verbose'
+          } >> ~/.gradle/gradle.properties
+
+      - name: Build pristine 7371 baseline
+        working-directory: LSP-IrenaX
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./gradlew clean zipAll --stacktrace 2>&1 | tee ../baseline-build.log
+          mapfile -t rel < <(find magisk-loader/release -maxdepth 1 -type f -name 'LSPosed-v*-IrenaX-release.zip' -print | sort)
+          test "${#rel[@]}" -eq 1
+          cp "${rel[0]}" ../BASELINE_RELEASE.zip
+
+      - name: Replace only Dobby submodule with 7244 backend
+        working-directory: LSP-IrenaX
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git -C external/dobby remote set-url origin "$OLD_DOBBY_REPO"
+          git -C external/dobby fetch --no-tags --depth=1 origin "$OLD_DOBBY_SHA"
+          git -C external/dobby checkout --detach "$OLD_DOBBY_SHA"
+
+          test "$(git -C external/dobby rev-parse HEAD)" = "$OLD_DOBBY_SHA"
+          test -z "$(git -C external/dobby status --porcelain)"
+
+          mapfile -t changed < <(git diff --name-only)
+          printf '%s\n' "${changed[@]}"
+          test "${#changed[@]}" -eq 1
+          test "${changed[0]}" = "external/dobby"
+
+          git diff --exit-code "$IRENA_COMMIT" -- \
+            magisk-loader/src/main/jni/api/zygisk_main.cpp \
+            magisk-loader/src/main/jni/src/magisk_loader.cpp \
+            daemon/src/main/java/org/lsposed/lspd/service/Dex2OatService.java \
+            magisk-loader/src/main/jni/CMakeLists.txt
+
+      - name: Force native rebuild and build P3
+        working-directory: LSP-IrenaX
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./gradlew clean zipAll --stacktrace 2>&1 | tee ../p3-build.log
+
+      - name: Compare baseline and P3 release packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf baseline p3cmp
+          mkdir baseline p3cmp
+          unzip -q BASELINE_RELEASE.zip -d baseline
+
+          mapfile -t p3rel < <(find LSP-IrenaX/magisk-loader/release -maxdepth 1 -type f -name 'LSPosed-v*-IrenaX-release.zip' -print | sort)
+          mapfile -t p3dbg < <(find LSP-IrenaX/magisk-loader/release -maxdepth 1 -type f -name 'LSPosed-v*-IrenaX-debug.zip' -print | sort)
+          test "${#p3rel[@]}" -eq 1
+          test "${#p3dbg[@]}" -eq 1
+          unzip -q "${p3rel[0]}" -d p3cmp
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib
+
+          def tree(root):
+              out = {}
+              root = Path(root)
+              for p in root.rglob("*"):
+                  if p.is_file():
+                      rel = p.relative_to(root).as_posix()
+                      out[rel] = hashlib.sha256(p.read_bytes()).hexdigest()
+              return out
+
+          a = tree("baseline")
+          b = tree("p3cmp")
+
+          if set(a) != set(b):
+              raise SystemExit("baseline/P3 file sets differ")
+
+          diff = sorted(k for k in a if a[k] != b[k])
+          Path("P3_BASELINE_PACKAGE_DIFF.txt").write_text("\n".join(diff) + "\n")
+          print("BASELINE_TO_P3_CHANGED_FILES=", diff)
+
+          allowed = sorted(
+              [f"lib/{abi}/liblspd.so" for abi in ("arm64-v8a","armeabi-v7a","x86","x86_64")] +
+              [f"lib/{abi}/liblspd.so.sha256" for abi in ("arm64-v8a","armeabi-v7a","x86","x86_64")]
+          )
+          if diff != allowed:
+              raise SystemExit(f"unexpected package delta: {diff}")
+          PY
+
+      - name: Verify package and ELF basics
+        shell: bash
+        run: |
+          set -euo pipefail
+          for so in p3cmp/lib/*/liblspd.so; do
+            test -s "$so"
+            readelf -h "$so" >/dev/null
+            readelf -Ws "$so" | grep -q 'zygisk_module_entry'
+            readelf -Ws "$so" | grep -q 'zygisk_companion_entry'
+          done
+
+          grep -q '^id=zygisk_lsposed$' p3cmp/module.prop
+          grep -q '^versionCode=7371$' p3cmp/module.prop
+
+      - name: Download verified official 7371 release
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 3 \
+            -o OFFICIAL_RELEASE.zip \
+            "https://github.com/silvzr/LSP-IrenaX/releases/download/v2.0.1/LSPosed-v2.0.1-7371-IrenaX-release.zip"
+          echo "$OFFICIAL_RELEASE_SHA256  OFFICIAL_RELEASE.zip" | sha256sum -c -
+
+      - name: Create official-base P3 ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib, zipfile
+
+          official = Path("OFFICIAL_RELEASE.zip")
+          p3 = Path("p3cmp")
+          out = Path("LSPosed-v2.0.1-7371-IrenaX-P3-old-dobby-7244-official-base-release.zip")
+
+          payload = {f"lib/{abi}/liblspd.so" for abi in (
+              "arm64-v8a","armeabi-v7a","x86","x86_64"
+          )}
+          sidecars = {x + ".sha256" for x in payload}
+          replacements = payload | sidecars
+
+          with zipfile.ZipFile(official, "r") as zin:
+              infos = zin.infolist()
+              names = [i.filename for i in infos]
+              if len(names) != len(set(names)):
+                  raise SystemExit("duplicate entries in official ZIP")
+              if not replacements.issubset(set(names)):
+                  raise SystemExit("missing replacement entries")
+
+              with zipfile.ZipFile(out, "w") as zout:
+                  for info in infos:
+                      name = info.filename
+                      if name in payload:
+                          data = (p3 / name).read_bytes()
+                      elif name in sidecars:
+                          payload_name = name[:-7]
+                          data = hashlib.sha256((p3 / payload_name).read_bytes()).hexdigest().encode()
+                      else:
+                          data = zin.read(name)
+                      zout.writestr(info, data)
+
+          print(out)
+          PY
+
+      - name: Audit final P3 official-base ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+          ZIP="LSPosed-v2.0.1-7371-IrenaX-P3-old-dobby-7244-official-base-release.zip"
+          unzip -t "$ZIP"
+
+          rm -rf officialcmp hybridcmp
+          mkdir officialcmp hybridcmp
+          unzip -q OFFICIAL_RELEASE.zip -d officialcmp
+          unzip -q "$ZIP" -d hybridcmp
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib
+
+          def sh(p): return hashlib.sha256(p.read_bytes()).hexdigest()
+
+          a = Path("officialcmp")
+          b = Path("hybridcmp")
+          ha = {p.relative_to(a).as_posix(): sh(p) for p in a.rglob("*") if p.is_file()}
+          hb = {p.relative_to(b).as_posix(): sh(p) for p in b.rglob("*") if p.is_file()}
+
+          if set(ha) != set(hb):
+              raise SystemExit("official/P3 file sets differ")
+
+          diff = sorted(k for k in ha if ha[k] != hb[k])
+          Path("P3_OFFICIAL_BASE_DIFF.txt").write_text("\n".join(diff) + "\n")
+
+          expected = sorted(
+              [f"lib/{abi}/liblspd.so" for abi in ("arm64-v8a","armeabi-v7a","x86","x86_64")] +
+              [f"lib/{abi}/liblspd.so.sha256" for abi in ("arm64-v8a","armeabi-v7a","x86","x86_64")]
+          )
+          print("OFFICIAL_TO_P3_CHANGED_FILES=", diff)
+          if diff != expected:
+              raise SystemExit(f"unexpected official->P3 delta: {diff}")
+
+          checked = 0
+          for sidecar in b.rglob("*.sha256"):
+              rel = sidecar.relative_to(b).as_posix()
+              target = b / rel[:-7]
+              if not target.exists():
+                  raise SystemExit(f"missing target for {rel}")
+              expected_hash = sidecar.read_text().strip().split()[0].lower()
+              actual = sh(target)
+              if expected_hash != actual:
+                  raise SystemExit(f"bad sidecar {rel}")
+              checked += 1
+          print("SIDECARS_CHECKED=", checked)
+          PY
+
+      - name: Collect P3 evidence
+        working-directory: LSP-IrenaX
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ../p3-output
+          {
+            echo "repo=$IRENA_REPO"
+            echo "head=$(git rev-parse HEAD)"
+            echo "expected_head=$IRENA_COMMIT"
+            echo "original_dobby=$CURRENT_DOBBY_SHA"
+            echo "replacement_dobby_repo=$OLD_DOBBY_REPO"
+            echo "replacement_dobby=$(git -C external/dobby rev-parse HEAD)"
+            echo "source_delta=external/dobby only"
+          } > ../p3-output/P3_PROVENANCE.txt
+
+          git diff --name-only > ../p3-output/P3_SOURCE_DIFF_NAMES.txt
+          git diff --submodule=short > ../p3-output/P3_SOURCE_DIFF.txt
+
+      - name: Finalize P3 artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp LSPosed-v2.0.1-7371-IrenaX-P3-old-dobby-7244-official-base-release.zip p3-output/
+          cp P3_BASELINE_PACKAGE_DIFF.txt P3_OFFICIAL_BASE_DIFF.txt p3-output/
+          cp baseline-build.log p3-build.log p3-output/
+          cp OFFICIAL_RELEASE.zip p3-output/OFFICIAL_7371_RELEASE_REFERENCE.zip
+
+          (
+            cd p3-output
+            sha256sum \
+              LSPosed-v2.0.1-7371-IrenaX-P3-old-dobby-7244-official-base-release.zip \
+              OFFICIAL_7371_RELEASE_REFERENCE.zip \
+              | tee P3_SHA256SUMS.txt
+          )
+
+      - name: Upload P3 artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: irena-x-v2.0.1-7371-p3-old-dobby-7244
+          path: p3-output/*
+          if-no-files-found: error
+          retention-days: 30
