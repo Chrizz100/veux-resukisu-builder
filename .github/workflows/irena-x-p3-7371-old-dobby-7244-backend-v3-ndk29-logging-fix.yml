@@ -1,0 +1,598 @@
+name: Irena X 7371 P3-v3 old Dobby backend NDK29 logging fix
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  IRENA_REPO: silvzr/LSP-IrenaX
+  IRENA_COMMIT: da439fbbed506dac6c66074af7fda8982aa4fc6a
+  CURRENT_DOBBY_SHA: dc7b4be06ad6c5dcfb0bb4ca2082b007d69eaed5
+  OLD_DOBBY_REPO: https://github.com/LSPosed/Dobby.git
+  OLD_DOBBY_SHA: 6813ca76ddeafcaece525bf8c6cde7ff4c21d3ce
+  OFFICIAL_RELEASE_SHA256: 99e7aaf54dda0e6fa746c55613483a80620174f255dd05e102713778a9966d2f
+
+jobs:
+  build:
+    name: Build P3-v3 with 7244 Dobby and NDK29 logging fix
+    runs-on: ubuntu-latest
+    env:
+      CCACHE_COMPILERCHECK: "%compiler% -dumpmachine; %compiler% -dumpversion"
+      CCACHE_NOHASHDIR: "true"
+      CCACHE_HARDLINK: "true"
+      CCACHE_BASEDIR: "${{ github.workspace }}/LSP-IrenaX"
+
+    steps:
+      - name: Checkout pinned Irena X 7371
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.IRENA_REPO }}
+          ref: ${{ env.IRENA_COMMIT }}
+          submodules: recursive
+          fetch-depth: 0
+          path: LSP-IrenaX
+
+      - name: Verify pristine source and current Dobby
+        working-directory: LSP-IrenaX
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$IRENA_COMMIT"
+          test -z "$(git status --porcelain)"
+          test "$(git -C external/dobby rev-parse HEAD)" = "$CURRENT_DOBBY_SHA"
+          test -z "$(git -C external/dobby status --porcelain)"
+
+          {
+            echo "IRENA_HEAD=$(git rev-parse HEAD)"
+            echo "CURRENT_DOBBY=$(git -C external/dobby rev-parse HEAD)"
+            echo "CURRENT_DOBBY_DESCRIBE=$(git -C external/dobby describe --always --dirty 2>/dev/null || true)"
+          } | tee ../P3_INITIAL_SOURCE_STATE.txt
+
+      - name: Setup Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          log-accepted-android-sdk-licenses: 'false'
+          packages: ''
+
+      - name: Setup ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          max-size: 2G
+          key: irena-x-p3-dobby-${{ runner.os }}
+          restore-keys: irena-x-${{ runner.os }}
+          save: false
+
+      - name: Setup Ninja 1.12.1
+        uses: seanmiddleditch/gha-setup-ninja@master
+        with:
+          version: 1.12.1
+
+      - name: Remove Android bundled CMake
+        shell: bash
+        run: rm -rf "$ANDROID_HOME/cmake"
+
+      - name: Configure Gradle for verbose native diagnostics
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.gradle
+          {
+            echo 'org.gradle.caching=true'
+            echo 'org.gradle.parallel=true'
+            echo 'org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8 -XX:+UseParallelGC'
+            echo 'android.native.buildOutput=verbose'
+          } >> ~/.gradle/gradle.properties
+
+          {
+            echo "java_version=$(java -version 2>&1 | head -n 1)"
+            echo "gradle_wrapper=$(cd LSP-IrenaX && ./gradlew --version | sed -n '1,20p')"
+            echo "ninja=$(ninja --version)"
+            echo "cmake=$(cmake --version 2>/dev/null | head -n 1 || true)"
+            echo "ANDROID_HOME=$ANDROID_HOME"
+          } > P3_TOOLCHAIN_STATE.txt
+
+      # Baseline is retained from v1 so a runner/toolchain regression is separated
+      # from the Dobby-only experiment. The build result is captured instead of
+      # aborting the job, allowing evidence upload even on failure.
+      - name: Build pristine 7371 baseline and preserve log
+        id: baseline
+        working-directory: LSP-IrenaX
+        shell: bash
+        run: |
+          set -uo pipefail
+          set +e
+          ./gradlew clean zipAll --stacktrace --info 2>&1 | tee ../baseline-build.log
+          rc=${PIPESTATUS[0]}
+          set -e
+
+          echo "$rc" > ../BASELINE_BUILD_EXIT_CODE.txt
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+
+          if [ "$rc" -eq 0 ]; then
+            mapfile -t rel < <(find magisk-loader/release -maxdepth 1 -type f -name 'LSPosed-v*-IrenaX-release.zip' -print | sort)
+            test "${#rel[@]}" -eq 1
+            cp "${rel[0]}" ../BASELINE_RELEASE.zip
+          fi
+
+          # Deliberately do not fail here: diagnostics must still be collected.
+          exit 0
+
+      - name: Replace only Dobby submodule with 7244 backend
+        id: replace
+        if: steps.baseline.outputs.rc == '0'
+        working-directory: LSP-IrenaX
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git -C external/dobby remote set-url origin "$OLD_DOBBY_REPO"
+          git -C external/dobby fetch --no-tags --depth=1 origin "$OLD_DOBBY_SHA"
+          git -C external/dobby checkout --detach "$OLD_DOBBY_SHA"
+
+          test "$(git -C external/dobby rev-parse HEAD)" = "$OLD_DOBBY_SHA"
+          test -z "$(git -C external/dobby status --porcelain)"
+
+          mapfile -t changed < <(git diff --name-only)
+          printf '%s\n' "${changed[@]}"
+          test "${#changed[@]}" -eq 1
+          test "${changed[0]}" = "external/dobby"
+
+          # Fail closed: none of the surrounding Irena-X integration files may change.
+          git diff --exit-code "$IRENA_COMMIT" -- \
+            magisk-loader/src/main/jni/api/zygisk_main.cpp \
+            magisk-loader/src/main/jni/src/magisk_loader.cpp \
+            daemon/src/main/java/org/lsposed/lspd/service/Dex2OatService.java \
+            magisk-loader/src/main/jni/CMakeLists.txt
+
+          {
+            echo "replacement_repo=$OLD_DOBBY_REPO"
+            echo "replacement_sha=$(git -C external/dobby rev-parse HEAD)"
+            echo "replacement_describe=$(git -C external/dobby describe --always --dirty 2>/dev/null || true)"
+            echo "source_delta:"
+            git diff --name-only
+            echo
+            echo "submodule_delta:"
+            git diff --submodule=short -- external/dobby
+            echo
+            echo "dobby_submodules:"
+            git -C external/dobby submodule status --recursive || true
+          } | tee ../P3_DOBBY_REPLACEMENT_STATE.txt
+
+      - name: Apply old Dobby NDK29 logging compatibility fix only
+        id: dobbycompat
+        if: steps.baseline.outputs.rc == '0' && steps.replace.outcome == 'success'
+        working-directory: LSP-IrenaX
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          p = Path("external/dobby/external/logging/logging.c")
+          s = p.read_text()
+
+          old_inner = (
+              '#if defined(__ANDROID__)\n'
+              '#define ANDROID_LOG_TAG "Dobby"\n'
+              '#include <android/log.h>\n'
+              '    __android_log_vprint(ANDROID_LOG_INFO, ANDROID_LOG_TAG, fmt, ap);'
+          )
+          new_inner = (
+              '#if defined(__ANDROID__)\n'
+              '    __android_log_vprint(ANDROID_LOG_INFO, ANDROID_LOG_TAG, fmt, ap);'
+          )
+          if s.count(old_inner) != 1:
+              raise SystemExit(f"unexpected old Android logging block count: {s.count(old_inner)}")
+          s = s.replace(old_inner, new_inner, 1)
+
+          anchor = '#if defined(__APPLE__)\n#include <dlfcn.h>\n#endif\n\n'
+          top_level = (
+              '#if defined(__ANDROID__)\n'
+              '#define ANDROID_LOG_TAG "Dobby"\n'
+              '#include <android/log.h>\n'
+              '#endif\n\n'
+          )
+          if s.count(anchor) != 1:
+              raise SystemExit(f"unexpected include anchor count: {s.count(anchor)}")
+          s = s.replace(anchor, anchor + top_level, 1)
+
+          if s.count('#include <android/log.h>') != 1:
+              raise SystemExit('android/log.h must appear exactly once after patch')
+          if s.index('#include <android/log.h>') > s.index('PUBLIC int log_internal_impl'):
+              raise SystemExit('android/log.h was not moved to file scope')
+          p.write_text(s)
+          PY
+
+          test "$(git -C external/dobby rev-parse HEAD)" = "$OLD_DOBBY_SHA"
+          mapfile -t dobby_changed < <(git -C external/dobby diff --name-only | sort)
+          printf 'DOBBY_COMPAT_CHANGED=%s\n' "${dobby_changed[*]}"
+          test "${#dobby_changed[@]}" -eq 1
+          test "${dobby_changed[0]}" = "external/logging/logging.c"
+          git -C external/dobby diff --check
+          grep -n '^#include <android/log.h>$' external/dobby/external/logging/logging.c
+          grep -n '__android_log_vprint(ANDROID_LOG_INFO, ANDROID_LOG_TAG, fmt, ap);' external/dobby/external/logging/logging.c
+
+          {
+            echo "dobby_head=$(git -C external/dobby rev-parse HEAD)"
+            echo "compatibility_change=external/logging/logging.c only"
+            echo "reason=move android/log.h include from function scope to file scope for NDK29"
+            echo
+            git -C external/dobby diff -- external/logging/logging.c
+          } | tee ../P3_DOBBY_NDK29_COMPAT_PATCH.txt
+
+      - name: Force native rebuild and build P3-v3
+        id: p3build
+        if: steps.baseline.outputs.rc == '0' && steps.replace.outcome == 'success' && steps.dobbycompat.outcome == 'success'
+        working-directory: LSP-IrenaX
+        shell: bash
+        run: |
+          set -uo pipefail
+          set +e
+          ./gradlew clean zipAll --stacktrace --info 2>&1 | tee ../p3-build.log
+          rc=${PIPESTATUS[0]}
+          set -e
+
+          echo "$rc" > ../P3_BUILD_EXIT_CODE.txt
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+
+          # Keep the job alive long enough to preserve the exact CMake/Ninja/clang error.
+          exit 0
+
+      - name: Extract exact P3 failure context
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p p3-diagnostics/native
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          log = Path("p3-build.log")
+          out = Path("p3-diagnostics/P3_FAILURE_EXCERPT.txt")
+
+          if not log.exists():
+              out.write_text("p3-build.log was not created; P3 build did not execute.\n")
+              raise SystemExit(0)
+
+          lines = log.read_text(errors="replace").splitlines()
+          pat = re.compile(
+              r"FAILED:|fatal error:|(?<!warning: )error:|undefined reference|"
+              r"CMake Error|ninja: build stopped|Execution failed for task|"
+              r"BUILD FAILED|ld\.lld: error|clang\+\+: error|clang: error",
+              re.IGNORECASE,
+          )
+
+          hits = [i for i, line in enumerate(lines) if pat.search(line)]
+          selected = set()
+          for i in hits:
+              selected.update(range(max(0, i - 12), min(len(lines), i + 36)))
+
+          # Always include the tail because Gradle frequently prints the causal task there.
+          selected.update(range(max(0, len(lines) - 240), len(lines)))
+
+          chunks = []
+          last = None
+          for i in sorted(selected):
+              if last is None or i != last + 1:
+                  chunks.append(f"\n===== log lines around {i + 1} =====\n")
+              chunks.append(f"{i + 1:07d}: {lines[i]}\n")
+              last = i
+
+          out.write_text("".join(chunks))
+
+          Path("p3-diagnostics/P3_FAILURE_MATCHES.txt").write_text(
+              "\n".join(f"{i + 1}: {lines[i]}" for i in hits) + ("\n" if hits else "")
+          )
+          PY
+
+          if [ -d LSP-IrenaX ]; then
+            find LSP-IrenaX -type f \
+              \( -name 'CMakeCache.txt' \
+              -o -name 'CMakeError.log' \
+              -o -name 'CMakeOutput.log' \
+              -o -name 'build.ninja' \
+              -o -name 'rules.ninja' \
+              -o -name 'compile_commands.json' \
+              -o -name 'build_command.txt' \
+              -o -name 'prefab_config.json' \) \
+              -print0 > p3-diagnostics/P3_NATIVE_DIAGNOSTIC_FILES.nul
+
+            while IFS= read -r -d '' f; do
+              dst="p3-diagnostics/native/$f"
+              mkdir -p "$(dirname "$dst")"
+              cp "$f" "$dst"
+            done < p3-diagnostics/P3_NATIVE_DIAGNOSTIC_FILES.nul
+
+            tr '\0' '\n' < p3-diagnostics/P3_NATIVE_DIAGNOSTIC_FILES.nul \
+              > p3-diagnostics/P3_NATIVE_DIAGNOSTIC_FILES.txt
+
+            {
+              echo '=== git status ==='
+              git -C LSP-IrenaX status --short --branch || true
+              echo
+              echo '=== source diff names ==='
+              git -C LSP-IrenaX diff --name-only || true
+              echo
+              echo '=== source diff / submodule ==='
+              git -C LSP-IrenaX diff --submodule=short || true
+              echo
+              echo '=== Dobby HEAD ==='
+              git -C LSP-IrenaX/external/dobby rev-parse HEAD || true
+              echo
+              echo '=== Dobby status ==='
+              git -C LSP-IrenaX/external/dobby status --short --branch || true
+              echo
+              echo '=== Dobby top-level files ==='
+              find LSP-IrenaX/external/dobby -maxdepth 2 -type f -printf '%P\n' | sort | head -n 600 || true
+            } > p3-diagnostics/P3_SOURCE_DIAGNOSTICS.txt
+          fi
+
+          if [ -d "$HOME/.gradle/daemon" ]; then
+            mkdir -p p3-diagnostics/gradle-daemon
+            find "$HOME/.gradle/daemon" -type f -name 'daemon-*.out.log' -print0 | \
+              while IFS= read -r -d '' f; do
+                cp "$f" p3-diagnostics/gradle-daemon/"$(basename "$f")"
+              done
+          fi
+
+      - name: Compare baseline and P3 release packages
+        if: steps.p3build.outputs.rc == '0'
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf baseline p3cmp
+          mkdir baseline p3cmp
+          unzip -q BASELINE_RELEASE.zip -d baseline
+
+          mapfile -t p3rel < <(find LSP-IrenaX/magisk-loader/release -maxdepth 1 -type f -name 'LSPosed-v*-IrenaX-release.zip' -print | sort)
+          mapfile -t p3dbg < <(find LSP-IrenaX/magisk-loader/release -maxdepth 1 -type f -name 'LSPosed-v*-IrenaX-debug.zip' -print | sort)
+          test "${#p3rel[@]}" -eq 1
+          test "${#p3dbg[@]}" -eq 1
+          unzip -q "${p3rel[0]}" -d p3cmp
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib
+
+          def tree(root):
+              out = {}
+              root = Path(root)
+              for p in root.rglob("*"):
+                  if p.is_file():
+                      rel = p.relative_to(root).as_posix()
+                      out[rel] = hashlib.sha256(p.read_bytes()).hexdigest()
+              return out
+
+          a = tree("baseline")
+          b = tree("p3cmp")
+
+          if set(a) != set(b):
+              raise SystemExit("baseline/P3 file sets differ")
+
+          diff = sorted(k for k in a if a[k] != b[k])
+          Path("P3_BASELINE_PACKAGE_DIFF.txt").write_text("\n".join(diff) + "\n")
+          print("BASELINE_TO_P3_CHANGED_FILES=", diff)
+
+          allowed = sorted(
+              [f"lib/{abi}/liblspd.so" for abi in ("arm64-v8a","armeabi-v7a","x86","x86_64")] +
+              [f"lib/{abi}/liblspd.so.sha256" for abi in ("arm64-v8a","armeabi-v7a","x86","x86_64")]
+          )
+          if diff != allowed:
+              raise SystemExit(f"unexpected package delta: {diff}")
+          PY
+
+      - name: Verify package and ELF basics
+        if: steps.p3build.outputs.rc == '0'
+        shell: bash
+        run: |
+          set -euo pipefail
+          for so in p3cmp/lib/*/liblspd.so; do
+            test -s "$so"
+            readelf -h "$so" >/dev/null
+            readelf -Ws "$so" | grep -q 'zygisk_module_entry'
+            readelf -Ws "$so" | grep -q 'zygisk_companion_entry'
+          done
+
+          grep -q '^id=zygisk_lsposed$' p3cmp/module.prop
+          grep -q '^versionCode=7371$' p3cmp/module.prop
+
+      - name: Download verified official 7371 release
+        if: steps.p3build.outputs.rc == '0'
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 3 \
+            -o OFFICIAL_RELEASE.zip \
+            "https://github.com/silvzr/LSP-IrenaX/releases/download/v2.0.1/LSPosed-v2.0.1-7371-IrenaX-release.zip"
+          echo "$OFFICIAL_RELEASE_SHA256  OFFICIAL_RELEASE.zip" | sha256sum -c -
+
+      - name: Create official-base P3 ZIP
+        if: steps.p3build.outputs.rc == '0'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib, zipfile
+
+          official = Path("OFFICIAL_RELEASE.zip")
+          p3 = Path("p3cmp")
+          out = Path("LSPosed-v2.0.1-7371-IrenaX-P3-old-dobby-7244-official-base-release.zip")
+
+          payload = {f"lib/{abi}/liblspd.so" for abi in (
+              "arm64-v8a","armeabi-v7a","x86","x86_64"
+          )}
+          sidecars = {x + ".sha256" for x in payload}
+          replacements = payload | sidecars
+
+          with zipfile.ZipFile(official, "r") as zin:
+              infos = zin.infolist()
+              names = [i.filename for i in infos]
+              if len(names) != len(set(names)):
+                  raise SystemExit("duplicate entries in official ZIP")
+              if not replacements.issubset(set(names)):
+                  raise SystemExit("missing replacement entries")
+
+              with zipfile.ZipFile(out, "w") as zout:
+                  for info in infos:
+                      name = info.filename
+                      if name in payload:
+                          data = (p3 / name).read_bytes()
+                      elif name in sidecars:
+                          payload_name = name[:-7]
+                          data = hashlib.sha256((p3 / payload_name).read_bytes()).hexdigest().encode()
+                      else:
+                          data = zin.read(name)
+                      zout.writestr(info, data)
+
+          print(out)
+          PY
+
+      - name: Audit final P3 official-base ZIP
+        if: steps.p3build.outputs.rc == '0'
+        shell: bash
+        run: |
+          set -euo pipefail
+          ZIP="LSPosed-v2.0.1-7371-IrenaX-P3-old-dobby-7244-official-base-release.zip"
+          unzip -t "$ZIP"
+
+          rm -rf officialcmp hybridcmp
+          mkdir officialcmp hybridcmp
+          unzip -q OFFICIAL_RELEASE.zip -d officialcmp
+          unzip -q "$ZIP" -d hybridcmp
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib
+
+          def sh(p): return hashlib.sha256(p.read_bytes()).hexdigest()
+
+          a = Path("officialcmp")
+          b = Path("hybridcmp")
+          ha = {p.relative_to(a).as_posix(): sh(p) for p in a.rglob("*") if p.is_file()}
+          hb = {p.relative_to(b).as_posix(): sh(p) for p in b.rglob("*") if p.is_file()}
+
+          if set(ha) != set(hb):
+              raise SystemExit("official/P3 file sets differ")
+
+          diff = sorted(k for k in ha if ha[k] != hb[k])
+          Path("P3_OFFICIAL_BASE_DIFF.txt").write_text("\n".join(diff) + "\n")
+
+          expected = sorted(
+              [f"lib/{abi}/liblspd.so" for abi in ("arm64-v8a","armeabi-v7a","x86","x86_64")] +
+              [f"lib/{abi}/liblspd.so.sha256" for abi in ("arm64-v8a","armeabi-v7a","x86","x86_64")]
+          )
+          print("OFFICIAL_TO_P3_CHANGED_FILES=", diff)
+          if diff != expected:
+              raise SystemExit(f"unexpected official->P3 delta: {diff}")
+
+          checked = 0
+          for sidecar in b.rglob("*.sha256"):
+              rel = sidecar.relative_to(b).as_posix()
+              target = b / rel[:-7]
+              if not target.exists():
+                  raise SystemExit(f"missing target for {rel}")
+              expected_hash = sidecar.read_text().strip().split()[0].lower()
+              actual = sh(target)
+              if expected_hash != actual:
+                  raise SystemExit(f"bad sidecar {rel}")
+              checked += 1
+          print("SIDECARS_CHECKED=", checked)
+          PY
+
+      - name: Collect P3-v3 evidence bundle
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p p3-output
+
+          cp -f P3_INITIAL_SOURCE_STATE.txt p3-output/ 2>/dev/null || true
+          cp -f P3_TOOLCHAIN_STATE.txt p3-output/ 2>/dev/null || true
+          cp -f BASELINE_BUILD_EXIT_CODE.txt p3-output/ 2>/dev/null || true
+          cp -f P3_BUILD_EXIT_CODE.txt p3-output/ 2>/dev/null || true
+          cp -f P3_DOBBY_REPLACEMENT_STATE.txt p3-output/ 2>/dev/null || true
+          cp -f P3_DOBBY_NDK29_COMPAT_PATCH.txt p3-output/ 2>/dev/null || true
+          cp -f baseline-build.log p3-output/ 2>/dev/null || true
+          cp -f p3-build.log p3-output/ 2>/dev/null || true
+          cp -a p3-diagnostics p3-output/ 2>/dev/null || true
+          cp -f P3_BASELINE_PACKAGE_DIFF.txt p3-output/ 2>/dev/null || true
+          cp -f P3_OFFICIAL_BASE_DIFF.txt p3-output/ 2>/dev/null || true
+
+          if [ -d LSP-IrenaX ]; then
+            {
+              echo "repo=$IRENA_REPO"
+              echo "head=$(git -C LSP-IrenaX rev-parse HEAD 2>/dev/null || true)"
+              echo "expected_head=$IRENA_COMMIT"
+              echo "original_dobby=$CURRENT_DOBBY_SHA"
+              echo "replacement_dobby_repo=$OLD_DOBBY_REPO"
+              echo "replacement_dobby=$(git -C LSP-IrenaX/external/dobby rev-parse HEAD 2>/dev/null || true)"
+              echo "source_delta=external/dobby only"
+              echo "dobby_compat_delta=external/logging/logging.c only (NDK29 include-scope fix)"
+            } > p3-output/P3_PROVENANCE.txt
+
+            git -C LSP-IrenaX diff --name-only > p3-output/P3_SOURCE_DIFF_NAMES.txt 2>/dev/null || true
+            git -C LSP-IrenaX diff --submodule=short > p3-output/P3_SOURCE_DIFF.txt 2>/dev/null || true
+          fi
+
+          if [ -f LSPosed-v2.0.1-7371-IrenaX-P3-old-dobby-7244-official-base-release.zip ]; then
+            cp LSPosed-v2.0.1-7371-IrenaX-P3-old-dobby-7244-official-base-release.zip p3-output/
+          fi
+          if [ -f OFFICIAL_RELEASE.zip ]; then
+            cp OFFICIAL_RELEASE.zip p3-output/OFFICIAL_7371_RELEASE_REFERENCE.zip
+          fi
+
+          (
+            cd p3-output
+            find . -type f -print0 | sort -z | xargs -0 sha256sum > P3_EVIDENCE_SHA256SUMS.txt
+          )
+
+      - name: Upload P3-v3 evidence and package
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: irena-x-v2.0.1-7371-p3-v3-old-dobby-7244-ndk29-fix
+          path: p3-output/*
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Final P3-v3 gate
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          baseline_rc="99"
+          p3_rc="99"
+          [ -f BASELINE_BUILD_EXIT_CODE.txt ] && baseline_rc="$(cat BASELINE_BUILD_EXIT_CODE.txt)"
+          [ -f P3_BUILD_EXIT_CODE.txt ] && p3_rc="$(cat P3_BUILD_EXIT_CODE.txt)"
+
+          echo "BASELINE_BUILD_EXIT_CODE=$baseline_rc"
+          echo "P3_BUILD_EXIT_CODE=$p3_rc"
+
+          if [ "$baseline_rc" != "0" ]; then
+            echo "Baseline failed; P3 was not accepted. Inspect uploaded baseline-build.log and diagnostics." >&2
+            exit 1
+          fi
+
+          if [ "$p3_rc" != "0" ]; then
+            echo "P3 failed; exact compiler/CMake/Ninja context was preserved in the uploaded diagnostics." >&2
+            exit 1
+          fi
+
+          test -f LSPosed-v2.0.1-7371-IrenaX-P3-old-dobby-7244-official-base-release.zip
+          echo "P3_V3_FINAL_GATE=PASS"
