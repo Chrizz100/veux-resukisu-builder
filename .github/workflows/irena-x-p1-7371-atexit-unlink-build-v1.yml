@@ -1,0 +1,181 @@
+name: Irena X 7371 P1 atexit unlink
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  IRENA_REPO: silvzr/LSP-IrenaX
+  IRENA_COMMIT: da439fbbed506dac6c66074af7fda8982aa4fc6a
+  EXPECTED_DIFF: magisk-loader/src/main/jni/CMakeLists.txt
+
+jobs:
+  build:
+    name: P1 build
+    runs-on: ubuntu-latest
+    env:
+      CCACHE_COMPILERCHECK: "%compiler% -dumpmachine; %compiler% -dumpversion"
+      CCACHE_NOHASHDIR: "true"
+      CCACHE_HARDLINK: "true"
+      CCACHE_BASEDIR: "${{ github.workspace }}/LSP-IrenaX"
+    steps:
+      - name: Checkout Irena X pinned source
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.IRENA_REPO }}
+          ref: ${{ env.IRENA_COMMIT }}
+          submodules: recursive
+          fetch-depth: 0
+          path: LSP-IrenaX
+
+      - name: Verify exact source pin and clean tree
+        working-directory: LSP-IrenaX
+        shell: bash
+        run: |
+          set -euo pipefail
+          actual="$(git rev-parse HEAD)"
+          printf 'HEAD=%s\n' "$actual"
+          test "$actual" = "$IRENA_COMMIT"
+          test -z "$(git status --porcelain)"
+          test -f magisk-loader/src/main/jni/src/atexit.cpp
+          test "$(grep -Fxc 'aux_source_directory(src SRC_LIST)' magisk-loader/src/main/jni/CMakeLists.txt)" -eq 1
+          git describe --tags --exact-match HEAD || true
+
+      - name: Apply P1 single-file patch
+        working-directory: LSP-IrenaX
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          p = Path('magisk-loader/src/main/jni/CMakeLists.txt')
+          s = p.read_text()
+          needle = 'aux_source_directory(src SRC_LIST)\n'
+          insert = '''aux_source_directory(src SRC_LIST)\n\n# P1 stability experiment:\n# Keep source intact but do not link IrenaX custom\n# __cxa_atexit/__cxa_finalize implementation.\nlist(FILTER SRC_LIST EXCLUDE REGEX "(^|/)atexit[.]cpp$")\n'''
+
+          if s.count(needle) != 1:
+              raise SystemExit(f'expected exactly one aux_source_directory line, got {s.count(needle)}')
+          if 'list(FILTER SRC_LIST EXCLUDE REGEX "(^|/)atexit[.]cpp$")' in s:
+              raise SystemExit('P1 filter already present unexpectedly')
+
+          p.write_text(s.replace(needle, insert, 1))
+          PY
+
+          test -f magisk-loader/src/main/jni/src/atexit.cpp
+          git diff --check
+          mapfile -t changed < <(git diff --name-only)
+          printf 'changed=%s\n' "${changed[*]}"
+          test "${#changed[@]}" -eq 1
+          test "${changed[0]}" = "$EXPECTED_DIFF"
+          git diff -- "$EXPECTED_DIFF"
+
+      - name: Setup Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          log-accepted-android-sdk-licenses: 'false'
+          packages: ''
+
+      - name: Setup ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          max-size: 2G
+          key: irena-x-p1-${{ runner.os }}
+          restore-keys: irena-x-${{ runner.os }}
+          save: false
+
+      - name: Setup Ninja 1.12.1
+        uses: seanmiddleditch/gha-setup-ninja@master
+        with:
+          version: 1.12.1
+
+      - name: Remove Android bundled CMake
+        shell: bash
+        run: rm -rf "$ANDROID_HOME/cmake"
+
+      - name: Configure Gradle
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.gradle
+          {
+            echo 'org.gradle.caching=true'
+            echo 'org.gradle.parallel=true'
+            echo 'org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8 -XX:+UseParallelGC'
+            echo 'android.native.buildOutput=verbose'
+          } >> ~/.gradle/gradle.properties
+
+      - name: Build zipAll
+        working-directory: LSP-IrenaX
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./gradlew zipAll --stacktrace 2>&1 | tee ../p1-build.log
+
+      - name: Verify outputs and collect evidence
+        working-directory: LSP-IrenaX
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mapfile -t changed < <(git diff --name-only)
+          test "${#changed[@]}" -eq 1
+          test "${changed[0]}" = "$EXPECTED_DIFF"
+          git diff --check
+          test -f magisk-loader/src/main/jni/src/atexit.cpp
+
+          mapfile -t release_zip < <(find magisk-loader/release -maxdepth 1 -type f -name 'LSPosed-v*-IrenaX-release.zip' -print | sort)
+          mapfile -t debug_zip < <(find magisk-loader/release -maxdepth 1 -type f -name 'LSPosed-v*-IrenaX-debug.zip' -print | sort)
+          test "${#release_zip[@]}" -eq 1
+          test "${#debug_zip[@]}" -eq 1
+
+          mkdir -p ../p1-output
+          cp "${release_zip[0]}" "${debug_zip[0]}" ../p1-output/
+          git diff --name-only > ../p1-output/P1_DIFF_NAMES.txt
+          git diff > ../p1-output/P1.patch
+
+          {
+            printf 'repo=%s\n' "$IRENA_REPO"
+            printf 'head=%s\n' "$(git rev-parse HEAD)"
+            printf 'expected_head=%s\n' "$IRENA_COMMIT"
+            printf 'changed_file=%s\n' "${changed[0]}"
+            printf 'atexit_source_present=yes\n'
+          } > ../p1-output/P1_PROVENANCE.txt
+
+          (cd ../p1-output && sha256sum LSPosed-v*-IrenaX-*.zip | tee P1_SHA256SUMS.txt)
+
+          # The custom source must not be compiled after the CMake filter.
+          # Match compiler-style source references only, not the P1 comments/diff output.
+          if grep -E '(^|[ /])src/atexit[.]cpp([ :]|$)' ../p1-build.log; then
+            echo 'ERROR: src/atexit.cpp appeared as a compiler input in the build log' >&2
+            exit 1
+          fi
+          echo 'ATEXIT_CPP_COMPILER_INPUT=ABSENT' | tee ../p1-output/P1_ATEXIT_LINK_EVIDENCE.txt
+
+          {
+            echo '--- release zip ---'
+            unzip -l "${release_zip[0]}"
+            echo '--- debug zip ---'
+            unzip -l "${debug_zip[0]}"
+          } > ../p1-output/P1_ZIP_CONTENTS.txt
+
+      - name: Upload P1 artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: irena-x-v2.0.1-7371-p1-atexit-unlinked
+          path: |
+            p1-output/*
+            p1-build.log
+          if-no-files-found: error
+          retention-days: 30
