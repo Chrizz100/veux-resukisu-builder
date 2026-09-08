@@ -1,0 +1,806 @@
+name: Irena X 7371 P7 v2 P4 mount-only unsigned-daemon package fix
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  IRENA_REPO: silvzr/LSP-IrenaX
+  IRENA_COMMIT: da439fbbed506dac6c66074af7fda8982aa4fc6a
+  CURRENT_LSPLANT_SHA: c5b46bb4f6a99ffe0c77ce3ab006d3f67d5a2b1c
+  OLD_LSPLANT_REPO: https://github.com/mywalkb/LSPlant_mod.git
+  OLD_LSPLANT_SHA: f492475a76777c0b40e419fe1908871cde88f627
+  CURRENT_DOBBY_SHA: dc7b4be06ad6c5dcfb0bb4ca2082b007d69eaed5
+  OFFICIAL_RELEASE_SHA256: 99e7aaf54dda0e6fa746c55613483a80620174f255dd05e102713778a9966d2f
+
+jobs:
+  build:
+    name: Build P4 v3 with 7244 LSPlant backend
+    runs-on: ubuntu-latest
+    env:
+      CCACHE_COMPILERCHECK: "%compiler% -dumpmachine; %compiler% -dumpversion"
+      CCACHE_NOHASHDIR: "true"
+      CCACHE_HARDLINK: "true"
+      CCACHE_BASEDIR: "${{ github.workspace }}/LSP-IrenaX"
+
+    steps:
+      - name: Checkout pinned Irena X 7371
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.IRENA_REPO }}
+          ref: ${{ env.IRENA_COMMIT }}
+          submodules: recursive
+          fetch-depth: 0
+          path: LSP-IrenaX
+
+      - name: Verify pristine source pins
+        working-directory: LSP-IrenaX
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$IRENA_COMMIT"
+          test -z "$(git status --porcelain)"
+          test "$(git -C external/lsplant rev-parse HEAD)" = "$CURRENT_LSPLANT_SHA"
+          test "$(git -C external/dobby rev-parse HEAD)" = "$CURRENT_DOBBY_SHA"
+          test -z "$(git -C external/lsplant status --porcelain)"
+          test -z "$(git -C external/dobby status --porcelain)"
+          {
+            echo "IRENA=$(git rev-parse HEAD)"
+            echo "LSPLANT=$(git -C external/lsplant rev-parse HEAD)"
+            echo "DOBBY=$(git -C external/dobby rev-parse HEAD)"
+          } > ../P4_INITIAL_STATE.txt
+
+      - name: Setup Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          log-accepted-android-sdk-licenses: 'false'
+          packages: ''
+
+      - name: Setup ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          max-size: 2G
+          key: irena-x-p4-lsplant-${{ runner.os }}
+          restore-keys: irena-x-${{ runner.os }}
+          save: false
+
+      - name: Setup Ninja 1.12.1
+        uses: seanmiddleditch/gha-setup-ninja@master
+        with:
+          version: 1.12.1
+
+      - name: Remove Android bundled CMake
+        shell: bash
+        run: rm -rf "$ANDROID_HOME/cmake"
+
+      - name: Configure Gradle diagnostics
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.gradle
+          {
+            echo 'org.gradle.caching=true'
+            echo 'org.gradle.parallel=true'
+            echo 'org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8 -XX:+UseParallelGC'
+            echo 'android.native.buildOutput=verbose'
+          } >> ~/.gradle/gradle.properties
+
+      - name: Build pristine 7371 baseline
+        id: baseline
+        working-directory: LSP-IrenaX
+        shell: bash
+        run: |
+          set -uo pipefail
+          set +e
+          ./gradlew clean zipAll --stacktrace --info 2>&1 | tee ../baseline-build.log
+          rc=${PIPESTATUS[0]}
+          set -e
+          echo "$rc" > ../BASELINE_BUILD_EXIT_CODE.txt
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          if [ "$rc" -eq 0 ]; then
+            mapfile -t rel < <(find magisk-loader/release -maxdepth 1 -type f \
+              -name 'LSPosed-v*-IrenaX-release.zip' -print | sort)
+            test "${#rel[@]}" -eq 1
+            cp "${rel[0]}" ../BASELINE_RELEASE.zip
+          fi
+          exit 0
+
+      - name: Replace only LSPlant with 7244 backend
+        id: replace
+        if: steps.baseline.outputs.rc == '0'
+        working-directory: LSP-IrenaX
+        shell: bash
+        run: |
+          set -euo pipefail
+          git -C external/lsplant remote set-url origin "$OLD_LSPLANT_REPO"
+          git -C external/lsplant fetch --no-tags --depth=1 origin "$OLD_LSPLANT_SHA"
+          git -C external/lsplant checkout --detach "$OLD_LSPLANT_SHA"
+          git -C external/lsplant submodule sync --recursive
+          git -C external/lsplant submodule update --init --recursive
+
+          test "$(git -C external/lsplant rev-parse HEAD)" = "$OLD_LSPLANT_SHA"
+          test -z "$(git -C external/lsplant status --porcelain)"
+          test "$(git -C external/dobby rev-parse HEAD)" = "$CURRENT_DOBBY_SHA"
+          test -z "$(git -C external/dobby status --porcelain)"
+
+          mapfile -t top < <(git diff --name-only | sort)
+          test "${#top[@]}" -eq 1
+          test "${top[0]}" = "external/lsplant"
+
+          {
+            echo "OLD_LSPLANT_REPO=$OLD_LSPLANT_REPO"
+            echo "OLD_LSPLANT_SHA=$(git -C external/lsplant rev-parse HEAD)"
+            echo "DOBBY_STILL=$(git -C external/dobby rev-parse HEAD)"
+            echo
+            git diff --submodule=short -- external/lsplant
+            echo
+            git -C external/lsplant submodule status --recursive
+          } > ../P4_LSPLANT_STATE.txt
+
+      - name: Apply LSPlant API compatibility adapter only
+        id: adapter
+        if: steps.baseline.outputs.rc == '0' && steps.replace.outcome == 'success'
+        working-directory: LSP-IrenaX
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          p = Path("core/src/main/jni/src/native_api.cpp")
+          s = p.read_text()
+
+          old_using = 'using lsplant::operator""_sym;\n'
+          if s.count(old_using) != 1:
+              raise SystemExit(f"unexpected _sym using count: {s.count(old_using)}")
+          s = s.replace(old_using, 'using lsplant::operator""_tstr;\n', 1)
+
+          old_hooker = '    using lsplant::Hooker;\n'
+          if s.count(old_hooker) != 1:
+              raise SystemExit(f"unexpected Hooker using count: {s.count(old_hooker)}")
+          s = s.replace(old_hooker, '', 1)
+
+          old_prefix = (
+              '    inline static auto do_dlopen_ = "__dl__Z9do_dlopenPKciPK17android_dlextinfoPKv"_sym.hook->*[]\n'
+              '            <lsplant::Backup auto backup>\n'
+              '            (const char* name, int flags, const void* extinfo, const void* caller_addr) static -> void* {\n'
+          )
+          new_prefix = (
+              '    CREATE_HOOK_STUB_ENTRY(\n'
+              '            "__dl__Z9do_dlopenPKciPK17android_dlextinfoPKv",\n'
+              '            void*, do_dlopen, (const char* name, int flags, const void* extinfo,\n'
+              '                    const void* caller_addr), {\n'
+          )
+          if s.count(old_prefix) != 1:
+              raise SystemExit(f"unexpected new-hook prefix count: {s.count(old_prefix)}")
+          s = s.replace(old_prefix, new_prefix, 1)
+
+          old_suffix = (
+              '                return handle;\n'
+              '            };\n\n'
+              '    bool InstallNativeAPI'
+          )
+          new_suffix = (
+              '                return handle;\n'
+              '            });\n\n'
+              '    bool InstallNativeAPI'
+          )
+          if s.count(old_suffix) != 1:
+              raise SystemExit(f"unexpected new-hook suffix count: {s.count(old_suffix)}")
+          s = s.replace(old_suffix, new_suffix, 1)
+
+          old_invoke = '            handler(do_dlopen_);\n'
+          new_invoke = '            HookSymNoHandle(handler, do_dlopen_sym, do_dlopen);\n'
+          if s.count(old_invoke) != 1:
+              raise SystemExit(f"unexpected handler invocation count: {s.count(old_invoke)}")
+          s = s.replace(old_invoke, new_invoke, 1)
+
+          for x in ('operator""_sym', 'lsplant::Backup', 'do_dlopen_ ='):
+              if x in s:
+                  raise SystemExit(f"new LSPlant helper token survived: {x}")
+
+          for required in (
+              'moduleLoadedCallbacks',
+              'moduleNativeLibs',
+              '.art_symbol_resolver =',
+              '.art_symbol_prefix_resolver =',
+              'Loading module native library',
+              'moduleLoadedCallbacks.push_back(callback)',
+          ):
+              if required not in s:
+                  raise SystemExit(f"current Irena behavior marker missing: {required}")
+
+          p.write_text(s)
+
+          r = Path("core/src/main/jni/include/framework/androidfw/resource_types.h")
+          t = r.read_text()
+
+          old_using2 = 'using lsplant::operator""_sym;\n\n'
+          if t.count(old_using2) != 1:
+              raise SystemExit(f"unexpected resource _sym using count: {t.count(old_using2)}")
+          t = t.replace(old_using2, "", 1)
+
+          old_string_at_s = (
+              '        inline static auto stringAtSSym = ("_ZNK7android13ResStringPool8stringAtEjPj"_sym |\n'
+              '                                         "_ZNK7android13ResStringPool8stringAtEmPm"_sym).as<stringAtRet (ResStringPool::*)(size_t)>;\n\n'
+              '        inline static stringAtRet stringAtS(ResStringPool* thiz, size_t idx) {\n'
+          )
+          new_string_at_s = (
+              '        CREATE_MEM_FUNC_SYMBOL_ENTRY(\n'
+              '                stringAtRet, stringAtS, ResStringPool *thiz, size_t idx) {\n'
+          )
+          if t.count(old_string_at_s) != 1:
+              raise SystemExit(f"unexpected stringAtS frontend count: {t.count(old_string_at_s)}")
+          t = t.replace(old_string_at_s, new_string_at_s, 1)
+
+          old_string_at = (
+              '        inline static auto stringAtSym = ("_ZNK7android13ResStringPool8stringAtEj"_sym |\n'
+              '                                        "_ZNK7android13ResStringPool8stringAtEm"_sym).as<const char16_t* (ResStringPool::*)(size_t, size_t *)>;\n\n'
+              '    inline static const char16_t* stringAt(ResStringPool* thiz, size_t idx, size_t *u16len) {\n'
+          )
+          new_string_at = (
+              '        CREATE_MEM_FUNC_SYMBOL_ENTRY(\n'
+              '                const char16_t*, stringAt, ResStringPool *thiz, size_t idx, size_t *u16len) {\n'
+          )
+          if t.count(old_string_at) != 1:
+              raise SystemExit(f"unexpected stringAt frontend count: {t.count(old_string_at)}")
+          t = t.replace(old_string_at, new_string_at, 1)
+
+          old_setup = (
+              '        static bool setup(const lsplant::HookHandler &handler) {\n'
+              '            return !stringAtSym || !stringAtSSym;\n'
+          )
+          new_setup = (
+              '        static bool setup(const lsplant::HookHandler &handler) {\n'
+              '            // Preserve Irena 7371 exact symbol-to-wrapper mapping.\n'
+              '            RETRIEVE_MEM_FUNC_SYMBOL(\n'
+              '                    stringAtS,\n'
+              '                    LP_SELECT("_ZNK7android13ResStringPool8stringAtEjPj",\n'
+              '                              "_ZNK7android13ResStringPool8stringAtEmPm"));\n'
+              '            RETRIEVE_MEM_FUNC_SYMBOL(\n'
+              '                    stringAt,\n'
+              '                    LP_SELECT("_ZNK7android13ResStringPool8stringAtEj",\n'
+              '                              "_ZNK7android13ResStringPool8stringAtEm"));\n'
+              '            return !stringAtSym || !stringAtSSym;\n'
+          )
+          if t.count(old_setup) != 1:
+              raise SystemExit(f"unexpected resource setup count: {t.count(old_setup)}")
+          t = t.replace(old_setup, new_setup, 1)
+
+          for x in ('operator""_sym', '_sym |', ').as<'):
+              if x in t:
+                  raise SystemExit(f"new LSPlant resource helper token survived: {x}")
+
+          r.write_text(t)
+          PY
+
+          git diff --check
+          mapfile -t top < <(git diff --name-only | sort)
+          printf '%s\n' "${top[@]}"
+          test "${#top[@]}" -eq 3
+          test "${top[0]}" = "core/src/main/jni/include/framework/androidfw/resource_types.h"
+          test "${top[1]}" = "core/src/main/jni/src/native_api.cpp"
+          test "${top[2]}" = "external/lsplant"
+
+          git diff --exit-code "$IRENA_COMMIT" -- \
+            magisk-loader/src/main/jni/api/zygisk_main.cpp \
+            magisk-loader/src/main/jni/src/magisk_loader.cpp \
+            magisk-loader/src/main/jni/CMakeLists.txt \
+            daemon/src/main/java/org/lsposed/lspd/service/Dex2OatService.java
+
+          test "$(git -C external/dobby rev-parse HEAD)" = "$CURRENT_DOBBY_SHA"
+          test -z "$(git -C external/dobby status --porcelain)"
+
+          {
+            echo "adapter1=core/src/main/jni/src/native_api.cpp"
+            echo "adapter2=core/src/main/jni/include/framework/androidfw/resource_types.h"
+            echo "purpose=syntax-only bridge from current _sym helper frontend to 7244 hook helper API"
+            echo "native callback body=current Irena 7371 preserved"
+            echo "resource symbol mapping=current Irena 7371 preserved"
+            echo
+            git diff --               core/src/main/jni/src/native_api.cpp               core/src/main/jni/include/framework/androidfw/resource_types.h
+          } > ../P4_NATIVE_API_ADAPTER.patch
+
+          if grep -R -n -E 'operator""_sym|lsplant::Backup|_sym[.]hook|[)]\.as<'               core/src/main/jni/src/native_api.cpp               core/src/main/jni/include/framework/androidfw/resource_types.h               > ../P4_NEW_HELPER_TOKEN_SCAN.txt; then
+            echo "new LSPlant helper tokens survived adapter" >&2
+            exit 1
+          else
+            echo "NONE" > ../P4_NEW_HELPER_TOKEN_SCAN.txt
+          fi
+
+      - name: Build P4 and preserve exact failure
+        id: p4build
+        if: steps.baseline.outputs.rc == '0' && steps.replace.outcome == 'success' && steps.adapter.outcome == 'success'
+        working-directory: LSP-IrenaX
+        shell: bash
+        run: |
+          set -uo pipefail
+          set +e
+          ./gradlew clean zipAll --stacktrace --info 2>&1 | tee ../p4-build.log
+          rc=${PIPESTATUS[0]}
+          set -e
+          echo "$rc" > ../P4_BUILD_EXIT_CODE.txt
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Extract P4 build diagnostics
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p p4-output/native
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          log = Path("p4-build.log")
+          if not log.exists():
+              Path("p4-output/P4_FAILURE_EXCERPT.txt").write_text("p4-build.log not created\n")
+              Path("p4-output/P4_FAILURE_MATCHES.txt").write_text("p4-build.log not created\n")
+              raise SystemExit(0)
+
+          lines = log.read_text(errors="replace").splitlines()
+          pat = re.compile(
+              r"(FAILED:|error:|fatal error:|undefined reference|CMake Error|ninja:.*failed|"
+              r"Execution failed for task|BUILD FAILED|No such file|not declared|no member named|"
+              r"unknown type name|does not name a type)",
+              re.I,
+          )
+          hits = [i for i, line in enumerate(lines) if pat.search(line)]
+          Path("p4-output/P4_FAILURE_MATCHES.txt").write_text(
+              "".join(f"{i+1}: {lines[i]}\n" for i in hits[:300])
+          )
+
+          if hits:
+              first = hits[0]
+              lo, hi = max(0, first - 60), min(len(lines), first + 180)
+          else:
+              lo, hi = max(0, len(lines)-300), len(lines)
+          Path("p4-output/P4_FAILURE_EXCERPT.txt").write_text(
+              "\n".join(f"{i+1}: {lines[i]}" for i in range(lo, hi)) + "\n"
+          )
+          PY
+
+          find LSP-IrenaX -type f \( \
+            -name 'CMakeCache.txt' -o \
+            -name 'CMakeError.log' -o \
+            -name 'CMakeOutput.log' -o \
+            -name 'build.ninja' -o \
+            -name 'rules.ninja' -o \
+            -name 'compile_commands.json' \
+          \) -print0 | while IFS= read -r -d '' f; do
+            dst="p4-output/native/${f#LSP-IrenaX/}"
+            mkdir -p "$(dirname "$dst")"
+            cp "$f" "$dst"
+          done
+
+      - name: Freeze clean P4 build as P7 baseline
+        id: p4pkg
+        if: steps.p4build.outputs.rc == '0'
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf p4cmp p7cmp
+          mkdir -p p4cmp p7cmp p7-output
+          mapfile -t rel < <(find LSP-IrenaX/magisk-loader/release -maxdepth 1 -type f \
+            -name 'LSPosed-v*-IrenaX-release.zip' -print | sort)
+          test "${#rel[@]}" -eq 1
+          cp "${rel[0]}" P4_RELEASE.zip
+          unzip -q P4_RELEASE.zip -d p4cmp
+          echo "P4_RELEASE_SHA256=$(sha256sum P4_RELEASE.zip | awk '{print $1}')" \
+            | tee p7-output/P7_P4_BASELINE.txt
+
+      - name: Apply P7 mount-only change on top of P4
+        id: mountpatch
+        if: steps.p4build.outputs.rc == '0' && steps.p4pkg.outcome == 'success'
+        working-directory: LSP-IrenaX
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          p = Path("daemon/src/main/java/org/lsposed/lspd/service/Dex2OatService.java")
+          s = p.read_text()
+
+          old = (
+              "    private void doMount(boolean enabled) {\n"
+              "        doMountNative(enabled, dex2oatArray[0], dex2oatArray[1], dex2oatArray[2], dex2oatArray[3]);\n"
+              "    }\n"
+          )
+          new = (
+              "    private void doMount(boolean enabled) {\n"
+              "        // P7 mount-only diagnostic: suppress creation/remount of the\n"
+              "        // global dex2oat bind mounts, while preserving the existing\n"
+              "        // unmount path. No target-process hook or LSPlant code changes.\n"
+              "        if (enabled) return;\n"
+              "        doMountNative(false, dex2oatArray[0], dex2oatArray[1], dex2oatArray[2], dex2oatArray[3]);\n"
+              "    }\n"
+          )
+
+          if s.count(old) != 1:
+              raise SystemExit(f"expected exactly one pristine doMount block, got {s.count(old)}")
+          p.write_text(s.replace(old, new, 1))
+          PY
+
+          git diff --check
+          mapfile -t changed < <(git diff --name-only | sort)
+          printf '%s\n' "${changed[@]}" | tee ../p7-output/P7_SOURCE_DIFF_NAMES.txt
+
+          # P4 already changes exactly these two adapter files plus the LSPlant gitlink.
+          # P7 may add only Dex2OatService.java.
+          expected=(
+            "core/src/main/jni/include/framework/androidfw/resource_types.h"
+            "core/src/main/jni/src/native_api.cpp"
+            "daemon/src/main/java/org/lsposed/lspd/service/Dex2OatService.java"
+            "external/lsplant"
+          )
+          test "${#changed[@]}" -eq "${#expected[@]}"
+          for i in "${!expected[@]}"; do
+            test "${changed[$i]}" = "${expected[$i]}"
+          done
+
+          git diff --exit-code "$IRENA_COMMIT" -- magisk-loader/src/main/jni/api/zygisk_main.cpp
+          git diff --exit-code "$IRENA_COMMIT" -- magisk-loader/src/main/jni/src/atexit.cpp
+          git diff --exit-code "$IRENA_COMMIT" -- core/src/main/java/org/lsposed/lspd/hooker/LoadedApkCtorHooker.java
+
+          {
+            echo "P7_BASE=P4-v3"
+            echo "P7_CHANGE=daemon Dex2OatService.doMount(true) no-op; doMount(false) preserved"
+            echo "P6_CLASSLINKER_FALLBACK=NOT_APPLIED"
+            echo "M_INCLUDE_CODE=UNCHANGED"
+            echo "PAIRIP_BYPASS=NOT_ATTEMPTED"
+          } > ../p7-output/P7_PROVENANCE.txt
+
+      - name: Build P7 mount-only candidate
+        id: p7build
+        if: steps.mountpatch.outcome == 'success'
+        working-directory: LSP-IrenaX
+        shell: bash
+        run: |
+          set -uo pipefail
+          set +e
+          ./gradlew clean zipAll --stacktrace --info 2>&1 | tee ../p7-build.log
+          rc=${PIPESTATUS[0]}
+          set -e
+          echo "$rc" > ../P7_BUILD_EXIT_CODE.txt
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Validate P4 to P7 build delta
+        id: delta
+        if: steps.p7build.outputs.rc == '0'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t rel < <(find LSP-IrenaX/magisk-loader/release -maxdepth 1 -type f \
+            -name 'LSPosed-v*-IrenaX-release.zip' -print | sort)
+          test "${#rel[@]}" -eq 1
+          cp "${rel[0]}" P7_RELEASE.zip
+          unzip -q P7_RELEASE.zip -d p7cmp
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib
+
+          def tree(root):
+              root = Path(root)
+              return {
+                  p.relative_to(root).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
+                  for p in root.rglob("*") if p.is_file()
+              }
+
+          a, b = tree("p4cmp"), tree("p7cmp")
+          if set(a) != set(b):
+              raise SystemExit("P4/P7 file sets differ")
+
+          diff = sorted(k for k in a if a[k] != b[k])
+          print("P4_TO_P7=", diff)
+          Path("p7-output/P7_P4_TO_P7_PACKAGE_DIFF.txt").write_text("\n".join(diff) + "\n")
+
+          expected = ["daemon.apk", "daemon.apk.sha256"]
+          if diff != expected:
+              raise SystemExit(f"unexpected P4->P7 package delta: {diff}")
+
+          # P4 loaders must be byte-identical in P7.
+          for abi in ("arm64-v8a","armeabi-v7a","x86","x86_64"):
+              rel = f"lib/{abi}/liblspd.so"
+              if a[rel] != b[rel]:
+                  raise SystemExit(f"target-process loader changed unexpectedly: {rel}")
+
+          Path("p7-output/P7_PACKAGE_SCOPE.txt").write_text(
+              "P4_TO_P7_BUILD_DELTA=daemon.apk + daemon.apk.sha256\n"
+              "TARGET_PROCESS_LOADERS=byte-identical to P4-v3\n"
+              "P6_CLASSLINKER_FALLBACK=absent\n"
+              "M_INCLUDE_CODE=unchanged\n"
+          )
+          PY
+
+      - name: Download verified official 7371 release
+        if: steps.delta.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 3 \
+            -o OFFICIAL_RELEASE.zip \
+            "https://github.com/silvzr/LSP-IrenaX/releases/download/v2.0.1/LSPosed-v2.0.1-7371-IrenaX-release.zip"
+          echo "$OFFICIAL_RELEASE_SHA256  OFFICIAL_RELEASE.zip" | sha256sum -c -
+          rm -rf officialcmp
+          mkdir officialcmp
+          unzip -q OFFICIAL_RELEASE.zip -d officialcmp
+
+      - name: Audit daemon APK format and P4 to P7 internal delta
+        id: daemonaudit
+        if: steps.delta.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # These daemon APKs are intentionally used as app_process classpaths,
+          # not installed Android packages. The official installer also patches
+          # daemon.apk in-place with sed, so an APK-signing requirement would be
+          # incompatible with the upstream install flow.
+          jarsigner -verify officialcmp/daemon.apk 2>&1 | tee p7-output/P7_OFFICIAL_DAEMON_JARSIGNER.txt
+          jarsigner -verify p7cmp/daemon.apk 2>&1 | tee p7-output/P7_REBUILT_DAEMON_JARSIGNER.txt
+          grep -q 'jar is unsigned' p7-output/P7_OFFICIAL_DAEMON_JARSIGNER.txt
+          grep -q 'jar is unsigned' p7-output/P7_REBUILT_DAEMON_JARSIGNER.txt
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib, struct, zipfile
+
+          def has_apk_sig_block(path):
+              data = Path(path).read_bytes()
+              eocd = data.rfind(b"PK\x05\x06", max(0, len(data) - 0x10000 - 22))
+              if eocd < 0:
+                  raise SystemExit(f"EOCD not found: {path}")
+              cd_off = struct.unpack_from("<I", data, eocd + 16)[0]
+              if cd_off < 24:
+                  return False
+              return data[cd_off - 16:cd_off] == b"APK Sig Block 42"
+
+          official = "officialcmp/daemon.apk"
+          p4 = "p4cmp/daemon.apk"
+          p7 = "p7cmp/daemon.apk"
+
+          for path in (official, p4, p7):
+              if has_apk_sig_block(path):
+                  raise SystemExit(f"unexpected APK Signing Block in daemon classpath APK: {path}")
+
+          def members(path):
+              with zipfile.ZipFile(path) as z:
+                  return {
+                      n: hashlib.sha256(z.read(n)).hexdigest()
+                      for n in z.namelist() if not n.endswith("/")
+                  }
+
+          a, b = members(p4), members(p7)
+          if set(a) != set(b):
+              raise SystemExit("P4/P7 daemon.apk internal member sets differ")
+
+          diff = sorted(k for k in a if a[k] != b[k])
+          Path("p7-output/P7_DAEMON_INTERNAL_DIFF.txt").write_text("\n".join(diff) + "\n")
+          if diff != ["classes.dex"]:
+              raise SystemExit(f"unexpected internal daemon delta: {diff}")
+
+          Path("p7-output/P7_DAEMON_FORMAT_RESULT.txt").write_text(
+              "OFFICIAL_DAEMON=UNSIGNED_CLASSPATH_APK\n"
+              "P7_DAEMON=UNSIGNED_CLASSPATH_APK\n"
+              "P4_TO_P7_DAEMON_INTERNAL_DELTA=classes.dex only\n"
+              "APK_SIGNER_GATE=NOT_APPLICABLE\n"
+          )
+          PY
+
+          # Verify the exact upstream installer/runtime semantics at the pinned source.
+          grep -Fq 'sed -i "s/5291374ceda0aef7c5d86cd2a4f6a3ac/$DEV_PATH/g" "$MODPATH/daemon.apk"' \
+            LSP-IrenaX/magisk-loader/magisk_module/customize.sh
+          grep -Fq 'java_options="-Djava.class.path=$dir/daemon.apk"' \
+            LSP-IrenaX/magisk-loader/magisk_module/daemon
+          grep -Fq 'exec /system/bin/app_process $java_options' \
+            LSP-IrenaX/magisk-loader/magisk_module/daemon
+
+      - name: Create and validate P7 official-base device candidate
+        id: package
+        if: steps.daemonaudit.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib, zipfile
+
+          official = Path("OFFICIAL_RELEASE.zip")
+          p4dir = Path("p4cmp")
+          p7dir = Path("p7cmp")
+          p4out = Path("P4_OFFICIAL_BASE_CONTROL.zip")
+          p7out = Path("LSPosed-v2.0.1-7371-IrenaX-P7-v2-P4-no-dex2oat-mount-official-base-release.zip")
+
+          loader_payload = {
+              f"lib/{abi}/liblspd.so"
+              for abi in ("arm64-v8a","armeabi-v7a","x86","x86_64")
+          }
+
+          def build(out, replace_daemon):
+              replace_payload = set(loader_payload)
+              if replace_daemon:
+                  replace_payload.add("daemon.apk")
+              replace_sidecars = {x + ".sha256" for x in replace_payload}
+
+              with zipfile.ZipFile(official, "r") as zin, zipfile.ZipFile(out, "w") as zout:
+                  infos = zin.infolist()
+                  names = [x.filename for x in infos]
+                  if len(names) != len(set(names)):
+                      raise SystemExit("duplicate names in official ZIP")
+                  if not (replace_payload | replace_sidecars).issubset(set(names)):
+                      raise SystemExit("official ZIP missing replacement target")
+
+                  for info in infos:
+                      name = info.filename
+                      if name in loader_payload:
+                          data = (p4dir / name).read_bytes()
+                      elif replace_daemon and name == "daemon.apk":
+                          data = (p7dir / name).read_bytes()
+                      elif name in replace_sidecars:
+                          payload = name[:-7]
+                          if payload in loader_payload:
+                              pdata = (p4dir / payload).read_bytes()
+                          elif replace_daemon and payload == "daemon.apk":
+                              pdata = (p7dir / payload).read_bytes()
+                          else:
+                              raise SystemExit(payload)
+                          data = hashlib.sha256(pdata).hexdigest().encode()
+                      else:
+                          data = zin.read(name)
+                      zout.writestr(info, data)
+
+          build(p4out, False)
+          p4sha = hashlib.sha256(p4out.read_bytes()).hexdigest()
+          expected_p4 = "306fe6b5f98264427466adbf2c668d0312cf6ec9243442678da18de9316255cf"
+          if p4sha != expected_p4:
+              raise SystemExit(f"P4 official-base reconstruction mismatch: {p4sha}")
+
+          build(p7out, True)
+
+          def tree(path):
+              with zipfile.ZipFile(path) as z:
+                  names = z.namelist()
+                  if len(names) != len(set(names)):
+                      raise SystemExit(f"duplicate names: {path}")
+                  bad = z.testzip()
+                  if bad:
+                      raise SystemExit(f"ZIP CRC failure {path}: {bad}")
+                  return {
+                      n: hashlib.sha256(z.read(n)).hexdigest()
+                      for n in names if not n.endswith("/")
+                  }
+
+          a, b = tree(p4out), tree(p7out)
+          if set(a) != set(b):
+              raise SystemExit("final P4/P7 file sets differ")
+          diff = sorted(k for k in a if a[k] != b[k])
+          if diff != ["daemon.apk", "daemon.apk.sha256"]:
+              raise SystemExit(f"unexpected final P4->P7 delta: {diff}")
+
+          # Verify all payload sidecars in the final candidate.
+          with zipfile.ZipFile(p7out) as z:
+              names = set(z.namelist())
+              checked = 0
+              for n in sorted(names):
+                  if not n.endswith(".sha256"):
+                      continue
+                  payload = n[:-7]
+                  if payload not in names:
+                      continue
+                  expected = z.read(n).decode().strip().split()[0]
+                  actual = hashlib.sha256(z.read(payload)).hexdigest()
+                  if expected != actual:
+                      raise SystemExit(f"sidecar mismatch: {n}")
+                  checked += 1
+              if checked != 28:
+                  raise SystemExit(f"expected 28 verified sidecars, got {checked}")
+
+          p7sha = hashlib.sha256(p7out.read_bytes()).hexdigest()
+          Path("p7-output/P7_FINAL_PACKAGE_SHA256.txt").write_text(
+              f"{p7sha}  {p7out.name}\n"
+          )
+          Path("p7-output/P7_FINAL_PACKAGE_DIFF.txt").write_text(
+              "daemon.apk\n"
+              "daemon.apk.sha256\n"
+          )
+          Path("p7-output/P7_FINAL_SCOPE.txt").write_text(
+              "BASE=P4-v3 official-base byte-exact control\n"
+              "ONLY_RUNTIME_CHANGE=daemon Dex2OatService mount creation suppressed\n"
+              "P4_LOADERS=byte-identical\n"
+              "FRAMEWORK_LSPD_DEX=official 7371\n"
+              "MANAGER=official 7371\n"
+              "P6_CLASSLINKER_FALLBACK=absent\n"
+          )
+          PY
+
+          unzip -t P4_OFFICIAL_BASE_CONTROL.zip
+          unzip -t LSPosed-v2.0.1-7371-IrenaX-P7-v2-P4-no-dex2oat-mount-official-base-release.zip
+          cp P4_OFFICIAL_BASE_CONTROL.zip p7-output/
+          cp LSPosed-v2.0.1-7371-IrenaX-P7-v2-P4-no-dex2oat-mount-official-base-release.zip p7-output/
+
+      - name: Collect P7 v2 evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p p7-output
+          cp P4_BUILD_EXIT_CODE.txt p7-output/ 2>/dev/null || true
+          cp P7_BUILD_EXIT_CODE.txt p7-output/ 2>/dev/null || true
+          cp p4-build.log p7-output/ 2>/dev/null || true
+          cp p7-build.log p7-output/ 2>/dev/null || true
+          cp P4_RELEASE.zip p7-output/ 2>/dev/null || true
+          cp P7_RELEASE.zip p7-output/ 2>/dev/null || true
+          cp OFFICIAL_RELEASE.zip p7-output/OFFICIAL_7371_RELEASE_REFERENCE.zip 2>/dev/null || true
+
+          if [ -d LSP-IrenaX ]; then
+            (
+              cd LSP-IrenaX
+              git diff --check
+              git diff > ../p7-output/P7_SOURCE.patch
+            ) || true
+          fi
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib
+
+          out = Path("p7-output")
+          files = sorted(
+              p for p in out.rglob("*")
+              if p.is_file() and p.name != "P7_EVIDENCE_SHA256SUMS.txt"
+          )
+          with (out / "P7_EVIDENCE_SHA256SUMS.txt").open("w") as f:
+              for p in files:
+                  rel = p.relative_to(out).as_posix()
+                  f.write(f"{hashlib.sha256(p.read_bytes()).hexdigest()}  {rel}\n")
+          PY
+
+          (
+            cd p7-output
+            sha256sum -c P7_EVIDENCE_SHA256SUMS.txt
+          )
+
+      - name: Upload P7 v2 artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: irena-x-v2.0.1-7371-p7-v2-p4-mount-only-unsigned-daemon-package
+          path: p7-output
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Final P7 v2 gate
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f P4_BUILD_EXIT_CODE.txt
+          test "$(cat P4_BUILD_EXIT_CODE.txt)" = "0"
+          test -f P7_BUILD_EXIT_CODE.txt
+          test "$(cat P7_BUILD_EXIT_CODE.txt)" = "0"
+          test -f p7-output/P7_DAEMON_FORMAT_RESULT.txt
+          grep -q '^OFFICIAL_DAEMON=UNSIGNED_CLASSPATH_APK$' p7-output/P7_DAEMON_FORMAT_RESULT.txt
+          grep -q '^P7_DAEMON=UNSIGNED_CLASSPATH_APK$' p7-output/P7_DAEMON_FORMAT_RESULT.txt
+          test -f p7-output/P4_OFFICIAL_BASE_CONTROL.zip
+          test -f p7-output/LSPosed-v2.0.1-7371-IrenaX-P7-v2-P4-no-dex2oat-mount-official-base-release.zip
+          (
+            cd p7-output
+            sha256sum -c P7_EVIDENCE_SHA256SUMS.txt
+          )
+          echo "P7_V2_RESULT=FULL_PASS_DEVICE_CANDIDATE_CREATED"
