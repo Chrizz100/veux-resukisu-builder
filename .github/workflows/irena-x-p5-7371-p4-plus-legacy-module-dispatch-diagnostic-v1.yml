@@ -1,0 +1,874 @@
+name: Irena X 7371 P5 v1 legacy Xposed module dispatch diagnostic
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  IRENA_REPO: silvzr/LSP-IrenaX
+  IRENA_COMMIT: da439fbbed506dac6c66074af7fda8982aa4fc6a
+  CURRENT_LSPLANT_SHA: c5b46bb4f6a99ffe0c77ce3ab006d3f67d5a2b1c
+  OLD_LSPLANT_REPO: https://github.com/mywalkb/LSPlant_mod.git
+  OLD_LSPLANT_SHA: f492475a76777c0b40e419fe1908871cde88f627
+  CURRENT_DOBBY_SHA: dc7b4be06ad6c5dcfb0bb4ca2082b007d69eaed5
+  OFFICIAL_RELEASE_SHA256: 99e7aaf54dda0e6fa746c55613483a80620174f255dd05e102713778a9966d2f
+  OLD_FRAMEWORK_REPO: mywalkb/LSPosed_mod
+  OLD_FRAMEWORK_COMMIT: 9770579f313de44397c295fd1cc44e3fcec4777c
+  HIDEMOCK_REPO: ThePieMonster/HideMockLocation
+  HIDEMOCK_COMMIT: db9c71ee209d766b0a47c8ed7bd915ea0b56b14b
+  TARGET_PACKAGE: com.nianticproject.ingress
+  HIDEMOCK_CLASS: com.github.thepiemonster.hidemocklocation.XposedModule
+
+jobs:
+  build:
+    name: Build P5 v1 diagnostic on P4 LSPlant backend
+    runs-on: ubuntu-latest
+    env:
+      CCACHE_COMPILERCHECK: "%compiler% -dumpmachine; %compiler% -dumpversion"
+      CCACHE_NOHASHDIR: "true"
+      CCACHE_HARDLINK: "true"
+      CCACHE_BASEDIR: "${{ github.workspace }}/LSP-IrenaX"
+
+    steps:
+      - name: Checkout pinned Irena X 7371
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.IRENA_REPO }}
+          ref: ${{ env.IRENA_COMMIT }}
+          submodules: recursive
+          fetch-depth: 0
+          path: LSP-IrenaX
+
+      - name: Checkout exact working 7244 source reference
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.OLD_FRAMEWORK_REPO }}
+          ref: ${{ env.OLD_FRAMEWORK_COMMIT }}
+          submodules: false
+          fetch-depth: 1
+          path: LSP-7244
+
+      - name: Checkout Hide Mock Location reference source
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.HIDEMOCK_REPO }}
+          ref: ${{ env.HIDEMOCK_COMMIT }}
+          submodules: false
+          fetch-depth: 1
+          path: HideMockLocation
+
+      - name: Verify pristine source pins
+        working-directory: LSP-IrenaX
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$IRENA_COMMIT"
+          test -z "$(git status --porcelain)"
+          test "$(git -C external/lsplant rev-parse HEAD)" = "$CURRENT_LSPLANT_SHA"
+          test "$(git -C external/dobby rev-parse HEAD)" = "$CURRENT_DOBBY_SHA"
+          test -z "$(git -C external/lsplant status --porcelain)"
+          test -z "$(git -C external/dobby status --porcelain)"
+          test "$(git -C ../LSP-7244 rev-parse HEAD)" = "$OLD_FRAMEWORK_COMMIT"
+          test -z "$(git -C ../LSP-7244 status --porcelain)"
+          test "$(git -C ../HideMockLocation rev-parse HEAD)" = "$HIDEMOCK_COMMIT"
+          test -z "$(git -C ../HideMockLocation status --porcelain)"
+          {
+            echo "IRENA=$(git rev-parse HEAD)"
+            echo "LSPLANT=$(git -C external/lsplant rev-parse HEAD)"
+            echo "DOBBY=$(git -C external/dobby rev-parse HEAD)"
+          } > ../P5_INITIAL_STATE.txt
+
+      - name: Audit 7244 vs 7371 legacy Xposed dispatch before patching
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p p5-output/static
+
+          files=(
+            core/src/main/java/org/lsposed/lspd/core/Startup.java
+            core/src/main/java/de/robv/android/xposed/XposedInit.java
+            core/src/main/java/de/robv/android/xposed/IXposedHookLoadPackage.java
+            core/src/main/java/de/robv/android/xposed/XposedBridge.java
+            core/src/main/java/de/robv/android/xposed/callbacks/XCallback.java
+            core/src/main/java/org/lsposed/lspd/hooker/LoadedApkCreateCLHooker.java
+            core/src/main/java/org/lsposed/lspd/core/ApplicationServiceClient.java
+            daemon/src/main/java/org/lsposed/lspd/service/LSPApplicationService.java
+            daemon/src/main/java/org/lsposed/lspd/service/ConfigManager.java
+          )
+
+          : > p5-output/static/P5_7244_7371_FILE_SHA256.txt
+          : > p5-output/static/P5_7244_7371_CHANGED_FILES.txt
+          for f in "${files[@]}"; do
+            test -f "LSP-7244/$f"
+            test -f "LSP-IrenaX/$f"
+            printf '%s\n' "FILE=$f" >> p5-output/static/P5_7244_7371_FILE_SHA256.txt
+            sha256sum "LSP-7244/$f" "LSP-IrenaX/$f" >> p5-output/static/P5_7244_7371_FILE_SHA256.txt
+            if ! cmp -s "LSP-7244/$f" "LSP-IrenaX/$f"; then
+              echo "$f" >> p5-output/static/P5_7244_7371_CHANGED_FILES.txt
+              safe="${f//\//__}"
+              diff -u "LSP-7244/$f" "LSP-IrenaX/$f" > "p5-output/static/${safe}.diff" || true
+            fi
+          done
+
+          cmp -s \
+            LSP-7244/core/src/main/java/org/lsposed/lspd/core/Startup.java \
+            LSP-IrenaX/core/src/main/java/org/lsposed/lspd/core/Startup.java
+
+          for root in LSP-7244 LSP-IrenaX; do
+            grep -q 'XposedInit.loadLegacyModules();' "$root/core/src/main/java/org/lsposed/lspd/core/Startup.java"
+            grep -q 'public static void loadLegacyModules()' "$root/core/src/main/java/de/robv/android/xposed/XposedInit.java"
+            grep -q 'XposedBridge.hookLoadPackage' "$root/core/src/main/java/de/robv/android/xposed/XposedInit.java"
+            grep -q 'XC_LoadPackage.callAll(lpparam);' "$root/core/src/main/java/org/lsposed/lspd/hooker/LoadedApkCreateCLHooker.java"
+            grep -q 'getLegacyModulesList' "$root/daemon/src/main/java/org/lsposed/lspd/service/LSPApplicationService.java"
+          done
+
+          test "$(cat HideMockLocation/app/src/main/assets/xposed_init)" = "$HIDEMOCK_CLASS"
+          grep -q '"isFromMockProvider"' HideMockLocation/app/src/main/java/com/github/thepiemonster/hidemocklocation/XposedModule.java
+          grep -q '"getExtras"' HideMockLocation/app/src/main/java/com/github/thepiemonster/hidemocklocation/XposedModule.java
+          grep -q 'Settings.Secure.ALLOW_MOCK_LOCATION' HideMockLocation/app/src/main/java/com/github/thepiemonster/hidemocklocation/XposedModule.java
+          {
+            echo "OLD_FRAMEWORK=$OLD_FRAMEWORK_REPO@$OLD_FRAMEWORK_COMMIT"
+            echo "CURRENT_FRAMEWORK=$IRENA_REPO@$IRENA_COMMIT"
+            echo "HIDEMOCK_REFERENCE=$HIDEMOCK_REPO@$HIDEMOCK_COMMIT"
+            echo "STARTUP_JAVA_BYTE_IDENTICAL=PASS"
+            echo "LEGACY_LOAD_PIPELINE_PRESENT_IN_BOTH=PASS"
+            echo "HIDEMOCK_REFERENCE_CLASS=$HIDEMOCK_CLASS"
+            echo "HIDEMOCK_REFERENCE_HOOKS=Settings.Secure.ALLOW_MOCK_LOCATION, Location.getExtras, Location.isFromMockProvider"
+            echo "NOTE=reference source only; installed APK identity/version is not inferred"
+          } > p5-output/static/P5_STATIC_AUDIT_SUMMARY.txt
+
+      - name: Setup Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          log-accepted-android-sdk-licenses: 'false'
+          packages: ''
+
+      - name: Setup ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          max-size: 2G
+          key: irena-x-p5-lsplant-${{ runner.os }}
+          restore-keys: irena-x-${{ runner.os }}
+          save: false
+
+      - name: Setup Ninja 1.12.1
+        uses: seanmiddleditch/gha-setup-ninja@master
+        with:
+          version: 1.12.1
+
+      - name: Remove Android bundled CMake
+        shell: bash
+        run: rm -rf "$ANDROID_HOME/cmake"
+
+      - name: Configure Gradle diagnostics
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.gradle
+          {
+            echo 'org.gradle.caching=true'
+            echo 'org.gradle.parallel=true'
+            echo 'org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8 -XX:+UseParallelGC'
+            echo 'android.native.buildOutput=verbose'
+          } >> ~/.gradle/gradle.properties
+
+      - name: Build pristine 7371 baseline
+        id: baseline
+        working-directory: LSP-IrenaX
+        shell: bash
+        run: |
+          set -uo pipefail
+          set +e
+          ./gradlew clean zipAll --stacktrace --info 2>&1 | tee ../baseline-build.log
+          rc=${PIPESTATUS[0]}
+          set -e
+          echo "$rc" > ../BASELINE_BUILD_EXIT_CODE.txt
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          if [ "$rc" -eq 0 ]; then
+            mapfile -t rel < <(find magisk-loader/release -maxdepth 1 -type f \
+              -name 'LSPosed-v*-IrenaX-release.zip' -print | sort)
+            test "${#rel[@]}" -eq 1
+            cp "${rel[0]}" ../BASELINE_RELEASE.zip
+          fi
+          exit 0
+
+      - name: Replace only LSPlant with 7244 backend
+        id: replace
+        if: steps.baseline.outputs.rc == '0'
+        working-directory: LSP-IrenaX
+        shell: bash
+        run: |
+          set -euo pipefail
+          git -C external/lsplant remote set-url origin "$OLD_LSPLANT_REPO"
+          git -C external/lsplant fetch --no-tags --depth=1 origin "$OLD_LSPLANT_SHA"
+          git -C external/lsplant checkout --detach "$OLD_LSPLANT_SHA"
+          git -C external/lsplant submodule sync --recursive
+          git -C external/lsplant submodule update --init --recursive
+
+          test "$(git -C external/lsplant rev-parse HEAD)" = "$OLD_LSPLANT_SHA"
+          test -z "$(git -C external/lsplant status --porcelain)"
+          test "$(git -C external/dobby rev-parse HEAD)" = "$CURRENT_DOBBY_SHA"
+          test -z "$(git -C external/dobby status --porcelain)"
+
+          mapfile -t top < <(git diff --name-only | sort)
+          test "${#top[@]}" -eq 1
+          test "${top[0]}" = "external/lsplant"
+
+          {
+            echo "OLD_LSPLANT_REPO=$OLD_LSPLANT_REPO"
+            echo "OLD_LSPLANT_SHA=$(git -C external/lsplant rev-parse HEAD)"
+            echo "DOBBY_STILL=$(git -C external/dobby rev-parse HEAD)"
+            echo
+            git diff --submodule=short -- external/lsplant
+            echo
+            git -C external/lsplant submodule status --recursive
+          } > ../P5_LSPLANT_STATE.txt
+
+      - name: Apply LSPlant API compatibility adapter only
+        id: adapter
+        if: steps.baseline.outputs.rc == '0' && steps.replace.outcome == 'success'
+        working-directory: LSP-IrenaX
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          p = Path("core/src/main/jni/src/native_api.cpp")
+          s = p.read_text()
+
+          old_using = 'using lsplant::operator""_sym;\n'
+          if s.count(old_using) != 1:
+              raise SystemExit(f"unexpected _sym using count: {s.count(old_using)}")
+          s = s.replace(old_using, 'using lsplant::operator""_tstr;\n', 1)
+
+          old_hooker = '    using lsplant::Hooker;\n'
+          if s.count(old_hooker) != 1:
+              raise SystemExit(f"unexpected Hooker using count: {s.count(old_hooker)}")
+          s = s.replace(old_hooker, '', 1)
+
+          old_prefix = (
+              '    inline static auto do_dlopen_ = "__dl__Z9do_dlopenPKciPK17android_dlextinfoPKv"_sym.hook->*[]\n'
+              '            <lsplant::Backup auto backup>\n'
+              '            (const char* name, int flags, const void* extinfo, const void* caller_addr) static -> void* {\n'
+          )
+          new_prefix = (
+              '    CREATE_HOOK_STUB_ENTRY(\n'
+              '            "__dl__Z9do_dlopenPKciPK17android_dlextinfoPKv",\n'
+              '            void*, do_dlopen, (const char* name, int flags, const void* extinfo,\n'
+              '                    const void* caller_addr), {\n'
+          )
+          if s.count(old_prefix) != 1:
+              raise SystemExit(f"unexpected new-hook prefix count: {s.count(old_prefix)}")
+          s = s.replace(old_prefix, new_prefix, 1)
+
+          old_suffix = (
+              '                return handle;\n'
+              '            };\n\n'
+              '    bool InstallNativeAPI'
+          )
+          new_suffix = (
+              '                return handle;\n'
+              '            });\n\n'
+              '    bool InstallNativeAPI'
+          )
+          if s.count(old_suffix) != 1:
+              raise SystemExit(f"unexpected new-hook suffix count: {s.count(old_suffix)}")
+          s = s.replace(old_suffix, new_suffix, 1)
+
+          old_invoke = '            handler(do_dlopen_);\n'
+          new_invoke = '            HookSymNoHandle(handler, do_dlopen_sym, do_dlopen);\n'
+          if s.count(old_invoke) != 1:
+              raise SystemExit(f"unexpected handler invocation count: {s.count(old_invoke)}")
+          s = s.replace(old_invoke, new_invoke, 1)
+
+          for x in ('operator""_sym', 'lsplant::Backup', 'do_dlopen_ ='):
+              if x in s:
+                  raise SystemExit(f"new LSPlant helper token survived: {x}")
+
+          for required in (
+              'moduleLoadedCallbacks',
+              'moduleNativeLibs',
+              '.art_symbol_resolver =',
+              '.art_symbol_prefix_resolver =',
+              'Loading module native library',
+              'moduleLoadedCallbacks.push_back(callback)',
+          ):
+              if required not in s:
+                  raise SystemExit(f"current Irena behavior marker missing: {required}")
+
+          p.write_text(s)
+
+          r = Path("core/src/main/jni/include/framework/androidfw/resource_types.h")
+          t = r.read_text()
+
+          old_using2 = 'using lsplant::operator""_sym;\n\n'
+          if t.count(old_using2) != 1:
+              raise SystemExit(f"unexpected resource _sym using count: {t.count(old_using2)}")
+          t = t.replace(old_using2, "", 1)
+
+          old_string_at_s = (
+              '        inline static auto stringAtSSym = ("_ZNK7android13ResStringPool8stringAtEjPj"_sym |\n'
+              '                                         "_ZNK7android13ResStringPool8stringAtEmPm"_sym).as<stringAtRet (ResStringPool::*)(size_t)>;\n\n'
+              '        inline static stringAtRet stringAtS(ResStringPool* thiz, size_t idx) {\n'
+          )
+          new_string_at_s = (
+              '        CREATE_MEM_FUNC_SYMBOL_ENTRY(\n'
+              '                stringAtRet, stringAtS, ResStringPool *thiz, size_t idx) {\n'
+          )
+          if t.count(old_string_at_s) != 1:
+              raise SystemExit(f"unexpected stringAtS frontend count: {t.count(old_string_at_s)}")
+          t = t.replace(old_string_at_s, new_string_at_s, 1)
+
+          old_string_at = (
+              '        inline static auto stringAtSym = ("_ZNK7android13ResStringPool8stringAtEj"_sym |\n'
+              '                                        "_ZNK7android13ResStringPool8stringAtEm"_sym).as<const char16_t* (ResStringPool::*)(size_t, size_t *)>;\n\n'
+              '    inline static const char16_t* stringAt(ResStringPool* thiz, size_t idx, size_t *u16len) {\n'
+          )
+          new_string_at = (
+              '        CREATE_MEM_FUNC_SYMBOL_ENTRY(\n'
+              '                const char16_t*, stringAt, ResStringPool *thiz, size_t idx, size_t *u16len) {\n'
+          )
+          if t.count(old_string_at) != 1:
+              raise SystemExit(f"unexpected stringAt frontend count: {t.count(old_string_at)}")
+          t = t.replace(old_string_at, new_string_at, 1)
+
+          old_setup = (
+              '        static bool setup(const lsplant::HookHandler &handler) {\n'
+              '            return !stringAtSym || !stringAtSSym;\n'
+          )
+          new_setup = (
+              '        static bool setup(const lsplant::HookHandler &handler) {\n'
+              '            // Preserve Irena 7371 exact symbol-to-wrapper mapping.\n'
+              '            RETRIEVE_MEM_FUNC_SYMBOL(\n'
+              '                    stringAtS,\n'
+              '                    LP_SELECT("_ZNK7android13ResStringPool8stringAtEjPj",\n'
+              '                              "_ZNK7android13ResStringPool8stringAtEmPm"));\n'
+              '            RETRIEVE_MEM_FUNC_SYMBOL(\n'
+              '                    stringAt,\n'
+              '                    LP_SELECT("_ZNK7android13ResStringPool8stringAtEj",\n'
+              '                              "_ZNK7android13ResStringPool8stringAtEm"));\n'
+              '            return !stringAtSym || !stringAtSSym;\n'
+          )
+          if t.count(old_setup) != 1:
+              raise SystemExit(f"unexpected resource setup count: {t.count(old_setup)}")
+          t = t.replace(old_setup, new_setup, 1)
+
+          for x in ('operator""_sym', '_sym |', ').as<'):
+              if x in t:
+                  raise SystemExit(f"new LSPlant resource helper token survived: {x}")
+
+          r.write_text(t)
+          PY
+
+          git diff --check
+          mapfile -t top < <(git diff --name-only | sort)
+          printf '%s\n' "${top[@]}"
+          test "${#top[@]}" -eq 3
+          test "${top[0]}" = "core/src/main/jni/include/framework/androidfw/resource_types.h"
+          test "${top[1]}" = "core/src/main/jni/src/native_api.cpp"
+          test "${top[2]}" = "external/lsplant"
+
+          git diff --exit-code "$IRENA_COMMIT" -- \
+            magisk-loader/src/main/jni/api/zygisk_main.cpp \
+            magisk-loader/src/main/jni/src/magisk_loader.cpp \
+            magisk-loader/src/main/jni/CMakeLists.txt \
+            daemon/src/main/java/org/lsposed/lspd/service/Dex2OatService.java
+
+          test "$(git -C external/dobby rev-parse HEAD)" = "$CURRENT_DOBBY_SHA"
+          test -z "$(git -C external/dobby status --porcelain)"
+
+          {
+            echo "adapter1=core/src/main/jni/src/native_api.cpp"
+            echo "adapter2=core/src/main/jni/include/framework/androidfw/resource_types.h"
+            echo "purpose=syntax-only bridge from current _sym helper frontend to 7244 hook helper API"
+            echo "native callback body=current Irena 7371 preserved"
+            echo "resource symbol mapping=current Irena 7371 preserved"
+            echo
+            git diff --               core/src/main/jni/src/native_api.cpp               core/src/main/jni/include/framework/androidfw/resource_types.h
+          } > ../P5_NATIVE_API_ADAPTER.patch
+
+          if grep -R -n -E 'operator""_sym|lsplant::Backup|_sym[.]hook|[)]\.as<'               core/src/main/jni/src/native_api.cpp               core/src/main/jni/include/framework/androidfw/resource_types.h               > ../P5_NEW_HELPER_TOKEN_SCAN.txt; then
+            echo "new LSPlant helper tokens survived adapter" >&2
+            exit 1
+          else
+            echo "NONE" > ../P5_NEW_HELPER_TOKEN_SCAN.txt
+          fi
+
+      - name: Add P5 diagnostics only - no hook result changes
+        id: diag
+        if: steps.baseline.outputs.rc == '0' && steps.replace.outcome == 'success' && steps.adapter.outcome == 'success'
+        working-directory: LSP-IrenaX
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          p = Path("core/src/main/java/de/robv/android/xposed/XposedInit.java")
+          s = p.read_text()
+          old = '''    public static void loadLegacyModules() {
+                  var moduleList = serviceClient.getLegacyModulesList();
+                  moduleList.forEach(module -> {
+                      var apk = module.apkPath;
+                      var name = module.packageName;
+                      var file = module.file;
+          '''
+          new = '''    public static void loadLegacyModules() {
+                  var moduleList = serviceClient.getLegacyModulesList();
+                  android.util.Log.i("P5DIAG", "legacy-list process=" + LSPosedContext.processName + " count=" + moduleList.size());
+                  moduleList.forEach(module -> {
+                      var apk = module.apkPath;
+                      var name = module.packageName;
+                      var file = module.file;
+                      android.util.Log.i("P5DIAG", "legacy-module process=" + LSPosedContext.processName + " package=" + name + " apk=" + apk);
+          '''
+          if s.count(old) != 1:
+              raise SystemExit("unexpected loadLegacyModules shape")
+          s = s.replace(old, new, 1)
+
+          old = '                Log.i(TAG, "  Loading class " + moduleClassName);\n\n                Class<?> moduleClass = mcl.loadClass(moduleClassName);\n'
+          new = '                Log.i(TAG, "  Loading class " + moduleClassName);\n                android.util.Log.i("P5DIAG", "legacy-class process=" + LSPosedContext.processName + " class=" + moduleClassName);\n\n                Class<?> moduleClass = mcl.loadClass(moduleClassName);\n'
+          if s.count(old) != 1:
+              raise SystemExit("unexpected initModule class load shape")
+          s = s.replace(old, new, 1)
+
+          old = '                if (moduleInstance instanceof IXposedHookLoadPackage) {\n                    XposedBridge.hookLoadPackage(new IXposedHookLoadPackage.Wrapper((IXposedHookLoadPackage) moduleInstance));\n                    count++;\n                }\n'
+          new = '                if (moduleInstance instanceof IXposedHookLoadPackage) {\n                    android.util.Log.i("P5DIAG", "legacy-register-loadpackage process=" + LSPosedContext.processName + " class=" + moduleClassName);\n                    XposedBridge.hookLoadPackage(new IXposedHookLoadPackage.Wrapper((IXposedHookLoadPackage) moduleInstance));\n                    count++;\n                }\n'
+          if s.count(old) != 1:
+              raise SystemExit("unexpected IXposedHookLoadPackage registration shape")
+          s = s.replace(old, new, 1)
+          p.write_text(s)
+
+          p = Path("core/src/main/java/de/robv/android/xposed/IXposedHookLoadPackage.java")
+          s = p.read_text()
+          old = '''        @Override
+                  public void handleLoadPackage(LoadPackageParam lpparam) throws Throwable {
+                      instance.handleLoadPackage(lpparam);
+                  }
+          '''
+          new = '''        @Override
+                  public void handleLoadPackage(LoadPackageParam lpparam) throws Throwable {
+                      final boolean p5diag = "com.nianticproject.ingress".equals(lpparam.packageName);
+                      if (p5diag) {
+                          android.util.Log.i("P5DIAG", "loadpackage-enter module=" + instance.getClass().getName()
+                                  + " package=" + lpparam.packageName + " process=" + lpparam.processName);
+                      }
+                      try {
+                          instance.handleLoadPackage(lpparam);
+                      } finally {
+                          if (p5diag) {
+                              android.util.Log.i("P5DIAG", "loadpackage-exit module=" + instance.getClass().getName()
+                                      + " package=" + lpparam.packageName + " process=" + lpparam.processName);
+                          }
+                      }
+                  }
+          '''
+          if s.count(old) != 1:
+              raise SystemExit("unexpected Wrapper.handleLoadPackage shape")
+          s = s.replace(old, new, 1)
+          p.write_text(s)
+
+          p = Path("core/src/main/java/org/lsposed/lspd/hooker/LoadedApkCreateCLHooker.java")
+          s = p.read_text()
+          old = '            Hookers.logD("Call handleLoadedPackage: packageName=" + lpparam.packageName + " processName=" + lpparam.processName + " isFirstPackage=" + isFirstPackage + " classLoader=" + lpparam.classLoader + " appInfo=" + lpparam.appInfo);\n            XC_LoadPackage.callAll(lpparam);\n'
+          new = '            Hookers.logD("Call handleLoadedPackage: packageName=" + lpparam.packageName + " processName=" + lpparam.processName + " isFirstPackage=" + isFirstPackage + " classLoader=" + lpparam.classLoader + " appInfo=" + lpparam.appInfo);\n            if ("com.nianticproject.ingress".equals(lpparam.packageName)) {\n                android.util.Log.i("P5DIAG", "callall package=" + lpparam.packageName + " process=" + lpparam.processName\n                        + " callbacks=" + XposedBridge.sLoadedPackageCallbacks.size() + " first=" + isFirstPackage);\n            }\n            XC_LoadPackage.callAll(lpparam);\n'
+          if s.count(old) != 1:
+              raise SystemExit("unexpected XC_LoadPackage.callAll shape")
+          s = s.replace(old, new, 1)
+          p.write_text(s)
+
+          p = Path("core/src/main/java/de/robv/android/xposed/XposedBridge.java")
+          s = p.read_text()
+          old = '''        if (!HookBridge.hookMethod(HookBridge.API_MODE_LEGACY, (Executable) hookMethod, LSPosedBridge.NativeHooker.class, callback.priority, callback)) {
+                      log("Failed to hook " + hookMethod);
+                      return null;
+                  }
+          
+                  return callback.new Unhook(hookMethod);
+          '''
+          new = '''        final String p5diagDecl = hookMethod.getDeclaringClass().getName();
+                  final String p5diagName = hookMethod.getName();
+                  final boolean p5diag = (p5diagDecl.equals("android.location.Location")
+                          && (p5diagName.equals("isFromMockProvider") || p5diagName.equals("getExtras")))
+                          || p5diagDecl.equals("android.provider.Settings$Secure");
+                  if (p5diag) {
+                      android.util.Log.i("P5DIAG", "hook-register-attempt member=" + hookMethod
+                              + " callback=" + callback.getClass().getName());
+                  }
+          
+                  if (!HookBridge.hookMethod(HookBridge.API_MODE_LEGACY, (Executable) hookMethod, LSPosedBridge.NativeHooker.class, callback.priority, callback)) {
+                      if (p5diag) android.util.Log.i("P5DIAG", "hook-register-result ok=false member=" + hookMethod);
+                      log("Failed to hook " + hookMethod);
+                      return null;
+                  }
+                  if (p5diag) android.util.Log.i("P5DIAG", "hook-register-result ok=true member=" + hookMethod);
+          
+                  return callback.new Unhook(hookMethod);
+          '''
+          if s.count(old) != 1:
+              raise SystemExit("unexpected XposedBridge.hookMethod shape")
+          s = s.replace(old, new, 1)
+          p.write_text(s)
+
+          touched = [
+              Path("core/src/main/java/de/robv/android/xposed/XposedInit.java"),
+              Path("core/src/main/java/de/robv/android/xposed/IXposedHookLoadPackage.java"),
+              Path("core/src/main/java/org/lsposed/lspd/hooker/LoadedApkCreateCLHooker.java"),
+              Path("core/src/main/java/de/robv/android/xposed/XposedBridge.java"),
+          ]
+          for f in touched:
+              if "P5DIAG" not in f.read_text():
+                  raise SystemExit(f"diagnostic marker missing from {f}")
+          PY
+
+          git diff -- \
+            core/src/main/java/de/robv/android/xposed/XposedInit.java \
+            core/src/main/java/de/robv/android/xposed/IXposedHookLoadPackage.java \
+            core/src/main/java/org/lsposed/lspd/hooker/LoadedApkCreateCLHooker.java \
+            core/src/main/java/de/robv/android/xposed/XposedBridge.java \
+            > ../P5_DIAGNOSTIC_LOGGING.patch
+
+          mapfile -t changed < <(git diff --name-only | sort)
+          printf '%s\n' "${changed[@]}" > ../P5_SOURCE_DIFF_NAMES_PREBUILD.txt
+          expected=(
+            core/src/main/java/de/robv/android/xposed/IXposedHookLoadPackage.java
+            core/src/main/java/de/robv/android/xposed/XposedBridge.java
+            core/src/main/java/de/robv/android/xposed/XposedInit.java
+            core/src/main/java/org/lsposed/lspd/hooker/LoadedApkCreateCLHooker.java
+            core/src/main/jni/include/framework/androidfw/resource_types.h
+            core/src/main/jni/src/native_api.cpp
+            external/lsplant
+          )
+          mapfile -t expected_sorted < <(printf '%s\n' "${expected[@]}" | sort)
+          test "${#changed[@]}" -eq "${#expected_sorted[@]}"
+          diff -u <(printf '%s\n' "${expected_sorted[@]}") <(printf '%s\n' "${changed[@]}")
+
+          if git diff -- core/src/main/java | grep -E '^\+.*(setResult|setThrowable|returnConstant|replaceHookedMethod)' ; then
+            echo "behavior-changing hook operation found in P5 diagnostic Java patch" >&2
+            exit 1
+          fi
+
+      - name: Build P5 and preserve exact failure
+        id: p5build
+        if: steps.baseline.outputs.rc == '0' && steps.replace.outcome == 'success' && steps.adapter.outcome == 'success' && steps.diag.outcome == 'success'
+        working-directory: LSP-IrenaX
+        shell: bash
+        run: |
+          set -uo pipefail
+          set +e
+          ./gradlew clean zipAll --stacktrace --info 2>&1 | tee ../p5-build.log
+          rc=${PIPESTATUS[0]}
+          set -e
+          echo "$rc" > ../P5_BUILD_EXIT_CODE.txt
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Extract P5 build diagnostics
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p p5-output/native
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          log = Path("p5-build.log")
+          if not log.exists():
+              Path("p5-output/P5_FAILURE_EXCERPT.txt").write_text("p5-build.log not created\n")
+              Path("p5-output/P5_FAILURE_MATCHES.txt").write_text("p5-build.log not created\n")
+              raise SystemExit(0)
+
+          lines = log.read_text(errors="replace").splitlines()
+          pat = re.compile(
+              r"(FAILED:|error:|fatal error:|undefined reference|CMake Error|ninja:.*failed|"
+              r"Execution failed for task|BUILD FAILED|No such file|not declared|no member named|"
+              r"unknown type name|does not name a type)",
+              re.I,
+          )
+          hits = [i for i, line in enumerate(lines) if pat.search(line)]
+          Path("p5-output/P5_FAILURE_MATCHES.txt").write_text(
+              "".join(f"{i+1}: {lines[i]}\n" for i in hits[:300])
+          )
+
+          if hits:
+              first = hits[0]
+              lo, hi = max(0, first - 60), min(len(lines), first + 180)
+          else:
+              lo, hi = max(0, len(lines)-300), len(lines)
+          Path("p5-output/P5_FAILURE_EXCERPT.txt").write_text(
+              "\n".join(f"{i+1}: {lines[i]}" for i in range(lo, hi)) + "\n"
+          )
+          PY
+
+          find LSP-IrenaX -type f \( \
+            -name 'CMakeCache.txt' -o \
+            -name 'CMakeError.log' -o \
+            -name 'CMakeOutput.log' -o \
+            -name 'build.ninja' -o \
+            -name 'rules.ninja' -o \
+            -name 'compile_commands.json' \
+          \) -print0 | while IFS= read -r -d '' f; do
+            dst="p5-output/native/${f#LSP-IrenaX/}"
+            mkdir -p "$(dirname "$dst")"
+            cp "$f" "$dst"
+          done
+
+      - name: Validate successful P5 package delta
+        id: package
+        if: steps.p5build.outputs.rc == '0'
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf baselinecmp p5cmp
+          mkdir baselinecmp p5cmp
+          unzip -q BASELINE_RELEASE.zip -d baselinecmp
+
+          mapfile -t rel < <(find LSP-IrenaX/magisk-loader/release -maxdepth 1 -type f \
+            -name 'LSPosed-v*-IrenaX-release.zip' -print | sort)
+          mapfile -t dbg < <(find LSP-IrenaX/magisk-loader/release -maxdepth 1 -type f \
+            -name 'LSPosed-v*-IrenaX-debug.zip' -print | sort)
+          test "${#rel[@]}" -eq 1
+          test "${#dbg[@]}" -eq 1
+          unzip -q "${rel[0]}" -d p5cmp
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib
+
+          def tree(root):
+              root = Path(root)
+              return {
+                  p.relative_to(root).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
+                  for p in root.rglob("*") if p.is_file()
+              }
+
+          a, b = tree("baselinecmp"), tree("p5cmp")
+          if set(a) != set(b):
+              raise SystemExit("baseline/P5 file sets differ")
+
+          diff = sorted(k for k in a if a[k] != b[k])
+          Path("p5-output/P5_BASELINE_PACKAGE_DIFF.txt").write_text("\n".join(diff) + "\n")
+          print("BASELINE_TO_P5=", diff)
+
+          expected = sorted(
+              ["daemon.apk", "daemon.apk.sha256", "framework/lspd.dex", "framework/lspd.dex.sha256"] +
+              [f"lib/{abi}/liblspd.so"
+               for abi in ("arm64-v8a","armeabi-v7a","x86","x86_64")] +
+              [f"lib/{abi}/liblspd.so.sha256"
+               for abi in ("arm64-v8a","armeabi-v7a","x86","x86_64")]
+          )
+          if diff != expected:
+              raise SystemExit(f"unexpected P5 build-package delta: {diff}")
+
+          Path("p5-output/P5_PACKAGE_SCOPE.txt").write_text(
+              "BUILD_DELTA_EXPECTED=daemon.apk + daemon.apk.sha256 + framework/lspd.dex + sidecar + 4 liblspd.so + 4 lib sidecars\n"
+              "WHY_DAEMON_CHANGES=daemon/src/main/jni/CMakeLists.txt links lsplant_static\n"
+              "DEVICE_TEST_SCOPE=framework/lspd.dex + sidecar + 4 liblspd.so + 4 lib sidecars are transplanted into official 7371\n"
+              "DAEMON_MANAGER_SCRIPTS=kept byte-identical to official 7371 in final hybrid\n"
+          )
+          PY
+
+      - name: Download verified official 7371 release
+        if: steps.p5build.outputs.rc == '0' && steps.package.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 3 \
+            -o OFFICIAL_RELEASE.zip \
+            "https://github.com/silvzr/LSP-IrenaX/releases/download/v2.0.1/LSPosed-v2.0.1-7371-IrenaX-release.zip"
+          echo "$OFFICIAL_RELEASE_SHA256  OFFICIAL_RELEASE.zip" | sha256sum -c -
+
+      - name: Create P5 official-base test ZIP
+        if: steps.p5build.outputs.rc == '0' && steps.package.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib, zipfile
+
+          official = Path("OFFICIAL_RELEASE.zip")
+          p5 = Path("p5cmp")
+          out = Path("LSPosed-v2.0.1-7371-IrenaX-P5-v1-legacy-module-diag-official-base-release.zip")
+
+          # Deliberately transplant only the P4 target-process loader plus the
+          # diagnostic framework dex. The rebuilt daemon.apk also changes because it
+          # statically links LSPlant, but it is intentionally NOT used in the device
+          # test. Official manager/daemon signing and scripts stay untouched.
+          payload = {
+              f"lib/{abi}/liblspd.so"
+              for abi in ("arm64-v8a","armeabi-v7a","x86","x86_64")
+          }
+          payload.add("framework/lspd.dex")
+          sidecars = {x + ".sha256" for x in payload}
+
+          with zipfile.ZipFile(official, "r") as zin, zipfile.ZipFile(out, "w") as zout:
+              infos = zin.infolist()
+              names = [x.filename for x in infos]
+              if len(names) != len(set(names)):
+                  raise SystemExit("duplicate names in official ZIP")
+              if not (payload | sidecars).issubset(set(names)):
+                  raise SystemExit("official ZIP misses replacement targets")
+
+              for info in infos:
+                  name = info.filename
+                  if name in payload:
+                      data = (p5 / name).read_bytes()
+                  elif name in sidecars:
+                      target = p5 / name[:-7]
+                      data = hashlib.sha256(target.read_bytes()).hexdigest().encode()
+                  else:
+                      data = zin.read(name)
+                  zout.writestr(info, data)
+          PY
+          unzip -t LSPosed-v2.0.1-7371-IrenaX-P5-v1-legacy-module-diag-official-base-release.zip
+
+      - name: Audit P5 official-base package
+        if: steps.p5build.outputs.rc == '0' && steps.package.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf offcmp hybridcmp
+          mkdir offcmp hybridcmp
+          unzip -q OFFICIAL_RELEASE.zip -d offcmp
+          unzip -q LSPosed-v2.0.1-7371-IrenaX-P5-v1-legacy-module-diag-official-base-release.zip -d hybridcmp
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib
+
+          def sha(p): return hashlib.sha256(p.read_bytes()).hexdigest()
+          a, b = Path("offcmp"), Path("hybridcmp")
+          ha = {p.relative_to(a).as_posix(): sha(p) for p in a.rglob("*") if p.is_file()}
+          hb = {p.relative_to(b).as_posix(): sha(p) for p in b.rglob("*") if p.is_file()}
+          if set(ha) != set(hb):
+              raise SystemExit("official/P5 file sets differ")
+
+          diff = sorted(k for k in ha if ha[k] != hb[k])
+          expected = sorted(
+              ["framework/lspd.dex", "framework/lspd.dex.sha256"] +
+              [f"lib/{abi}/liblspd.so"
+               for abi in ("arm64-v8a","armeabi-v7a","x86","x86_64")] +
+              [f"lib/{abi}/liblspd.so.sha256"
+               for abi in ("arm64-v8a","armeabi-v7a","x86","x86_64")]
+          )
+          Path("p5-output/P5_OFFICIAL_BASE_DIFF.txt").write_text("\n".join(diff) + "\n")
+          if diff != expected:
+              raise SystemExit(f"unexpected official/P5 delta: {diff}")
+
+          checked = 0
+          for side in b.rglob("*.sha256"):
+              rel = side.relative_to(b).as_posix()
+              target = b / rel[:-7]
+              if not target.exists():
+                  raise SystemExit(f"missing payload for {rel}")
+              if side.read_text().strip().split()[0].lower() != sha(target):
+                  raise SystemExit(f"bad sidecar {rel}")
+              checked += 1
+          print("SIDECARS_CHECKED=", checked)
+          PY
+
+          for so in hybridcmp/lib/*/liblspd.so; do
+            readelf -h "$so" >/dev/null
+            readelf -Ws "$so" | grep -q 'zygisk_module_entry'
+            readelf -Ws "$so" | grep -q 'zygisk_companion_entry'
+          done
+
+      - name: Collect provenance
+        if: always()
+        working-directory: LSP-IrenaX
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ../p5-output
+          {
+            echo "repo=$IRENA_REPO"
+            echo "irena=$(git rev-parse HEAD)"
+            echo "expected_irena=$IRENA_COMMIT"
+            echo "current_lsplant=$CURRENT_LSPLANT_SHA"
+            echo "replacement_lsplant=$(git -C external/lsplant rev-parse HEAD 2>/dev/null || true)"
+            echo "expected_replacement=$OLD_LSPLANT_SHA"
+            echo "dobby=$(git -C external/dobby rev-parse HEAD 2>/dev/null || true)"
+            echo "expected_dobby=$CURRENT_DOBBY_SHA"
+            echo "P5_scope=P4 7244 LSPlant backend plus diagnostic-only legacy module dispatch/hook-registration logging"
+            echo "P1_atexit=NOT_APPLIED"
+            echo "P2_dex2oat_mount=NOT_APPLIED"
+            echo "P3_old_dobby=NOT_APPLIED"
+          } > ../p5-output/P5_PROVENANCE.txt
+
+          git diff --name-only | sort > ../p5-output/P5_SOURCE_DIFF_NAMES.txt
+          git diff --submodule=short > ../p5-output/P5_SOURCE_DIFF.txt || true
+          [ ! -f ../P5_NATIVE_API_ADAPTER.patch ] || cp ../P5_NATIVE_API_ADAPTER.patch ../p5-output/
+          [ ! -f ../P5_LSPLANT_STATE.txt ] || cp ../P5_LSPLANT_STATE.txt ../p5-output/
+          [ ! -f ../P5_NEW_HELPER_TOKEN_SCAN.txt ] || cp ../P5_NEW_HELPER_TOKEN_SCAN.txt ../p5-output/
+          [ ! -f ../P5_DIAGNOSTIC_LOGGING.patch ] || cp ../P5_DIAGNOSTIC_LOGGING.patch ../p5-output/
+          [ ! -f ../P5_SOURCE_DIFF_NAMES_PREBUILD.txt ] || cp ../P5_SOURCE_DIFF_NAMES_PREBUILD.txt ../p5-output/
+
+      - name: Finalize evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p p5-output
+          for f in \
+            P5_INITIAL_STATE.txt \
+            BASELINE_BUILD_EXIT_CODE.txt \
+            P5_BUILD_EXIT_CODE.txt \
+            baseline-build.log \
+            p5-build.log
+          do
+            [ ! -f "$f" ] || cp "$f" p5-output/
+          done
+
+          if [ -f LSPosed-v2.0.1-7371-IrenaX-P5-v1-legacy-module-diag-official-base-release.zip ]; then
+            cp LSPosed-v2.0.1-7371-IrenaX-P5-v1-legacy-module-diag-official-base-release.zip p5-output/
+          fi
+
+          cat > p5-output/P5_DEVICE_CAPTURE_INSTRUCTIONS.txt <<'EOF'
+          Keep P5 installed with the same LSPosed scopes and modules as the failing P4 case.
+          Clear logcat, start the target app once, wait for the scanner state, then collect:
+            su -c 'logcat -c'
+            # start app normally
+            su -c 'logcat -b all -d -v threadtime' > /sdcard/Download/p5-full-logcat.txt
+          The audit searches for tag P5DIAG. Do not change GPS/location or module scope during one capture.
+          EOF
+
+          (
+            cd p5-output
+            find . -type f ! -name 'P5_EVIDENCE_SHA256SUMS.txt' -print0 | sort -z | xargs -0 sha256sum > P5_EVIDENCE_SHA256SUMS.txt
+          )
+
+      - name: Upload P5 evidence and package
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: irena-x-v2.0.1-7371-p5-v1-legacy-module-diag
+          path: p5-output/**
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Final P5 gate
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          base="$(cat BASELINE_BUILD_EXIT_CODE.txt 2>/dev/null || echo 999)"
+          p5="$(cat P5_BUILD_EXIT_CODE.txt 2>/dev/null || echo 999)"
+          echo "BASELINE_BUILD_EXIT_CODE=$base"
+          echo "P5_BUILD_EXIT_CODE=$p5"
+          test "$base" = "0"
+          test "$p5" = "0"
+          test -f p5-output/LSPosed-v2.0.1-7371-IrenaX-P5-v1-legacy-module-diag-official-base-release.zip
