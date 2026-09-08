@@ -1,0 +1,901 @@
+name: Irena X 7371 P5 v3 runtime-safe hook and mount diagnostic
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  IRENA_REPO: silvzr/LSP-IrenaX
+  IRENA_COMMIT: da439fbbed506dac6c66074af7fda8982aa4fc6a
+  CURRENT_LSPLANT_SHA: c5b46bb4f6a99ffe0c77ce3ab006d3f67d5a2b1c
+  OLD_LSPLANT_REPO: https://github.com/mywalkb/LSPlant_mod.git
+  OLD_LSPLANT_SHA: f492475a76777c0b40e419fe1908871cde88f627
+  CURRENT_DOBBY_SHA: dc7b4be06ad6c5dcfb0bb4ca2082b007d69eaed5
+  OFFICIAL_RELEASE_SHA256: 99e7aaf54dda0e6fa746c55613483a80620174f255dd05e102713778a9966d2f
+  KNOWN_GOOD_P4_ZIP_SHA256: 306fe6b5f98264427466adbf2c668d0312cf6ec9243442678da18de9316255cf
+  P4_ARM64_SHA256: 6aebd7c12539534c30a7be185d6d37030b51cb94a40e2556e470ec90f83d4fdf
+  P4_ARMV7_SHA256: 1e9bccbdf216598eb340c5434b91029d06c0ad8f2b1e7fbeb364a66603f7bcf9
+  P4_X86_SHA256: 9af0c7b9bb7275cc892c5b04cf5718b41d95285ee988717c261e0632a457df7b
+  P4_X86_64_SHA256: 905719fdae332a7b863e31a696f3cd63fa77f1351b94718d2d0ac434bd1e5861
+  HIDEMOCK_REFERENCE_REPO: auag0/HideMockLocation
+  HIDEMOCK_REFERENCE_COMMIT: 6b9adb7cce1602d6e1230138af592bc463744010
+
+jobs:
+  build:
+    name: Reproduce exact P4 runtime baseline and emit read-only diagnostics
+    runs-on: ubuntu-latest
+    env:
+      CCACHE_COMPILERCHECK: "%compiler% -dumpmachine; %compiler% -dumpversion"
+      CCACHE_NOHASHDIR: "true"
+      CCACHE_HARDLINK: "true"
+      CCACHE_BASEDIR: "${{ github.workspace }}/LSP-IrenaX"
+
+    steps:
+      - name: Checkout pinned Irena X 7371
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.IRENA_REPO }}
+          ref: ${{ env.IRENA_COMMIT }}
+          submodules: recursive
+          fetch-depth: 0
+          path: LSP-IrenaX
+
+      - name: Checkout pinned HideMockLocation reference source
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.HIDEMOCK_REFERENCE_REPO }}
+          ref: ${{ env.HIDEMOCK_REFERENCE_COMMIT }}
+          fetch-depth: 1
+          path: HideMockLocation-reference
+
+      - name: Record HideMock reference provenance only
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C HideMockLocation-reference rev-parse HEAD)" = "$HIDEMOCK_REFERENCE_COMMIT"
+          test -z "$(git -C HideMockLocation-reference status --porcelain)"
+          {
+            echo "REFERENCE_ONLY=YES"
+            echo "repo=$HIDEMOCK_REFERENCE_REPO"
+            echo "commit=$(git -C HideMockLocation-reference rev-parse HEAD)"
+            echo "installed_device_apk_is_not_assumed_to_match_this_reference=YES"
+            if [ -f HideMockLocation-reference/app/src/main/java/io/github/auag0/hidemocklocation/Main.kt ]; then
+              sha256sum HideMockLocation-reference/app/src/main/java/io/github/auag0/hidemocklocation/Main.kt
+            fi
+          } > P5V3_HIDEMOCK_REFERENCE.txt
+
+      - name: Verify pristine source pins
+        working-directory: LSP-IrenaX
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$IRENA_COMMIT"
+          test -z "$(git status --porcelain)"
+          test "$(git -C external/lsplant rev-parse HEAD)" = "$CURRENT_LSPLANT_SHA"
+          test "$(git -C external/dobby rev-parse HEAD)" = "$CURRENT_DOBBY_SHA"
+          test -z "$(git -C external/lsplant status --porcelain)"
+          test -z "$(git -C external/dobby status --porcelain)"
+          {
+            echo "IRENA=$(git rev-parse HEAD)"
+            echo "LSPLANT=$(git -C external/lsplant rev-parse HEAD)"
+            echo "DOBBY=$(git -C external/dobby rev-parse HEAD)"
+          } > ../P4_INITIAL_STATE.txt
+
+      - name: Setup Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          log-accepted-android-sdk-licenses: 'false'
+          packages: ''
+
+      - name: Setup ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          max-size: 2G
+          key: irena-x-p4-lsplant-${{ runner.os }}
+          restore-keys: irena-x-${{ runner.os }}
+          save: false
+
+      - name: Setup Ninja 1.12.1
+        uses: seanmiddleditch/gha-setup-ninja@master
+        with:
+          version: 1.12.1
+
+      - name: Remove Android bundled CMake
+        shell: bash
+        run: rm -rf "$ANDROID_HOME/cmake"
+
+      - name: Configure Gradle diagnostics
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.gradle
+          {
+            echo 'org.gradle.caching=true'
+            echo 'org.gradle.parallel=true'
+            echo 'org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8 -XX:+UseParallelGC'
+            echo 'android.native.buildOutput=verbose'
+          } >> ~/.gradle/gradle.properties
+
+      - name: Build pristine 7371 baseline
+        id: baseline
+        working-directory: LSP-IrenaX
+        shell: bash
+        run: |
+          set -uo pipefail
+          set +e
+          ./gradlew clean zipAll --stacktrace --info 2>&1 | tee ../baseline-build.log
+          rc=${PIPESTATUS[0]}
+          set -e
+          echo "$rc" > ../BASELINE_BUILD_EXIT_CODE.txt
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          if [ "$rc" -eq 0 ]; then
+            mapfile -t rel < <(find magisk-loader/release -maxdepth 1 -type f \
+              -name 'LSPosed-v*-IrenaX-release.zip' -print | sort)
+            test "${#rel[@]}" -eq 1
+            cp "${rel[0]}" ../BASELINE_RELEASE.zip
+          fi
+          exit 0
+
+      - name: Replace only LSPlant with 7244 backend
+        id: replace
+        if: steps.baseline.outputs.rc == '0'
+        working-directory: LSP-IrenaX
+        shell: bash
+        run: |
+          set -euo pipefail
+          git -C external/lsplant remote set-url origin "$OLD_LSPLANT_REPO"
+          git -C external/lsplant fetch --no-tags --depth=1 origin "$OLD_LSPLANT_SHA"
+          git -C external/lsplant checkout --detach "$OLD_LSPLANT_SHA"
+          git -C external/lsplant submodule sync --recursive
+          git -C external/lsplant submodule update --init --recursive
+
+          test "$(git -C external/lsplant rev-parse HEAD)" = "$OLD_LSPLANT_SHA"
+          test -z "$(git -C external/lsplant status --porcelain)"
+          test "$(git -C external/dobby rev-parse HEAD)" = "$CURRENT_DOBBY_SHA"
+          test -z "$(git -C external/dobby status --porcelain)"
+
+          mapfile -t top < <(git diff --name-only | sort)
+          test "${#top[@]}" -eq 1
+          test "${top[0]}" = "external/lsplant"
+
+          {
+            echo "OLD_LSPLANT_REPO=$OLD_LSPLANT_REPO"
+            echo "OLD_LSPLANT_SHA=$(git -C external/lsplant rev-parse HEAD)"
+            echo "DOBBY_STILL=$(git -C external/dobby rev-parse HEAD)"
+            echo
+            git diff --submodule=short -- external/lsplant
+            echo
+            git -C external/lsplant submodule status --recursive
+          } > ../P4_LSPLANT_STATE.txt
+
+      - name: Apply LSPlant API compatibility adapter only
+        id: adapter
+        if: steps.baseline.outputs.rc == '0' && steps.replace.outcome == 'success'
+        working-directory: LSP-IrenaX
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          p = Path("core/src/main/jni/src/native_api.cpp")
+          s = p.read_text()
+
+          old_using = 'using lsplant::operator""_sym;\n'
+          if s.count(old_using) != 1:
+              raise SystemExit(f"unexpected _sym using count: {s.count(old_using)}")
+          s = s.replace(old_using, 'using lsplant::operator""_tstr;\n', 1)
+
+          old_hooker = '    using lsplant::Hooker;\n'
+          if s.count(old_hooker) != 1:
+              raise SystemExit(f"unexpected Hooker using count: {s.count(old_hooker)}")
+          s = s.replace(old_hooker, '', 1)
+
+          old_prefix = (
+              '    inline static auto do_dlopen_ = "__dl__Z9do_dlopenPKciPK17android_dlextinfoPKv"_sym.hook->*[]\n'
+              '            <lsplant::Backup auto backup>\n'
+              '            (const char* name, int flags, const void* extinfo, const void* caller_addr) static -> void* {\n'
+          )
+          new_prefix = (
+              '    CREATE_HOOK_STUB_ENTRY(\n'
+              '            "__dl__Z9do_dlopenPKciPK17android_dlextinfoPKv",\n'
+              '            void*, do_dlopen, (const char* name, int flags, const void* extinfo,\n'
+              '                    const void* caller_addr), {\n'
+          )
+          if s.count(old_prefix) != 1:
+              raise SystemExit(f"unexpected new-hook prefix count: {s.count(old_prefix)}")
+          s = s.replace(old_prefix, new_prefix, 1)
+
+          old_suffix = (
+              '                return handle;\n'
+              '            };\n\n'
+              '    bool InstallNativeAPI'
+          )
+          new_suffix = (
+              '                return handle;\n'
+              '            });\n\n'
+              '    bool InstallNativeAPI'
+          )
+          if s.count(old_suffix) != 1:
+              raise SystemExit(f"unexpected new-hook suffix count: {s.count(old_suffix)}")
+          s = s.replace(old_suffix, new_suffix, 1)
+
+          old_invoke = '            handler(do_dlopen_);\n'
+          new_invoke = '            HookSymNoHandle(handler, do_dlopen_sym, do_dlopen);\n'
+          if s.count(old_invoke) != 1:
+              raise SystemExit(f"unexpected handler invocation count: {s.count(old_invoke)}")
+          s = s.replace(old_invoke, new_invoke, 1)
+
+          for x in ('operator""_sym', 'lsplant::Backup', 'do_dlopen_ ='):
+              if x in s:
+                  raise SystemExit(f"new LSPlant helper token survived: {x}")
+
+          for required in (
+              'moduleLoadedCallbacks',
+              'moduleNativeLibs',
+              '.art_symbol_resolver =',
+              '.art_symbol_prefix_resolver =',
+              'Loading module native library',
+              'moduleLoadedCallbacks.push_back(callback)',
+          ):
+              if required not in s:
+                  raise SystemExit(f"current Irena behavior marker missing: {required}")
+
+          p.write_text(s)
+
+          r = Path("core/src/main/jni/include/framework/androidfw/resource_types.h")
+          t = r.read_text()
+
+          old_using2 = 'using lsplant::operator""_sym;\n\n'
+          if t.count(old_using2) != 1:
+              raise SystemExit(f"unexpected resource _sym using count: {t.count(old_using2)}")
+          t = t.replace(old_using2, "", 1)
+
+          old_string_at_s = (
+              '        inline static auto stringAtSSym = ("_ZNK7android13ResStringPool8stringAtEjPj"_sym |\n'
+              '                                         "_ZNK7android13ResStringPool8stringAtEmPm"_sym).as<stringAtRet (ResStringPool::*)(size_t)>;\n\n'
+              '        inline static stringAtRet stringAtS(ResStringPool* thiz, size_t idx) {\n'
+          )
+          new_string_at_s = (
+              '        CREATE_MEM_FUNC_SYMBOL_ENTRY(\n'
+              '                stringAtRet, stringAtS, ResStringPool *thiz, size_t idx) {\n'
+          )
+          if t.count(old_string_at_s) != 1:
+              raise SystemExit(f"unexpected stringAtS frontend count: {t.count(old_string_at_s)}")
+          t = t.replace(old_string_at_s, new_string_at_s, 1)
+
+          old_string_at = (
+              '        inline static auto stringAtSym = ("_ZNK7android13ResStringPool8stringAtEj"_sym |\n'
+              '                                        "_ZNK7android13ResStringPool8stringAtEm"_sym).as<const char16_t* (ResStringPool::*)(size_t, size_t *)>;\n\n'
+              '    inline static const char16_t* stringAt(ResStringPool* thiz, size_t idx, size_t *u16len) {\n'
+          )
+          new_string_at = (
+              '        CREATE_MEM_FUNC_SYMBOL_ENTRY(\n'
+              '                const char16_t*, stringAt, ResStringPool *thiz, size_t idx, size_t *u16len) {\n'
+          )
+          if t.count(old_string_at) != 1:
+              raise SystemExit(f"unexpected stringAt frontend count: {t.count(old_string_at)}")
+          t = t.replace(old_string_at, new_string_at, 1)
+
+          old_setup = (
+              '        static bool setup(const lsplant::HookHandler &handler) {\n'
+              '            return !stringAtSym || !stringAtSSym;\n'
+          )
+          new_setup = (
+              '        static bool setup(const lsplant::HookHandler &handler) {\n'
+              '            // Preserve Irena 7371 exact symbol-to-wrapper mapping.\n'
+              '            RETRIEVE_MEM_FUNC_SYMBOL(\n'
+              '                    stringAtS,\n'
+              '                    LP_SELECT("_ZNK7android13ResStringPool8stringAtEjPj",\n'
+              '                              "_ZNK7android13ResStringPool8stringAtEmPm"));\n'
+              '            RETRIEVE_MEM_FUNC_SYMBOL(\n'
+              '                    stringAt,\n'
+              '                    LP_SELECT("_ZNK7android13ResStringPool8stringAtEj",\n'
+              '                              "_ZNK7android13ResStringPool8stringAtEm"));\n'
+              '            return !stringAtSym || !stringAtSSym;\n'
+          )
+          if t.count(old_setup) != 1:
+              raise SystemExit(f"unexpected resource setup count: {t.count(old_setup)}")
+          t = t.replace(old_setup, new_setup, 1)
+
+          for x in ('operator""_sym', '_sym |', ').as<'):
+              if x in t:
+                  raise SystemExit(f"new LSPlant resource helper token survived: {x}")
+
+          r.write_text(t)
+          PY
+
+          git diff --check
+          mapfile -t top < <(git diff --name-only | sort)
+          printf '%s\n' "${top[@]}"
+          test "${#top[@]}" -eq 3
+          test "${top[0]}" = "core/src/main/jni/include/framework/androidfw/resource_types.h"
+          test "${top[1]}" = "core/src/main/jni/src/native_api.cpp"
+          test "${top[2]}" = "external/lsplant"
+
+          git diff --exit-code "$IRENA_COMMIT" -- \
+            magisk-loader/src/main/jni/api/zygisk_main.cpp \
+            magisk-loader/src/main/jni/src/magisk_loader.cpp \
+            magisk-loader/src/main/jni/CMakeLists.txt \
+            daemon/src/main/java/org/lsposed/lspd/service/Dex2OatService.java
+
+          test "$(git -C external/dobby rev-parse HEAD)" = "$CURRENT_DOBBY_SHA"
+          test -z "$(git -C external/dobby status --porcelain)"
+
+          {
+            echo "adapter1=core/src/main/jni/src/native_api.cpp"
+            echo "adapter2=core/src/main/jni/include/framework/androidfw/resource_types.h"
+            echo "purpose=syntax-only bridge from current _sym helper frontend to 7244 hook helper API"
+            echo "native callback body=current Irena 7371 preserved"
+            echo "resource symbol mapping=current Irena 7371 preserved"
+            echo
+            git diff --               core/src/main/jni/src/native_api.cpp               core/src/main/jni/include/framework/androidfw/resource_types.h
+          } > ../P4_NATIVE_API_ADAPTER.patch
+
+          if grep -R -n -E 'operator""_sym|lsplant::Backup|_sym[.]hook|[)]\.as<'               core/src/main/jni/src/native_api.cpp               core/src/main/jni/include/framework/androidfw/resource_types.h               > ../P4_NEW_HELPER_TOKEN_SCAN.txt; then
+            echo "new LSPlant helper tokens survived adapter" >&2
+            exit 1
+          else
+            echo "NONE" > ../P4_NEW_HELPER_TOKEN_SCAN.txt
+          fi
+
+      - name: Build P4 and preserve exact failure
+        id: p4build
+        if: steps.baseline.outputs.rc == '0' && steps.replace.outcome == 'success' && steps.adapter.outcome == 'success'
+        working-directory: LSP-IrenaX
+        shell: bash
+        run: |
+          set -uo pipefail
+          set +e
+          ./gradlew clean zipAll --stacktrace --info 2>&1 | tee ../p4-build.log
+          rc=${PIPESTATUS[0]}
+          set -e
+          echo "$rc" > ../P4_BUILD_EXIT_CODE.txt
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Extract P4 build diagnostics
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p p4-output/native
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          log = Path("p4-build.log")
+          if not log.exists():
+              Path("p4-output/P4_FAILURE_EXCERPT.txt").write_text("p4-build.log not created\n")
+              Path("p4-output/P4_FAILURE_MATCHES.txt").write_text("p4-build.log not created\n")
+              raise SystemExit(0)
+
+          lines = log.read_text(errors="replace").splitlines()
+          pat = re.compile(
+              r"(FAILED:|error:|fatal error:|undefined reference|CMake Error|ninja:.*failed|"
+              r"Execution failed for task|BUILD FAILED|No such file|not declared|no member named|"
+              r"unknown type name|does not name a type)",
+              re.I,
+          )
+          hits = [i for i, line in enumerate(lines) if pat.search(line)]
+          Path("p4-output/P4_FAILURE_MATCHES.txt").write_text(
+              "".join(f"{i+1}: {lines[i]}\n" for i in hits[:300])
+          )
+
+          if hits:
+              first = hits[0]
+              lo, hi = max(0, first - 60), min(len(lines), first + 180)
+          else:
+              lo, hi = max(0, len(lines)-300), len(lines)
+          Path("p4-output/P4_FAILURE_EXCERPT.txt").write_text(
+              "\n".join(f"{i+1}: {lines[i]}" for i in range(lo, hi)) + "\n"
+          )
+          PY
+
+          find LSP-IrenaX -type f \( \
+            -name 'CMakeCache.txt' -o \
+            -name 'CMakeError.log' -o \
+            -name 'CMakeOutput.log' -o \
+            -name 'build.ninja' -o \
+            -name 'rules.ninja' -o \
+            -name 'compile_commands.json' \
+          \) -print0 | while IFS= read -r -d '' f; do
+            dst="p4-output/native/${f#LSP-IrenaX/}"
+            mkdir -p "$(dirname "$dst")"
+            cp "$f" "$dst"
+          done
+
+      - name: Validate successful P4 package delta
+        id: package
+        if: steps.p4build.outputs.rc == '0'
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf baselinecmp p4cmp
+          mkdir baselinecmp p4cmp
+          unzip -q BASELINE_RELEASE.zip -d baselinecmp
+
+          mapfile -t rel < <(find LSP-IrenaX/magisk-loader/release -maxdepth 1 -type f \
+            -name 'LSPosed-v*-IrenaX-release.zip' -print | sort)
+          mapfile -t dbg < <(find LSP-IrenaX/magisk-loader/release -maxdepth 1 -type f \
+            -name 'LSPosed-v*-IrenaX-debug.zip' -print | sort)
+          test "${#rel[@]}" -eq 1
+          test "${#dbg[@]}" -eq 1
+          unzip -q "${rel[0]}" -d p4cmp
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib
+
+          def tree(root):
+              root = Path(root)
+              return {
+                  p.relative_to(root).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
+                  for p in root.rglob("*") if p.is_file()
+              }
+
+          a, b = tree("baselinecmp"), tree("p4cmp")
+          if set(a) != set(b):
+              raise SystemExit("baseline/P4 file sets differ")
+
+          diff = sorted(k for k in a if a[k] != b[k])
+          Path("p4-output/P4_BASELINE_PACKAGE_DIFF.txt").write_text("\n".join(diff) + "\n")
+          print("BASELINE_TO_P4=", diff)
+
+          expected = sorted(
+              ["daemon.apk", "daemon.apk.sha256"] +
+              [f"lib/{abi}/liblspd.so"
+               for abi in ("arm64-v8a","armeabi-v7a","x86","x86_64")] +
+              [f"lib/{abi}/liblspd.so.sha256"
+               for abi in ("arm64-v8a","armeabi-v7a","x86","x86_64")]
+          )
+          if diff != expected:
+              raise SystemExit(f"unexpected P4 build-package delta: {diff}")
+
+          Path("p4-output/P4_PACKAGE_SCOPE.txt").write_text(
+              "BUILD_DELTA_EXPECTED=daemon.apk + daemon.apk.sha256 + 4 liblspd.so + 4 sidecars\n"
+              "WHY_DAEMON_CHANGES=daemon/src/main/jni/CMakeLists.txt links lsplant_static\n"
+              "DEVICE_TEST_SCOPE=only 4 liblspd.so + 4 sidecars are transplanted into official 7371\n"
+              "DAEMON_MANAGER_SCRIPTS=kept byte-identical to official 7371 in final hybrid\n"
+          )
+          PY
+
+      - name: Download verified official 7371 release
+        if: steps.p4build.outputs.rc == '0' && steps.package.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 3 \
+            -o OFFICIAL_RELEASE.zip \
+            "https://github.com/silvzr/LSP-IrenaX/releases/download/v2.0.1/LSPosed-v2.0.1-7371-IrenaX-release.zip"
+          echo "$OFFICIAL_RELEASE_SHA256  OFFICIAL_RELEASE.zip" | sha256sum -c -
+
+      - name: Create P4 official-base test ZIP
+        if: steps.p4build.outputs.rc == '0' && steps.package.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib, zipfile
+
+          official = Path("OFFICIAL_RELEASE.zip")
+          p4 = Path("p4cmp")
+          out = Path("LSPosed-v2.0.1-7371-IrenaX-P4-v3-lsplant-7244-official-base-release.zip")
+
+          # Deliberately transplant only the target-process/zygisk loader.
+          # The rebuilt daemon.apk also changes because it statically links LSPlant,
+          # but it is intentionally NOT used in the device test. This keeps the
+          # official manager/daemon signing and runtime chain untouched.
+          payload = {
+              f"lib/{abi}/liblspd.so"
+              for abi in ("arm64-v8a","armeabi-v7a","x86","x86_64")
+          }
+          sidecars = {x + ".sha256" for x in payload}
+
+          with zipfile.ZipFile(official, "r") as zin, zipfile.ZipFile(out, "w") as zout:
+              infos = zin.infolist()
+              names = [x.filename for x in infos]
+              if len(names) != len(set(names)):
+                  raise SystemExit("duplicate names in official ZIP")
+              if not (payload | sidecars).issubset(set(names)):
+                  raise SystemExit("official ZIP misses replacement targets")
+
+              for info in infos:
+                  name = info.filename
+                  if name in payload:
+                      data = (p4 / name).read_bytes()
+                  elif name in sidecars:
+                      target = p4 / name[:-7]
+                      data = hashlib.sha256(target.read_bytes()).hexdigest().encode()
+                  else:
+                      data = zin.read(name)
+                  zout.writestr(info, data)
+          PY
+          unzip -t LSPosed-v2.0.1-7371-IrenaX-P4-v3-lsplant-7244-official-base-release.zip
+
+      - name: Audit P4 official-base package
+        if: steps.p4build.outputs.rc == '0' && steps.package.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf offcmp hybridcmp
+          mkdir offcmp hybridcmp
+          unzip -q OFFICIAL_RELEASE.zip -d offcmp
+          unzip -q LSPosed-v2.0.1-7371-IrenaX-P4-v3-lsplant-7244-official-base-release.zip -d hybridcmp
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib
+
+          def sha(p): return hashlib.sha256(p.read_bytes()).hexdigest()
+          a, b = Path("offcmp"), Path("hybridcmp")
+          ha = {p.relative_to(a).as_posix(): sha(p) for p in a.rglob("*") if p.is_file()}
+          hb = {p.relative_to(b).as_posix(): sha(p) for p in b.rglob("*") if p.is_file()}
+          if set(ha) != set(hb):
+              raise SystemExit("official/P4 file sets differ")
+
+          diff = sorted(k for k in ha if ha[k] != hb[k])
+          expected = sorted(
+              [f"lib/{abi}/liblspd.so"
+               for abi in ("arm64-v8a","armeabi-v7a","x86","x86_64")] +
+              [f"lib/{abi}/liblspd.so.sha256"
+               for abi in ("arm64-v8a","armeabi-v7a","x86","x86_64")]
+          )
+          Path("p4-output/P4_OFFICIAL_BASE_DIFF.txt").write_text("\n".join(diff) + "\n")
+          if diff != expected:
+              raise SystemExit(f"unexpected official/P4 delta: {diff}")
+
+          checked = 0
+          for side in b.rglob("*.sha256"):
+              rel = side.relative_to(b).as_posix()
+              target = b / rel[:-7]
+              if not target.exists():
+                  raise SystemExit(f"missing payload for {rel}")
+              if side.read_text().strip().split()[0].lower() != sha(target):
+                  raise SystemExit(f"bad sidecar {rel}")
+              checked += 1
+          print("SIDECARS_CHECKED=", checked)
+          PY
+
+          for so in hybridcmp/lib/*/liblspd.so; do
+            readelf -h "$so" >/dev/null
+            readelf -Ws "$so" | grep -q 'zygisk_module_entry'
+            readelf -Ws "$so" | grep -q 'zygisk_companion_entry'
+          done
+
+      - name: Gate byte-exact known-good P4 runtime payload
+        if: steps.p4build.outputs.rc == '0' && steps.package.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          hybrid="LSPosed-v2.0.1-7371-IrenaX-P4-v3-lsplant-7244-official-base-release.zip"
+          test -f "$hybrid"
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib, os, zipfile
+
+          hybrid = Path("LSPosed-v2.0.1-7371-IrenaX-P4-v3-lsplant-7244-official-base-release.zip")
+          official = Path("OFFICIAL_RELEASE.zip")
+          known_zip = os.environ["KNOWN_GOOD_P4_ZIP_SHA256"].lower()
+          expected = {
+              "lib/arm64-v8a/liblspd.so": os.environ["P4_ARM64_SHA256"].lower(),
+              "lib/armeabi-v7a/liblspd.so": os.environ["P4_ARMV7_SHA256"].lower(),
+              "lib/x86/liblspd.so": os.environ["P4_X86_SHA256"].lower(),
+              "lib/x86_64/liblspd.so": os.environ["P4_X86_64_SHA256"].lower(),
+          }
+          sha = lambda b: hashlib.sha256(b).hexdigest()
+
+          with zipfile.ZipFile(hybrid) as z:
+              names = z.namelist()
+              if len(names) != len(set(names)):
+                  raise SystemExit("duplicate entries in hybrid")
+              for name, want in expected.items():
+                  got = sha(z.read(name))
+                  if got != want:
+                      raise SystemExit(f"known-good P4 loader mismatch {name}: {got} != {want}")
+
+          with zipfile.ZipFile(hybrid) as h, zipfile.ZipFile(official) as o:
+              for name in ("framework/lspd.dex", "daemon.apk"):
+                  if h.read(name) != o.read(name):
+                      raise SystemExit(f"runtime-safe invariant failed: {name} differs from official")
+
+          got_zip = sha(hybrid.read_bytes())
+          if got_zip != known_zip:
+              raise SystemExit(f"byte-exact P4 ZIP mismatch: {got_zip} != {known_zip}")
+
+          Path("p4-output/P5V3_RUNTIME_BASELINE_GATE.txt").write_text(
+              "P4_BYTE_EXACT_ZIP=PASS\n"
+              f"P4_ZIP_SHA256={got_zip}\n"
+              "P4_4_LOADER_HASHES=PASS\n"
+              "FRAMEWORK_LSPD_DEX=OFFICIAL_BYTE_IDENTICAL\n"
+              "DAEMON_APK=OFFICIAL_BYTE_IDENTICAL\n"
+              "P5V2_DIAGNOSTIC_DEX=NOT_USED\n"
+              "DEVICE_RUNTIME_CHANGE_VS_CONFIRMED_P4=NONE\n"
+          )
+          PY
+
+          cp "$hybrid" \
+            "LSPosed-v2.0.1-7371-IrenaX-P5-v3-runtime-safe-hook-mount-diag-official-base-release.zip"
+          echo "$KNOWN_GOOD_P4_ZIP_SHA256  LSPosed-v2.0.1-7371-IrenaX-P5-v3-runtime-safe-hook-mount-diag-official-base-release.zip" \
+            | sha256sum -c -
+
+      - name: Create read-only device runtime collector
+        if: steps.p4build.outputs.rc == '0' && steps.package.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p p4-output
+          cat > p4-output/P5V3_RUNTIME_COLLECTOR.sh <<'COLLECTOR'
+          #!/system/bin/sh
+          # P5-v3 runtime collector: read-only diagnostic capture.
+          # It does not change settings, scopes, packages, mounts, location values, or hook results.
+          set -u
+
+          LABEL="${1:-capture}"
+          STAMP="$(date +%Y%m%d-%H%M%S 2>/dev/null || echo unknown-time)"
+          BASE="/sdcard/Download/P5V3-runtime-${LABEL}-${STAMP}"
+          mkdir -p "$BASE" || exit 1
+
+          run_to() {
+            name="$1"
+            shift
+            {
+              echo "# label=$LABEL"
+              echo "# captured=$(date -Ins 2>/dev/null || date 2>/dev/null || true)"
+              echo "# command=$*"
+              "$@"
+            } >"$BASE/$name" 2>&1 || true
+          }
+
+          shell_to() {
+            name="$1"
+            shift
+            cmd="$*"
+            {
+              echo "# label=$LABEL"
+              echo "# captured=$(date -Ins 2>/dev/null || date 2>/dev/null || true)"
+              echo "# shell=$cmd"
+              sh -c "$cmd"
+            } >"$BASE/$name" 2>&1 || true
+          }
+
+          pkg_capture() {
+            pkg="$1"
+            safe="$(echo "$pkg" | tr '.:' '__')"
+            dumpsys package "$pkg" >"$BASE/package-${safe}.txt" 2>&1 || true
+            pm path "$pkg" >"$BASE/pm-path-${safe}.txt" 2>&1 || true
+            : >"$BASE/apk-sha256-${safe}.txt"
+            while IFS= read -r line; do
+              case "$line" in
+                package:*)
+                  p="${line#package:}"
+                  if [ -f "$p" ]; then
+                    sha256sum "$p" >>"$BASE/apk-sha256-${safe}.txt" 2>&1 || true
+                  fi
+                  ;;
+              esac
+            done <"$BASE/pm-path-${safe}.txt"
+          }
+
+          first_pid() {
+            pidof "$1" 2>/dev/null | awk '{print $1}'
+          }
+
+          pid_capture() {
+            label="$1"
+            pid="$2"
+            if [ -z "$pid" ] || [ ! -d "/proc/$pid" ]; then
+              echo "PID_NOT_PRESENT" >"$BASE/pid-${label}.txt"
+              return 0
+            fi
+            echo "$pid" >"$BASE/pid-${label}.txt"
+            readlink "/proc/$pid/ns/mnt" >"$BASE/ns-mnt-${label}.txt" 2>&1 || true
+            stat -Lc 'inode=%i path=%n' "/proc/$pid/ns/mnt" >>"$BASE/ns-mnt-${label}.txt" 2>&1 || true
+            cat "/proc/$pid/status" >"$BASE/proc-status-${label}.txt" 2>&1 || true
+            tr '\000' ' ' <"/proc/$pid/cmdline" >"$BASE/proc-cmdline-${label}.txt" 2>&1 || true
+            cat "/proc/$pid/mountinfo" >"$BASE/mountinfo-${label}.txt" 2>&1 || true
+            grep -E -i 'dex2oat|lsposed|lspd|zygisk|magisk|module|overlay|apex|riru|susfs' \
+              "/proc/$pid/mountinfo" >"$BASE/mountinfo-filtered-${label}.txt" 2>&1 || true
+          }
+
+          {
+            echo "label=$LABEL"
+            echo "stamp=$STAMP"
+            echo "uid=$(id -u 2>/dev/null || true)"
+            echo "user=$(id 2>/dev/null || true)"
+            echo "getenforce=$(getenforce 2>/dev/null || true)"
+            echo "sdk=$(getprop ro.build.version.sdk 2>/dev/null || true)"
+            echo "release=$(getprop ro.build.version.release 2>/dev/null || true)"
+            echo "fingerprint=$(getprop ro.build.fingerprint 2>/dev/null || true)"
+            echo "kernel=$(uname -a 2>/dev/null || true)"
+          } >"$BASE/00-summary.txt" 2>&1
+
+          pkg_capture com.nianticproject.ingress
+          pkg_capture io.github.auag0.hidemocklocation
+          pkg_capture com.android1500.gpssetter
+          pkg_capture com.theqtbsezydl.eeffevafzafjaxj
+
+          INGRESS_PID="$(first_pid com.nianticproject.ingress)"
+          SYSTEM_PID="$(first_pid system_server)"
+          ZYGOTE64_PID="$(first_pid zygote64)"
+          GPS_PID="$(first_pid com.theqtbsezydl.eeffevafzafjaxj)"
+
+          pid_capture pid1 1
+          pid_capture self $$
+          pid_capture system_server "$SYSTEM_PID"
+          pid_capture zygote64 "$ZYGOTE64_PID"
+          pid_capture ingress "$INGRESS_PID"
+          pid_capture gpsjoystick "$GPS_PID"
+
+          run_to ps.txt ps -A
+          shell_to ps-detail.txt 'ps -A -o USER,PID,PPID,NAME 2>/dev/null || ps -A'
+          run_to proc-mounts.txt cat /proc/mounts
+          run_to mount-command.txt mount
+          run_to dumpsys-location.txt dumpsys location
+          run_to dumpsys-activity-processes.txt dumpsys activity processes
+          run_to settings-location-providers.txt settings get secure location_providers_allowed
+
+          {
+            for x in /apex/com.android.art/bin/dex2oat32 /apex/com.android.art/bin/dex2oat64; do
+              echo "== $x =="
+              ls -lZ "$x" 2>&1 || ls -l "$x" 2>&1 || true
+              readlink -f "$x" 2>&1 || true
+            done
+          } >"$BASE/dex2oat-paths.txt" 2>&1
+
+          logcat -b all -d -v threadtime >"$BASE/logcat-all.txt" 2>&1 || true
+          grep -E -i 'LSPosed|LSPlant|zygisk|hidemock|gpssetter|network!=gps|mock|mount|dex2oat|pairip' \
+            "$BASE/logcat-all.txt" >"$BASE/logcat-framework-filtered.txt" 2>&1 || true
+
+          {
+            echo "INGRESS_PID=$INGRESS_PID"
+            echo "SYSTEM_SERVER_PID=$SYSTEM_PID"
+            echo "ZYGOTE64_PID=$ZYGOTE64_PID"
+            echo "GPS_JOYSTICK_PID=$GPS_PID"
+            for f in "$BASE"/ns-mnt-*.txt; do
+              [ -f "$f" ] || continue
+              echo "== $(basename "$f") =="
+              cat "$f"
+            done
+          } >"$BASE/mount-namespace-summary.txt" 2>&1
+
+          ARCHIVE="${BASE}.tar.gz"
+          parent="$(dirname "$BASE")"
+          base_name="$(basename "$BASE")"
+          if toybox tar -czf "$ARCHIVE" -C "$parent" "$base_name" 2>/dev/null; then
+            echo "$ARCHIVE"
+          elif tar -czf "$ARCHIVE" -C "$parent" "$base_name" 2>/dev/null; then
+            echo "$ARCHIVE"
+          else
+            echo "$BASE"
+          fi
+          COLLECTOR
+          chmod 0755 p4-output/P5V3_RUNTIME_COLLECTOR.sh
+
+          cat > p4-output/P5V3_RUNTIME_TEST_README.txt <<'README'
+          P5-v3 is deliberately byte-identical to the already confirmed P4-v3 device package.
+          It does NOT replace framework/lspd.dex and does NOT add in-process diagnostic hooks.
+
+          Goal:
+          - establish whether the exact P4 runtime shows LSPlant/LoadedApk errors
+          - capture module/package versions and APK hashes
+          - capture mount namespace identities and mountinfo
+          - correlate those with GPS/location and framework logs
+          - do not change any hook result or location value
+
+          Device procedure:
+          1) Install the P5-v3 package (it is byte-identical to known-good P4-v3) and reboot if your module manager requires it.
+          2) Copy P5V3_RUNTIME_COLLECTOR.sh to /sdcard/Download/.
+          3) Keep the same LSPosed scopes/modules and the same GPS/location configuration.
+          4) Before launch:
+               su -c 'am force-stop com.nianticproject.ingress'
+               su -c 'logcat -c'
+               su -c 'sh /sdcard/Download/P5V3_RUNTIME_COLLECTOR.sh before'
+          5) Launch Ingress once and wait until the scanner is either working or disabled.
+          6) Immediately capture:
+               su -c 'sh /sdcard/Download/P5V3_RUNTIME_COLLECTOR.sh after'
+          7) Upload the two P5V3-runtime-*.tar.gz files.
+
+          The collector is read-only except for writing its own output files under /sdcard/Download.
+          README
+
+          sha256sum p4-output/P5V3_RUNTIME_COLLECTOR.sh \
+                    p4-output/P5V3_RUNTIME_TEST_README.txt \
+            > p4-output/P5V3_COLLECTOR_SHA256SUMS.txt
+
+      - name: Collect provenance
+        if: always()
+        working-directory: LSP-IrenaX
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ../p4-output
+          {
+            echo "repo=$IRENA_REPO"
+            echo "irena=$(git rev-parse HEAD)"
+            echo "expected_irena=$IRENA_COMMIT"
+            echo "current_lsplant=$CURRENT_LSPLANT_SHA"
+            echo "replacement_lsplant=$(git -C external/lsplant rev-parse HEAD 2>/dev/null || true)"
+            echo "expected_replacement=$OLD_LSPLANT_SHA"
+            echo "dobby=$(git -C external/dobby rev-parse HEAD 2>/dev/null || true)"
+            echo "expected_dobby=$CURRENT_DOBBY_SHA"
+            echo "P4_scope=7244 LSPlant plus syntax-only native_api/resource_types adapters"
+            echo "P1_atexit=NOT_APPLIED"
+            echo "P2_dex2oat_mount=NOT_APPLIED"
+            echo "P3_old_dobby=NOT_APPLIED"
+          } > ../p4-output/P4_PROVENANCE.txt
+
+          git diff --name-only | sort > ../p4-output/P4_SOURCE_DIFF_NAMES.txt
+          git diff --submodule=short > ../p4-output/P4_SOURCE_DIFF.txt || true
+          [ ! -f ../P4_NATIVE_API_ADAPTER.patch ] || cp ../P4_NATIVE_API_ADAPTER.patch ../p4-output/
+          [ ! -f ../P4_LSPLANT_STATE.txt ] || cp ../P4_LSPLANT_STATE.txt ../p4-output/
+          [ ! -f ../P4_NEW_HELPER_TOKEN_SCAN.txt ] || cp ../P4_NEW_HELPER_TOKEN_SCAN.txt ../p4-output/
+
+      - name: Finalize evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p p4-output
+          for f in \
+            P4_INITIAL_STATE.txt \
+            P5V3_HIDEMOCK_REFERENCE.txt \
+            BASELINE_BUILD_EXIT_CODE.txt \
+            P4_BUILD_EXIT_CODE.txt \
+            baseline-build.log \
+            p4-build.log
+          do
+            [ ! -f "$f" ] || cp "$f" p4-output/
+          done
+
+          if [ -f LSPosed-v2.0.1-7371-IrenaX-P4-v3-lsplant-7244-official-base-release.zip ]; then
+            cp LSPosed-v2.0.1-7371-IrenaX-P4-v3-lsplant-7244-official-base-release.zip p4-output/
+          fi
+
+          if [ -f LSPosed-v2.0.1-7371-IrenaX-P5-v3-runtime-safe-hook-mount-diag-official-base-release.zip ]; then
+            cp LSPosed-v2.0.1-7371-IrenaX-P5-v3-runtime-safe-hook-mount-diag-official-base-release.zip p4-output/
+          fi
+
+          (
+            cd p4-output
+            find . -type f ! -name 'P4_EVIDENCE_SHA256SUMS.txt' -print0               | sort -z | xargs -0 sha256sum > P4_EVIDENCE_SHA256SUMS.txt
+          )
+
+      - name: Upload P4 evidence and package
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: irena-x-v2.0.1-7371-p5-v3-runtime-safe-hook-mount-diagnostic
+          path: p4-output/**
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Final P5-v3 runtime-safe gate
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          base="$(cat BASELINE_BUILD_EXIT_CODE.txt 2>/dev/null || echo 999)"
+          p4="$(cat P4_BUILD_EXIT_CODE.txt 2>/dev/null || echo 999)"
+          echo "BASELINE_BUILD_EXIT_CODE=$base"
+          echo "P4_BUILD_EXIT_CODE=$p4"
+          test "$base" = "0"
+          test "$p4" = "0"
+          test -f p4-output/LSPosed-v2.0.1-7371-IrenaX-P5-v3-runtime-safe-hook-mount-diag-official-base-release.zip
+          test -f p4-output/P5V3_RUNTIME_COLLECTOR.sh
+          test -f p4-output/P5V3_RUNTIME_BASELINE_GATE.txt
+          grep -q '^P4_BYTE_EXACT_ZIP=PASS$' p4-output/P5V3_RUNTIME_BASELINE_GATE.txt
