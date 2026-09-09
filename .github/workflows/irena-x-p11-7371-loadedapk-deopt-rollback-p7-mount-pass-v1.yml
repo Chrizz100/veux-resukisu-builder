@@ -1,0 +1,773 @@
+name: Irena X 7371 P11 v1 LoadedApk deopt rollback + P7 mount PASS
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  FRAMEWORK_FAMILY: Irena-X
+  FRAMEWORK_VERSION: v2.0.1
+  FRAMEWORK_BUILD: "7371"
+  XPOSED_API_LINE: "100+101"
+
+  IRENA_REPO: silvzr/LSP-IrenaX
+  IRENA_COMMIT: da439fbbed506dac6c66074af7fda8982aa4fc6a
+  CURRENT_LSPLANT_SHA: c5b46bb4f6a99ffe0c77ce3ab006d3f67d5a2b1c
+  CURRENT_DOBBY_SHA: dc7b4be06ad6c5dcfb0bb4ca2082b007d69eaed5
+
+  OLD_WORKING_REPO: mywalkb/LSPosed_mod
+  OLD_WORKING_COMMIT: 9770579f313de44397c295fd1cc44e3fcec4777c
+  DEOPT_REGRESSION_COMMIT: 33067febac0c677f9567d25ee34675e250207b60
+
+  OFFICIAL_RELEASE_URL: https://github.com/silvzr/LSP-IrenaX/releases/download/v2.0.1/LSPosed-v2.0.1-7371-IrenaX-release.zip
+  OFFICIAL_RELEASE_SHA256: 99e7aaf54dda0e6fa746c55613483a80620174f255dd05e102713778a9966d2f
+
+  # Frozen confirmed runtime PASS from the mount-only branch.
+  PARENT_PASS_ID: IRENA_X_7371_P7_V2_MOUNT_ONLY_FULL_PASS
+  PARENT_PASS_ZIP_SHA256: 4e12798295bc1e6180461d435b05d145e0c28a22e5c3e1e12c990f334cc15cba
+  PARENT_PASS_DATE: "2026-09-08"
+
+  # P8 restored current hooks and reproduced the PairIP crash.
+  # P11 keeps that hook stack and changes only the LoadedApk boot-image deopt list.
+  DIAGNOSTIC_PARENT: IRENA_X_7371_P8_CURRENT_HOOKS_P7_MOUNT
+  PAIRIP_KNOWN_CRASH_OFFSET: "0x65768"
+
+  FINAL_ZIP: LSPosed-v2.0.1-7371-IrenaX-P11-v1-loadedapk-deopt-rollback-P7-mount-release.zip
+
+jobs:
+  build:
+    name: Build P11 LoadedApk deopt rollback on P7 mount PASS
+    runs-on: ubuntu-latest
+
+    env:
+      CCACHE_COMPILERCHECK: "%compiler% -dumpmachine; %compiler% -dumpversion"
+      CCACHE_NOHASHDIR: "true"
+      CCACHE_HARDLINK: "true"
+      CCACHE_BASEDIR: "${{ github.workspace }}/LSP-IrenaX"
+
+    steps:
+      - name: Checkout pinned Irena X 7371
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.IRENA_REPO }}
+          ref: ${{ env.IRENA_COMMIT }}
+          submodules: recursive
+          fetch-depth: 0
+          path: LSP-IrenaX
+
+      - name: Checkout old working 7244 reference
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.OLD_WORKING_REPO }}
+          ref: ${{ env.OLD_WORKING_COMMIT }}
+          submodules: false
+          fetch-depth: 1
+          path: LSPosed-7244-reference
+
+      - name: Freeze parent PASS and P11 hypothesis
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p p11-output
+          {
+            echo "PARENT_PASS_ID=$PARENT_PASS_ID"
+            echo "PARENT_PASS_ZIP_SHA256=$PARENT_PASS_ZIP_SHA256"
+            echo "PARENT_PASS_DATE=$PARENT_PASS_DATE"
+            echo "PARENT_PASS_RUNTIME_1=PID1 dex2oat32/64 mount scan NONE"
+            echo "PARENT_PASS_RUNTIME_2=zygote64 dex2oat32/64 mount scan NONE"
+            echo "PARENT_PASS_RUNTIME_3=system_server dex2oat32/64 mount scan NONE"
+            echo "PARENT_PASS_RUNTIME_4=TrustAttestor L0 PASS"
+            echo "PARENT_PASS_RUNTIME_5=TrustAttestor L2 PASS"
+            echo "DIAGNOSTIC_PARENT=$DIAGNOSTIC_PARENT"
+            echo "P11_HYPOTHESIS=7371 LoadedApk makeApplication* boot-image deopts contribute to PairIP crash"
+            echo "P11_ONLY_NEW_FUNCTIONAL_CHANGE=rollback exactly 3 LoadedApk deopt callers to 7244 behavior"
+            echo "P11_PRESERVED_CHANGE=P7 dex2oat doMount(true) suppression"
+            echo "PAIRIP_BYPASS=NOT_ATTEMPTED"
+            echo "M_INCLUDE_CODE=UNCHANGED"
+            echo "LSPLANT=UNCHANGED_CURRENT_7371"
+            echo "DOBBY=UNCHANGED_CURRENT_7371"
+          } | tee p11-output/P11_PARENT_PASS_AND_HYPOTHESIS.txt
+
+      - name: Verify pristine pins and 7244 reference
+        working-directory: LSP-IrenaX
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$IRENA_COMMIT"
+          test -z "$(git status --porcelain)"
+          test "$(git -C external/lsplant rev-parse HEAD)" = "$CURRENT_LSPLANT_SHA"
+          test "$(git -C external/dobby rev-parse HEAD)" = "$CURRENT_DOBBY_SHA"
+          test -z "$(git -C external/lsplant status --porcelain)"
+          test -z "$(git -C external/dobby status --porcelain)"
+
+          test "$(git -C ../LSPosed-7244-reference rev-parse HEAD)" = "$OLD_WORKING_COMMIT"
+          test -f ../LSPosed-7244-reference/core/src/main/java/org/lsposed/lspd/deopt/InlinedMethodCallers.java
+
+          {
+            echo "FRAMEWORK_FAMILY=$FRAMEWORK_FAMILY"
+            echo "FRAMEWORK_VERSION=$FRAMEWORK_VERSION"
+            echo "FRAMEWORK_BUILD=$FRAMEWORK_BUILD"
+            echo "XPOSED_API_LINE=$XPOSED_API_LINE"
+            echo "IRENA=$(git rev-parse HEAD)"
+            echo "LSPLANT=$(git -C external/lsplant rev-parse HEAD)"
+            echo "DOBBY=$(git -C external/dobby rev-parse HEAD)"
+            echo "OLD_WORKING_7244=$(git -C ../LSPosed-7244-reference rev-parse HEAD)"
+            echo "DEOPT_REGRESSION_COMMIT=$DEOPT_REGRESSION_COMMIT"
+          } > ../p11-output/P11_SOURCE_PINS.txt
+
+      - name: Setup Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          log-accepted-android-sdk-licenses: 'false'
+          packages: ''
+
+      - name: Setup ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          max-size: 2G
+          key: irena-x-p11-loadedapk-deopt-${{ runner.os }}
+          restore-keys: |
+            irena-x-${{ runner.os }}
+          save: false
+
+      - name: Setup Ninja 1.12.1
+        uses: seanmiddleditch/gha-setup-ninja@master
+        with:
+          version: 1.12.1
+
+      - name: Remove Android bundled CMake
+        shell: bash
+        run: rm -rf "$ANDROID_HOME/cmake"
+
+      - name: Configure Gradle diagnostics
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.gradle
+          {
+            echo 'org.gradle.caching=true'
+            echo 'org.gradle.parallel=true'
+            echo 'org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8 -XX:+UseParallelGC'
+            echo 'android.native.buildOutput=verbose'
+          } >> ~/.gradle/gradle.properties
+
+      - name: Build pristine official-hook 7371 baseline
+        id: baseline
+        working-directory: LSP-IrenaX
+        shell: bash
+        run: |
+          set -uo pipefail
+          set +e
+          ./gradlew clean zipAll --stacktrace --info 2>&1 | tee ../p11-baseline-build.log
+          rc=${PIPESTATUS[0]}
+          set -e
+          echo "$rc" > ../P11_BASELINE_BUILD_EXIT_CODE.txt
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+
+          if [ "$rc" -eq 0 ]; then
+            mapfile -t rel < <(find magisk-loader/release -maxdepth 1 -type f \
+              -name 'LSPosed-v*-IrenaX-release.zip' -print | sort)
+            test "${#rel[@]}" -eq 1
+            cp "${rel[0]}" ../P11_BASELINE_RELEASE.zip
+          fi
+          exit 0
+
+      - name: Freeze pristine baseline package
+        id: baselinepkg
+        if: steps.baseline.outputs.rc == '0'
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf baselinecmp p11cmp officialcmp
+          mkdir -p baselinecmp p11cmp officialcmp
+          unzip -q P11_BASELINE_RELEASE.zip -d baselinecmp
+          sha256sum P11_BASELINE_RELEASE.zip | tee p11-output/P11_BASELINE_RELEASE_SHA256.txt
+
+      - name: Apply P7 mount fix plus only P11 LoadedApk deopt rollback
+        id: patch
+        if: steps.baseline.outputs.rc == '0' && steps.baselinepkg.outcome == 'success'
+        working-directory: LSP-IrenaX
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          # 1) Preserve the already-confirmed P7 mount-only fix.
+          p = Path("daemon/src/main/java/org/lsposed/lspd/service/Dex2OatService.java")
+          s = p.read_text()
+          old = (
+              "    private void doMount(boolean enabled) {\n"
+              "        doMountNative(enabled, dex2oatArray[0], dex2oatArray[1], dex2oatArray[2], dex2oatArray[3]);\n"
+              "    }\n"
+          )
+          new = (
+              "    private void doMount(boolean enabled) {\n"
+              "        // P7/P11 confirmed mount-only fix: never create/remount the global\n"
+              "        // dex2oat bind mounts. Preserve the existing unmount path.\n"
+              "        if (enabled) return;\n"
+              "        doMountNative(false, dex2oatArray[0], dex2oatArray[1], dex2oatArray[2], dex2oatArray[3]);\n"
+              "    }\n"
+          )
+          if s.count(old) != 1:
+              raise SystemExit(f"expected exactly one pristine doMount block, got {s.count(old)}")
+          p.write_text(s.replace(old, new, 1))
+
+          # 2) P11: revert ONLY commit 33067f's three LoadedApk boot-image callers
+          #    and the import that exists solely for them.
+          p = Path("core/src/main/java/org/lsposed/lspd/deopt/InlinedMethodCallers.java")
+          s = p.read_text()
+
+          import_line = "import android.app.Instrumentation;\n"
+          callers = (
+              '            {"android.app.LoadedApk", "makeApplication", Boolean.TYPE, Instrumentation.class},\n'
+              '            {"android.app.LoadedApk", "makeApplicationInner", Boolean.TYPE, Instrumentation.class},\n'
+              '            {"android.app.LoadedApk", "makeApplicationInner", Boolean.TYPE, Instrumentation.class, Boolean.TYPE},\n'
+          )
+
+          if s.count(import_line) != 1:
+              raise SystemExit(f"expected one Instrumentation import, got {s.count(import_line)}")
+          if s.count(callers) != 1:
+              raise SystemExit(f"expected one exact LoadedApk caller block, got {s.count(callers)}")
+
+          s = s.replace(import_line, "", 1)
+          s = s.replace(callers, "", 1)
+          p.write_text(s)
+          PY
+
+          git diff --check
+
+          mapfile -t changed < <(git diff --name-only | sort)
+          printf '%s\n' "${changed[@]}" | tee ../p11-output/P11_SOURCE_DIFF_NAMES.txt
+          test "${#changed[@]}" -eq 2
+          test "${changed[0]}" = "core/src/main/java/org/lsposed/lspd/deopt/InlinedMethodCallers.java"
+          test "${changed[1]}" = "daemon/src/main/java/org/lsposed/lspd/service/Dex2OatService.java"
+
+          # Strong gate: after the rollback the whole deopt caller file must be byte-identical
+          # to the known-working 7244 reference.
+          cmp \
+            core/src/main/java/org/lsposed/lspd/deopt/InlinedMethodCallers.java \
+            ../LSPosed-7244-reference/core/src/main/java/org/lsposed/lspd/deopt/InlinedMethodCallers.java
+
+          sha256sum \
+            core/src/main/java/org/lsposed/lspd/deopt/InlinedMethodCallers.java \
+            ../LSPosed-7244-reference/core/src/main/java/org/lsposed/lspd/deopt/InlinedMethodCallers.java \
+            | tee ../p11-output/P11_DEOPT_FILE_SHA256_COMPARISON.txt
+
+          # Current official native hook backend must remain untouched.
+          test "$(git -C external/lsplant rev-parse HEAD)" = "$CURRENT_LSPLANT_SHA"
+          test "$(git -C external/dobby rev-parse HEAD)" = "$CURRENT_DOBBY_SHA"
+          test -z "$(git -C external/lsplant status --porcelain)"
+          test -z "$(git -C external/dobby status --porcelain)"
+
+          # Fail closed on all previously investigated hook/lifecycle/native files.
+          git diff --exit-code "$IRENA_COMMIT" -- \
+            core/src/main/java/org/lsposed/lspd/hooker/LoadedApkCtorHooker.java \
+            core/src/main/java/org/lsposed/lspd/hooker/LoadedApkCreateCLHooker.java \
+            core/src/main/java/org/lsposed/lspd/core/Startup.java \
+            core/src/main/java/org/lsposed/lspd/impl/LSPosedBridge.java \
+            core/src/main/java/org/lsposed/lspd/impl/LSPosedHelper.java \
+            core/src/main/jni/src/jni/hook_bridge.cpp \
+            core/src/main/jni/src/native_api.cpp \
+            magisk-loader/src/main/jni/api/zygisk_main.cpp \
+            magisk-loader/src/main/jni/src/magisk_loader.cpp
+
+          {
+            echo "P11_BASE=official Irena X 7371 source"
+            echo "P11_PRESERVED_CHANGE=P7 Dex2OatService.doMount(true) no-op; doMount(false) preserved"
+            echo "P11_ONLY_NEW_FUNCTIONAL_CHANGE=remove 3 LoadedApk makeApplication* boot-image deopt callers"
+            echo "P11_DEOPT_RESULT=InlinedMethodCallers.java byte-identical to old working 7244"
+            echo "P11_HOOK_BACKEND=current official LSPlant $CURRENT_LSPLANT_SHA"
+            echo "P11_DOBBY=current official Dobby $CURRENT_DOBBY_SHA"
+            echo "M_INCLUDE_CODE=UNCHANGED_FROM_OFFICIAL_7371"
+            echo "PAIRIP_BYPASS=NOT_ATTEMPTED"
+            echo "P6_CLASSLINKER_FALLBACK=NOT_APPLIED"
+            echo "CUSTOM_ATEXIT=UNCHANGED_FROM_OFFICIAL_7371"
+          } > ../p11-output/P11_PROVENANCE.txt
+
+          git diff -- \
+            core/src/main/java/org/lsposed/lspd/deopt/InlinedMethodCallers.java \
+            > ../p11-output/P11_LOADEDAPK_DEOPT_ROLLBACK.patch
+
+          git diff -- \
+            daemon/src/main/java/org/lsposed/lspd/service/Dex2OatService.java \
+            > ../p11-output/P11_P7_MOUNT_FIX.patch
+
+      - name: Build P11 candidate
+        id: p11build
+        if: steps.patch.outcome == 'success'
+        working-directory: LSP-IrenaX
+        shell: bash
+        run: |
+          set -uo pipefail
+          set +e
+          ./gradlew clean zipAll --stacktrace --info 2>&1 | tee ../p11-build.log
+          rc=${PIPESTATUS[0]}
+          set -e
+          echo "$rc" > ../P11_BUILD_EXIT_CODE.txt
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Validate baseline to P11 package delta
+        id: delta
+        if: steps.p11build.outputs.rc == '0'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mapfile -t rel < <(find LSP-IrenaX/magisk-loader/release -maxdepth 1 -type f \
+            -name 'LSPosed-v*-IrenaX-release.zip' -print | sort)
+          test "${#rel[@]}" -eq 1
+          cp "${rel[0]}" P11_BUILD_RELEASE.zip
+          unzip -q P11_BUILD_RELEASE.zip -d p11cmp
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib
+
+          def tree(root):
+              root = Path(root)
+              return {
+                  p.relative_to(root).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
+                  for p in root.rglob("*") if p.is_file()
+              }
+
+          a = tree("baselinecmp")
+          b = tree("p11cmp")
+
+          if set(a) != set(b):
+              missing = sorted(set(a) - set(b))
+              added = sorted(set(b) - set(a))
+              raise SystemExit(f"baseline/P11 file sets differ: missing={missing} added={added}")
+
+          diff = sorted(k for k in a if a[k] != b[k])
+          Path("p11-output/P11_BASELINE_TO_BUILD_DIFF.txt").write_text("\n".join(diff) + "\n")
+
+          expected = [
+              "daemon.apk",
+              "daemon.apk.sha256",
+              "framework/lspd.dex",
+              "framework/lspd.dex.sha256",
+          ]
+          if diff != expected:
+              raise SystemExit(f"unexpected baseline->P11 package delta: {diff}")
+
+          # Native hook loaders, manager and every non-target payload remain byte-identical.
+          for rel in (
+              "manager.apk",
+              "lib/arm64-v8a/liblspd.so",
+              "lib/armeabi-v7a/liblspd.so",
+              "lib/x86/liblspd.so",
+              "lib/x86_64/liblspd.so",
+          ):
+              if a[rel] != b[rel]:
+                  raise SystemExit(f"unexpected native/manager change: {rel}")
+
+          Path("p11-output/P11_BUILD_SCOPE.txt").write_text(
+              "BASELINE_TO_P11_BUILD_DELTA=daemon.apk + daemon sidecar + framework/lspd.dex + dex sidecar\n"
+              "NATIVE_HOOK_LOADERS=current official 7371 and unchanged\n"
+              "MANAGER=unchanged\n"
+              "P7_MOUNT_FIX=preserved in daemon\n"
+              "P11_DEOPT_ROLLBACK=contained in framework/lspd.dex\n"
+          )
+          PY
+
+      - name: Download and verify official 7371 release
+        id: official
+        if: steps.delta.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 3 \
+            -o OFFICIAL_RELEASE.zip \
+            "$OFFICIAL_RELEASE_URL"
+          echo "$OFFICIAL_RELEASE_SHA256  OFFICIAL_RELEASE.zip" | sha256sum -c -
+
+          unzip -q OFFICIAL_RELEASE.zip -d officialcmp
+
+          python3 - <<'PY'
+          import zipfile
+          with zipfile.ZipFile("OFFICIAL_RELEASE.zip") as z:
+              names = [x.filename for x in z.infolist()]
+              if len(names) != len(set(names)):
+                  raise SystemExit("duplicate names in official release")
+              bad = z.testzip()
+              if bad:
+                  raise SystemExit(f"official ZIP CRC failure: {bad}")
+          PY
+
+      - name: Audit daemon format and target payloads
+        id: payloadaudit
+        if: steps.official.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          jarsigner -verify officialcmp/daemon.apk 2>&1 \
+            | tee p11-output/P11_OFFICIAL_DAEMON_JARSIGNER.txt
+          jarsigner -verify p11cmp/daemon.apk 2>&1 \
+            | tee p11-output/P11_REBUILT_DAEMON_JARSIGNER.txt
+
+          grep -qi 'jar is unsigned' p11-output/P11_OFFICIAL_DAEMON_JARSIGNER.txt
+          grep -qi 'jar is unsigned' p11-output/P11_REBUILT_DAEMON_JARSIGNER.txt
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib, struct, zipfile
+
+          def has_apk_sig_block(path):
+              data = Path(path).read_bytes()
+              eocd = data.rfind(b"PK\x05\x06", max(0, len(data) - 0x10000 - 22))
+              if eocd < 0:
+                  raise SystemExit(f"EOCD not found: {path}")
+              cd_off = struct.unpack_from("<I", data, eocd + 16)[0]
+              if cd_off < 24:
+                  return False
+              return data[cd_off - 16:cd_off] == b"APK Sig Block 42"
+
+          for path in ("officialcmp/daemon.apk", "baselinecmp/daemon.apk", "p11cmp/daemon.apk"):
+              if has_apk_sig_block(path):
+                  raise SystemExit(f"unexpected APK Signing Block in daemon classpath APK: {path}")
+
+          def members(path):
+              with zipfile.ZipFile(path) as z:
+                  return {
+                      n: hashlib.sha256(z.read(n)).hexdigest()
+                      for n in z.namelist() if not n.endswith("/")
+                  }
+
+          a = members("baselinecmp/daemon.apk")
+          b = members("p11cmp/daemon.apk")
+          if set(a) != set(b):
+              raise SystemExit("baseline/P11 daemon internal member sets differ")
+
+          diff = sorted(k for k in a if a[k] != b[k])
+          Path("p11-output/P11_DAEMON_INTERNAL_DIFF.txt").write_text("\n".join(diff) + "\n")
+          if diff != ["classes.dex"]:
+              raise SystemExit(f"unexpected internal daemon delta: {diff}")
+
+          for root in ("baselinecmp", "p11cmp", "officialcmp"):
+              for rel in ("daemon.apk", "framework/lspd.dex"):
+                  if not Path(root, rel).is_file():
+                      raise SystemExit(f"missing target payload: {root}/{rel}")
+
+          Path("p11-output/P11_PAYLOAD_FORMAT_RESULT.txt").write_text(
+              "OFFICIAL_DAEMON=UNSIGNED_CLASSPATH_APK\n"
+              "P11_DAEMON=UNSIGNED_CLASSPATH_APK\n"
+              "BASELINE_TO_P11_DAEMON_INTERNAL_DELTA=classes.dex only\n"
+              "FRAMEWORK_LSPD_DEX=raw rebuilt framework payload\n"
+          )
+          PY
+
+          grep -Fq 'java_options="-Djava.class.path=$dir/daemon.apk"' \
+            LSP-IrenaX/magisk-loader/magisk_module/daemon
+          grep -Fq 'exec /system/bin/app_process $java_options' \
+            LSP-IrenaX/magisk-loader/magisk_module/daemon
+
+      - name: Create official-base P11 device candidate
+        id: package
+        if: steps.payloadaudit.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib, zipfile
+
+          official = Path("OFFICIAL_RELEASE.zip")
+          build = Path("p11cmp")
+          out = Path("${{ env.FINAL_ZIP }}")
+
+          replacements = {
+              "daemon.apk": (build / "daemon.apk").read_bytes(),
+              "framework/lspd.dex": (build / "framework/lspd.dex").read_bytes(),
+          }
+          replacements["daemon.apk.sha256"] = hashlib.sha256(replacements["daemon.apk"]).hexdigest().encode()
+          replacements["framework/lspd.dex.sha256"] = hashlib.sha256(
+              replacements["framework/lspd.dex"]
+          ).hexdigest().encode()
+
+          with zipfile.ZipFile(official, "r") as zin, zipfile.ZipFile(out, "w") as zout:
+              infos = zin.infolist()
+              names = [x.filename for x in infos]
+              if len(names) != len(set(names)):
+                  raise SystemExit("duplicate names in official ZIP")
+
+              required = set(replacements)
+              if not required.issubset(set(names)):
+                  raise SystemExit(f"official ZIP missing replacement targets: {sorted(required - set(names))}")
+
+              for info in infos:
+                  data = replacements.get(info.filename)
+                  if data is None:
+                      data = zin.read(info.filename)
+                  zout.writestr(info, data)
+
+          def tree(path):
+              with zipfile.ZipFile(path) as z:
+                  names = z.namelist()
+                  if len(names) != len(set(names)):
+                      raise SystemExit(f"duplicate names: {path}")
+                  bad = z.testzip()
+                  if bad:
+                      raise SystemExit(f"ZIP CRC failure {path}: {bad}")
+                  return {
+                      n: hashlib.sha256(z.read(n)).hexdigest()
+                      for n in names if not n.endswith("/")
+                  }
+
+          a = tree(official)
+          b = tree(out)
+          if set(a) != set(b):
+              raise SystemExit("official/P11 final file sets differ")
+          if len(a) != 56:
+              raise SystemExit(f"expected 56 final files, got {len(a)}")
+
+          diff = sorted(k for k in a if a[k] != b[k])
+          expected = [
+              "daemon.apk",
+              "daemon.apk.sha256",
+              "framework/lspd.dex",
+              "framework/lspd.dex.sha256",
+          ]
+          if diff != expected:
+              raise SystemExit(f"unexpected official->P11 final delta: {diff}")
+
+          # Freeze all native loaders and manager to the official 7371 bytes.
+          for rel in (
+              "manager.apk",
+              "lib/arm64-v8a/liblspd.so",
+              "lib/armeabi-v7a/liblspd.so",
+              "lib/x86/liblspd.so",
+              "lib/x86_64/liblspd.so",
+          ):
+              if a[rel] != b[rel]:
+                  raise SystemExit(f"official payload changed unexpectedly: {rel}")
+
+          with zipfile.ZipFile(out) as z:
+              names = set(z.namelist())
+              checked = 0
+              for n in sorted(names):
+                  if not n.endswith(".sha256"):
+                      continue
+                  payload = n[:-7]
+                  if payload not in names:
+                      continue
+                  expected_hash = z.read(n).decode().strip().split()[0]
+                  actual_hash = hashlib.sha256(z.read(payload)).hexdigest()
+                  if expected_hash != actual_hash:
+                      raise SystemExit(f"sidecar mismatch: {n}")
+                  checked += 1
+              if checked != 28:
+                  raise SystemExit(f"expected 28 verified sidecars, got {checked}")
+
+          sha = hashlib.sha256(out.read_bytes()).hexdigest()
+          Path("p11-output/P11_FINAL_PACKAGE_SHA256.txt").write_text(f"{sha}  {out.name}\n")
+          Path("p11-output/P11_FINAL_PACKAGE_DIFF.txt").write_text("\n".join(expected) + "\n")
+          Path("p11-output/P11_FINAL_SCOPE.txt").write_text(
+              "BASE=official Irena X 7371 release\n"
+              "P7_MOUNT_FIX=preserved in daemon.apk\n"
+              "P11_NEW_CHANGE=LoadedApk makeApplication* deopt rollback in framework/lspd.dex\n"
+              "INLINED_METHOD_CALLERS=byte-identical to working 7244 reference\n"
+              "LSPLANT=current official 7371 unchanged\n"
+              "DOBBY=current official 7371 unchanged\n"
+              "ALL_LIBLSPD=official 7371 byte-identical\n"
+              "MANAGER=official 7371 byte-identical\n"
+              "M_INCLUDE_CODE=unchanged\n"
+              "PAIRIP_BYPASS=not attempted\n"
+          )
+          PY
+
+          unzip -t "$FINAL_ZIP"
+          cp "$FINAL_ZIP" "p11-output/INSTALL_THIS_${FINAL_ZIP}"
+
+      - name: Write P11 device test plan
+        if: steps.package.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > p11-output/P11_DEVICE_TEST_PLAN.txt <<'EOF'
+          P11-v1 objective:
+          Test whether the three Irena-7371 LoadedApk makeApplication/makeApplicationInner
+          boot-image deoptimizations are the PairIP regression trigger.
+
+          This build intentionally:
+          - keeps current official Irena 7371 LSPlant/Dobby/native loaders;
+          - keeps the confirmed P7 global dex2oat mount suppression;
+          - reverts ONLY the 3 LoadedApk deopt caller entries to working-7244 behavior;
+          - does NOT change mIncludeCode;
+          - does NOT add an Ingress/PairIP-specific bypass.
+
+          Device runtime gate after installation + reboot:
+          1. Confirm LSPosed manager opens normally.
+          2. Confirm Hide Mock Location reports Xposed/module active.
+          3. Confirm PID 1, zygote64 and system_server dex2oat mount scan remains NONE.
+          4. Confirm TrustAttestor L0 and L2 remain PASS.
+          5. Cold-start Ingress three times with the intended module scope active.
+          6. Record each result separately:
+             - PASS: Ingress reaches normal map/scanner state and module remains active.
+             - FAIL: libpairipcore.so reproduces SIGSEGV/SEGV_ACCERR, especially PC 0x65768.
+             - UNKNOWN: any unrelated crash, scope ambiguity, module inactive, or missing evidence.
+          7. If PairIP crash reproduces, stop this hypothesis branch; do not stack another fix onto P11.
+
+          IMPORTANT:
+          A green GitHub workflow means STATIC BUILD/PACKAGE PASS only.
+          Device runtime PASS must be established separately from the device evidence.
+          EOF
+
+      - name: Collect P11 evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p p11-output
+
+          cp P11_BASELINE_BUILD_EXIT_CODE.txt p11-output/ 2>/dev/null || true
+          cp P11_BUILD_EXIT_CODE.txt p11-output/ 2>/dev/null || true
+          cp p11-baseline-build.log p11-output/ 2>/dev/null || true
+          cp p11-build.log p11-output/ 2>/dev/null || true
+          cp P11_BASELINE_RELEASE.zip p11-output/ 2>/dev/null || true
+          cp P11_BUILD_RELEASE.zip p11-output/ 2>/dev/null || true
+          cp OFFICIAL_RELEASE.zip p11-output/OFFICIAL_7371_RELEASE_REFERENCE.zip 2>/dev/null || true
+
+          if [ -d LSP-IrenaX ]; then
+            (
+              cd LSP-IrenaX
+              git diff --check
+              git diff > ../p11-output/P11_SOURCE_FULL.patch
+            ) || true
+          fi
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib
+
+          out = Path("p11-output")
+          files = sorted(
+              p for p in out.rglob("*")
+              if p.is_file() and p.name != "P11_EVIDENCE_SHA256SUMS.txt"
+          )
+          with (out / "P11_EVIDENCE_SHA256SUMS.txt").open("w") as f:
+              for p in files:
+                  rel = p.relative_to(out).as_posix()
+                  f.write(f"{hashlib.sha256(p.read_bytes()).hexdigest()}  {rel}\n")
+          PY
+
+          (
+            cd p11-output
+            sha256sum -c P11_EVIDENCE_SHA256SUMS.txt
+          )
+
+      - name: Final P11 static gate and create immutable PASS backup
+        id: finalgate
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test -f P11_BASELINE_BUILD_EXIT_CODE.txt
+          test "$(cat P11_BASELINE_BUILD_EXIT_CODE.txt)" = "0"
+          test -f P11_BUILD_EXIT_CODE.txt
+          test "$(cat P11_BUILD_EXIT_CODE.txt)" = "0"
+
+          diff -u <(printf '%s\n' \
+            core/src/main/java/org/lsposed/lspd/deopt/InlinedMethodCallers.java \
+            daemon/src/main/java/org/lsposed/lspd/service/Dex2OatService.java) \
+            p11-output/P11_SOURCE_DIFF_NAMES.txt
+
+          diff -u <(printf '%s\n' \
+            daemon.apk \
+            daemon.apk.sha256 \
+            framework/lspd.dex \
+            framework/lspd.dex.sha256) \
+            p11-output/P11_BASELINE_TO_BUILD_DIFF.txt
+
+          diff -u <(printf '%s\n' \
+            daemon.apk \
+            daemon.apk.sha256 \
+            framework/lspd.dex \
+            framework/lspd.dex.sha256) \
+            p11-output/P11_FINAL_PACKAGE_DIFF.txt
+
+          grep -q '^OFFICIAL_DAEMON=UNSIGNED_CLASSPATH_APK$' \
+            p11-output/P11_PAYLOAD_FORMAT_RESULT.txt
+          grep -q '^P11_DAEMON=UNSIGNED_CLASSPATH_APK$' \
+            p11-output/P11_PAYLOAD_FORMAT_RESULT.txt
+          grep -q '^P11_DEOPT_RESULT=InlinedMethodCallers.java byte-identical to old working 7244$' \
+            p11-output/P11_PROVENANCE.txt
+          grep -q '^PAIRIP_BYPASS=NOT_ATTEMPTED$' \
+            p11-output/P11_PARENT_PASS_AND_HYPOTHESIS.txt
+
+          test -f "p11-output/INSTALL_THIS_${FINAL_ZIP}"
+
+          (
+            cd p11-output
+            sha256sum -c P11_EVIDENCE_SHA256SUMS.txt
+          )
+
+          {
+            echo "RESULT=P11_V1_STATIC_FULL_PASS_DEVICE_CANDIDATE_CREATED"
+            echo "FRAMEWORK=$FRAMEWORK_FAMILY $FRAMEWORK_VERSION build $FRAMEWORK_BUILD"
+            echo "XPOSED_API_LINE=$XPOSED_API_LINE"
+            echo "PARENT_RUNTIME_PASS=$PARENT_PASS_ID"
+            echo "PARENT_PASS_ZIP_SHA256=$PARENT_PASS_ZIP_SHA256"
+            echo "PRESERVED_P7_MOUNT_FIX=YES"
+            echo "P11_DEOPT_ROLLBACK=EXACT_7244_REFERENCE_MATCH"
+            echo "LSPLANT=current official $CURRENT_LSPLANT_SHA"
+            echo "DOBBY=current official $CURRENT_DOBBY_SHA"
+            echo "M_INCLUDE_CODE=UNCHANGED"
+            echo "PAIRIP_BYPASS=NOT_ATTEMPTED"
+            echo "DEVICE_RUNTIME_STATUS=NOT_TESTED_BY_WORKFLOW"
+            echo "STATIC_PASS_IS_NOT_DEVICE_PASS=YES"
+          } | tee p11-output/P11_STATIC_PASS_MARKER.txt
+
+          mkdir -p p11-pass-backup
+          cp "p11-output/INSTALL_THIS_${FINAL_ZIP}" p11-pass-backup/
+          cp p11-output/P11_STATIC_PASS_MARKER.txt p11-pass-backup/
+          cp p11-output/P11_PARENT_PASS_AND_HYPOTHESIS.txt p11-pass-backup/
+          cp p11-output/P11_SOURCE_PINS.txt p11-pass-backup/
+          cp p11-output/P11_PROVENANCE.txt p11-pass-backup/
+          cp p11-output/P11_LOADEDAPK_DEOPT_ROLLBACK.patch p11-pass-backup/
+          cp p11-output/P11_P7_MOUNT_FIX.patch p11-pass-backup/
+          cp p11-output/P11_DEOPT_FILE_SHA256_COMPARISON.txt p11-pass-backup/
+          cp p11-output/P11_FINAL_PACKAGE_SHA256.txt p11-pass-backup/
+          cp p11-output/P11_FINAL_SCOPE.txt p11-pass-backup/
+          cp p11-output/P11_DEVICE_TEST_PLAN.txt p11-pass-backup/
+
+          (
+            cd p11-pass-backup
+            sha256sum * > P11_PASS_BACKUP_SHA256SUMS.txt
+            sha256sum -c P11_PASS_BACKUP_SHA256SUMS.txt
+          )
+
+      - name: Upload P11 diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: irena-x-v2.0.1-7371-p11-v1-loadedapk-deopt-diagnostics-${{ github.run_id }}
+          path: p11-output
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload immutable P11 STATIC PASS backup
+        if: steps.finalgate.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: irena-x-v2.0.1-7371-p11-v1-STATIC-PASS-BACKUP-${{ github.run_id }}
+          path: p11-pass-backup
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 90
