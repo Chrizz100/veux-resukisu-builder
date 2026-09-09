@@ -1,0 +1,482 @@
+name: Irena X 7371 P9 v1 manager signature provenance audit
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  FRAMEWORK_FAMILY: Irena-X
+  FRAMEWORK_VERSION: v2.0.1
+  FRAMEWORK_BUILD: "7371"
+  XPOSED_API_LINE: "100+101"
+
+  IRENA_REPO: silvzr/LSP-IrenaX
+  IRENA_COMMIT: da439fbbed506dac6c66074af7fda8982aa4fc6a
+  CURRENT_LSPLANT_SHA: c5b46bb4f6a99ffe0c77ce3ab006d3f67d5a2b1c
+  CURRENT_DOBBY_SHA: dc7b4be06ad6c5dcfb0bb4ca2082b007d69eaed5
+
+  OFFICIAL_RELEASE_URL: https://github.com/silvzr/LSP-IrenaX/releases/download/v2.0.1/LSPosed-v2.0.1-7371-IrenaX-release.zip
+  OFFICIAL_RELEASE_SHA256: 99e7aaf54dda0e6fa746c55613483a80620174f255dd05e102713778a9966d2f
+
+  P8_WORKFLOW_PATH: .github/workflows/irena-x-p8-7371-official-hooks-p7-mount-pass-v1.yml
+  P8_WORKFLOW_BLOB_SHA: 212014fbf225ec5d5325d2f46eb977ccb9b677f8
+
+jobs:
+  audit:
+    name: Audit daemon-embedded manager certificate against official manager
+    runs-on: ubuntu-latest
+
+    env:
+      CCACHE_COMPILERCHECK: "%compiler% -dumpmachine; %compiler% -dumpversion"
+      CCACHE_NOHASHDIR: "true"
+      CCACHE_HARDLINK: "true"
+      CCACHE_BASEDIR: "${{ github.workspace }}/LSP-IrenaX"
+
+    steps:
+      - name: Checkout builder repository read-only
+        uses: actions/checkout@v4
+        with:
+          path: builder
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Freeze and audit P8 packaging provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p p9-output
+
+          p8="builder/$P8_WORKFLOW_PATH"
+          test -f "$p8"
+
+          actual_blob="$(git -C builder rev-parse "HEAD:$P8_WORKFLOW_PATH")"
+          printf 'EXPECTED_P8_WORKFLOW_BLOB=%s\nACTUAL_P8_WORKFLOW_BLOB=%s\n' \
+            "$P8_WORKFLOW_BLOB_SHA" "$actual_blob" \
+            | tee p9-output/P9_P8_WORKFLOW_PROVENANCE.txt
+          test "$actual_blob" = "$P8_WORKFLOW_BLOB_SHA"
+
+          # P8 rebuilt daemon.apk but deliberately retained the official manager.apk.
+          grep -Fq 'if info.filename == "daemon.apk":' "$p8"
+          grep -Fq 'elif info.filename == "daemon.apk.sha256":' "$p8"
+          grep -Fq '"manager.apk",' "$p8"
+          grep -Fq 'MANAGER=official 7371 byte-identical' "$p8"
+          grep -Fq 'ONLY_RUNTIME_CHANGE=P7 dex2oat mount creation/remount suppressed' "$p8"
+
+          # P8 must not have injected the upstream private app signing key.
+          if grep -Eq 'secrets\.KEY_STORE|androidStoreFile|androidStorePassword|androidKeyAlias|androidKeyPassword|key\.jks' "$p8"; then
+            echo "P8 unexpectedly contains signing-key injection" >&2
+            exit 1
+          fi
+
+          {
+            echo "P8_FINAL_PAIRING=official manager.apk + locally rebuilt daemon.apk"
+            echo "P8_SIGNING_KEY_INJECTION=absent"
+            echo "P8_FUNCTIONAL_SCOPE=P7 dex2oat mount-only fix preserved"
+            echo "P9_MUTATION=none; audit only"
+          } | tee p9-output/P9_P8_PAIRING.txt
+
+      - name: Checkout pinned Irena X 7371
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.IRENA_REPO }}
+          ref: ${{ env.IRENA_COMMIT }}
+          submodules: recursive
+          fetch-depth: 0
+          path: LSP-IrenaX
+          persist-credentials: false
+
+      - name: Verify source pins and signature-verification mechanism
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test "$(git -C LSP-IrenaX rev-parse HEAD)" = "$IRENA_COMMIT"
+          test -z "$(git -C LSP-IrenaX status --porcelain)"
+          test "$(git -C LSP-IrenaX/external/lsplant rev-parse HEAD)" = "$CURRENT_LSPLANT_SHA"
+          test "$(git -C LSP-IrenaX/external/dobby rev-parse HEAD)" = "$CURRENT_DOBBY_SHA"
+
+          daemon_gradle="LSP-IrenaX/daemon/build.gradle.kts"
+          verifier="LSP-IrenaX/daemon/src/main/java/org/lsposed/lspd/util/InstallerVerifier.java"
+          config_file="LSP-IrenaX/daemon/src/main/java/org/lsposed/lspd/service/ConfigFileManager.java"
+          upstream_ci="LSP-IrenaX/.github/workflows/core.yml"
+
+          # The daemon embeds the certificate from :app's signing configuration.
+          grep -Fq 'dependsOn(":app:validateSigning${buildTypeCapped}")' "$daemon_gradle"
+          grep -Fq 'KeystoreHelper.getCertificateInfo(' "$daemon_gradle"
+          grep -Fq 'certificateInfo.certificate.encoded.joinToString(",")' "$daemon_gradle"
+
+          # Runtime verifies manager.apk against that embedded certificate.
+          grep -Fq 'import static org.lsposed.lspd.util.SignInfo.CERTIFICATE;' "$verifier"
+          grep -Fq 'if (!Arrays.equals(mainCert.getEncoded(), CERTIFICATE)) {' "$verifier"
+          grep -Fq 'throw new IOException("apk signature mismatch: " + dname);' "$verifier"
+          grep -Fq 'InstallerVerifier.verifyInstallerSignature(managerApkPath.toString());' "$config_file"
+
+          # Upstream release CI has a private-key injection path for tags/dev.
+          grep -Fq "github.ref_type == 'tag'" "$upstream_ci"
+          grep -Fq 'secrets.KEY_STORE' "$upstream_ci"
+          grep -Fq "androidStoreFile='key.jks'" "$upstream_ci"
+
+          {
+            echo "IRENA_COMMIT=$(git -C LSP-IrenaX rev-parse HEAD)"
+            echo "LSPLANT=$(git -C LSP-IrenaX/external/lsplant rev-parse HEAD)"
+            echo "DOBBY=$(git -C LSP-IrenaX/external/dobby rev-parse HEAD)"
+            echo
+            grep -nH -F 'dependsOn(":app:validateSigning${buildTypeCapped}")' "$daemon_gradle"
+            grep -nH -F 'KeystoreHelper.getCertificateInfo(' "$daemon_gradle"
+            grep -nH -F 'certificateInfo.certificate.encoded.joinToString(",")' "$daemon_gradle"
+            grep -nH -F 'if (!Arrays.equals(mainCert.getEncoded(), CERTIFICATE)) {' "$verifier"
+            grep -nH -F 'throw new IOException("apk signature mismatch: " + dname);' "$verifier"
+            grep -nH -F 'InstallerVerifier.verifyInstallerSignature(managerApkPath.toString());' "$config_file"
+            grep -nH -F "github.ref_type == 'tag'" "$upstream_ci"
+            grep -nH -F 'secrets.KEY_STORE' "$upstream_ci"
+          } > p9-output/P9_SIGNATURE_MECHANISM_SOURCE.txt
+
+      - name: Setup Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          log-accepted-android-sdk-licenses: 'false'
+          packages: ''
+
+      - name: Ensure APK signer tooling
+        shell: bash
+        run: |
+          set -euo pipefail
+          sdkmanager "build-tools;36.0.0" >/dev/null
+          test -x "$ANDROID_HOME/build-tools/36.0.0/apksigner"
+          echo "APKSIGNER=$ANDROID_HOME/build-tools/36.0.0/apksigner" >> "$GITHUB_ENV"
+
+      - name: Setup ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          max-size: 2G
+          key: irena-x-p9-signature-${{ runner.os }}
+          restore-keys: |
+            irena-x-${{ runner.os }}
+          save: false
+
+      - name: Setup Ninja 1.12.1
+        uses: seanmiddleditch/gha-setup-ninja@master
+        with:
+          version: 1.12.1
+
+      - name: Remove Android bundled CMake
+        shell: bash
+        run: rm -rf "$ANDROID_HOME/cmake"
+
+      - name: Configure Gradle diagnostics
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.gradle
+          {
+            echo 'org.gradle.caching=true'
+            echo 'org.gradle.parallel=true'
+            echo 'org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8 -XX:+UseParallelGC'
+            echo 'android.native.buildOutput=verbose'
+          } >> ~/.gradle/gradle.properties
+
+      - name: Apply exact P8 mount-only source delta
+        shell: bash
+        working-directory: LSP-IrenaX
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          p = Path("daemon/src/main/java/org/lsposed/lspd/service/Dex2OatService.java")
+          s = p.read_text()
+
+          old = (
+              "    private void doMount(boolean enabled) {\n"
+              "        doMountNative(enabled, dex2oatArray[0], dex2oatArray[1], dex2oatArray[2], dex2oatArray[3]);\n"
+              "    }\n"
+          )
+          new = (
+              "    private void doMount(boolean enabled) {\n"
+              "        // P7/P8 confirmed mount-only fix: never create/remount the global\n"
+              "        // dex2oat bind mounts. Preserve the existing unmount path.\n"
+              "        if (enabled) return;\n"
+              "        doMountNative(false, dex2oatArray[0], dex2oatArray[1], dex2oatArray[2], dex2oatArray[3]);\n"
+              "    }\n"
+          )
+
+          if s.count(old) != 1:
+              raise SystemExit(f"expected exactly one pristine doMount block, got {s.count(old)}")
+          p.write_text(s.replace(old, new, 1))
+          PY
+
+          git diff --check
+          mapfile -t changed < <(git diff --name-only | sort)
+          test "${#changed[@]}" -eq 1
+          test "${changed[0]}" = "daemon/src/main/java/org/lsposed/lspd/service/Dex2OatService.java"
+
+          # P9 itself adds no source mutation beyond reconstructing the exact P8 source delta.
+          printf '%s\n' "${changed[@]}" > ../p9-output/P9_RECONSTRUCTED_P8_SOURCE_DIFF_NAMES.txt
+          git diff -- daemon/src/main/java/org/lsposed/lspd/service/Dex2OatService.java \
+            > ../p9-output/P9_RECONSTRUCTED_P8_MOUNT_ONLY.patch
+
+      - name: Rebuild exact P8 source without upstream signing secrets
+        id: rebuild
+        shell: bash
+        working-directory: LSP-IrenaX
+        run: |
+          set -uo pipefail
+          set +e
+          ./gradlew clean zipAll --stacktrace --info 2>&1 | tee ../p9-rebuild.log
+          rc=${PIPESTATUS[0]}
+          set -e
+          echo "$rc" > ../P9_REBUILD_EXIT_CODE.txt
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Freeze rebuilt package and generated daemon certificate
+        if: steps.rebuild.outputs.rc == '0'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mapfile -t rel < <(find LSP-IrenaX/magisk-loader/release -maxdepth 1 -type f \
+            -name 'LSPosed-v*-IrenaX-release.zip' -print | sort)
+          test "${#rel[@]}" -eq 1
+          cp "${rel[0]}" P9_REBUILT_P8_SOURCE_RELEASE.zip
+
+          rm -rf rebuiltcmp
+          mkdir rebuiltcmp
+          unzip -q P9_REBUILT_P8_SOURCE_RELEASE.zip -d rebuiltcmp
+
+          signinfo="LSP-IrenaX/daemon/build/generated/source/signInfo/release/org/lsposed/lspd/util/SignInfo.java"
+          test -f "$signinfo"
+          cp "$signinfo" p9-output/P9_GENERATED_SIGNINFO.java
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib
+          import re
+
+          p = Path("p9-output/P9_GENERATED_SIGNINFO.java")
+          s = p.read_text()
+          m = re.search(r"CERTIFICATE\s*=\s*\{([^}]*)\}", s, re.S)
+          if not m:
+              raise SystemExit("CERTIFICATE byte array not found in generated SignInfo.java")
+
+          vals = [int(x.strip()) for x in m.group(1).split(",") if x.strip()]
+          if not vals:
+              raise SystemExit("empty generated certificate")
+          if any(v < -128 or v > 255 for v in vals):
+              raise SystemExit("unexpected certificate byte outside Java byte range")
+
+          der = bytes((v + 256) % 256 for v in vals)
+          sha = hashlib.sha256(der).hexdigest()
+          Path("p9-output/P9_DAEMON_EMBEDDED_MANAGER_CERT_SHA256.txt").write_text(
+              sha + "\n"
+          )
+          Path("p9-output/P9_DAEMON_EMBEDDED_MANAGER_CERT_LENGTH.txt").write_text(
+              str(len(der)) + "\n"
+          )
+          PY
+
+          sha256sum P9_REBUILT_P8_SOURCE_RELEASE.zip \
+            > p9-output/P9_REBUILT_RELEASE_SHA256.txt
+          sha256sum rebuiltcmp/manager.apk \
+            > p9-output/P9_REBUILT_MANAGER_APK_SHA256.txt
+          sha256sum rebuiltcmp/daemon.apk \
+            > p9-output/P9_REBUILT_DAEMON_APK_SHA256.txt
+
+      - name: Download and verify official 7371 release
+        if: steps.rebuild.outputs.rc == '0'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          curl --fail --location --retry 3 \
+            -o OFFICIAL_RELEASE.zip \
+            "$OFFICIAL_RELEASE_URL"
+          echo "$OFFICIAL_RELEASE_SHA256  OFFICIAL_RELEASE.zip" | sha256sum -c -
+
+          rm -rf officialcmp
+          mkdir officialcmp
+          unzip -q OFFICIAL_RELEASE.zip -d officialcmp
+          unzip -t OFFICIAL_RELEASE.zip
+
+          test -f officialcmp/manager.apk
+          test -f officialcmp/daemon.apk
+
+          sha256sum OFFICIAL_RELEASE.zip \
+            > p9-output/P9_OFFICIAL_RELEASE_SHA256.txt
+          sha256sum officialcmp/manager.apk \
+            > p9-output/P9_OFFICIAL_MANAGER_APK_SHA256.txt
+          sha256sum officialcmp/daemon.apk \
+            > p9-output/P9_OFFICIAL_DAEMON_APK_SHA256.txt
+
+      - name: Extract and compare manager signer certificates
+        id: certaudit
+        if: steps.rebuild.outputs.rc == '0'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          "$APKSIGNER" verify --verbose --print-certs officialcmp/manager.apk 2>&1 \
+            | tee p9-output/P9_OFFICIAL_MANAGER_APKSIGNER.txt
+          "$APKSIGNER" verify --verbose --print-certs rebuiltcmp/manager.apk 2>&1 \
+            | tee p9-output/P9_REBUILT_MANAGER_APKSIGNER.txt
+
+          official_cert="$(
+            awk -F': ' '/Signer #1 certificate SHA-256 digest:/{print tolower($2); exit}' \
+              p9-output/P9_OFFICIAL_MANAGER_APKSIGNER.txt \
+              | tr -d ':[:space:]'
+          )"
+          rebuilt_cert="$(
+            awk -F': ' '/Signer #1 certificate SHA-256 digest:/{print tolower($2); exit}' \
+              p9-output/P9_REBUILT_MANAGER_APKSIGNER.txt \
+              | tr -d ':[:space:]'
+          )"
+          embedded_cert="$(tr -d ':[:space:]' < p9-output/P9_DAEMON_EMBEDDED_MANAGER_CERT_SHA256.txt)"
+
+          [[ "$official_cert" =~ ^[0-9a-f]{64}$ ]]
+          [[ "$rebuilt_cert" =~ ^[0-9a-f]{64}$ ]]
+          [[ "$embedded_cert" =~ ^[0-9a-f]{64}$ ]]
+
+          {
+            echo "OFFICIAL_MANAGER_CERT_SHA256=$official_cert"
+            echo "REBUILT_MANAGER_CERT_SHA256=$rebuilt_cert"
+            echo "REBUILT_DAEMON_EMBEDDED_MANAGER_CERT_SHA256=$embedded_cert"
+          } | tee p9-output/P9_CERTIFICATE_COMPARE.txt
+
+          # The rebuilt daemon must expect exactly the certificate of the manager
+          # produced by that same build. Otherwise this audit is internally invalid.
+          if [ "$embedded_cert" != "$rebuilt_cert" ]; then
+            {
+              echo "P9_RESULT=INCONCLUSIVE_FAIL_CLOSED"
+              echo "REASON=generated SignInfo certificate does not match rebuilt manager signer"
+            } | tee p9-output/P9_RESULT.txt
+            echo "classification=INCONCLUSIVE_FAIL_CLOSED" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ "$official_cert" != "$embedded_cert" ]; then
+            {
+              echo "P9_RESULT=SIGNATURE_PROVENANCE_MISMATCH_CONFIRMED"
+              echo "OFFICIAL_MANAGER_CERT_SHA256=$official_cert"
+              echo "DAEMON_EXPECTED_CERT_SHA256=$embedded_cert"
+              echo "MECHANISM=InstallerVerifier compares manager signer DER to SignInfo.CERTIFICATE"
+              echo "P8_PAIRING=official manager.apk + locally rebuilt daemon.apk"
+              echo "FIX_NOT_APPLIED=audit only"
+            } | tee p9-output/P9_RESULT.txt
+            echo "classification=SIGNATURE_PROVENANCE_MISMATCH_CONFIRMED" >> "$GITHUB_OUTPUT"
+          else
+            {
+              echo "P9_RESULT=SIGNATURES_MATCH_DEEPER_CAUSE_REQUIRED"
+              echo "OFFICIAL_MANAGER_CERT_SHA256=$official_cert"
+              echo "DAEMON_EXPECTED_CERT_SHA256=$embedded_cert"
+              echo "FIX_NOT_APPLIED=audit only"
+            } | tee p9-output/P9_RESULT.txt
+            echo "classification=SIGNATURES_MATCH_DEEPER_CAUSE_REQUIRED" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Write P9 audit scope
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p p9-output
+
+          {
+            echo "P9_TYPE=diagnostic signature/provenance audit"
+            echo "INSTALLABLE_ZIP_CREATED=NO"
+            echo "TARGET_RUNTIME_CODE_CHANGED=NO"
+            echo "RECONSTRUCTED_SOURCE_DELTA=P8/P7 Dex2OatService mount-only patch only"
+            echo "LSPLANT_CHANGE=NO"
+            echo "DOBBY_CHANGE=NO"
+            echo "LOADEDAPK_CHANGE=NO"
+            echo "M_INCLUDE_CODE_CHANGE=NO"
+            echo "PAIRIP_BYPASS=NO"
+            echo "MANAGER_ROUTING_CHANGE=NO"
+            echo "SIGNATURE_CHECK_BYPASS=NO"
+          } > p9-output/P9_SCOPE.txt
+
+          cp P9_REBUILD_EXIT_CODE.txt p9-output/ 2>/dev/null || true
+          cp p9-rebuild.log p9-output/ 2>/dev/null || true
+
+      - name: Build evidence manifest
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p p9-output
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib
+
+          out = Path("p9-output")
+          manifest = out / "P9_EVIDENCE_SHA256SUMS.txt"
+          files = sorted(
+              p for p in out.rglob("*")
+              if p.is_file() and p != manifest
+          )
+          with manifest.open("w") as f:
+              for p in files:
+                  rel = p.relative_to(out).as_posix()
+                  f.write(f"{hashlib.sha256(p.read_bytes()).hexdigest()}  {rel}\n")
+          PY
+
+          (
+            cd p9-output
+            sha256sum -c P9_EVIDENCE_SHA256SUMS.txt
+          )
+
+      - name: Final P9 gate
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test -f P9_REBUILD_EXIT_CODE.txt
+          test "$(cat P9_REBUILD_EXIT_CODE.txt)" = "0"
+
+          test -f p9-output/P9_RESULT.txt
+          result="$(sed -n 's/^P9_RESULT=//p' p9-output/P9_RESULT.txt)"
+          case "$result" in
+            SIGNATURE_PROVENANCE_MISMATCH_CONFIRMED)
+              echo "P9 full audit PASS: signature provenance mismatch confirmed."
+              ;;
+            SIGNATURES_MATCH_DEEPER_CAUSE_REQUIRED)
+              echo "P9 full audit PASS: signatures match; deeper cause required."
+              ;;
+            INCONCLUSIVE_FAIL_CLOSED)
+              echo "P9 audit inconclusive; failing closed." >&2
+              exit 1
+              ;;
+            *)
+              echo "Unknown or missing P9 result: $result" >&2
+              exit 1
+              ;;
+          esac
+
+          test -f p9-output/P9_EVIDENCE_SHA256SUMS.txt
+          (
+            cd p9-output
+            sha256sum -c P9_EVIDENCE_SHA256SUMS.txt
+          )
+
+      - name: Upload P9 signature audit evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: irena-x-v2.0.1-7371-p9-v1-manager-signature-provenance-audit
+          path: p9-output
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 30
