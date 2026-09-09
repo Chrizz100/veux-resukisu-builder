@@ -1,0 +1,660 @@
+name: Irena X 7371 P8 v1 official hooks + P7 mount PASS checkpoint
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  # Framework identity: keep explicit so the same workflow pattern can later
+  # be adapted to another LSPosed/API line without losing provenance.
+  FRAMEWORK_FAMILY: Irena-X
+  FRAMEWORK_VERSION: v2.0.1
+  FRAMEWORK_BUILD: "7371"
+  XPOSED_API_LINE: "100+101"
+
+  IRENA_REPO: silvzr/LSP-IrenaX
+  IRENA_COMMIT: da439fbbed506dac6c66074af7fda8982aa4fc6a
+  CURRENT_LSPLANT_SHA: c5b46bb4f6a99ffe0c77ce3ab006d3f67d5a2b1c
+  CURRENT_DOBBY_SHA: dc7b4be06ad6c5dcfb0bb4ca2082b007d69eaed5
+
+  OFFICIAL_RELEASE_URL: https://github.com/silvzr/LSP-IrenaX/releases/download/v2.0.1/LSPosed-v2.0.1-7371-IrenaX-release.zip
+  OFFICIAL_RELEASE_SHA256: 99e7aaf54dda0e6fa746c55613483a80620174f255dd05e102713778a9966d2f
+
+  # Confirmed device PASS inherited from the previous stage.
+  # P8 MUST preserve this mount-only fix while restoring the official hook backend.
+  PARENT_PASS_ID: IRENA_X_7371_P7_V2_MOUNT_ONLY_FULL_PASS
+  PARENT_PASS_ZIP_SHA256: 4e12798295bc1e6180461d435b05d145e0c28a22e5c3e1e12c990f334cc15cba
+  PARENT_PASS_DATE: "2026-09-08"
+
+  FINAL_ZIP: LSPosed-v2.0.1-7371-IrenaX-P8-v1-official-hooks-P7-mount-pass-release.zip
+
+jobs:
+  build:
+    name: Build P8 from official 7371 hooks while preserving P7 mount fix
+    runs-on: ubuntu-latest
+
+    env:
+      CCACHE_COMPILERCHECK: "%compiler% -dumpmachine; %compiler% -dumpversion"
+      CCACHE_NOHASHDIR: "true"
+      CCACHE_HARDLINK: "true"
+      CCACHE_BASEDIR: "${{ github.workspace }}/LSP-IrenaX"
+
+    steps:
+      - name: Checkout pinned Irena X 7371
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.IRENA_REPO }}
+          ref: ${{ env.IRENA_COMMIT }}
+          submodules: recursive
+          fetch-depth: 0
+          path: LSP-IrenaX
+
+      - name: Freeze parent PASS checkpoint
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p p8-output
+          {
+            echo "PARENT_PASS_ID=$PARENT_PASS_ID"
+            echo "PARENT_PASS_ZIP_SHA256=$PARENT_PASS_ZIP_SHA256"
+            echo "PARENT_PASS_DATE=$PARENT_PASS_DATE"
+            echo "PARENT_PASS_RUNTIME_1=PID1 dex2oat32/64 mount scan NONE"
+            echo "PARENT_PASS_RUNTIME_2=zygote64 dex2oat32/64 mount scan NONE"
+            echo "PARENT_PASS_RUNTIME_3=system_server dex2oat32/64 mount scan NONE"
+            echo "PARENT_PASS_RUNTIME_4=TrustAttestor L0 PASS"
+            echo "PARENT_PASS_RUNTIME_5=TrustAttestor L2 PASS"
+            echo "P8_RULE=preserve P7 mount-only fix; do not inherit P4 old-LSPlant backend"
+          } | tee p8-output/P8_PARENT_PASS_CHECKPOINT.txt
+
+      - name: Verify pristine source and official hook pins
+        working-directory: LSP-IrenaX
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$IRENA_COMMIT"
+          test -z "$(git status --porcelain)"
+          test "$(git -C external/lsplant rev-parse HEAD)" = "$CURRENT_LSPLANT_SHA"
+          test "$(git -C external/dobby rev-parse HEAD)" = "$CURRENT_DOBBY_SHA"
+          test -z "$(git -C external/lsplant status --porcelain)"
+          test -z "$(git -C external/dobby status --porcelain)"
+
+          {
+            echo "FRAMEWORK_FAMILY=$FRAMEWORK_FAMILY"
+            echo "FRAMEWORK_VERSION=$FRAMEWORK_VERSION"
+            echo "FRAMEWORK_BUILD=$FRAMEWORK_BUILD"
+            echo "XPOSED_API_LINE=$XPOSED_API_LINE"
+            echo "IRENA=$(git rev-parse HEAD)"
+            echo "LSPLANT=$(git -C external/lsplant rev-parse HEAD)"
+            echo "DOBBY=$(git -C external/dobby rev-parse HEAD)"
+          } > ../p8-output/P8_SOURCE_PINS.txt
+
+      - name: Setup Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          log-accepted-android-sdk-licenses: 'false'
+          packages: ''
+
+      - name: Setup ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          max-size: 2G
+          key: irena-x-p8-official-hooks-${{ runner.os }}
+          restore-keys: |
+            irena-x-${{ runner.os }}
+          save: false
+
+      - name: Setup Ninja 1.12.1
+        uses: seanmiddleditch/gha-setup-ninja@master
+        with:
+          version: 1.12.1
+
+      - name: Remove Android bundled CMake
+        shell: bash
+        run: rm -rf "$ANDROID_HOME/cmake"
+
+      - name: Configure Gradle diagnostics
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.gradle
+          {
+            echo 'org.gradle.caching=true'
+            echo 'org.gradle.parallel=true'
+            echo 'org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8 -XX:+UseParallelGC'
+            echo 'android.native.buildOutput=verbose'
+          } >> ~/.gradle/gradle.properties
+
+      - name: Build pristine current-hook 7371 baseline
+        id: baseline
+        working-directory: LSP-IrenaX
+        shell: bash
+        run: |
+          set -uo pipefail
+          set +e
+          ./gradlew clean zipAll --stacktrace --info 2>&1 | tee ../baseline-current-hooks-build.log
+          rc=${PIPESTATUS[0]}
+          set -e
+          echo "$rc" > ../BASELINE_BUILD_EXIT_CODE.txt
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+
+          if [ "$rc" -eq 0 ]; then
+            mapfile -t rel < <(find magisk-loader/release -maxdepth 1 -type f \
+              -name 'LSPosed-v*-IrenaX-release.zip' -print | sort)
+            test "${#rel[@]}" -eq 1
+            cp "${rel[0]}" ../BASELINE_CURRENT_HOOKS_RELEASE.zip
+          fi
+          exit 0
+
+      - name: Freeze pristine baseline package
+        id: baselinepkg
+        if: steps.baseline.outputs.rc == '0'
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf baselinecmp p8cmp
+          mkdir -p baselinecmp p8cmp
+          unzip -q BASELINE_CURRENT_HOOKS_RELEASE.zip -d baselinecmp
+          sha256sum BASELINE_CURRENT_HOOKS_RELEASE.zip \
+            | tee p8-output/P8_BASELINE_BUILD_SHA256.txt
+
+      - name: Apply only confirmed P7 dex2oat mount suppression
+        id: mountpatch
+        if: steps.baseline.outputs.rc == '0' && steps.baselinepkg.outcome == 'success'
+        working-directory: LSP-IrenaX
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          p = Path("daemon/src/main/java/org/lsposed/lspd/service/Dex2OatService.java")
+          s = p.read_text()
+
+          old = (
+              "    private void doMount(boolean enabled) {\n"
+              "        doMountNative(enabled, dex2oatArray[0], dex2oatArray[1], dex2oatArray[2], dex2oatArray[3]);\n"
+              "    }\n"
+          )
+          new = (
+              "    private void doMount(boolean enabled) {\n"
+              "        // P7/P8 confirmed mount-only fix: never create/remount the global\n"
+              "        // dex2oat bind mounts. Preserve the existing unmount path.\n"
+              "        if (enabled) return;\n"
+              "        doMountNative(false, dex2oatArray[0], dex2oatArray[1], dex2oatArray[2], dex2oatArray[3]);\n"
+              "    }\n"
+          )
+
+          if s.count(old) != 1:
+              raise SystemExit(f"expected exactly one pristine doMount block, got {s.count(old)}")
+          p.write_text(s.replace(old, new, 1))
+          PY
+
+          git diff --check
+
+          mapfile -t changed < <(git diff --name-only | sort)
+          printf '%s\n' "${changed[@]}" | tee ../p8-output/P8_SOURCE_DIFF_NAMES.txt
+          test "${#changed[@]}" -eq 1
+          test "${changed[0]}" = "daemon/src/main/java/org/lsposed/lspd/service/Dex2OatService.java"
+
+          # P8 explicitly restores/retains the official current hook backend.
+          test "$(git -C external/lsplant rev-parse HEAD)" = "$CURRENT_LSPLANT_SHA"
+          test "$(git -C external/dobby rev-parse HEAD)" = "$CURRENT_DOBBY_SHA"
+          test -z "$(git -C external/lsplant status --porcelain)"
+          test -z "$(git -C external/dobby status --porcelain)"
+
+          # Fail closed if any hook/lifecycle files changed.
+          git diff --exit-code "$IRENA_COMMIT" -- \
+            core/src/main/java/org/lsposed/lspd/hooker/LoadedApkCtorHooker.java \
+            core/src/main/java/org/lsposed/lspd/hooker/LoadedApkCreateCLHooker.java \
+            core/src/main/jni/src/native_api.cpp \
+            core/src/main/jni/include/framework/androidfw/resource_types.h \
+            magisk-loader/src/main/jni/api/zygisk_main.cpp \
+            magisk-loader/src/main/jni/src/magisk_loader.cpp
+
+          {
+            echo "P8_BASE=official Irena X 7371 source"
+            echo "P8_HOOK_BACKEND=current official LSPlant $CURRENT_LSPLANT_SHA"
+            echo "P8_DOBBY=current official Dobby $CURRENT_DOBBY_SHA"
+            echo "P8_ONLY_SOURCE_CHANGE=Dex2OatService.doMount(true) no-op; doMount(false) preserved"
+            echo "P4_OLD_LSPLANT=NOT_USED"
+            echo "P6_CLASSLINKER_FALLBACK=NOT_USED"
+            echo "LOADEDAPK_MIncludeCode=UNCHANGED_FROM_OFFICIAL_7371"
+          } > ../p8-output/P8_PROVENANCE.txt
+
+          git diff -- \
+            daemon/src/main/java/org/lsposed/lspd/service/Dex2OatService.java \
+            > ../p8-output/P8_MOUNT_ONLY.patch
+
+      - name: Build P8 current-hook candidate
+        id: p8build
+        if: steps.mountpatch.outcome == 'success'
+        working-directory: LSP-IrenaX
+        shell: bash
+        run: |
+          set -uo pipefail
+          set +e
+          ./gradlew clean zipAll --stacktrace --info 2>&1 | tee ../p8-build.log
+          rc=${PIPESTATUS[0]}
+          set -e
+          echo "$rc" > ../P8_BUILD_EXIT_CODE.txt
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Validate pristine baseline to P8 build delta
+        id: delta
+        if: steps.p8build.outputs.rc == '0'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mapfile -t rel < <(find LSP-IrenaX/magisk-loader/release -maxdepth 1 -type f \
+            -name 'LSPosed-v*-IrenaX-release.zip' -print | sort)
+          test "${#rel[@]}" -eq 1
+          cp "${rel[0]}" P8_BUILD_RELEASE.zip
+          unzip -q P8_BUILD_RELEASE.zip -d p8cmp
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib
+
+          def tree(root):
+              root = Path(root)
+              return {
+                  p.relative_to(root).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
+                  for p in root.rglob("*") if p.is_file()
+              }
+
+          a = tree("baselinecmp")
+          b = tree("p8cmp")
+          if set(a) != set(b):
+              raise SystemExit("baseline/P8 file sets differ")
+
+          diff = sorted(k for k in a if a[k] != b[k])
+          Path("p8-output/P8_BASELINE_TO_BUILD_DIFF.txt").write_text("\n".join(diff) + "\n")
+
+          expected = ["daemon.apk", "daemon.apk.sha256"]
+          if diff != expected:
+              raise SystemExit(f"unexpected baseline->P8 package delta: {diff}")
+
+          # Current official hook payload must be byte-identical between the two builds.
+          for abi in ("arm64-v8a", "armeabi-v7a", "x86", "x86_64"):
+              rel = f"lib/{abi}/liblspd.so"
+              if a[rel] != b[rel]:
+                  raise SystemExit(f"hook loader changed unexpectedly: {rel}")
+
+          for rel in ("framework/lspd.dex", "manager.apk"):
+              if a[rel] != b[rel]:
+                  raise SystemExit(f"non-daemon payload changed unexpectedly: {rel}")
+
+          Path("p8-output/P8_BUILD_SCOPE.txt").write_text(
+              "BASELINE_TO_P8_BUILD_DELTA=daemon.apk + daemon.apk.sha256\n"
+              "HOOK_LOADERS=current official 7371 and unchanged\n"
+              "FRAMEWORK_LSPD_DEX=unchanged\n"
+              "MANAGER=unchanged\n"
+              "P7_MOUNT_FIX=preserved\n"
+          )
+          PY
+
+      - name: Download and verify official 7371 release
+        id: official
+        if: steps.delta.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 3 \
+            -o OFFICIAL_RELEASE.zip \
+            "$OFFICIAL_RELEASE_URL"
+          echo "$OFFICIAL_RELEASE_SHA256  OFFICIAL_RELEASE.zip" | sha256sum -c -
+
+          rm -rf officialcmp
+          mkdir officialcmp
+          unzip -q OFFICIAL_RELEASE.zip -d officialcmp
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import zipfile
+
+          with zipfile.ZipFile("OFFICIAL_RELEASE.zip") as z:
+              names = [x.filename for x in z.infolist()]
+              if len(names) != len(set(names)):
+                  raise SystemExit("duplicate names in official release")
+              bad = z.testzip()
+              if bad:
+                  raise SystemExit(f"official ZIP CRC failure: {bad}")
+          PY
+
+      - name: Audit daemon format and internal delta
+        id: daemonaudit
+        if: steps.official.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          jarsigner -verify officialcmp/daemon.apk 2>&1 \
+            | tee p8-output/P8_OFFICIAL_DAEMON_JARSIGNER.txt
+          jarsigner -verify p8cmp/daemon.apk 2>&1 \
+            | tee p8-output/P8_REBUILT_DAEMON_JARSIGNER.txt
+
+          grep -qi 'jar is unsigned' p8-output/P8_OFFICIAL_DAEMON_JARSIGNER.txt
+          grep -qi 'jar is unsigned' p8-output/P8_REBUILT_DAEMON_JARSIGNER.txt
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib, struct, zipfile
+
+          def has_apk_sig_block(path):
+              data = Path(path).read_bytes()
+              eocd = data.rfind(b"PK\x05\x06", max(0, len(data) - 0x10000 - 22))
+              if eocd < 0:
+                  raise SystemExit(f"EOCD not found: {path}")
+              cd_off = struct.unpack_from("<I", data, eocd + 16)[0]
+              if cd_off < 24:
+                  return False
+              return data[cd_off - 16:cd_off] == b"APK Sig Block 42"
+
+          for path in ("officialcmp/daemon.apk", "baselinecmp/daemon.apk", "p8cmp/daemon.apk"):
+              if has_apk_sig_block(path):
+                  raise SystemExit(f"unexpected APK Signing Block in daemon classpath APK: {path}")
+
+          def members(path):
+              with zipfile.ZipFile(path) as z:
+                  return {
+                      n: hashlib.sha256(z.read(n)).hexdigest()
+                      for n in z.namelist() if not n.endswith("/")
+                  }
+
+          a = members("baselinecmp/daemon.apk")
+          b = members("p8cmp/daemon.apk")
+          if set(a) != set(b):
+              raise SystemExit("baseline/P8 daemon internal member sets differ")
+
+          diff = sorted(k for k in a if a[k] != b[k])
+          Path("p8-output/P8_DAEMON_INTERNAL_DIFF.txt").write_text("\n".join(diff) + "\n")
+          if diff != ["classes.dex"]:
+              raise SystemExit(f"unexpected internal daemon delta: {diff}")
+
+          Path("p8-output/P8_DAEMON_FORMAT_RESULT.txt").write_text(
+              "OFFICIAL_DAEMON=UNSIGNED_CLASSPATH_APK\n"
+              "P8_DAEMON=UNSIGNED_CLASSPATH_APK\n"
+              "BASELINE_TO_P8_DAEMON_INTERNAL_DELTA=classes.dex only\n"
+              "APK_SIGNER_GATE=NOT_APPLICABLE\n"
+          )
+          PY
+
+          # Preserve the pinned upstream classpath semantics.
+          grep -Fq 'java_options="-Djava.class.path=$dir/daemon.apk"' \
+            LSP-IrenaX/magisk-loader/magisk_module/daemon
+          grep -Fq 'exec /system/bin/app_process $java_options' \
+            LSP-IrenaX/magisk-loader/magisk_module/daemon
+
+      - name: Create official-base P8 device candidate
+        id: package
+        if: steps.daemonaudit.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib, zipfile
+
+          official = Path("OFFICIAL_RELEASE.zip")
+          p8dir = Path("p8cmp")
+          out = Path("${{ env.FINAL_ZIP }}")
+
+          with zipfile.ZipFile(official, "r") as zin, zipfile.ZipFile(out, "w") as zout:
+              infos = zin.infolist()
+              names = [x.filename for x in infos]
+              if len(names) != len(set(names)):
+                  raise SystemExit("duplicate names in official ZIP")
+
+              required = {"daemon.apk", "daemon.apk.sha256"}
+              if not required.issubset(set(names)):
+                  raise SystemExit("official ZIP missing daemon replacement target")
+
+              daemon = (p8dir / "daemon.apk").read_bytes()
+              daemon_sha = hashlib.sha256(daemon).hexdigest().encode()
+
+              for info in infos:
+                  if info.filename == "daemon.apk":
+                      data = daemon
+                  elif info.filename == "daemon.apk.sha256":
+                      data = daemon_sha
+                  else:
+                      data = zin.read(info.filename)
+                  zout.writestr(info, data)
+
+          def tree(path):
+              with zipfile.ZipFile(path) as z:
+                  names = z.namelist()
+                  if len(names) != len(set(names)):
+                      raise SystemExit(f"duplicate names: {path}")
+                  bad = z.testzip()
+                  if bad:
+                      raise SystemExit(f"ZIP CRC failure {path}: {bad}")
+                  return {
+                      n: hashlib.sha256(z.read(n)).hexdigest()
+                      for n in names if not n.endswith("/")
+                  }
+
+          a = tree(official)
+          b = tree(out)
+
+          if set(a) != set(b):
+              raise SystemExit("official/P8 final file sets differ")
+          if len(a) != 56:
+              raise SystemExit(f"expected 56 final files, got {len(a)}")
+
+          diff = sorted(k for k in a if a[k] != b[k])
+          if diff != ["daemon.apk", "daemon.apk.sha256"]:
+              raise SystemExit(f"unexpected official->P8 final delta: {diff}")
+
+          # Explicitly freeze every hook-side payload as official 7371.
+          for rel in (
+              "manager.apk",
+              "framework/lspd.dex",
+              "lib/arm64-v8a/liblspd.so",
+              "lib/armeabi-v7a/liblspd.so",
+              "lib/x86/liblspd.so",
+              "lib/x86_64/liblspd.so",
+          ):
+              if a[rel] != b[rel]:
+                  raise SystemExit(f"official hook payload changed unexpectedly: {rel}")
+
+          with zipfile.ZipFile(out) as z:
+              names = set(z.namelist())
+              checked = 0
+              for n in sorted(names):
+                  if not n.endswith(".sha256"):
+                      continue
+                  payload = n[:-7]
+                  if payload not in names:
+                      continue
+                  expected = z.read(n).decode().strip().split()[0]
+                  actual = hashlib.sha256(z.read(payload)).hexdigest()
+                  if expected != actual:
+                      raise SystemExit(f"sidecar mismatch: {n}")
+                  checked += 1
+              if checked != 28:
+                  raise SystemExit(f"expected 28 verified sidecars, got {checked}")
+
+          sha = hashlib.sha256(out.read_bytes()).hexdigest()
+          Path("p8-output/P8_FINAL_PACKAGE_SHA256.txt").write_text(f"{sha}  {out.name}\n")
+          Path("p8-output/P8_FINAL_PACKAGE_DIFF.txt").write_text(
+              "daemon.apk\n"
+              "daemon.apk.sha256\n"
+          )
+          Path("p8-output/P8_FINAL_SCOPE.txt").write_text(
+              "BASE=official Irena X 7371 release\n"
+              "HOOK_BACKEND=official current 7371 LSPlant/Dobby/loaders\n"
+              "ONLY_RUNTIME_CHANGE=P7 dex2oat mount creation/remount suppressed\n"
+              "MANAGER=official 7371 byte-identical\n"
+              "FRAMEWORK_LSPD_DEX=official 7371 byte-identical\n"
+              "ALL_LIBLSPD=official 7371 byte-identical\n"
+              "P4_OLD_LSPLANT=absent\n"
+              "P6_CLASSLINKER_FALLBACK=absent\n"
+          )
+          PY
+
+          unzip -t "$FINAL_ZIP"
+          cp "$FINAL_ZIP" "p8-output/INSTALL_THIS_${FINAL_ZIP}"
+
+      - name: Write device test plan
+        if: steps.package.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > p8-output/P8_DEVICE_TEST_PLAN.txt <<'EOF'
+          P8-v1 objective:
+          Restore the official Irena X 7371 hook backend while preserving the confirmed
+          P7 mount-only fix. This is NOT a new PairIP bypass.
+
+          After installation + reboot:
+          1. Confirm LSPosed manager opens normally instead of BugreportWarningActivity.
+          2. Confirm Hide Mock Location reports Xposed/module active.
+          3. Re-run dex2oat mount scan for PID 1, zygote64, system_server; all must remain NONE.
+          4. Run TrustAttestor; L0 and L2 should remain PASS.
+          5. Only after 1-4, test Ingress once.
+             If the old libpairipcore.so crash returns, stop there and preserve logs:
+             that means current official hooks are functional again and PairIP remains
+             a separate compatibility problem for the next stage.
+          EOF
+
+      - name: Collect P8 evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p p8-output
+
+          cp BASELINE_BUILD_EXIT_CODE.txt p8-output/ 2>/dev/null || true
+          cp P8_BUILD_EXIT_CODE.txt p8-output/ 2>/dev/null || true
+          cp baseline-current-hooks-build.log p8-output/ 2>/dev/null || true
+          cp p8-build.log p8-output/ 2>/dev/null || true
+          cp BASELINE_CURRENT_HOOKS_RELEASE.zip p8-output/ 2>/dev/null || true
+          cp P8_BUILD_RELEASE.zip p8-output/ 2>/dev/null || true
+          cp OFFICIAL_RELEASE.zip p8-output/OFFICIAL_7371_RELEASE_REFERENCE.zip 2>/dev/null || true
+
+          if [ -d LSP-IrenaX ]; then
+            (
+              cd LSP-IrenaX
+              git diff --check
+              git diff > ../p8-output/P8_SOURCE_FULL.patch
+            ) || true
+          fi
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib
+
+          out = Path("p8-output")
+          files = sorted(
+              p for p in out.rglob("*")
+              if p.is_file() and p.name != "P8_EVIDENCE_SHA256SUMS.txt"
+          )
+          with (out / "P8_EVIDENCE_SHA256SUMS.txt").open("w") as f:
+              for p in files:
+                  rel = p.relative_to(out).as_posix()
+                  f.write(f"{hashlib.sha256(p.read_bytes()).hexdigest()}  {rel}\n")
+          PY
+
+          (
+            cd p8-output
+            sha256sum -c P8_EVIDENCE_SHA256SUMS.txt
+          )
+
+      - name: Final P8 v1 gate and create PASS marker
+        id: finalgate
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test -f BASELINE_BUILD_EXIT_CODE.txt
+          test "$(cat BASELINE_BUILD_EXIT_CODE.txt)" = "0"
+          test -f P8_BUILD_EXIT_CODE.txt
+          test "$(cat P8_BUILD_EXIT_CODE.txt)" = "0"
+
+          test -f p8-output/P8_SOURCE_DIFF_NAMES.txt
+          test "$(cat p8-output/P8_SOURCE_DIFF_NAMES.txt)" = \
+            "daemon/src/main/java/org/lsposed/lspd/service/Dex2OatService.java"
+
+          test -f p8-output/P8_BASELINE_TO_BUILD_DIFF.txt
+          diff -u <(printf '%s\n' daemon.apk daemon.apk.sha256) \
+            p8-output/P8_BASELINE_TO_BUILD_DIFF.txt
+
+          test -f p8-output/P8_FINAL_PACKAGE_DIFF.txt
+          diff -u <(printf '%s\n' daemon.apk daemon.apk.sha256) \
+            p8-output/P8_FINAL_PACKAGE_DIFF.txt
+
+          grep -q '^OFFICIAL_DAEMON=UNSIGNED_CLASSPATH_APK$' \
+            p8-output/P8_DAEMON_FORMAT_RESULT.txt
+          grep -q '^P8_DAEMON=UNSIGNED_CLASSPATH_APK$' \
+            p8-output/P8_DAEMON_FORMAT_RESULT.txt
+
+          test -f "p8-output/INSTALL_THIS_${FINAL_ZIP}"
+
+          (
+            cd p8-output
+            sha256sum -c P8_EVIDENCE_SHA256SUMS.txt
+          )
+
+          {
+            echo "RESULT=P8_V1_STATIC_FULL_PASS_DEVICE_CANDIDATE_CREATED"
+            echo "FRAMEWORK=$FRAMEWORK_FAMILY $FRAMEWORK_VERSION build $FRAMEWORK_BUILD"
+            echo "XPOSED_API_LINE=$XPOSED_API_LINE"
+            echo "PARENT_PASS=$PARENT_PASS_ID"
+            echo "PARENT_PASS_ZIP_SHA256=$PARENT_PASS_ZIP_SHA256"
+            echo "HOOK_BACKEND=official current Irena 7371"
+            echo "MOUNT_FIX=P7 confirmed doMount(true) suppression preserved"
+            echo "DEVICE_RUNTIME_STATUS=NOT_TESTED_BY_WORKFLOW"
+            echo "NEXT_RUNTIME_GATE=manager + module active + mounts NONE + TrustAttestor L0/L2 + one Ingress start"
+          } | tee p8-output/P8_PASS_MARKER.txt
+
+          mkdir -p p8-pass-backup
+          cp "p8-output/INSTALL_THIS_${FINAL_ZIP}" p8-pass-backup/
+          cp p8-output/P8_PASS_MARKER.txt p8-pass-backup/
+          cp p8-output/P8_PARENT_PASS_CHECKPOINT.txt p8-pass-backup/
+          cp p8-output/P8_SOURCE_PINS.txt p8-pass-backup/
+          cp p8-output/P8_PROVENANCE.txt p8-pass-backup/
+          cp p8-output/P8_MOUNT_ONLY.patch p8-pass-backup/
+          cp p8-output/P8_FINAL_PACKAGE_SHA256.txt p8-pass-backup/
+          cp p8-output/P8_FINAL_SCOPE.txt p8-pass-backup/
+          cp p8-output/P8_DEVICE_TEST_PLAN.txt p8-pass-backup/
+
+          (
+            cd p8-pass-backup
+            sha256sum * > P8_PASS_BACKUP_SHA256SUMS.txt
+            sha256sum -c P8_PASS_BACKUP_SHA256SUMS.txt
+          )
+
+      - name: Upload P8 diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: irena-x-v2.0.1-7371-p8-v1-diagnostics
+          path: p8-output
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload P8 PASS backup
+        if: steps.finalgate.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: irena-x-v2.0.1-7371-p8-v1-PASS-BACKUP
+          path: p8-pass-backup
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 90
