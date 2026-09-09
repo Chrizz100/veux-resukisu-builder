@@ -1,0 +1,682 @@
+name: Irena X 7371 P10 v1 official manager cert + P7 mount fix
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  FRAMEWORK_FAMILY: Irena-X
+  FRAMEWORK_VERSION: v2.0.1
+  FRAMEWORK_BUILD: "7371"
+  XPOSED_API_LINE: "100+101"
+
+  IRENA_REPO: silvzr/LSP-IrenaX
+  IRENA_COMMIT: da439fbbed506dac6c66074af7fda8982aa4fc6a
+  CURRENT_LSPLANT_SHA: c5b46bb4f6a99ffe0c77ce3ab006d3f67d5a2b1c
+  CURRENT_DOBBY_SHA: dc7b4be06ad6c5dcfb0bb4ca2082b007d69eaed5
+
+  OFFICIAL_RELEASE_URL: https://github.com/silvzr/LSP-IrenaX/releases/download/v2.0.1/LSPosed-v2.0.1-7371-IrenaX-release.zip
+  OFFICIAL_RELEASE_SHA256: 99e7aaf54dda0e6fa746c55613483a80620174f255dd05e102713778a9966d2f
+  OFFICIAL_MANAGER_CERT_SHA256: 116d6fa5b78e304889e7bb2012e4a4652574c2ec2957d41d0a8a80ca14353bc8
+
+  P9_CONFIRMED_RESULT: SIGNATURE_PROVENANCE_MISMATCH_CONFIRMED
+  P8_PARENT_ZIP_SHA256: 4e12798295bc1e6180461d435b05d145e0c28a22e5c3e1e12c990f334cc15cba
+
+  FINAL_ZIP: LSPosed-v2.0.1-7371-IrenaX-P10-v1-official-manager-cert-P7-mount-fix-release.zip
+
+jobs:
+  build:
+    name: Build P10 with exact official manager certificate
+    runs-on: ubuntu-latest
+
+    env:
+      CCACHE_COMPILERCHECK: "%compiler% -dumpmachine; %compiler% -dumpversion"
+      CCACHE_NOHASHDIR: "true"
+      CCACHE_HARDLINK: "true"
+      CCACHE_BASEDIR: "${{ github.workspace }}/LSP-IrenaX"
+
+    steps:
+      - name: Freeze P9 confirmed diagnosis
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p p10-output
+          {
+            echo "P9_RESULT=$P9_CONFIRMED_RESULT"
+            echo "P9_OFFICIAL_MANAGER_CERT_SHA256=$OFFICIAL_MANAGER_CERT_SHA256"
+            echo "P9_REBUILT_DAEMON_EXPECTED_CERT_SHA256=732a679850e9cc4769fc8f0c62cf9223719fcd68309fd50513f9f0f616884b73"
+            echo "P10_GOAL=keep official manager.apk and make rebuilt daemon expect that exact official certificate"
+            echo "P10_SECURITY_RULE=preserve InstallerVerifier; do not bypass manager signature verification"
+            echo "P10_RUNTIME_RULE=preserve P7 dex2oat mount suppression"
+            echo "PAIRIP_BRANCH=unchanged and separate"
+          } | tee p10-output/P10_PARENT_DIAGNOSIS.txt
+
+      - name: Checkout pinned Irena X 7371
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.IRENA_REPO }}
+          ref: ${{ env.IRENA_COMMIT }}
+          submodules: recursive
+          fetch-depth: 0
+          path: LSP-IrenaX
+          persist-credentials: false
+
+      - name: Verify pristine source and official hook pins
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test "$(git -C LSP-IrenaX rev-parse HEAD)" = "$IRENA_COMMIT"
+          test -z "$(git -C LSP-IrenaX status --porcelain)"
+          test "$(git -C LSP-IrenaX/external/lsplant rev-parse HEAD)" = "$CURRENT_LSPLANT_SHA"
+          test "$(git -C LSP-IrenaX/external/dobby rev-parse HEAD)" = "$CURRENT_DOBBY_SHA"
+          test -z "$(git -C LSP-IrenaX/external/lsplant status --porcelain)"
+          test -z "$(git -C LSP-IrenaX/external/dobby status --porcelain)"
+
+          {
+            echo "IRENA=$(git -C LSP-IrenaX rev-parse HEAD)"
+            echo "LSPLANT=$(git -C LSP-IrenaX/external/lsplant rev-parse HEAD)"
+            echo "DOBBY=$(git -C LSP-IrenaX/external/dobby rev-parse HEAD)"
+          } > p10-output/P10_SOURCE_PINS.txt
+
+      - name: Setup Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          log-accepted-android-sdk-licenses: 'false'
+          packages: ''
+
+      - name: Install build tools 36
+        shell: bash
+        run: |
+          set -euo pipefail
+          sdkmanager "build-tools;36.0.0" >/dev/null
+          test -x "$ANDROID_HOME/build-tools/36.0.0/apksigner"
+          test -f "$ANDROID_HOME/build-tools/36.0.0/lib/apksigner.jar"
+          echo "APKSIGNER=$ANDROID_HOME/build-tools/36.0.0/apksigner" >> "$GITHUB_ENV"
+          echo "APKSIGNER_JAR=$ANDROID_HOME/build-tools/36.0.0/lib/apksigner.jar" >> "$GITHUB_ENV"
+
+      - name: Setup ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          max-size: 2G
+          key: irena-x-p10-official-manager-cert-${{ runner.os }}
+          restore-keys: |
+            irena-x-${{ runner.os }}
+          save: false
+
+      - name: Setup Ninja 1.12.1
+        uses: seanmiddleditch/gha-setup-ninja@master
+        with:
+          version: 1.12.1
+
+      - name: Remove Android bundled CMake
+        shell: bash
+        run: rm -rf "$ANDROID_HOME/cmake"
+
+      - name: Configure Gradle diagnostics
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.gradle
+          {
+            echo 'org.gradle.caching=true'
+            echo 'org.gradle.parallel=true'
+            echo 'org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8 -XX:+UseParallelGC'
+            echo 'android.native.buildOutput=verbose'
+          } >> ~/.gradle/gradle.properties
+
+      - name: Download and verify official 7371 release
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          curl --fail --location --retry 3 \
+            -o OFFICIAL_RELEASE.zip \
+            "$OFFICIAL_RELEASE_URL"
+          echo "$OFFICIAL_RELEASE_SHA256  OFFICIAL_RELEASE.zip" | sha256sum -c -
+
+          rm -rf officialcmp
+          mkdir officialcmp
+          unzip -q OFFICIAL_RELEASE.zip -d officialcmp
+          unzip -t OFFICIAL_RELEASE.zip
+
+          test -f officialcmp/manager.apk
+          test -f officialcmp/daemon.apk
+
+          "$APKSIGNER" verify --verbose --print-certs officialcmp/manager.apk 2>&1 \
+            | tee p10-output/P10_OFFICIAL_MANAGER_APKSIGNER.txt
+
+          cert="$(
+            awk -F': ' '/Signer #1 certificate SHA-256 digest:/{print tolower($2); exit}' \
+              p10-output/P10_OFFICIAL_MANAGER_APKSIGNER.txt \
+              | tr -d ':[:space:]'
+          )"
+          test "$cert" = "$OFFICIAL_MANAGER_CERT_SHA256"
+
+          sha256sum OFFICIAL_RELEASE.zip \
+            > p10-output/P10_OFFICIAL_RELEASE_SHA256.txt
+          sha256sum officialcmp/manager.apk \
+            > p10-output/P10_OFFICIAL_MANAGER_APK_SHA256.txt
+
+      - name: Extract exact official manager certificate DER
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cat > ExtractApkSignerCert.java <<'JAVA'
+          import com.android.apksig.ApkVerifier;
+          import java.io.File;
+          import java.nio.file.Files;
+          import java.nio.file.Path;
+
+          public final class ExtractApkSignerCert {
+              public static void main(String[] args) throws Exception {
+                  if (args.length != 2) {
+                      throw new IllegalArgumentException("usage: <apk> <out.der>");
+                  }
+                  ApkVerifier.Result result =
+                          new ApkVerifier.Builder(new File(args[0])).build().verify();
+                  if (!result.isVerified()) {
+                      throw new IllegalStateException("APK verification failed");
+                  }
+                  if (result.getSignerCertificates().size() != 1) {
+                      throw new IllegalStateException(
+                              "expected exactly one signer, got "
+                                      + result.getSignerCertificates().size());
+                  }
+                  Files.write(
+                          Path.of(args[1]),
+                          result.getSignerCertificates().get(0).getEncoded());
+              }
+          }
+          JAVA
+
+          javac -cp "$APKSIGNER_JAR" ExtractApkSignerCert.java
+          java -cp ".:$APKSIGNER_JAR" ExtractApkSignerCert \
+            officialcmp/manager.apk P10_OFFICIAL_MANAGER_CERT.der
+
+          test -s P10_OFFICIAL_MANAGER_CERT.der
+          actual="$(sha256sum P10_OFFICIAL_MANAGER_CERT.der | awk '{print $1}')"
+          test "$actual" = "$OFFICIAL_MANAGER_CERT_SHA256"
+
+          {
+            echo "OFFICIAL_MANAGER_CERT_SHA256=$actual"
+            echo "OFFICIAL_MANAGER_CERT_DER_SIZE=$(stat -c %s P10_OFFICIAL_MANAGER_CERT.der)"
+          } | tee p10-output/P10_OFFICIAL_MANAGER_CERT_DER.txt
+
+      - name: Apply only P7 mount fix plus P10 certificate provenance fix
+        shell: bash
+        working-directory: LSP-IrenaX
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          # 1) Preserve the already confirmed P7 mount-only runtime fix.
+          p = Path("daemon/src/main/java/org/lsposed/lspd/service/Dex2OatService.java")
+          s = p.read_text()
+          old = (
+              "    private void doMount(boolean enabled) {\n"
+              "        doMountNative(enabled, dex2oatArray[0], dex2oatArray[1], dex2oatArray[2], dex2oatArray[3]);\n"
+              "    }\n"
+          )
+          new = (
+              "    private void doMount(boolean enabled) {\n"
+              "        // P7/P10 confirmed mount-only fix: never create/remount the global\n"
+              "        // dex2oat bind mounts. Preserve the existing unmount path.\n"
+              "        if (enabled) return;\n"
+              "        doMountNative(false, dex2oatArray[0], dex2oatArray[1], dex2oatArray[2], dex2oatArray[3]);\n"
+              "    }\n"
+          )
+          if s.count(old) != 1:
+              raise SystemExit(f"expected exactly one pristine doMount block, got {s.count(old)}")
+          p.write_text(s.replace(old, new, 1))
+
+          # 2) Preserve InstallerVerifier itself. Change only how SignInfo.CERTIFICATE
+          #    is generated at build time: when P10_MANAGER_CERT_DER is supplied,
+          #    embed that exact DER certificate instead of the local build key cert.
+          p = Path("daemon/build.gradle.kts")
+          s = p.read_text()
+          old = (
+              "            PrintStream(outSrc).print(\n"
+              "                \"\"\"\n"
+              "                |package org.lsposed.lspd.util;\n"
+              "                |public final class SignInfo {\n"
+              "                |    public static final byte[] CERTIFICATE = {${\n"
+              "                    certificateInfo.certificate.encoded.joinToString(\",\")\n"
+              "                }};\n"
+              "                |}\"\"\".trimMargin()\n"
+              "            )\n"
+          )
+          new = (
+              "            val managerCertificate = System.getenv(\"P10_MANAGER_CERT_DER\")\n"
+              "                ?.takeIf { it.isNotBlank() }\n"
+              "                ?.let { File(it).readBytes() }\n"
+              "                ?: certificateInfo.certificate.encoded\n"
+              "            PrintStream(outSrc).print(\n"
+              "                \"\"\"\n"
+              "                |package org.lsposed.lspd.util;\n"
+              "                |public final class SignInfo {\n"
+              "                |    public static final byte[] CERTIFICATE = {${\n"
+              "                    managerCertificate.joinToString(\",\")\n"
+              "                }};\n"
+              "                |}\"\"\".trimMargin()\n"
+              "            )\n"
+          )
+          if s.count(old) != 1:
+              raise SystemExit(
+                  f"expected exactly one pristine SignInfo generation block, got {s.count(old)}"
+              )
+          p.write_text(s.replace(old, new, 1))
+          PY
+
+          git diff --check
+
+          mapfile -t changed < <(git diff --name-only | sort)
+          printf '%s\n' "${changed[@]}" | tee ../p10-output/P10_SOURCE_DIFF_NAMES.txt
+          test "${#changed[@]}" -eq 2
+          test "${changed[0]}" = "daemon/build.gradle.kts"
+          test "${changed[1]}" = "daemon/src/main/java/org/lsposed/lspd/service/Dex2OatService.java"
+
+          # Fail closed: runtime verification logic itself must remain pristine.
+          git diff --exit-code "$IRENA_COMMIT" -- \
+            daemon/src/main/java/org/lsposed/lspd/util/InstallerVerifier.java \
+            daemon/src/main/java/org/lsposed/lspd/service/ConfigFileManager.java
+
+          # Fail closed: hook backend/lifecycle paths remain pristine official 7371.
+          git diff --exit-code "$IRENA_COMMIT" -- \
+            core/src/main/java/org/lsposed/lspd/hooker/LoadedApkCtorHooker.java \
+            core/src/main/java/org/lsposed/lspd/hooker/LoadedApkCreateCLHooker.java \
+            core/src/main/jni/src/native_api.cpp \
+            core/src/main/jni/include/framework/androidfw/resource_types.h \
+            magisk-loader/src/main/jni/api/zygisk_main.cpp \
+            magisk-loader/src/main/jni/src/magisk_loader.cpp
+
+          test "$(git -C external/lsplant rev-parse HEAD)" = "$CURRENT_LSPLANT_SHA"
+          test "$(git -C external/dobby rev-parse HEAD)" = "$CURRENT_DOBBY_SHA"
+          test -z "$(git -C external/lsplant status --porcelain)"
+          test -z "$(git -C external/dobby status --porcelain)"
+
+          git diff > ../p10-output/P10_SOURCE_FULL.patch
+
+          {
+            echo "BASE=official Irena X 7371 source"
+            echo "CHANGE_1=P7 Dex2OatService.doMount(true) suppression"
+            echo "CHANGE_2=build-time SignInfo.CERTIFICATE source from exact official manager DER"
+            echo "INSTALLERVERIFIER=UNCHANGED"
+            echo "CONFIGFILEMANAGER=UNCHANGED"
+            echo "SIGNATURE_VERIFICATION_BYPASS=NO"
+            echo "OFFICIAL_CERT_PIN=$OFFICIAL_MANAGER_CERT_SHA256"
+            echo "HOOK_BACKEND=official current 7371"
+            echo "PAIRIP_BYPASS=NO"
+          } > ../p10-output/P10_PROVENANCE.txt
+
+      - name: Build P10 candidate
+        id: p10build
+        shell: bash
+        working-directory: LSP-IrenaX
+        env:
+          P10_MANAGER_CERT_DER: ${{ github.workspace }}/P10_OFFICIAL_MANAGER_CERT.der
+        run: |
+          set -uo pipefail
+          set +e
+          ./gradlew clean zipAll --stacktrace --info 2>&1 | tee ../p10-build.log
+          rc=${PIPESTATUS[0]}
+          set -e
+          echo "$rc" > ../P10_BUILD_EXIT_CODE.txt
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Freeze build and prove embedded certificate
+        id: certaudit
+        if: steps.p10build.outputs.rc == '0'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mapfile -t rel < <(find LSP-IrenaX/magisk-loader/release -maxdepth 1 -type f \
+            -name 'LSPosed-v*-IrenaX-release.zip' -print | sort)
+          test "${#rel[@]}" -eq 1
+          cp "${rel[0]}" P10_BUILD_RELEASE.zip
+
+          rm -rf p10cmp
+          mkdir p10cmp
+          unzip -q P10_BUILD_RELEASE.zip -d p10cmp
+
+          signinfo="LSP-IrenaX/daemon/build/generated/source/signInfo/release/org/lsposed/lspd/util/SignInfo.java"
+          test -f "$signinfo"
+          cp "$signinfo" p10-output/P10_GENERATED_SIGNINFO.java
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib
+          import re
+
+          s = Path("p10-output/P10_GENERATED_SIGNINFO.java").read_text()
+          m = re.search(r"CERTIFICATE\s*=\s*\{([^}]*)\}", s, re.S)
+          if not m:
+              raise SystemExit("CERTIFICATE array missing")
+          vals = [int(x.strip()) for x in m.group(1).split(",") if x.strip()]
+          if not vals:
+              raise SystemExit("CERTIFICATE array empty")
+          der = bytes((v + 256) % 256 for v in vals)
+          sha = hashlib.sha256(der).hexdigest()
+          Path("p10-output/P10_DAEMON_EMBEDDED_MANAGER_CERT_SHA256.txt").write_text(
+              sha + "\n"
+          )
+          Path("p10-output/P10_DAEMON_EMBEDDED_MANAGER_CERT_LENGTH.txt").write_text(
+              str(len(der)) + "\n"
+          )
+          PY
+
+          embedded="$(tr -d ':[:space:]' < p10-output/P10_DAEMON_EMBEDDED_MANAGER_CERT_SHA256.txt)"
+          test "$embedded" = "$OFFICIAL_MANAGER_CERT_SHA256"
+
+          {
+            echo "OFFICIAL_MANAGER_CERT_SHA256=$OFFICIAL_MANAGER_CERT_SHA256"
+            echo "P10_DAEMON_EMBEDDED_MANAGER_CERT_SHA256=$embedded"
+            echo "RESULT=EXACT_CERT_MATCH"
+          } | tee p10-output/P10_CERTIFICATE_GATE.txt
+
+          sha256sum P10_BUILD_RELEASE.zip \
+            > p10-output/P10_BUILD_RELEASE_SHA256.txt
+          sha256sum p10cmp/daemon.apk \
+            > p10-output/P10_REBUILT_DAEMON_APK_SHA256.txt
+
+      - name: Audit daemon classpath APK format
+        id: daemonaudit
+        if: steps.certaudit.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          jarsigner -verify officialcmp/daemon.apk 2>&1 \
+            | tee p10-output/P10_OFFICIAL_DAEMON_JARSIGNER.txt
+          jarsigner -verify p10cmp/daemon.apk 2>&1 \
+            | tee p10-output/P10_REBUILT_DAEMON_JARSIGNER.txt
+
+          grep -qi 'jar is unsigned' p10-output/P10_OFFICIAL_DAEMON_JARSIGNER.txt
+          grep -qi 'jar is unsigned' p10-output/P10_REBUILT_DAEMON_JARSIGNER.txt
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import struct
+
+          def has_apk_sig_block(path):
+              data = Path(path).read_bytes()
+              eocd = data.rfind(b"PK\x05\x06", max(0, len(data) - 0x10000 - 22))
+              if eocd < 0:
+                  raise SystemExit(f"EOCD not found: {path}")
+              cd_off = struct.unpack_from("<I", data, eocd + 16)[0]
+              if cd_off < 24:
+                  return False
+              return data[cd_off - 16:cd_off] == b"APK Sig Block 42"
+
+          for path in ("officialcmp/daemon.apk", "p10cmp/daemon.apk"):
+              if has_apk_sig_block(path):
+                  raise SystemExit(f"unexpected APK Signing Block in daemon: {path}")
+          PY
+
+          {
+            echo "OFFICIAL_DAEMON=UNSIGNED_CLASSPATH_APK"
+            echo "P10_DAEMON=UNSIGNED_CLASSPATH_APK"
+            echo "APK_SIGNER_GATE=NOT_APPLICABLE"
+          } > p10-output/P10_DAEMON_FORMAT_RESULT.txt
+
+          grep -Fq 'java_options="-Djava.class.path=$dir/daemon.apk"' \
+            LSP-IrenaX/magisk-loader/magisk_module/daemon
+          grep -Fq 'exec /system/bin/app_process $java_options' \
+            LSP-IrenaX/magisk-loader/magisk_module/daemon
+
+      - name: Create official-base P10 device candidate
+        id: package
+        if: steps.daemonaudit.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib
+          import zipfile
+
+          official = Path("OFFICIAL_RELEASE.zip")
+          p10dir = Path("p10cmp")
+          out = Path("${{ env.FINAL_ZIP }}")
+
+          with zipfile.ZipFile(official, "r") as zin, zipfile.ZipFile(out, "w") as zout:
+              infos = zin.infolist()
+              names = [x.filename for x in infos]
+              if len(names) != len(set(names)):
+                  raise SystemExit("duplicate names in official ZIP")
+
+              required = {"daemon.apk", "daemon.apk.sha256", "manager.apk"}
+              if not required.issubset(set(names)):
+                  raise SystemExit("official ZIP missing required payload")
+
+              daemon = (p10dir / "daemon.apk").read_bytes()
+              daemon_sha = hashlib.sha256(daemon).hexdigest().encode()
+
+              for info in infos:
+                  if info.filename == "daemon.apk":
+                      data = daemon
+                  elif info.filename == "daemon.apk.sha256":
+                      data = daemon_sha
+                  else:
+                      data = zin.read(info.filename)
+                  zout.writestr(info, data)
+
+          def tree(path):
+              with zipfile.ZipFile(path) as z:
+                  names = z.namelist()
+                  if len(names) != len(set(names)):
+                      raise SystemExit(f"duplicate names: {path}")
+                  bad = z.testzip()
+                  if bad:
+                      raise SystemExit(f"ZIP CRC failure {path}: {bad}")
+                  return {
+                      n: hashlib.sha256(z.read(n)).hexdigest()
+                      for n in names if not n.endswith("/")
+                  }
+
+          a = tree(official)
+          b = tree(out)
+
+          if set(a) != set(b):
+              raise SystemExit("official/P10 final file sets differ")
+          if len(a) != 56:
+              raise SystemExit(f"expected 56 final files, got {len(a)}")
+
+          diff = sorted(k for k in a if a[k] != b[k])
+          if diff != ["daemon.apk", "daemon.apk.sha256"]:
+              raise SystemExit(f"unexpected official->P10 final delta: {diff}")
+
+          # All hook/manager payload remains byte-identical to official 7371.
+          for rel in (
+              "manager.apk",
+              "framework/lspd.dex",
+              "lib/arm64-v8a/liblspd.so",
+              "lib/armeabi-v7a/liblspd.so",
+              "lib/x86/liblspd.so",
+              "lib/x86_64/liblspd.so",
+          ):
+              if a[rel] != b[rel]:
+                  raise SystemExit(f"official payload changed unexpectedly: {rel}")
+
+          with zipfile.ZipFile(out) as z:
+              names = set(z.namelist())
+              checked = 0
+              for n in sorted(names):
+                  if not n.endswith(".sha256"):
+                      continue
+                  payload = n[:-7]
+                  if payload not in names:
+                      continue
+                  expected = z.read(n).decode().strip().split()[0]
+                  actual = hashlib.sha256(z.read(payload)).hexdigest()
+                  if expected != actual:
+                      raise SystemExit(f"sidecar mismatch: {n}")
+                  checked += 1
+              if checked != 28:
+                  raise SystemExit(f"expected 28 verified sidecars, got {checked}")
+
+          sha = hashlib.sha256(out.read_bytes()).hexdigest()
+          Path("p10-output/P10_FINAL_PACKAGE_SHA256.txt").write_text(
+              f"{sha}  {out.name}\n"
+          )
+          Path("p10-output/P10_FINAL_PACKAGE_DIFF.txt").write_text(
+              "daemon.apk\n"
+              "daemon.apk.sha256\n"
+          )
+          Path("p10-output/P10_FINAL_SCOPE.txt").write_text(
+              "BASE=official Irena X 7371 release\n"
+              "MANAGER=official 7371 byte-identical\n"
+              "HOOK_BACKEND=official current 7371 byte-identical\n"
+              "ONLY_RUNTIME_CHANGES=P7 mount suppression + daemon expects exact official manager certificate\n"
+              "INSTALLERVERIFIER=official logic unchanged\n"
+              "SIGNATURE_BYPASS=NO\n"
+              "PAIRIP_BYPASS=NO\n"
+          )
+          PY
+
+          unzip -t "$FINAL_ZIP"
+          cp "$FINAL_ZIP" "p10-output/INSTALL_THIS_${FINAL_ZIP}"
+
+          cat > p10-output/README_INSTALL_ARTIFACT.txt <<EOF
+          GitHub Actions wraps this directory in an OUTER artifact ZIP.
+          DO NOT flash the outer Actions artifact.
+          Extract it first and install this inner ZIP in ReSukiSU/KernelSU:
+          INSTALL_THIS_${FINAL_ZIP}
+          EOF
+
+      - name: Write device test plan
+        if: steps.package.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > p10-output/P10_DEVICE_TEST_PLAN.txt <<'EOF'
+          P10-v1 objective:
+          Repair only the P8 manager-certificate provenance mismatch while preserving
+          the confirmed P7 dex2oat mount suppression and official Irena 7371 hook backend.
+
+          After installation + reboot, in this order:
+
+          1. Open LSPosed/Irena manager.
+             PASS: manager UI opens normally.
+             FAIL: BugreportWarningActivity or "apk signature mismatch" returns.
+
+          2. Check Hide Mock Location.
+             PASS: module reports Xposed/module active.
+             This is a hook-functionality check, not a manager-signature check.
+
+          3. Re-run the dex2oat mount scan for PID 1, zygote64 and system_server.
+             PASS: no LSPosed dex2oat32/64 bind mounts.
+
+          4. Run TrustAttestor.
+             PASS target: L0 PASS and L2 PASS remain preserved.
+
+          5. Only after 1-4, start Ingress once.
+             If libpairipcore.so SIGSEGV returns, stop and preserve logs.
+             That is the separate PairIP/current-hook compatibility branch and does
+             not invalidate the P10 manager-signature or P7 mount fixes.
+          EOF
+
+      - name: Collect evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p p10-output
+
+          cp P10_BUILD_EXIT_CODE.txt p10-output/ 2>/dev/null || true
+          cp p10-build.log p10-output/ 2>/dev/null || true
+          cp P10_BUILD_RELEASE.zip p10-output/ 2>/dev/null || true
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib
+
+          out = Path("p10-output")
+          manifest = out / "P10_EVIDENCE_SHA256SUMS.txt"
+          files = sorted(
+              p for p in out.rglob("*")
+              if p.is_file() and p != manifest
+          )
+          with manifest.open("w") as f:
+              for p in files:
+                  rel = p.relative_to(out).as_posix()
+                  f.write(f"{hashlib.sha256(p.read_bytes()).hexdigest()}  {rel}\n")
+          PY
+
+          (
+            cd p10-output
+            sha256sum -c P10_EVIDENCE_SHA256SUMS.txt
+          )
+
+      - name: Final P10 static gate
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test -f P10_BUILD_EXIT_CODE.txt
+          test "$(cat P10_BUILD_EXIT_CODE.txt)" = "0"
+
+          test -f p10-output/P10_SOURCE_DIFF_NAMES.txt
+          diff -u <(printf '%s\n' \
+            daemon/build.gradle.kts \
+            daemon/src/main/java/org/lsposed/lspd/service/Dex2OatService.java) \
+            p10-output/P10_SOURCE_DIFF_NAMES.txt
+
+          grep -q '^RESULT=EXACT_CERT_MATCH$' \
+            p10-output/P10_CERTIFICATE_GATE.txt
+          grep -q "^P10_DAEMON_EMBEDDED_MANAGER_CERT_SHA256=$OFFICIAL_MANAGER_CERT_SHA256$" \
+            p10-output/P10_CERTIFICATE_GATE.txt
+
+          grep -q '^OFFICIAL_DAEMON=UNSIGNED_CLASSPATH_APK$' \
+            p10-output/P10_DAEMON_FORMAT_RESULT.txt
+          grep -q '^P10_DAEMON=UNSIGNED_CLASSPATH_APK$' \
+            p10-output/P10_DAEMON_FORMAT_RESULT.txt
+
+          diff -u <(printf '%s\n' daemon.apk daemon.apk.sha256) \
+            p10-output/P10_FINAL_PACKAGE_DIFF.txt
+
+          test -f "p10-output/INSTALL_THIS_${FINAL_ZIP}"
+
+          (
+            cd p10-output
+            sha256sum -c P10_EVIDENCE_SHA256SUMS.txt
+          )
+
+          {
+            echo "RESULT=P10_V1_STATIC_FULL_PASS_DEVICE_CANDIDATE_CREATED"
+            echo "P9_CAUSE=signature provenance mismatch confirmed"
+            echo "MANAGER_CERT_PIN=$OFFICIAL_MANAGER_CERT_SHA256"
+            echo "INSTALLERVERIFIER=unchanged"
+            echo "SIGNATURE_BYPASS=NO"
+            echo "P7_MOUNT_FIX=preserved"
+            echo "HOOK_BACKEND=official current Irena 7371"
+            echo "DEVICE_RUNTIME_STATUS=NOT_TESTED_BY_WORKFLOW"
+            echo "NEXT_RUNTIME_GATE=manager + module active + mounts NONE + TrustAttestor L0/L2 + one Ingress start"
+          } | tee p10-output/P10_PASS_MARKER.txt
+
+      - name: Upload P10 diagnostics and inner install ZIP
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: irena-x-v2.0.1-7371-p10-v1-EXTRACT-FIRST
+          path: p10-output
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 30
