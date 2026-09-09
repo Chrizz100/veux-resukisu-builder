@@ -1,0 +1,654 @@
+name: Irena X 7371 R5 v1 legacy-call observer on R1-v2
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  FRAMEWORK_FAMILY: Irena-X
+  FRAMEWORK_VERSION: v2.0.1
+  FRAMEWORK_BUILD: "7371"
+  XPOSED_API_LINE: "100+101"
+
+  IRENA_REPO: silvzr/LSP-IrenaX
+  IRENA_COMMIT: da439fbbed506dac6c66074af7fda8982aa4fc6a
+  CURRENT_LSPLANT_SHA: c5b46bb4f6a99ffe0c77ce3ab006d3f67d5a2b1c
+  CURRENT_DOBBY_SHA: dc7b4be06ad6c5dcfb0bb4ca2082b007d69eaed5
+
+  OLD_WORKING_REPO: mywalkb/LSPosed_mod
+  OLD_WORKING_COMMIT: 9770579f313de44397c295fd1cc44e3fcec4777c
+
+  OFFICIAL_RELEASE_URL: https://github.com/silvzr/LSP-IrenaX/releases/download/v2.0.1/LSPosed-v2.0.1-7371-IrenaX-release.zip
+  OFFICIAL_RELEASE_SHA256: 99e7aaf54dda0e6fa746c55613483a80620174f255dd05e102713778a9966d2f
+
+  FINAL_ZIP: LSPosed-v2.0.1-7371-IrenaX-R5-v1-R1-base-legacy-call-observer-release.zip
+
+jobs:
+  build:
+    name: Build R5 v1 legacy-call observer from R1-v2
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Freeze R5 observer contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p r5-output
+          {
+            echo "PARENT_RUNTIME=R1-v2"
+            echo "PARENT_PACKAGE_SHA256=7ed948db19d92b0dd7776c424f93783e10210082ea807345228e901ab9ce4af7"
+            echo "R4_RESULT=GPSSetter alone crashes 3/3; HideMockLocation alone crashes 3/3; together crashes 3/3"
+            echo "R4_COMMON_DENOMINATOR=classic legacy hook path"
+            echo "R5_BASE=official Irena X 7371 + exact R1-v2 mIncludeCode compatibility fix"
+            echo "R5_ONLY_NEW_CHANGE=observer-only logging of actual legacy hooked-method execution"
+            echo "R5_FUNCTIONAL_PATCH=NONE"
+            echo "P7_MOUNT_SUPPRESSION=NOT_APPLIED"
+            echo "P10_CERT_REBUILD_PATCH=NOT_APPLIED"
+            echo "R2_DEOPT_ROLLBACK=NOT_APPLIED"
+            echo "PAIRIP_BYPASS=NOT_ATTEMPTED"
+            echo "LSPLANT=official current Irena pin"
+            echo "DOBBY=official current Irena pin"
+            echo "DEVICE_OBJECTIVE=determine whether any legacy-hooked method executes before PairIP crash"
+          } | tee r5-output/R5_OBSERVER_CONTRACT.txt
+
+      - name: Checkout pinned Irena X 7371
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.IRENA_REPO }}
+          ref: ${{ env.IRENA_COMMIT }}
+          submodules: recursive
+          fetch-depth: 0
+          path: LSP-IrenaX
+          persist-credentials: false
+
+      - name: Checkout old working 7244 reference
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.OLD_WORKING_REPO }}
+          ref: ${{ env.OLD_WORKING_COMMIT }}
+          submodules: false
+          fetch-depth: 1
+          path: LSPosed-7244-reference
+          persist-credentials: false
+
+      - name: Verify exact source pins and regression preconditions
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test "$(git -C LSP-IrenaX rev-parse HEAD)" = "$IRENA_COMMIT"
+          test -z "$(git -C LSP-IrenaX status --porcelain)"
+          test "$(git -C LSP-IrenaX/external/lsplant rev-parse HEAD)" = "$CURRENT_LSPLANT_SHA"
+          test "$(git -C LSP-IrenaX/external/dobby rev-parse HEAD)" = "$CURRENT_DOBBY_SHA"
+          test -z "$(git -C LSP-IrenaX/external/lsplant status --porcelain)"
+          test -z "$(git -C LSP-IrenaX/external/dobby status --porcelain)"
+
+          test "$(git -C LSPosed-7244-reference rev-parse HEAD)" = "$OLD_WORKING_COMMIT"
+
+          current="LSP-IrenaX/core/src/main/java/org/lsposed/lspd/hooker/LoadedApkCtorHooker.java"
+          old="LSPosed-7244-reference/core/src/main/java/org/lsposed/lspd/hooker/LoadedApkCtorHooker.java"
+
+          test -f "$current"
+          test -f "$old"
+
+          grep -Fq 'boolean includeCode = XposedHelpers.getBooleanField(loadedApk, "mIncludeCode");' "$current"
+          grep -Fq 'else if (!includeCode)' "$current"
+
+          if grep -Fq 'mIncludeCode' "$old"; then
+            echo "old working 7244 unexpectedly contains mIncludeCode access"
+            exit 1
+          fi
+
+          {
+            echo "IRENA=$(git -C LSP-IrenaX rev-parse HEAD)"
+            echo "LSPLANT=$(git -C LSP-IrenaX/external/lsplant rev-parse HEAD)"
+            echo "DOBBY=$(git -C LSP-IrenaX/external/dobby rev-parse HEAD)"
+            echo "OLD_WORKING_7244=$(git -C LSPosed-7244-reference rev-parse HEAD)"
+            echo "CURRENT_7371_M_INCLUDE_CODE=PRESENT"
+            echo "OLD_7244_M_INCLUDE_CODE=ABSENT"
+          } | tee r5-output/R5_SOURCE_PINS_AND_PRECONDITIONS.txt
+
+      - name: Setup Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          log-accepted-android-sdk-licenses: 'false'
+          packages: ''
+
+      - name: Setup ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          max-size: 2G
+          key: irena-x-r1-clean-base-${{ runner.os }}
+          restore-keys: |
+            irena-x-${{ runner.os }}
+          save: false
+
+      - name: Setup Ninja 1.12.1
+        uses: seanmiddleditch/gha-setup-ninja@master
+        with:
+          version: 1.12.1
+
+      - name: Remove Android bundled CMake
+        shell: bash
+        run: rm -rf "$ANDROID_HOME/cmake"
+
+      - name: Configure Gradle
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.gradle
+          {
+            echo 'org.gradle.caching=true'
+            echo 'org.gradle.parallel=true'
+            echo 'org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8 -XX:+UseParallelGC'
+            echo 'android.native.buildOutput=verbose'
+          } >> ~/.gradle/gradle.properties
+
+      - name: Download and verify official Irena 7371 release
+        id: official
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          curl --fail --location --retry 3 \
+            -o OFFICIAL_RELEASE.zip \
+            "$OFFICIAL_RELEASE_URL"
+
+          echo "$OFFICIAL_RELEASE_SHA256  OFFICIAL_RELEASE.zip" | sha256sum -c -
+
+          rm -rf officialcmp
+          mkdir officialcmp
+          unzip -q OFFICIAL_RELEASE.zip -d officialcmp
+          unzip -t OFFICIAL_RELEASE.zip
+
+          test -f officialcmp/manager.apk
+          test -f officialcmp/daemon.apk
+          test -f officialcmp/framework/lspd.dex
+
+          python3 - <<'PY'
+          import zipfile
+          with zipfile.ZipFile("OFFICIAL_RELEASE.zip") as z:
+              names = z.namelist()
+              if len(names) != len(set(names)):
+                  raise SystemExit("duplicate names in official release")
+              if len([n for n in names if not n.endswith("/")]) != 56:
+                  raise SystemExit("official release file count is not 56")
+              bad = z.testzip()
+              if bad:
+                  raise SystemExit(f"official release CRC failure: {bad}")
+          PY
+
+          sha256sum OFFICIAL_RELEASE.zip \
+            > r5-output/R5_OFFICIAL_RELEASE_SHA256.txt
+
+      - name: Apply exact R1 fix plus observer-only legacy call markers
+        id: patch
+        if: steps.official.outcome == 'success'
+        working-directory: LSP-IrenaX
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          p = Path("core/src/main/java/org/lsposed/lspd/hooker/LoadedApkCtorHooker.java")
+          s = p.read_text()
+
+          line = '            boolean includeCode = XposedHelpers.getBooleanField(loadedApk, "mIncludeCode");\n'
+          branch = (
+              '            } else if (!includeCode) {\n'
+              '                Hookers.logD("LoadedApk#<init> has no code, skip: " + mAppDir);\n'
+              '                return;\n'
+          )
+
+          if s.count(line) != 1:
+              raise SystemExit(f"R1 precondition failed: mIncludeCode read count={s.count(line)}")
+          if s.count(branch) != 1:
+              raise SystemExit(f"R1 precondition failed: no-code branch count={s.count(branch)}")
+
+          s = s.replace(line, "", 1)
+          s = s.replace(branch, "", 1)
+
+          if 'mIncludeCode' in s:
+              raise SystemExit("R1-v2 mIncludeCode regression")
+
+          p.write_text(s)
+          PY
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          p = Path("core/src/main/java/org/lsposed/lspd/impl/LSPosedBridge.java")
+          s = p.read_text()
+
+          old = (
+              '            Object[][] callbacksSnapshot = HookBridge.callbackSnapshot(HookerCallback.class, method);\n'
+              '            Object[] modernSnapshot = callbacksSnapshot[0];\n'
+              '            Object[] legacySnapshot = callbacksSnapshot[1];\n'
+              '            Object[] api101Snapshot = callbacksSnapshot[2];\n'
+          )
+          new = (
+              '            Object[][] callbacksSnapshot = HookBridge.callbackSnapshot(HookerCallback.class, method);\n'
+              '            Object[] modernSnapshot = callbacksSnapshot[0];\n'
+              '            Object[] legacySnapshot = callbacksSnapshot[1];\n'
+              '            Object[] api101Snapshot = callbacksSnapshot[2];\n'
+              '            if (legacySnapshot.length != 0) {\n'
+              '                android.util.Log.w("LSPosed-R5", "CALL_ENTER target=" + method + " legacy=" + legacySnapshot.length);\n'
+              '            }\n'
+          )
+          if s.count(old) != 1:
+              raise SystemExit("NativeHooker snapshot anchor mismatch")
+          s = s.replace(old, new, 1)
+
+          old = (
+              '        if (!callback.isSkipped && legacySnapshot.length != 0) {\n'
+              '            legacy = new XposedBridge.LegacyApiSupport<>(callback, legacySnapshot);\n'
+              '            legacy.handleBefore();\n'
+              '        }\n'
+          )
+          new = (
+              '        if (!callback.isSkipped && legacySnapshot.length != 0) {\n'
+              '            android.util.Log.w("LSPosed-R5", "LEGACY_BEFORE_ENTER target=" + method);\n'
+              '            legacy = new XposedBridge.LegacyApiSupport<>(callback, legacySnapshot);\n'
+              '            legacy.handleBefore();\n'
+              '            android.util.Log.w("LSPosed-R5", "LEGACY_BEFORE_EXIT target=" + method + " skipped=" + callback.isSkipped);\n'
+              '        }\n'
+          )
+          if s.count(old) != 1:
+              raise SystemExit("legacy handleBefore anchor mismatch")
+          s = s.replace(old, new, 1)
+
+          old = (
+              '        if (!callback.isSkipped) {\n'
+              '            try {\n'
+              '                var result = HookBridge.invokeOriginalMethod(method, thisObject, args);\n'
+              '                callback.setResult(result);\n'
+          )
+          new = (
+              '        if (!callback.isSkipped) {\n'
+              '            try {\n'
+              '                if (legacySnapshot.length != 0) android.util.Log.w("LSPosed-R5", "ORIGINAL_ENTER target=" + method);\n'
+              '                var result = HookBridge.invokeOriginalMethod(method, thisObject, args);\n'
+              '                callback.setResult(result);\n'
+              '                if (legacySnapshot.length != 0) android.util.Log.w("LSPosed-R5", "ORIGINAL_EXIT target=" + method);\n'
+          )
+          if s.count(old) != 1:
+              raise SystemExit("original invoke anchor mismatch")
+          s = s.replace(old, new, 1)
+
+          old = (
+              '        if (legacy != null) {\n'
+              '            legacy.handleAfter();\n'
+              '        }\n'
+          )
+          new = (
+              '        if (legacy != null) {\n'
+              '            android.util.Log.w("LSPosed-R5", "LEGACY_AFTER_ENTER target=" + method);\n'
+              '            legacy.handleAfter();\n'
+              '            android.util.Log.w("LSPosed-R5", "LEGACY_AFTER_EXIT target=" + method);\n'
+              '        }\n'
+          )
+          if s.count(old) != 1:
+              raise SystemExit("legacy handleAfter anchor mismatch")
+          s = s.replace(old, new, 1)
+
+          p.write_text(s)
+          PY
+
+          git diff --check
+
+          mapfile -t changed < <(git diff --name-only | sort)
+          printf '%s\n' "${changed[@]}" | tee ../r5-output/R5_SOURCE_DIFF_NAMES.txt
+
+          test "${#changed[@]}" -eq 2
+          test "${changed[0]}" = "core/src/main/java/org/lsposed/lspd/hooker/LoadedApkCtorHooker.java"
+          test "${changed[1]}" = "core/src/main/java/org/lsposed/lspd/impl/LSPosedBridge.java"
+
+          if grep -Fq 'mIncludeCode' core/src/main/java/org/lsposed/lspd/hooker/LoadedApkCtorHooker.java; then
+            echo "R1-v2 mIncludeCode fix was lost"
+            exit 1
+          fi
+
+          git diff --exit-code "$IRENA_COMMIT" -- \
+            core/src/main/java/de/robv/android/xposed/XposedBridge.java \
+            core/src/main/java/org/lsposed/lspd/deopt/InlinedMethodCallers.java \
+            core/src/main/java/org/lsposed/lspd/hooker/LoadedApkCreateCLHooker.java \
+            core/src/main/java/org/lsposed/lspd/nativebridge/HookBridge.java \
+            core/src/main/jni/src/jni/hook_bridge.cpp \
+            core/src/main/jni/src/native_api.cpp \
+            daemon/build.gradle.kts \
+            daemon/src/main/java/org/lsposed/lspd/service/Dex2OatService.java \
+            daemon/src/main/java/org/lsposed/lspd/util/InstallerVerifier.java \
+            magisk-loader/src/main/jni/api/zygisk_main.cpp \
+            magisk-loader/src/main/jni/src/magisk_loader.cpp
+
+          test "$(git -C external/lsplant rev-parse HEAD)" = "$CURRENT_LSPLANT_SHA"
+          test "$(git -C external/dobby rev-parse HEAD)" = "$CURRENT_DOBBY_SHA"
+
+          grep -Rho '"LSPosed-R5", "[A-Z_]*' \
+            core/src/main/java/org/lsposed/lspd/impl/LSPosedBridge.java \
+            | sort -u | tee ../r5-output/R5_MARKER_LIST.txt
+          test "$(wc -l < ../r5-output/R5_MARKER_LIST.txt)" -eq 7
+
+          git diff > ../r5-output/R5_SOURCE_FULL.patch
+
+          {
+            echo "PARENT=R1-v2 device framework PASS"
+            echo "PARENT_PACKAGE_SHA256=7ed948db19d92b0dd7776c424f93783e10210082ea807345228e901ab9ce4af7"
+            echo "SOURCE_DELTA_VS_OFFICIAL=LoadedApkCtorHooker.java + LSPosedBridge.java"
+            echo "FUNCTIONAL_DELTA_VS_R1=NONE"
+            echo "OBSERVER_DELTA_VS_R1=legacy hooked-method execution logging only"
+            echo "M_INCLUDE_CODE_FIX=PRESERVED"
+            echo "R2_DEOPT_ROLLBACK=ABSENT"
+            echo "P7_MOUNT_SUPPRESSION=ABSENT"
+            echo "P10_CERT_PATCH=ABSENT"
+            echo "PAIRIP_BYPASS=ABSENT"
+            echo "NATIVE_HOOK_BRIDGE=OFFICIAL"
+            echo "LSPLANT=$CURRENT_LSPLANT_SHA"
+            echo "DOBBY=$CURRENT_DOBBY_SHA"
+          } | tee ../r5-output/R5_PROVENANCE.txt
+
+      - name: Build R5 v1 observer framework
+        id: r5build
+        if: steps.patch.outcome == 'success'
+        working-directory: LSP-IrenaX
+        shell: bash
+        run: |
+          set -uo pipefail
+          set +e
+          ./gradlew clean zipAll --stacktrace --info 2>&1 | tee ../r5-build.log
+          rc=${PIPESTATUS[0]}
+          set -e
+          echo "$rc" > ../R5_BUILD_EXIT_CODE.txt
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Freeze rebuilt framework payload
+        id: framework
+        if: steps.r5build.outputs.rc == '0'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mapfile -t rel < <(find LSP-IrenaX/magisk-loader/release -maxdepth 1 -type f \
+            -name 'LSPosed-v*-IrenaX-release.zip' -print | sort)
+
+          test "${#rel[@]}" -eq 1
+          cp "${rel[0]}" R5_BUILD_RELEASE.zip
+
+          rm -rf r5buildcmp
+          mkdir r5buildcmp
+          unzip -q R5_BUILD_RELEASE.zip -d r5buildcmp
+
+          test -f r5buildcmp/framework/lspd.dex
+          sha256sum r5buildcmp/framework/lspd.dex \
+            > r5-output/R5_REBUILT_FRAMEWORK_DEX_SHA256.txt
+
+      - name: Create official-base R5 observer package
+        id: package
+        if: steps.framework.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib
+          import zipfile
+
+          official = Path("OFFICIAL_RELEASE.zip")
+          out = Path("${{ env.FINAL_ZIP }}")
+          rebuilt_dex = Path("r5buildcmp/framework/lspd.dex").read_bytes()
+          rebuilt_dex_sha = hashlib.sha256(rebuilt_dex).hexdigest().encode()
+
+          replacements = {
+              "framework/lspd.dex": rebuilt_dex,
+              "framework/lspd.dex.sha256": rebuilt_dex_sha,
+          }
+
+          with zipfile.ZipFile(official, "r") as zin, zipfile.ZipFile(out, "w") as zout:
+              infos = zin.infolist()
+              names = [i.filename for i in infos]
+
+              if len(names) != len(set(names)):
+                  raise SystemExit("duplicate names in official ZIP")
+
+              for required in replacements:
+                  if required not in names:
+                      raise SystemExit(f"missing official payload: {required}")
+
+              for info in infos:
+                  data = replacements.get(info.filename)
+                  if data is None:
+                      data = zin.read(info.filename)
+                  zout.writestr(info, data)
+
+          def tree(path):
+              with zipfile.ZipFile(path) as z:
+                  names = z.namelist()
+                  if len(names) != len(set(names)):
+                      raise SystemExit(f"duplicate names: {path}")
+                  bad = z.testzip()
+                  if bad:
+                      raise SystemExit(f"ZIP CRC failure {path}: {bad}")
+                  return {
+                      n: hashlib.sha256(z.read(n)).hexdigest()
+                      for n in names
+                      if not n.endswith("/")
+                  }
+
+          a = tree(official)
+          b = tree(out)
+
+          if set(a) != set(b):
+              raise SystemExit("official/R5 file sets differ")
+          if len(a) != 56:
+              raise SystemExit(f"expected 56 files, got {len(a)}")
+
+          diff = sorted(k for k in a if a[k] != b[k])
+          expected = ["framework/lspd.dex", "framework/lspd.dex.sha256"]
+          if diff != expected:
+              raise SystemExit(f"unexpected official->R5 final delta: {diff}")
+
+          # All manager/daemon/native payload must remain exact official 7371.
+          for rel in (
+              "manager.apk",
+              "daemon.apk",
+              "lib/arm64-v8a/liblspd.so",
+              "lib/armeabi-v7a/liblspd.so",
+              "lib/x86/liblspd.so",
+              "lib/x86_64/liblspd.so",
+          ):
+              if a[rel] != b[rel]:
+                  raise SystemExit(f"official payload changed unexpectedly: {rel}")
+
+          with zipfile.ZipFile(out) as z:
+              names = set(z.namelist())
+              checked = 0
+              for n in sorted(names):
+                  if not n.endswith(".sha256"):
+                      continue
+                  payload = n[:-7]
+                  if payload not in names:
+                      continue
+                  expected_hash = z.read(n).decode().strip().split()[0]
+                  actual_hash = hashlib.sha256(z.read(payload)).hexdigest()
+                  if expected_hash != actual_hash:
+                      raise SystemExit(f"sidecar mismatch: {n}")
+                  checked += 1
+
+              if checked != 28:
+                  raise SystemExit(f"expected 28 verified sidecars, got {checked}")
+
+          sha = hashlib.sha256(out.read_bytes()).hexdigest()
+          Path("r5-output/R5_FINAL_PACKAGE_SHA256.txt").write_text(
+              f"{sha}  {out.name}\n"
+          )
+          Path("r5-output/R5_FINAL_PACKAGE_DIFF.txt").write_text(
+              "framework/lspd.dex\nframework/lspd.dex.sha256\n"
+          )
+          Path("r5-output/R5_FINAL_SCOPE.txt").write_text(
+              "BASE=official Irena X 7371 release + R1-v2 mIncludeCode fix\n"
+              "ONLY_FINAL_PAYLOAD_CHANGE=framework/lspd.dex + sidecar\n"
+              "MANAGER=official 7371 byte-identical\n"
+              "DAEMON=official 7371 byte-identical\n"
+              "DEX2OAT_BEHAVIOR=official 7371 unchanged\n"
+              "ALL_LIBLSPD=official 7371 byte-identical\n"
+              "M_INCLUDE_CODE_DIRECT_READ=removed (R1 preserved)\n"
+              "R5_OBSERVER=actual legacy hooked-method execution logs\n"
+              "R5_FUNCTIONAL_PATCH=none\n"
+              "R2_DEOPT_ROLLBACK=not present\n"
+              "P7_MOUNT_SUPPRESSION=not present\n"
+              "P10_CERT_REBUILD_PATCH=not present\n"
+              "PAIRIP_BYPASS=not present\n"
+          )
+          PY
+
+          unzip -t "$FINAL_ZIP"
+          cp "$FINAL_ZIP" "r5-output/INSTALL_THIS_${FINAL_ZIP}"
+
+      - name: Write R5 observer device plan
+        if: steps.package.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cat > r5-output/R5_DEVICE_TEST_PLAN.txt <<'EOF'
+          R5 LEGACY-CALL OBSERVER DEVICE TEST
+
+          Use exactly ONE of the two module-only configurations already proven to crash 3/3.
+          Prefer GPSSetter-only for the first capture.
+
+          1. Install the inner INSTALL_THIS_*.zip and reboot.
+          2. Confirm framework/manager still behaves like R1-v2.
+          3. Run one controlled Ingress start:
+
+             su -c 'logcat -c'
+             su -c 'am force-stop com.nianticproject.ingress'
+             su -c 'monkey -p com.nianticproject.ingress -c android.intent.category.LAUNCHER 1'
+             sleep 4
+             su -c 'logcat -b all -d -v threadtime | grep -E "LSPosed-R5|libpairipcore|SIGSEGV|SEGV_|Fatal signal" > /sdcard/Download/r5-legacy-call.txt'
+
+          4. Upload r5-legacy-call.txt.
+
+          INTERPRETATION
+          - No LSPosed-R5 call marker before PairIP crash:
+            crash is triggered by installed hook state before any legacy-hooked method executes.
+          - CALL_ENTER appears:
+            identify exact first invoked hooked method.
+          - LEGACY_BEFORE_ENTER without EXIT:
+            crash occurs inside module before-callback.
+          - ORIGINAL_ENTER without ORIGINAL_EXIT:
+            crash occurs while invoking the original hooked method.
+          - LEGACY_AFTER_ENTER without EXIT:
+            crash occurs inside module after-callback.
+          - Full ENTER/EXIT sequence completes before PairIP crash:
+            actual hooked method execution succeeds; investigate PairIP reaction to persistent ArtMethod/trampoline state.
+          EOF
+
+      - name: Collect R5 evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p r5-output
+
+          cp R5_BUILD_EXIT_CODE.txt r5-output/ 2>/dev/null || true
+          cp r5-build.log r5-output/ 2>/dev/null || true
+          cp R5_BUILD_RELEASE.zip r5-output/ 2>/dev/null || true
+          cp OFFICIAL_RELEASE.zip r5-output/OFFICIAL_7371_RELEASE_REFERENCE.zip 2>/dev/null || true
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib
+
+          out = Path("r5-output")
+          manifest = out / "R5_EVIDENCE_SHA256SUMS.txt"
+
+          files = sorted(
+              p for p in out.rglob("*")
+              if p.is_file() and p != manifest
+          )
+
+          with manifest.open("w") as f:
+              for p in files:
+                  rel = p.relative_to(out).as_posix()
+                  f.write(f"{hashlib.sha256(p.read_bytes()).hexdigest()}  {rel}\n")
+          PY
+
+          (
+            cd r5-output
+            sha256sum -c R5_EVIDENCE_SHA256SUMS.txt
+          )
+
+      - name: Final R5 fail-closed static gate
+        id: finalgate
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test -f R5_BUILD_EXIT_CODE.txt
+          test "$(cat R5_BUILD_EXIT_CODE.txt)" = "0"
+
+          diff -u <(printf '%s\n' \
+            core/src/main/java/org/lsposed/lspd/hooker/LoadedApkCtorHooker.java \
+            core/src/main/java/org/lsposed/lspd/impl/LSPosedBridge.java) \
+            r5-output/R5_SOURCE_DIFF_NAMES.txt
+
+          diff -u <(printf '%s\n' \
+            framework/lspd.dex \
+            framework/lspd.dex.sha256) \
+            r5-output/R5_FINAL_PACKAGE_DIFF.txt
+
+          grep -q '^P7_MOUNT_SUPPRESSION=ABSENT$' r5-output/R5_PROVENANCE.txt
+          grep -q '^P10_CERT_PATCH=ABSENT$' r5-output/R5_PROVENANCE.txt
+          grep -q '^R2_DEOPT_ROLLBACK=ABSENT$' r5-output/R5_PROVENANCE.txt
+          grep -q '^FUNCTIONAL_DELTA_VS_R1=NONE$' r5-output/R5_PROVENANCE.txt
+          grep -q '^PAIRIP_BYPASS=ABSENT$' r5-output/R5_PROVENANCE.txt
+
+          test -f "r5-output/INSTALL_THIS_${FINAL_ZIP}"
+
+          (
+            cd r5-output
+            sha256sum -c R5_EVIDENCE_SHA256SUMS.txt
+          )
+
+          {
+            echo "RESULT=R5_V1_STATIC_FULL_PASS_OBSERVER_CANDIDATE_CREATED"
+            echo "PARENT=R1-v2 device framework PASS"
+            echo "PARENT_PACKAGE_SHA256=7ed948db19d92b0dd7776c424f93783e10210082ea807345228e901ab9ce4af7"
+            echo "BASE=official Irena X 7371"
+            echo "SOURCE_CHANGE_VS_OFFICIAL=LoadedApkCtorHooker.java + LSPosedBridge.java"
+            echo "FUNCTIONAL_CHANGE_VS_R1=NONE"
+            echo "OBSERVER_CHANGE_VS_R1=legacy hooked-method execution logging only"
+            echo "FINAL_PACKAGE_DELTA=framework/lspd.dex + framework/lspd.dex.sha256 only"
+            echo "MANAGER=official 7371"
+            echo "DAEMON=official 7371"
+            echo "DEX2OAT=official 7371"
+            echo "LIBLSPD=official 7371"
+            echo "DEVICE_RUNTIME_STATUS=NOT_TESTED_BY_WORKFLOW"
+            echo "RUNTIME_TARGET=first actual legacy hooked-method call before PairIP crash"
+            echo "STATIC_PASS_IS_NOT_DEVICE_PASS=YES"
+          } | tee r5-output/R5_STATIC_PASS_MARKER.txt
+
+      - name: Upload R5 diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: irena-x-v2.0.1-7371-r5-v1-legacy-call-observer-${{ github.run_id }}
+          path: r5-output
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 30
