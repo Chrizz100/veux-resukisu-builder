@@ -1,0 +1,681 @@
+name: Irena X 7371 R8 v3 Ingress legacy-module-load suppression diagnostic on R1-v2
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  FRAMEWORK_FAMILY: Irena-X
+  FRAMEWORK_VERSION: v2.0.1
+  FRAMEWORK_BUILD: "7371"
+  XPOSED_API_LINE: "100+101"
+
+  IRENA_REPO: silvzr/LSP-IrenaX
+  IRENA_COMMIT: da439fbbed506dac6c66074af7fda8982aa4fc6a
+  CURRENT_LSPLANT_SHA: c5b46bb4f6a99ffe0c77ce3ab006d3f67d5a2b1c
+  CURRENT_DOBBY_SHA: dc7b4be06ad6c5dcfb0bb4ca2082b007d69eaed5
+
+  OLD_WORKING_REPO: mywalkb/LSPosed_mod
+  OLD_WORKING_COMMIT: 9770579f313de44397c295fd1cc44e3fcec4777c
+
+  OFFICIAL_RELEASE_URL: https://github.com/silvzr/LSP-IrenaX/releases/download/v2.0.1/LSPosed-v2.0.1-7371-IrenaX-release.zip
+  OFFICIAL_RELEASE_SHA256: 99e7aaf54dda0e6fa746c55613483a80620174f255dd05e102713778a9966d2f
+
+  FINAL_ZIP: LSPosed-v2.0.1-7371-IrenaX-R8-v3-R1-base-Ingress-proc-cmdline-legacy-module-load-suppression-diagnostic.zip
+
+jobs:
+  build:
+    name: Build R8 v3 Ingress legacy-module-load suppression diagnostic
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Freeze R8 diagnostic contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p r8-output
+          {
+            echo "PARENT_RUNTIME=R1-v2"
+            echo "PARENT_PACKAGE_SHA256=7ed948db19d92b0dd7776c424f93783e10210082ea807345228e901ab9ce4af7"
+            echo "R7_RESULT=PairIP still crashes after XC_LoadPackage.callAll was skipped for Ingress"
+            echo "R7_CONCLUSION=legacy handleLoadPackage callback execution is not necessary for the crash"
+            echo "R8_BASE=official Irena X 7371 + exact R1-v2 mIncludeCode compatibility fix"
+            echo "R8_V1_RUNTIME_TEST=INVALID_REQUIRED_MARKER_ABSENT"
+            echo "R8_V2_RUNTIME_TEST=INVALID_BOOTSTRAP_PROCESS_NULL"
+            echo "R8_V3_PROCESS_GUARD=/proc/self/cmdline"
+            echo "R8_ONLY_NEW_FUNCTIONAL_CHANGE=skip XposedInit.loadLegacyModules for com.nianticproject.ingress only"
+            echo "R8_BOOTSTRAP_HOOKS=UNCHANGED"
+            echo "R8_LEGACY_MODULE_CODE=INTENTIONALLY_NOT_LOADED_IN_INGRESS"
+            echo "R8_NATIVE_HOOK_BRIDGE=UNCHANGED"
+            echo "R8_LSPLANT=UNCHANGED"
+            echo "R8_DOBBY=UNCHANGED"
+            echo "P7_MOUNT_SUPPRESSION=NOT_APPLIED"
+            echo "P10_CERT_REBUILD_PATCH=NOT_APPLIED"
+            echo "R2_DEOPT_ROLLBACK=NOT_APPLIED"
+            echo "PAIRIP_BYPASS=NOT_ATTEMPTED"
+            echo "DEVICE_OBJECTIVE=separate legacy module loading/static initialization from bootstrap/injection state"
+          } | tee r8-output/R8_DIAGNOSTIC_CONTRACT.txt
+
+      - name: Checkout pinned Irena X 7371
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.IRENA_REPO }}
+          ref: ${{ env.IRENA_COMMIT }}
+          submodules: recursive
+          fetch-depth: 0
+          path: LSP-IrenaX
+          persist-credentials: false
+
+      - name: Checkout old working 7244 reference
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.OLD_WORKING_REPO }}
+          ref: ${{ env.OLD_WORKING_COMMIT }}
+          submodules: false
+          fetch-depth: 1
+          path: LSPosed-7244-reference
+          persist-credentials: false
+
+      - name: Verify exact source pins and regression preconditions
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test "$(git -C LSP-IrenaX rev-parse HEAD)" = "$IRENA_COMMIT"
+          test -z "$(git -C LSP-IrenaX status --porcelain)"
+          test "$(git -C LSP-IrenaX/external/lsplant rev-parse HEAD)" = "$CURRENT_LSPLANT_SHA"
+          test "$(git -C LSP-IrenaX/external/dobby rev-parse HEAD)" = "$CURRENT_DOBBY_SHA"
+          test -z "$(git -C LSP-IrenaX/external/lsplant status --porcelain)"
+          test -z "$(git -C LSP-IrenaX/external/dobby status --porcelain)"
+
+          test "$(git -C LSPosed-7244-reference rev-parse HEAD)" = "$OLD_WORKING_COMMIT"
+
+          current="LSP-IrenaX/core/src/main/java/org/lsposed/lspd/hooker/LoadedApkCtorHooker.java"
+          old="LSPosed-7244-reference/core/src/main/java/org/lsposed/lspd/hooker/LoadedApkCtorHooker.java"
+
+          test -f "$current"
+          test -f "$old"
+
+          grep -Fq 'boolean includeCode = XposedHelpers.getBooleanField(loadedApk, "mIncludeCode");' "$current"
+          grep -Fq 'else if (!includeCode)' "$current"
+
+          if grep -Fq 'mIncludeCode' "$old"; then
+            echo "old working 7244 unexpectedly contains mIncludeCode access"
+            exit 1
+          fi
+
+          {
+            echo "IRENA=$(git -C LSP-IrenaX rev-parse HEAD)"
+            echo "LSPLANT=$(git -C LSP-IrenaX/external/lsplant rev-parse HEAD)"
+            echo "DOBBY=$(git -C LSP-IrenaX/external/dobby rev-parse HEAD)"
+            echo "OLD_WORKING_7244=$(git -C LSPosed-7244-reference rev-parse HEAD)"
+            echo "CURRENT_7371_M_INCLUDE_CODE=PRESENT"
+            echo "OLD_7244_M_INCLUDE_CODE=ABSENT"
+          } | tee r8-output/R8_SOURCE_PINS_AND_PRECONDITIONS.txt
+
+      - name: Setup Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          log-accepted-android-sdk-licenses: 'false'
+          packages: ''
+
+      - name: Setup ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          max-size: 2G
+          key: irena-x-r1-clean-base-${{ runner.os }}
+          restore-keys: |
+            irena-x-${{ runner.os }}
+          save: false
+
+      - name: Setup Ninja 1.12.1
+        uses: seanmiddleditch/gha-setup-ninja@master
+        with:
+          version: 1.12.1
+
+      - name: Remove Android bundled CMake
+        shell: bash
+        run: rm -rf "$ANDROID_HOME/cmake"
+
+      - name: Configure Gradle
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.gradle
+          {
+            echo 'org.gradle.caching=true'
+            echo 'org.gradle.parallel=true'
+            echo 'org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8 -XX:+UseParallelGC'
+            echo 'android.native.buildOutput=verbose'
+          } >> ~/.gradle/gradle.properties
+
+      - name: Download and verify official Irena 7371 release
+        id: official
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          curl --fail --location --retry 3 \
+            -o OFFICIAL_RELEASE.zip \
+            "$OFFICIAL_RELEASE_URL"
+
+          echo "$OFFICIAL_RELEASE_SHA256  OFFICIAL_RELEASE.zip" | sha256sum -c -
+
+          rm -rf officialcmp
+          mkdir officialcmp
+          unzip -q OFFICIAL_RELEASE.zip -d officialcmp
+          unzip -t OFFICIAL_RELEASE.zip
+
+          test -f officialcmp/manager.apk
+          test -f officialcmp/daemon.apk
+          test -f officialcmp/framework/lspd.dex
+
+          python3 - <<'PY'
+          import zipfile
+          with zipfile.ZipFile("OFFICIAL_RELEASE.zip") as z:
+              names = z.namelist()
+              if len(names) != len(set(names)):
+                  raise SystemExit("duplicate names in official release")
+              if len([n for n in names if not n.endswith("/")]) != 56:
+                  raise SystemExit("official release file count is not 56")
+              bad = z.testzip()
+              if bad:
+                  raise SystemExit(f"official release CRC failure: {bad}")
+          PY
+
+          sha256sum OFFICIAL_RELEASE.zip \
+            > r8-output/R8_OFFICIAL_RELEASE_SHA256.txt
+
+      - name: Apply exact R1 fix plus Ingress-only legacy module-load suppression
+        id: patch
+        if: steps.official.outcome == 'success'
+        working-directory: LSP-IrenaX
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # A) Reproduce exact confirmed R1-v2 mIncludeCode compatibility fix.
+          python3 - <<'PY'
+          from pathlib import Path
+
+          p = Path("core/src/main/java/org/lsposed/lspd/hooker/LoadedApkCtorHooker.java")
+          s = p.read_text()
+
+          line = '            boolean includeCode = XposedHelpers.getBooleanField(loadedApk, "mIncludeCode");\n'
+          branch = (
+              '            } else if (!includeCode) {\n'
+              '                Hookers.logD("LoadedApk#<init> has no code, skip: " + mAppDir);\n'
+              '                return;\n'
+          )
+
+          if s.count(line) != 1:
+              raise SystemExit(f"R1 precondition failed: mIncludeCode read count={s.count(line)}")
+          if s.count(branch) != 1:
+              raise SystemExit(f"R1 precondition failed: no-code branch count={s.count(branch)}")
+
+          s = s.replace(line, "", 1)
+          s = s.replace(branch, "", 1)
+
+          if 'mIncludeCode' in s:
+              raise SystemExit("R1-v2 mIncludeCode regression")
+
+          p.write_text(s)
+          PY
+
+          # B) R8-v3 one-variable diagnostic correction:
+          #    R8-v2 proved ActivityThread.currentProcessName() is null at this bootstrap point.
+          #    Keep all bootstrap hooks unchanged; obtain only the early process identity from
+          #    /proc/self/cmdline and suppress classic legacy module loading for exact Ingress.
+          python3 - <<'PY'
+          from pathlib import Path
+
+          p = Path("core/src/main/java/org/lsposed/lspd/core/Startup.java")
+          s = p.read_text()
+
+          class_anchor = 'public class Startup {\n'
+          helper = (
+              'public class Startup {\n'
+              '    private static String readSelfCmdlineR8() {\n'
+              '        try (java.io.FileInputStream in = new java.io.FileInputStream("/proc/self/cmdline")) {\n'
+              '            byte[] buffer = new byte[4096];\n'
+              '            int length = 0;\n'
+              '            while (length < buffer.length) {\n'
+              '                int value = in.read();\n'
+              '                if (value <= 0) break;\n'
+              '                buffer[length++] = (byte) value;\n'
+              '            }\n'
+              '            if (length == 0) return null;\n'
+              '            return new String(buffer, 0, length, java.nio.charset.StandardCharsets.UTF_8);\n'
+              '        } catch (Throwable t) {\n'
+              '            android.util.Log.w("LSPosed-R8", "CMDLINE_READ_FAILED", t);\n'
+              '            return null;\n'
+              '        }\n'
+              '    }\n\n'
+          )
+
+          old = (
+              '            startBootstrapHook(XposedInit.startsSystemServer);\n'
+              '            XposedInit.loadLegacyModules();\n'
+          )
+          new = (
+              '            startBootstrapHook(XposedInit.startsSystemServer);\n'
+              '            String r8Process = readSelfCmdlineR8();\n'
+              '            android.util.Log.w("LSPosed-R8", "CMDLINE process=" + r8Process);\n'
+              '            android.util.Log.w("LSPosed-R8", "BOOTSTRAP process=" + r8Process);\n'
+              '            if ("com.nianticproject.ingress".equals(r8Process)) {\n'
+              '                android.util.Log.w("LSPosed-R8", "LEGACY_MODULE_LOAD_SKIPPED process=" + r8Process);\n'
+              '            } else {\n'
+              '                XposedInit.loadLegacyModules();\n'
+              '            }\n'
+          )
+
+          if s.count(class_anchor) != 1:
+              raise SystemExit(f"Startup class anchor count={s.count(class_anchor)}")
+          if s.count(old) != 1:
+              raise SystemExit(f"bootstrap/loadLegacyModules anchor count={s.count(old)}")
+
+          s = s.replace(class_anchor, helper, 1)
+          s = s.replace(old, new, 1)
+
+          required = (
+              'new java.io.FileInputStream("/proc/self/cmdline")',
+              'readSelfCmdlineR8()',
+              '"CMDLINE process=" + r8Process',
+              '"BOOTSTRAP process=" + r8Process',
+              '"LEGACY_MODULE_LOAD_SKIPPED process=" + r8Process',
+              '"com.nianticproject.ingress".equals(r8Process)',
+          )
+          for needle in required:
+              if needle not in s:
+                  raise SystemExit(f"R8-v3 required source missing: {needle}")
+
+          if 'ActivityThread.currentProcessName()' in s:
+              raise SystemExit("R8-v2 process guard unexpectedly remains")
+          if s.count('XposedInit.loadLegacyModules();') != 1:
+              raise SystemExit("loadLegacyModules should remain exactly once inside the non-Ingress branch")
+
+          p.write_text(s)
+          PY
+
+          git diff --check
+
+          mapfile -t changed < <(git diff --name-only | sort)
+          printf '%s\n' "${changed[@]}" | tee ../r8-output/R8_SOURCE_DIFF_NAMES.txt
+
+          test "${#changed[@]}" -eq 2
+          test "${changed[0]}" = "core/src/main/java/org/lsposed/lspd/core/Startup.java"
+          test "${changed[1]}" = "core/src/main/java/org/lsposed/lspd/hooker/LoadedApkCtorHooker.java"
+
+          if grep -Fq 'mIncludeCode' core/src/main/java/org/lsposed/lspd/hooker/LoadedApkCtorHooker.java; then
+            echo "R1-v2 mIncludeCode fix was lost"
+            exit 1
+          fi
+
+          grep -Fq 'LEGACY_MODULE_LOAD_SKIPPED' core/src/main/java/org/lsposed/lspd/core/Startup.java
+          grep -Fq 'new java.io.FileInputStream("/proc/self/cmdline")' core/src/main/java/org/lsposed/lspd/core/Startup.java
+          grep -Fq 'CMDLINE process=' core/src/main/java/org/lsposed/lspd/core/Startup.java
+          grep -Fq 'BOOTSTRAP process=' core/src/main/java/org/lsposed/lspd/core/Startup.java
+          grep -Fq '"com.nianticproject.ingress".equals(r8Process)' core/src/main/java/org/lsposed/lspd/core/Startup.java
+          if grep -Fq 'ActivityThread.currentProcessName()' core/src/main/java/org/lsposed/lspd/core/Startup.java; then
+            echo "R8-v2 ActivityThread process guard unexpectedly remains"
+            exit 1
+          fi
+
+          # Freeze package dispatch and all hook-engine/native paths.
+          git diff --exit-code "$IRENA_COMMIT" -- \
+            core/src/main/java/de/robv/android/xposed/XposedBridge.java \
+            core/src/main/java/org/lsposed/lspd/deopt/InlinedMethodCallers.java \
+            core/src/main/java/org/lsposed/lspd/hooker/LoadedApkCreateCLHooker.java \
+            core/src/main/java/org/lsposed/lspd/impl/LSPosedBridge.java \
+            core/src/main/java/org/lsposed/lspd/nativebridge/HookBridge.java \
+            core/src/main/jni/src/jni/hook_bridge.cpp \
+            core/src/main/jni/src/native_api.cpp \
+            daemon/build.gradle.kts \
+            daemon/src/main/java/org/lsposed/lspd/service/Dex2OatService.java \
+            daemon/src/main/java/org/lsposed/lspd/util/InstallerVerifier.java \
+            magisk-loader/src/main/jni/api/zygisk_main.cpp \
+            magisk-loader/src/main/jni/src/magisk_loader.cpp
+
+          test "$(git -C external/lsplant rev-parse HEAD)" = "$CURRENT_LSPLANT_SHA"
+          test "$(git -C external/dobby rev-parse HEAD)" = "$CURRENT_DOBBY_SHA"
+          test -z "$(git -C external/lsplant status --porcelain)"
+          test -z "$(git -C external/dobby status --porcelain)"
+
+          git diff > ../r8-output/R8_SOURCE_FULL.patch
+
+          {
+            echo "PARENT=R1-v2 device framework PASS"
+            echo "PARENT_PACKAGE_SHA256=7ed948db19d92b0dd7776c424f93783e10210082ea807345228e901ab9ce4af7"
+            echo "SOURCE_DELTA_VS_OFFICIAL=Startup.java + LoadedApkCtorHooker.java"
+            echo "FUNCTIONAL_DELTA_VS_R1=Ingress-only XposedInit.loadLegacyModules suppression"
+            echo "PROCESS_GUARD_SOURCE=/proc/self/cmdline"
+            echo "UNCONDITIONAL_BOOTSTRAP_MARKER=PRESENT"
+            echo "M_INCLUDE_CODE_FIX=PRESERVED"
+            echo "BOOTSTRAP_HOOKS=UNCHANGED"
+            echo "LEGACY_MODULE_LOAD_IN_INGRESS=SUPPRESSED"
+            echo "PACKAGE_DISPATCH=UNCHANGED"
+            echo "NATIVE_HOOK_BRIDGE=UNCHANGED"
+            echo "LSPLANT=$CURRENT_LSPLANT_SHA"
+            echo "DOBBY=$CURRENT_DOBBY_SHA"
+            echo "R2_DEOPT_ROLLBACK=ABSENT"
+            echo "P7_MOUNT_SUPPRESSION=ABSENT"
+            echo "P10_CERT_PATCH=ABSENT"
+            echo "PAIRIP_BYPASS=ABSENT"
+          } | tee ../r8-output/R8_PROVENANCE.txt
+
+      - name: Build R8 v3 diagnostic framework
+        id: r8build
+        if: steps.patch.outcome == 'success'
+        working-directory: LSP-IrenaX
+        shell: bash
+        run: |
+          set -uo pipefail
+          set +e
+          ./gradlew clean zipAll --stacktrace --info 2>&1 | tee ../r8-build.log
+          rc=${PIPESTATUS[0]}
+          set -e
+          echo "$rc" > ../R8_BUILD_EXIT_CODE.txt
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Freeze rebuilt framework payload
+        id: framework
+        if: steps.r8build.outputs.rc == '0'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mapfile -t rel < <(find LSP-IrenaX/magisk-loader/release -maxdepth 1 -type f \
+            -name 'LSPosed-v*-IrenaX-release.zip' -print | sort)
+
+          test "${#rel[@]}" -eq 1
+          cp "${rel[0]}" R8_BUILD_RELEASE.zip
+
+          rm -rf r8buildcmp
+          mkdir r8buildcmp
+          unzip -q R8_BUILD_RELEASE.zip -d r8buildcmp
+
+          test -f r8buildcmp/framework/lspd.dex
+          sha256sum r8buildcmp/framework/lspd.dex \
+            > r8-output/R8_REBUILT_FRAMEWORK_DEX_SHA256.txt
+
+      - name: Create official-base R8 diagnostic package
+        id: package
+        if: steps.framework.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib
+          import zipfile
+
+          official = Path("OFFICIAL_RELEASE.zip")
+          out = Path("${{ env.FINAL_ZIP }}")
+          rebuilt_dex = Path("r8buildcmp/framework/lspd.dex").read_bytes()
+          rebuilt_dex_sha = hashlib.sha256(rebuilt_dex).hexdigest().encode()
+
+          replacements = {
+              "framework/lspd.dex": rebuilt_dex,
+              "framework/lspd.dex.sha256": rebuilt_dex_sha,
+          }
+
+          with zipfile.ZipFile(official, "r") as zin, zipfile.ZipFile(out, "w") as zout:
+              infos = zin.infolist()
+              names = [i.filename for i in infos]
+
+              if len(names) != len(set(names)):
+                  raise SystemExit("duplicate names in official ZIP")
+
+              for required in replacements:
+                  if required not in names:
+                      raise SystemExit(f"missing official payload: {required}")
+
+              for info in infos:
+                  data = replacements.get(info.filename)
+                  if data is None:
+                      data = zin.read(info.filename)
+                  zout.writestr(info, data)
+
+          def tree(path):
+              with zipfile.ZipFile(path) as z:
+                  names = z.namelist()
+                  if len(names) != len(set(names)):
+                      raise SystemExit(f"duplicate names: {path}")
+                  bad = z.testzip()
+                  if bad:
+                      raise SystemExit(f"ZIP CRC failure {path}: {bad}")
+                  return {
+                      n: hashlib.sha256(z.read(n)).hexdigest()
+                      for n in names
+                      if not n.endswith("/")
+                  }
+
+          a = tree(official)
+          b = tree(out)
+
+          if set(a) != set(b):
+              raise SystemExit("official/R8 file sets differ")
+          if len(a) != 56:
+              raise SystemExit(f"expected 56 files, got {len(a)}")
+
+          diff = sorted(k for k in a if a[k] != b[k])
+          expected = ["framework/lspd.dex", "framework/lspd.dex.sha256"]
+          if diff != expected:
+              raise SystemExit(f"unexpected official->R8 final delta: {diff}")
+
+          # All manager/daemon/native payload must remain exact official 7371.
+          for rel in (
+              "manager.apk",
+              "daemon.apk",
+              "lib/arm64-v8a/liblspd.so",
+              "lib/armeabi-v7a/liblspd.so",
+              "lib/x86/liblspd.so",
+              "lib/x86_64/liblspd.so",
+          ):
+              if a[rel] != b[rel]:
+                  raise SystemExit(f"official payload changed unexpectedly: {rel}")
+
+          with zipfile.ZipFile(out) as z:
+              names = set(z.namelist())
+              checked = 0
+              for n in sorted(names):
+                  if not n.endswith(".sha256"):
+                      continue
+                  payload = n[:-7]
+                  if payload not in names:
+                      continue
+                  expected_hash = z.read(n).decode().strip().split()[0]
+                  actual_hash = hashlib.sha256(z.read(payload)).hexdigest()
+                  if expected_hash != actual_hash:
+                      raise SystemExit(f"sidecar mismatch: {n}")
+                  checked += 1
+
+              if checked != 28:
+                  raise SystemExit(f"expected 28 verified sidecars, got {checked}")
+
+          sha = hashlib.sha256(out.read_bytes()).hexdigest()
+          Path("r8-output/R8_FINAL_PACKAGE_SHA256.txt").write_text(
+              f"{sha}  {out.name}\n"
+          )
+          Path("r8-output/R8_FINAL_PACKAGE_DIFF.txt").write_text(
+              "framework/lspd.dex\nframework/lspd.dex.sha256\n"
+          )
+          Path("r8-output/R8_FINAL_SCOPE.txt").write_text(
+              "BASE=official Irena X 7371 release + R1-v2 mIncludeCode fix\n"
+              "ONLY_FINAL_PAYLOAD_CHANGE=framework/lspd.dex + sidecar\n"
+              "MANAGER=official 7371 byte-identical\n"
+              "DAEMON=official 7371 byte-identical\n"
+              "DEX2OAT_BEHAVIOR=official 7371 unchanged\n"
+              "ALL_LIBLSPD=official 7371 byte-identical\n"
+              "M_INCLUDE_CODE_DIRECT_READ=removed (R1 preserved)\n"
+              "R8_FUNCTIONAL_CHANGE=Ingress-only XposedInit.loadLegacyModules suppression\n"
+              "R8_V1_RUNTIME_TEST=invalid because marker absent\n"
+              "R8_V2_RUNTIME_TEST=invalid: BOOTSTRAP process=null\n"
+              "R8_V3_PROCESS_GUARD=/proc/self/cmdline\n"
+              "R8_V3_CMDLINE_MARKER=unconditional after read attempt\n"
+              "R8_V3_BOOTSTRAP_MARKER=unconditional\n"
+              "R8_BOOTSTRAP_HOOKS=unchanged\n"
+              "R8_LEGACY_MODULE_CODE=not loaded in Ingress\n"
+              "R8_PACKAGE_DISPATCH=unchanged but no legacy callbacks can exist if legacy modules are not loaded\n"
+              "R2_DEOPT_ROLLBACK=not present\n"
+              "P7_MOUNT_SUPPRESSION=not present\n"
+              "P10_CERT_REBUILD_PATCH=not present\n"
+              "PAIRIP_BYPASS=not present\n"
+          )
+          PY
+
+          unzip -t "$FINAL_ZIP"
+          cp "$FINAL_ZIP" "r8-output/INSTALL_THIS_${FINAL_ZIP}"
+
+      - name: Write R8 device diagnostic plan
+        if: steps.package.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cat > r8-output/R8_DEVICE_TEST_PLAN.txt <<'EOF'
+          R8 INGRESS LEGACY-MODULE-LOAD SUPPRESSION DIAGNOSTIC
+
+          PURPOSE:
+          R7 proved legacy handleLoadPackage execution is not necessary for the PairIP crash.
+          R8 removes the earlier remaining legacy-module-loading/static-initialization step itself,
+          while leaving the built-in LSPosed bootstrap hooks and general injection path untouched.
+
+          Keep Ingress targeted/scoped exactly as before so the LSPosed process injection still occurs.
+
+          1. Install the inner INSTALL_THIS_*.zip and reboot.
+          2. Confirm framework/manager still works.
+          3. Run one controlled Ingress start:
+
+             su -c 'logcat -c'
+             su -c 'am force-stop com.nianticproject.ingress'
+             su -c 'monkey -p com.nianticproject.ingress -c android.intent.category.LAUNCHER 1'
+             sleep 4
+             su -c 'logcat -b all -d -v threadtime | grep -E "LSPosed-R8|libpairipcore|SIGSEGV|SEGV_|Fatal signal" > /sdcard/Download/r8-v3-module-load-suppression.txt'
+
+          4. The capture MUST contain ALL THREE:
+             LSPosed-R8: CMDLINE process=com.nianticproject.ingress
+             LSPosed-R8: BOOTSTRAP process=com.nianticproject.ingress
+             LSPosed-R8: LEGACY_MODULE_LOAD_SKIPPED process=com.nianticproject.ingress
+
+          INTERPRETATION
+          - Marker present + PairIP still crashes:
+            loading classic module code/static initialization is not necessary.
+            Remaining common state is LSPosed injection/bootstrap hook state.
+          - Marker present + Ingress starts:
+            legacy module loading itself is necessary for the crash, even though R6/R7 showed
+            neither actual legacy hook installation nor handleLoadPackage execution was necessary.
+          - CMDLINE/BOOTSTRAP marker with null/another process, CMDLINE_READ_FAILED, or missing SKIPPED marker:
+            test invalid; upload the file and do not interpret PairIP causality.
+          EOF
+
+      - name: Collect R8 evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p r8-output
+
+          cp R8_BUILD_EXIT_CODE.txt r8-output/ 2>/dev/null || true
+          cp r8-build.log r8-output/ 2>/dev/null || true
+          cp R8_BUILD_RELEASE.zip r8-output/ 2>/dev/null || true
+          cp OFFICIAL_RELEASE.zip r8-output/OFFICIAL_7371_RELEASE_REFERENCE.zip 2>/dev/null || true
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib
+
+          out = Path("r8-output")
+          manifest = out / "R8_EVIDENCE_SHA256SUMS.txt"
+
+          files = sorted(
+              p for p in out.rglob("*")
+              if p.is_file() and p != manifest
+          )
+
+          with manifest.open("w") as f:
+              for p in files:
+                  rel = p.relative_to(out).as_posix()
+                  f.write(f"{hashlib.sha256(p.read_bytes()).hexdigest()}  {rel}\n")
+          PY
+
+          (
+            cd r8-output
+            sha256sum -c R8_EVIDENCE_SHA256SUMS.txt
+          )
+
+      - name: Final R8 fail-closed static gate
+        id: finalgate
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test -f R8_BUILD_EXIT_CODE.txt
+          test "$(cat R8_BUILD_EXIT_CODE.txt)" = "0"
+
+          diff -u <(printf '%s\n' \
+            core/src/main/java/org/lsposed/lspd/core/Startup.java \
+            core/src/main/java/org/lsposed/lspd/hooker/LoadedApkCtorHooker.java) \
+            r8-output/R8_SOURCE_DIFF_NAMES.txt
+
+          diff -u <(printf '%s\n' \
+            framework/lspd.dex \
+            framework/lspd.dex.sha256) \
+            r8-output/R8_FINAL_PACKAGE_DIFF.txt
+
+          grep -q '^P7_MOUNT_SUPPRESSION=ABSENT$' r8-output/R8_PROVENANCE.txt
+          grep -q '^P10_CERT_PATCH=ABSENT$' r8-output/R8_PROVENANCE.txt
+          grep -q '^R2_DEOPT_ROLLBACK=ABSENT$' r8-output/R8_PROVENANCE.txt
+          grep -q '^LEGACY_MODULE_LOAD_IN_INGRESS=SUPPRESSED$' r8-output/R8_PROVENANCE.txt
+          grep -q '^PAIRIP_BYPASS=ABSENT$' r8-output/R8_PROVENANCE.txt
+
+          test -f "r8-output/INSTALL_THIS_${FINAL_ZIP}"
+
+          (
+            cd r8-output
+            sha256sum -c R8_EVIDENCE_SHA256SUMS.txt
+          )
+
+          {
+            echo "RESULT=R8_V3_STATIC_FULL_PASS_DIAGNOSTIC_CANDIDATE_CREATED"
+            echo "PARENT=R1-v2 device framework PASS"
+            echo "R8_V1_RUNTIME_TEST=INVALID_REQUIRED_MARKER_ABSENT"
+            echo "R8_V2_RUNTIME_TEST=INVALID_BOOTSTRAP_PROCESS_NULL"
+            echo "R8_V3_PROCESS_GUARD=/proc/self/cmdline"
+            echo "PARENT_PACKAGE_SHA256=7ed948db19d92b0dd7776c424f93783e10210082ea807345228e901ab9ce4af7"
+            echo "BASE=official Irena X 7371"
+            echo "SOURCE_CHANGE_VS_OFFICIAL=Startup.java + LoadedApkCtorHooker.java"
+            echo "FUNCTIONAL_CHANGE_VS_R1=Ingress-only legacy module-load suppression"
+            echo "BOOTSTRAP_HOOKS=unchanged"
+            echo "PACKAGE_DISPATCH_CODE=unchanged"
+            echo "NATIVE_HOOK_BRIDGE=unchanged"
+            echo "FINAL_PACKAGE_DELTA=framework/lspd.dex + framework/lspd.dex.sha256 only"
+            echo "MANAGER=official 7371"
+            echo "DAEMON=official 7371"
+            echo "LIBLSPD=official 7371"
+            echo "DEVICE_RUNTIME_STATUS=NOT_TESTED_BY_WORKFLOW"
+            echo "STATIC_PASS_IS_NOT_DEVICE_PASS=YES"
+          } | tee r8-output/R8_STATIC_PASS_MARKER.txt
+
+      - name: Upload R8 diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: irena-x-v2.0.1-7371-r8-v3-Ingress-proc-cmdline-legacy-module-load-suppression-${{ github.run_id }}
+          path: r8-output
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 30
