@@ -1,0 +1,734 @@
+name: Irena X 7371 R9 v4 Ingress LoadedApkCtor callback isolation diagnostic on R1-v2
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  FRAMEWORK_FAMILY: Irena-X
+  FRAMEWORK_VERSION: v2.0.1
+  FRAMEWORK_BUILD: "7371"
+  XPOSED_API_LINE: "100+101"
+
+  IRENA_REPO: silvzr/LSP-IrenaX
+  IRENA_COMMIT: da439fbbed506dac6c66074af7fda8982aa4fc6a
+  CURRENT_LSPLANT_SHA: c5b46bb4f6a99ffe0c77ce3ab006d3f67d5a2b1c
+  CURRENT_DOBBY_SHA: dc7b4be06ad6c5dcfb0bb4ca2082b007d69eaed5
+
+  OLD_WORKING_REPO: mywalkb/LSPosed_mod
+  OLD_WORKING_COMMIT: 9770579f313de44397c295fd1cc44e3fcec4777c
+
+  OFFICIAL_RELEASE_URL: https://github.com/silvzr/LSP-IrenaX/releases/download/v2.0.1/LSPosed-v2.0.1-7371-IrenaX-release.zip
+  OFFICIAL_RELEASE_SHA256: 99e7aaf54dda0e6fa746c55613483a80620174f255dd05e102713778a9966d2f
+
+  FINAL_ZIP: LSPosed-v2.0.1-7371-IrenaX-R9-v4-R1-base-Ingress-LoadedApkCtor-callback-isolation-diagnostic.zip
+
+jobs:
+  build:
+    name: Build R9 v4 Ingress LoadedApkCtor callback isolation diagnostic
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Freeze R9 diagnostic contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p r9-output
+          {
+            echo "PARENT_RUNTIME=R1-v2"
+            echo "PARENT_PACKAGE_SHA256=7ed948db19d92b0dd7776c424f93783e10210082ea807345228e901ab9ce4af7"
+            echo "R8_V4_RUNTIME_TEST=VALID_MARKER_PRESENT"
+            echo "R8_V4_RESULT=PairIP still crashes after XposedInit.loadLegacyModules was globally skipped"
+            echo "R8_V4_CRASH=SIGSEGV_SEGV_ACCERR_libpairipcore_plus_0x65768"
+            echo "R8_V4_CONCLUSION=classic legacy-module loading/static initialization is not necessary for the crash"
+            echo "R9_BASE=official Irena X 7371 + exact R1-v2 mIncludeCode compatibility fix"
+            echo "R9_V1_DEVICE_RESULT=Ingress starts but parasitic Manager activity is broken by global bootstrap-hook suppression"
+            echo "R9_V2_DEVICE_RESULT=Manager starts normally; Ingress still crashes SIGSEGV_SEGV_ACCERR at libpairipcore_plus_0x65768 with OpenDex subgroup suppressed"
+            echo "R9_V2_CONCLUSION=OpenDex bootstrap-hook subgroup is not necessary for the reproducible PairIP crash"
+            echo "R9_V3_DEVICE_RESULT=Ingress still crashes SIGSEGV_SEGV_ACCERR at libpairipcore_plus_0x65768 with CrashDumpHooker registration suppressed"
+            echo "R9_V3_CONCLUSION=CrashDumpHooker registration is not necessary for the reproducible PairIP crash"
+            echo "R9_V4_ONLY_NEW_FUNCTIONAL_CHANGE=Ingress-only early return from LoadedApkCtorHooker callback after package identification"
+            echo "R9_V4_LOADEDAPK_CTOR_CALLBACK=SUPPRESSED_FOR_INGRESS_ONLY"
+            echo "R9_V4_LOADEDAPK_CTOR_REGISTRATION=UNCHANGED"
+            echo "R9_V4_LOADEDAPK_CREATECL_REGISTRATION=UNCHANGED"
+            echo "R9_V4_ATTACH_HOOK=UNCHANGED"
+            echo "R9_V4_CRASHDUMP_HOOK=RESTORED_UNCHANGED_R1_V2"
+            echo "R9_V4_OPENDEX_HOOKS=UNCHANGED_R1_V2"
+            echo "R9_START_BOOTSTRAP_HOOK_INVOCATION=UNCHANGED"
+            echo "R9_LEGACY_MODULE_LOADING=UNCHANGED"
+            echo "R9_NATIVE_HOOK_BRIDGE=UNCHANGED"
+            echo "R9_LSPLANT=UNCHANGED"
+            echo "R9_DOBBY=UNCHANGED"
+            echo "P7_MOUNT_SUPPRESSION=NOT_APPLIED"
+            echo "P10_CERT_REBUILD_PATCH=NOT_APPLIED"
+            echo "R2_DEOPT_ROLLBACK=NOT_APPLIED"
+            echo "PAIRIP_BYPASS=NOT_ATTEMPTED"
+            echo "DEVICE_OBJECTIVE=determine whether the Ingress LoadedApk constructor callback path and its downstream LoadedApk tracking are necessary for the reproducible PairIP crash without perturbing other processes"
+          } | tee r9-output/R9_DIAGNOSTIC_CONTRACT.txt
+
+      - name: Checkout pinned Irena X 7371
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.IRENA_REPO }}
+          ref: ${{ env.IRENA_COMMIT }}
+          submodules: recursive
+          fetch-depth: 0
+          path: LSP-IrenaX
+          persist-credentials: false
+
+      - name: Checkout old working 7244 reference
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.OLD_WORKING_REPO }}
+          ref: ${{ env.OLD_WORKING_COMMIT }}
+          submodules: false
+          fetch-depth: 1
+          path: LSPosed-7244-reference
+          persist-credentials: false
+
+      - name: Verify exact source pins and regression preconditions
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test "$(git -C LSP-IrenaX rev-parse HEAD)" = "$IRENA_COMMIT"
+          test -z "$(git -C LSP-IrenaX status --porcelain)"
+          test "$(git -C LSP-IrenaX/external/lsplant rev-parse HEAD)" = "$CURRENT_LSPLANT_SHA"
+          test "$(git -C LSP-IrenaX/external/dobby rev-parse HEAD)" = "$CURRENT_DOBBY_SHA"
+          test -z "$(git -C LSP-IrenaX/external/lsplant status --porcelain)"
+          test -z "$(git -C LSP-IrenaX/external/dobby status --porcelain)"
+
+          test "$(git -C LSPosed-7244-reference rev-parse HEAD)" = "$OLD_WORKING_COMMIT"
+
+          current="LSP-IrenaX/core/src/main/java/org/lsposed/lspd/hooker/LoadedApkCtorHooker.java"
+          old="LSPosed-7244-reference/core/src/main/java/org/lsposed/lspd/hooker/LoadedApkCtorHooker.java"
+
+          test -f "$current"
+          test -f "$old"
+
+          grep -Fq 'boolean includeCode = XposedHelpers.getBooleanField(loadedApk, "mIncludeCode");' "$current"
+          grep -Fq 'else if (!includeCode)' "$current"
+
+          if grep -Fq 'mIncludeCode' "$old"; then
+            echo "old working 7244 unexpectedly contains mIncludeCode access"
+            exit 1
+          fi
+
+          {
+            echo "IRENA=$(git -C LSP-IrenaX rev-parse HEAD)"
+            echo "LSPLANT=$(git -C LSP-IrenaX/external/lsplant rev-parse HEAD)"
+            echo "DOBBY=$(git -C LSP-IrenaX/external/dobby rev-parse HEAD)"
+            echo "OLD_WORKING_7244=$(git -C LSPosed-7244-reference rev-parse HEAD)"
+            echo "CURRENT_7371_M_INCLUDE_CODE=PRESENT"
+            echo "OLD_7244_M_INCLUDE_CODE=ABSENT"
+          } | tee r9-output/R9_SOURCE_PINS_AND_PRECONDITIONS.txt
+
+      - name: Setup Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          log-accepted-android-sdk-licenses: 'false'
+          packages: ''
+
+      - name: Setup ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          max-size: 2G
+          key: irena-x-r1-clean-base-${{ runner.os }}
+          restore-keys: |
+            irena-x-${{ runner.os }}
+          save: false
+
+      - name: Setup Ninja 1.12.1
+        uses: seanmiddleditch/gha-setup-ninja@master
+        with:
+          version: 1.12.1
+
+      - name: Remove Android bundled CMake
+        shell: bash
+        run: rm -rf "$ANDROID_HOME/cmake"
+
+      - name: Configure Gradle
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.gradle
+          {
+            echo 'org.gradle.caching=true'
+            echo 'org.gradle.parallel=true'
+            echo 'org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8 -XX:+UseParallelGC'
+            echo 'android.native.buildOutput=verbose'
+          } >> ~/.gradle/gradle.properties
+
+      - name: Download and verify official Irena 7371 release
+        id: official
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          curl --fail --location --retry 3 \
+            -o OFFICIAL_RELEASE.zip \
+            "$OFFICIAL_RELEASE_URL"
+
+          echo "$OFFICIAL_RELEASE_SHA256  OFFICIAL_RELEASE.zip" | sha256sum -c -
+
+          rm -rf officialcmp
+          mkdir officialcmp
+          unzip -q OFFICIAL_RELEASE.zip -d officialcmp
+          unzip -t OFFICIAL_RELEASE.zip
+
+          test -f officialcmp/manager.apk
+          test -f officialcmp/daemon.apk
+          test -f officialcmp/framework/lspd.dex
+
+          python3 - <<'PY'
+          import zipfile
+          with zipfile.ZipFile("OFFICIAL_RELEASE.zip") as z:
+              names = z.namelist()
+              if len(names) != len(set(names)):
+                  raise SystemExit("duplicate names in official release")
+              if len([n for n in names if not n.endswith("/")]) != 56:
+                  raise SystemExit("official release file count is not 56")
+              bad = z.testzip()
+              if bad:
+                  raise SystemExit(f"official release CRC failure: {bad}")
+          PY
+
+          sha256sum OFFICIAL_RELEASE.zip \
+            > r9-output/R9_OFFICIAL_RELEASE_SHA256.txt
+
+      - name: Apply exact R1 fix plus Ingress-only LoadedApkCtor callback isolation
+        id: patch
+        if: steps.official.outcome == 'success'
+        working-directory: LSP-IrenaX
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # A) Reproduce exact confirmed R1-v2 mIncludeCode compatibility fix.
+          python3 - <<'PY'
+          from pathlib import Path
+
+          p = Path("core/src/main/java/org/lsposed/lspd/hooker/LoadedApkCtorHooker.java")
+          s = p.read_text()
+
+          line = '            boolean includeCode = XposedHelpers.getBooleanField(loadedApk, "mIncludeCode");\n'
+          branch = (
+              '            } else if (!includeCode) {\n'
+              '                Hookers.logD("LoadedApk#<init> has no code, skip: " + mAppDir);\n'
+              '                return;\n'
+          )
+
+          if s.count(line) != 1:
+              raise SystemExit(f"R1 precondition failed: mIncludeCode read count={s.count(line)}")
+          if s.count(branch) != 1:
+              raise SystemExit(f"R1 precondition failed: no-code branch count={s.count(branch)}")
+
+          s = s.replace(line, "", 1)
+          s = s.replace(branch, "", 1)
+
+          if 'mIncludeCode' in s:
+              raise SystemExit("R1-v2 mIncludeCode regression")
+
+          p.write_text(s)
+          PY
+
+          # B) R9-v4 one-variable diagnostic:
+          #    R9-v3 showed the same PairIP +0x65768 crash without the CrashDump hook. Restore
+          #    every bootstrap registration to the normal R1-v2 state. In the already-installed
+          #    LoadedApk constructor hook, suppress only the callback body for the exact Ingress
+          #    package after packageName is available. Other processes, including com.android.shell,
+          #    execute the original callback path.
+          python3 - <<'PY'
+          from pathlib import Path
+
+          p = Path("core/src/main/java/org/lsposed/lspd/hooker/LoadedApkCtorHooker.java")
+          s = p.read_text()
+
+          anchor = '            String packageName = loadedApk.getPackageName();\n'
+          guard = (
+              '            String packageName = loadedApk.getPackageName();\n'
+              '            if ("com.nianticproject.ingress".equals(packageName)) {\n'
+              '                android.util.Log.w("LSPosed-R9", "LOADEDAPK_CTOR_CALLBACK_SKIPPED package=" + packageName);\n'
+              '                return;\n'
+              '            }\n'
+          )
+
+          if s.count(anchor) != 1:
+              raise SystemExit(f"LoadedApkCtor packageName anchor count={s.count(anchor)}")
+          s = s.replace(anchor, guard, 1)
+
+          if s.count('LOADEDAPK_CTOR_CALLBACK_SKIPPED') != 1:
+              raise SystemExit("R9-v4 LoadedApkCtor marker count mismatch")
+          if s.count('"com.nianticproject.ingress".equals(packageName)') != 1:
+              raise SystemExit("R9-v4 exact Ingress package guard missing")
+          if 'CRASHDUMP_BOOTSTRAP_HOOK_SKIPPED' in s:
+              raise SystemExit("R9-v3 CrashDump suppression leaked into R9-v4")
+
+          p.write_text(s)
+          PY
+
+          # Prove Startup.java is completely restored to official 7371/R1-v2 behavior and prove
+          # LoadedApkCtorHooker differs from official only by the established R1-v2 fix plus this
+          # exact Ingress-only callback guard.
+          python3 - <<'PY'
+          from pathlib import Path
+          import os
+          import subprocess
+
+          commit = os.environ["IRENA_COMMIT"]
+          startup_path = "core/src/main/java/org/lsposed/lspd/core/Startup.java"
+          ctor_path = "core/src/main/java/org/lsposed/lspd/hooker/LoadedApkCtorHooker.java"
+
+          startup_original = subprocess.check_output([
+              "git", "show", f"{commit}:{startup_path}"
+          ], text=True)
+          if Path(startup_path).read_text() != startup_original:
+              raise SystemExit("R9-v4 Startup.java is not byte-identical to pinned official source")
+
+          original = subprocess.check_output([
+              "git", "show", f"{commit}:{ctor_path}"
+          ], text=True)
+          expected = original
+
+          r1_line = '            boolean includeCode = XposedHelpers.getBooleanField(loadedApk, "mIncludeCode");\n'
+          r1_branch = (
+              '            } else if (!includeCode) {\n'
+              '                Hookers.logD("LoadedApk#<init> has no code, skip: " + mAppDir);\n'
+              '                return;\n'
+          )
+          if expected.count(r1_line) != 1 or expected.count(r1_branch) != 1:
+              raise SystemExit("R1 expected source anchors changed")
+          expected = expected.replace(r1_line, "", 1).replace(r1_branch, "", 1)
+
+          anchor = '            String packageName = loadedApk.getPackageName();\n'
+          guard = (
+              '            String packageName = loadedApk.getPackageName();\n'
+              '            if ("com.nianticproject.ingress".equals(packageName)) {\n'
+              '                android.util.Log.w("LSPosed-R9", "LOADEDAPK_CTOR_CALLBACK_SKIPPED package=" + packageName);\n'
+              '                return;\n'
+              '            }\n'
+          )
+          if expected.count(anchor) != 1:
+              raise SystemExit("R9-v4 expected packageName anchor changed")
+          expected = expected.replace(anchor, guard, 1)
+
+          current = Path(ctor_path).read_text()
+          if current != expected:
+              raise SystemExit("R9-v4 LoadedApkCtorHooker changed beyond R1-v2 + exact Ingress callback guard")
+          PY
+
+          git diff --check
+
+          mapfile -t changed < <(git diff --name-only | sort)
+          printf '%s\n' "${changed[@]}" | tee ../r9-output/R9_SOURCE_DIFF_NAMES.txt
+
+          test "${#changed[@]}" -eq 1
+          test "${changed[0]}" = "core/src/main/java/org/lsposed/lspd/hooker/LoadedApkCtorHooker.java"
+
+          if grep -Fq 'mIncludeCode' core/src/main/java/org/lsposed/lspd/hooker/LoadedApkCtorHooker.java; then
+            echo "R1-v2 mIncludeCode fix was lost"
+            exit 1
+          fi
+          grep -Fq 'LOADEDAPK_CTOR_CALLBACK_SKIPPED' core/src/main/java/org/lsposed/lspd/hooker/LoadedApkCtorHooker.java
+          grep -Fq '"com.nianticproject.ingress".equals(packageName)' core/src/main/java/org/lsposed/lspd/hooker/LoadedApkCtorHooker.java
+
+          # Startup and all other framework/native paths must be exact pinned 7371 source.
+          git diff --exit-code "$IRENA_COMMIT" -- \
+            core/src/main/java/org/lsposed/lspd/core/Startup.java \
+            core/src/main/java/de/robv/android/xposed/XposedBridge.java \
+            core/src/main/java/de/robv/android/xposed/XposedInit.java \
+            core/src/main/java/org/lsposed/lspd/deopt/InlinedMethodCallers.java \
+            core/src/main/java/org/lsposed/lspd/hooker/LoadedApkCreateCLHooker.java \
+            core/src/main/java/org/lsposed/lspd/hooker/AttachHooker.java \
+            core/src/main/java/org/lsposed/lspd/hooker/CrashDumpHooker.java \
+            core/src/main/java/org/lsposed/lspd/hooker/OpenDexFileHooker.java \
+            core/src/main/java/org/lsposed/lspd/impl/LSPosedBridge.java \
+            core/src/main/java/org/lsposed/lspd/nativebridge/HookBridge.java \
+            core/src/main/jni/src/jni/hook_bridge.cpp \
+            core/src/main/jni/src/native_api.cpp \
+            daemon/build.gradle.kts \
+            daemon/src/main/java/org/lsposed/lspd/service/Dex2OatService.java \
+            daemon/src/main/java/org/lsposed/lspd/util/InstallerVerifier.java \
+            magisk-loader/src/main/jni/api/zygisk_main.cpp \
+            magisk-loader/src/main/jni/src/magisk_loader.cpp
+
+          test "$(git -C external/lsplant rev-parse HEAD)" = "$CURRENT_LSPLANT_SHA"
+          test "$(git -C external/dobby rev-parse HEAD)" = "$CURRENT_DOBBY_SHA"
+          test -z "$(git -C external/lsplant status --porcelain)"
+          test -z "$(git -C external/dobby status --porcelain)"
+
+          git diff > ../r9-output/R9_SOURCE_FULL.patch
+
+          {
+            echo "PARENT=R1-v2 device framework PASS"
+            echo "PARENT_PACKAGE_SHA256=7ed948db19d92b0dd7776c424f93783e10210082ea807345228e901ab9ce4af7"
+            echo "R8_V4_DEVICE_RESULT=VALID_MARKER_PLUS_SAME_PAIRIP_0x65768_CRASH"
+            echo "R8_V4_CONCLUSION=legacy module loading/static initialization not necessary"
+            echo "R9_V2_DEVICE_RESULT=MANAGER_STARTS_AND_INGRESS_SAME_PAIRIP_0x65768_CRASH"
+            echo "R9_V2_CONCLUSION=OpenDex bootstrap-hook subgroup not necessary"
+            echo "R9_V3_DEVICE_RESULT=SAME_PAIRIP_0x65768_CRASH_WITH_CRASHDUMP_HOOK_SUPPRESSED"
+            echo "R9_V3_CONCLUSION=CrashDumpHooker registration not necessary"
+            echo "SOURCE_DELTA_VS_OFFICIAL=LoadedApkCtorHooker.java only"
+            echo "FUNCTIONAL_DELTA_VS_R1=Ingress-only LoadedApkCtorHooker callback early return"
+            echo "LOADEDAPK_CTOR_REGISTRATION=UNCHANGED"
+            echo "LOADEDAPK_CTOR_CALLBACK_IN_INGRESS=SUPPRESSED"
+            echo "LOADEDAPK_CREATECL_REGISTRATION=UNCHANGED"
+            echo "ATTACH_HOOK=UNCHANGED"
+            echo "CRASHDUMP_BOOTSTRAP_HOOK=UNCHANGED_R1_V2"
+            echo "OPENDEX_BOOTSTRAP_HOOK_GROUP=UNCHANGED_R1_V2"
+            echo "START_BOOTSTRAP_HOOK_INVOCATION=UNCHANGED"
+            echo "LEGACY_MODULE_LOADING=UNCHANGED"
+            echo "NATIVE_HOOK_BRIDGE=UNCHANGED"
+            echo "LSPLANT=$CURRENT_LSPLANT_SHA"
+            echo "DOBBY=$CURRENT_DOBBY_SHA"
+            echo "R2_DEOPT_ROLLBACK=ABSENT"
+            echo "P7_MOUNT_SUPPRESSION=ABSENT"
+            echo "P10_CERT_PATCH=ABSENT"
+            echo "PAIRIP_BYPASS=ABSENT"
+          } | tee ../r9-output/R9_PROVENANCE.txt
+
+      - name: Build R9 v4 diagnostic framework
+        id: r9build
+        if: steps.patch.outcome == 'success'
+        working-directory: LSP-IrenaX
+        shell: bash
+        run: |
+          set -uo pipefail
+          set +e
+          ./gradlew clean zipAll --stacktrace --info 2>&1 | tee ../r9-build.log
+          rc=${PIPESTATUS[0]}
+          set -e
+          echo "$rc" > ../R9_BUILD_EXIT_CODE.txt
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Freeze rebuilt R9 v4 framework payload
+        id: framework
+        if: steps.r9build.outputs.rc == '0'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mapfile -t rel < <(find LSP-IrenaX/magisk-loader/release -maxdepth 1 -type f \
+            -name 'LSPosed-v*-IrenaX-release.zip' -print | sort)
+
+          test "${#rel[@]}" -eq 1
+          cp "${rel[0]}" R9_BUILD_RELEASE.zip
+
+          rm -rf r9buildcmp
+          mkdir r9buildcmp
+          unzip -q R9_BUILD_RELEASE.zip -d r9buildcmp
+
+          test -f r9buildcmp/framework/lspd.dex
+          sha256sum r9buildcmp/framework/lspd.dex \
+            > r9-output/R9_REBUILT_FRAMEWORK_DEX_SHA256.txt
+
+      - name: Create official-base R9 diagnostic package
+        id: package
+        if: steps.framework.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib
+          import zipfile
+
+          official = Path("OFFICIAL_RELEASE.zip")
+          out = Path("${{ env.FINAL_ZIP }}")
+          rebuilt_dex = Path("r9buildcmp/framework/lspd.dex").read_bytes()
+          rebuilt_dex_sha = hashlib.sha256(rebuilt_dex).hexdigest().encode()
+
+          replacements = {
+              "framework/lspd.dex": rebuilt_dex,
+              "framework/lspd.dex.sha256": rebuilt_dex_sha,
+          }
+
+          with zipfile.ZipFile(official, "r") as zin, zipfile.ZipFile(out, "w") as zout:
+              infos = zin.infolist()
+              names = [i.filename for i in infos]
+
+              if len(names) != len(set(names)):
+                  raise SystemExit("duplicate names in official ZIP")
+
+              for required in replacements:
+                  if required not in names:
+                      raise SystemExit(f"missing official payload: {required}")
+
+              for info in infos:
+                  data = replacements.get(info.filename)
+                  if data is None:
+                      data = zin.read(info.filename)
+                  zout.writestr(info, data)
+
+          def tree(path):
+              with zipfile.ZipFile(path) as z:
+                  names = z.namelist()
+                  if len(names) != len(set(names)):
+                      raise SystemExit(f"duplicate names: {path}")
+                  bad = z.testzip()
+                  if bad:
+                      raise SystemExit(f"ZIP CRC failure {path}: {bad}")
+                  return {
+                      n: hashlib.sha256(z.read(n)).hexdigest()
+                      for n in names
+                      if not n.endswith("/")
+                  }
+
+          a = tree(official)
+          b = tree(out)
+
+          if set(a) != set(b):
+              raise SystemExit("official/R9 file sets differ")
+          if len(a) != 56:
+              raise SystemExit(f"expected 56 files, got {len(a)}")
+
+          diff = sorted(k for k in a if a[k] != b[k])
+          expected = ["framework/lspd.dex", "framework/lspd.dex.sha256"]
+          if diff != expected:
+              raise SystemExit(f"unexpected official->R9 final delta: {diff}")
+
+          # All manager/daemon/native payload must remain exact official 7371.
+          for rel in (
+              "manager.apk",
+              "daemon.apk",
+              "lib/arm64-v8a/liblspd.so",
+              "lib/armeabi-v7a/liblspd.so",
+              "lib/x86/liblspd.so",
+              "lib/x86_64/liblspd.so",
+          ):
+              if a[rel] != b[rel]:
+                  raise SystemExit(f"official payload changed unexpectedly: {rel}")
+
+          with zipfile.ZipFile(out) as z:
+              names = set(z.namelist())
+              checked = 0
+              for n in sorted(names):
+                  if not n.endswith(".sha256"):
+                      continue
+                  payload = n[:-7]
+                  if payload not in names:
+                      continue
+                  expected_hash = z.read(n).decode().strip().split()[0]
+                  actual_hash = hashlib.sha256(z.read(payload)).hexdigest()
+                  if expected_hash != actual_hash:
+                      raise SystemExit(f"sidecar mismatch: {n}")
+                  checked += 1
+
+              if checked != 28:
+                  raise SystemExit(f"expected 28 verified sidecars, got {checked}")
+
+          sha = hashlib.sha256(out.read_bytes()).hexdigest()
+          Path("r9-output/R9_FINAL_PACKAGE_SHA256.txt").write_text(
+              f"{sha}  {out.name}\n"
+          )
+          Path("r9-output/R9_FINAL_PACKAGE_DIFF.txt").write_text(
+              "framework/lspd.dex\nframework/lspd.dex.sha256\n"
+          )
+          Path("r9-output/R9_FINAL_SCOPE.txt").write_text(
+              "BASE=official Irena X 7371 release + R1-v2 mIncludeCode fix\n"
+              "ONLY_FINAL_PAYLOAD_CHANGE=framework/lspd.dex + sidecar\n"
+              "MANAGER=official 7371 byte-identical\n"
+              "DAEMON=official 7371 byte-identical\n"
+              "DEX2OAT_BEHAVIOR=official 7371 unchanged\n"
+              "ALL_LIBLSPD=official 7371 byte-identical\n"
+              "M_INCLUDE_CODE_DIRECT_READ=removed (R1 preserved)\n"
+              "R8_V4_DEVICE_RESULT=valid marker + same PairIP +0x65768 crash\n"
+              "R8_V4_CONCLUSION=legacy-module loading/static initialization not necessary\n"
+              "R9_V1_DEVICE_RESULT=Ingress starts; global bootstrap suppression breaks parasitic Manager host\n"
+              "R9_V2_DEVICE_RESULT=Manager starts; Ingress still crashes at PairIP +0x65768\n"
+              "R9_V2_CONCLUSION=OpenDex subgroup not necessary\n"
+              "R9_V3_DEVICE_RESULT=same PairIP +0x65768 crash with CrashDump registration suppressed\n"
+              "R9_V3_CONCLUSION=CrashDumpHooker registration not necessary\n"
+              "R9_V4_FUNCTIONAL_CHANGE=Ingress-only LoadedApkCtorHooker callback early return\n"
+              "R9_LOADEDAPK_CTOR_REGISTRATION=unchanged\n"
+              "R9_LOADEDAPK_CREATECL_REGISTRATION=unchanged\n"
+              "R9_START_BOOTSTRAP_HOOK_INVOCATION=unchanged\n"
+              "R9_CRASHDUMP_BOOTSTRAP_HOOK=restored/unchanged\n"
+              "R9_OPENDEX_BOOTSTRAP_HOOKS=restored/unchanged\n"
+              "R9_LEGACY_MODULE_LOADING=unchanged\n"
+              "R2_DEOPT_ROLLBACK=not present\n"
+              "P7_MOUNT_SUPPRESSION=not present\n"
+              "P10_CERT_REBUILD_PATCH=not present\n"
+              "PAIRIP_BYPASS=not present\n"
+          )
+          PY
+
+          unzip -t "$FINAL_ZIP"
+          cp "$FINAL_ZIP" "r9-output/INSTALL_THIS_${FINAL_ZIP}"
+
+      - name: Write R9 device diagnostic plan
+        if: steps.package.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cat > r9-output/R9_DEVICE_TEST_PLAN.txt <<'EOF'
+          R9-v4 INGRESS LOADEDAPK-CTOR CALLBACK ISOLATION DIAGNOSTIC
+
+          PURPOSE:
+          R9-v3 still reproduced SIGSEGV / SEGV_ACCERR at libpairipcore.so +0x65768 with the
+          CrashDump bootstrap hook absent. R9-v4 returns directly to R1-v2 and restores every
+          bootstrap registration. It changes one runtime behavior only: once LoadedApkCtorHooker
+          has an exact packageName, the callback returns early for com.nianticproject.ingress.
+
+          This leaves com.android.shell/Manager and every other process on the normal R1-v2 path.
+          The LoadedApk constructor hook itself remains registered. For Ingress, the callback does
+          not perform resource bookkeeping, loadedPackagesInProcess bookkeeping, or addLoadedApk();
+          consequently the downstream LoadedApkCreateCLHooker has no tracked LoadedApk from this
+          constructor callback. Interpret this as isolation of the Ingress LoadedApk constructor
+          callback chain, not as proof about the CreateCL hook registration itself.
+
+          1. Install the inner INSTALL_THIS_*.zip and reboot.
+          2. Open LSPosed Manager and confirm normal usability.
+          3. Run one controlled Ingress start:
+
+             su -c 'logcat -c'
+             su -c 'am force-stop com.nianticproject.ingress'
+             su -c 'monkey -p com.nianticproject.ingress -c android.intent.category.LAUNCHER 1'
+             sleep 4
+             su -c 'logcat -b all -d -v threadtime | grep -E "LSPosed-R9|libpairipcore|SIGSEGV|SEGV_|Fatal signal" > /sdcard/Download/r9-v4-loadedapk-ctor-isolation.txt'
+
+          VALIDITY REQUIREMENT:
+          The capture MUST contain:
+             LSPosed-R9: LOADEDAPK_CTOR_CALLBACK_SKIPPED package=com.nianticproject.ingress
+
+          INTERPRETATION
+          - Marker present + Manager works + same PairIP +0x65768 crash:
+            the Ingress LoadedApkCtor callback body and its addLoadedApk-dependent downstream chain
+            are not necessary. Continue with another independently isolated bootstrap callback.
+          - Marker present + Manager works + Ingress starts:
+            the causal region is inside the LoadedApk constructor callback chain. Do not call it fixed
+            from one start; reproduce three controlled starts, then split ctor-specific effects from
+            the downstream CreateCL callback in the next one-variable diagnostic.
+          - Marker missing:
+            test invalid; do not interpret PairIP causality.
+          - Manager fails:
+            keep R9-v4 diagnostic-only and inspect that regression before proceeding.
+          EOF
+
+      - name: Collect R9 evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p r9-output
+
+          cp R9_BUILD_EXIT_CODE.txt r9-output/ 2>/dev/null || true
+          cp r9-build.log r9-output/ 2>/dev/null || true
+          cp R9_BUILD_RELEASE.zip r9-output/ 2>/dev/null || true
+          cp OFFICIAL_RELEASE.zip r9-output/OFFICIAL_7371_RELEASE_REFERENCE.zip 2>/dev/null || true
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib
+
+          out = Path("r9-output")
+          manifest = out / "R9_EVIDENCE_SHA256SUMS.txt"
+
+          files = sorted(
+              p for p in out.rglob("*")
+              if p.is_file() and p != manifest
+          )
+
+          with manifest.open("w") as f:
+              for p in files:
+                  rel = p.relative_to(out).as_posix()
+                  f.write(f"{hashlib.sha256(p.read_bytes()).hexdigest()}  {rel}\n")
+          PY
+
+          (
+            cd r9-output
+            sha256sum -c R9_EVIDENCE_SHA256SUMS.txt
+          )
+
+      - name: Final R9 fail-closed static gate
+        id: finalgate
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test -f R9_BUILD_EXIT_CODE.txt
+          test "$(cat R9_BUILD_EXIT_CODE.txt)" = "0"
+
+          diff -u <(printf '%s\n' \
+            core/src/main/java/org/lsposed/lspd/hooker/LoadedApkCtorHooker.java) \
+            r9-output/R9_SOURCE_DIFF_NAMES.txt
+
+          diff -u <(printf '%s\n' \
+            framework/lspd.dex \
+            framework/lspd.dex.sha256) \
+            r9-output/R9_FINAL_PACKAGE_DIFF.txt
+
+          grep -q '^R8_V4_DEVICE_RESULT=VALID_MARKER_PLUS_SAME_PAIRIP_0x65768_CRASH$' r9-output/R9_PROVENANCE.txt
+          grep -q '^R9_V2_DEVICE_RESULT=MANAGER_STARTS_AND_INGRESS_SAME_PAIRIP_0x65768_CRASH$' r9-output/R9_PROVENANCE.txt
+          grep -q '^R9_V3_DEVICE_RESULT=SAME_PAIRIP_0x65768_CRASH_WITH_CRASHDUMP_HOOK_SUPPRESSED$' r9-output/R9_PROVENANCE.txt
+          grep -q '^LOADEDAPK_CTOR_REGISTRATION=UNCHANGED$' r9-output/R9_PROVENANCE.txt
+          grep -q '^LOADEDAPK_CTOR_CALLBACK_IN_INGRESS=SUPPRESSED$' r9-output/R9_PROVENANCE.txt
+          grep -q '^LOADEDAPK_CREATECL_REGISTRATION=UNCHANGED$' r9-output/R9_PROVENANCE.txt
+          grep -q '^CRASHDUMP_BOOTSTRAP_HOOK=UNCHANGED_R1_V2$' r9-output/R9_PROVENANCE.txt
+          grep -q '^OPENDEX_BOOTSTRAP_HOOK_GROUP=UNCHANGED_R1_V2$' r9-output/R9_PROVENANCE.txt
+          grep -q '^START_BOOTSTRAP_HOOK_INVOCATION=UNCHANGED$' r9-output/R9_PROVENANCE.txt
+          grep -q '^LEGACY_MODULE_LOADING=UNCHANGED$' r9-output/R9_PROVENANCE.txt
+          grep -q '^P7_MOUNT_SUPPRESSION=ABSENT$' r9-output/R9_PROVENANCE.txt
+          grep -q '^P10_CERT_PATCH=ABSENT$' r9-output/R9_PROVENANCE.txt
+          grep -q '^R2_DEOPT_ROLLBACK=ABSENT$' r9-output/R9_PROVENANCE.txt
+          grep -q '^PAIRIP_BYPASS=ABSENT$' r9-output/R9_PROVENANCE.txt
+
+          test -f "r9-output/INSTALL_THIS_${FINAL_ZIP}"
+
+          (
+            cd r9-output
+            sha256sum -c R9_EVIDENCE_SHA256SUMS.txt
+          )
+
+          {
+            echo "RESULT=R9_V4_STATIC_FULL_PASS_DIAGNOSTIC_CANDIDATE_CREATED"
+            echo "PARENT=R1-v2 device framework PASS"
+            echo "R8_V4_DEVICE_RESULT=VALID_MARKER_PLUS_SAME_PAIRIP_0x65768_CRASH"
+            echo "R8_V4_CONCLUSION=legacy module loading/static initialization not necessary"
+            echo "R9_V2_DEVICE_RESULT=MANAGER_STARTS_AND_INGRESS_SAME_PAIRIP_0x65768_CRASH"
+            echo "R9_V2_CONCLUSION=OpenDex bootstrap-hook subgroup not necessary"
+            echo "R9_V3_DEVICE_RESULT=SAME_PAIRIP_0x65768_CRASH_WITH_CRASHDUMP_HOOK_SUPPRESSED"
+            echo "R9_V3_CONCLUSION=CrashDumpHooker registration not necessary"
+            echo "PARENT_PACKAGE_SHA256=7ed948db19d92b0dd7776c424f93783e10210082ea807345228e901ab9ce4af7"
+            echo "BASE=official Irena X 7371"
+            echo "SOURCE_CHANGE_VS_OFFICIAL=LoadedApkCtorHooker.java only"
+            echo "FUNCTIONAL_CHANGE_VS_R1=Ingress-only LoadedApkCtorHooker callback early return"
+            echo "LOADEDAPK_CTOR_REGISTRATION=unchanged"
+            echo "LOADEDAPK_CTOR_CALLBACK_IN_INGRESS=suppressed"
+            echo "LOADEDAPK_CREATECL_REGISTRATION=unchanged"
+            echo "CRASHDUMP_BOOTSTRAP_HOOK=unchanged_R1_v2"
+            echo "OPENDEX_BOOTSTRAP_HOOK_GROUP=unchanged_R1_v2"
+            echo "START_BOOTSTRAP_HOOK_INVOCATION=unchanged"
+            echo "LEGACY_MODULE_LOADING=unchanged"
+            echo "NATIVE_HOOK_BRIDGE=unchanged"
+            echo "FINAL_PACKAGE_DELTA=framework/lspd.dex + framework/lspd.dex.sha256 only"
+            echo "MANAGER=official 7371"
+            echo "DAEMON=official 7371"
+            echo "LIBLSPD=official 7371"
+            echo "DEVICE_RUNTIME_STATUS=NOT_TESTED_BY_WORKFLOW"
+            echo "STATIC_PASS_IS_NOT_DEVICE_PASS=YES"
+          } | tee r9-output/R9_STATIC_PASS_MARKER.txt
+
+      - name: Upload R9 diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: irena-x-v2.0.1-7371-r9-v4-Ingress-LoadedApkCtor-callback-isolation-${{ github.run_id }}
+          path: r9-output
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 30
