@@ -1,0 +1,464 @@
+name: CLEAN GEN1 P10 - AK3 + 73MB Safety Rollback Package v1
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  package:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    env:
+      P10_RUN_ID: "34589710509"
+      P10_ARTIFACT_ID: "10195763248"
+      P10_ARTIFACT_SHA256: "28d36dc2165e7c8c638449b6c4cd10be89ba35735c601a3fd7fed90c93b751f6"
+
+      P10_BOOT_NAME: "VEUX-GEN1-P10-5.4.274-ReSukiSU-Current-UAPI4-SUSFS-2.3-boot.img"
+      P10_BOOT_SHA256: "47f2573ce3d610ab9471721f21323c7e38c1f6a66c00dbed57213ed804264c0a"
+      P10_BOOT_BYTES: "134217728"
+
+      P10_AK3_NAME: "VEUX-GEN1-P10-5.4.274-ReSukiSU-Current-UAPI4-SUSFS-2.3-AK3.zip"
+      P10_AK3_SHA256: "217554160c08af68c60ef8ca30886a61272624df109c8847c379e4047968ad7a"
+
+      FINAL_BOOT_ASSET_ID: "520966251"
+      FINAL_BOOT_ZIP_SHA256: "920f2aa04d495771506c9e34ef81776de50273bde82835553cadbb73a864b4b8"
+      FINAL_BOOT_ZIP_BYTES: "73232741"
+
+      FINAL_BOOT_REFERENCE_BOOT_SHA256: "2baffafce260348c247674c5e8176408d45dc75b35ccbf7ca5834cbb4679398e"
+      STOCK_BOOT_SHA256: "ac6522e4eed55782dd2ae61362e9d345d01a1f229c87333818511d5537fa79c5"
+      STOCK_BOOT_BYTES: "134217728"
+      ROLLBACK_GZIP_SHA256: "9a1532ccfc57b465256bba97863f927b80823fa8812a4d13e4f4c8bf9af0c78b"
+
+      SAFETY_ZIP_NAME: "VEUX-GEN1-P10-5.4.274-ReSukiSU-Current-UAPI4-SUSFS-2.3-73MB-SAFETY.zip"
+
+      WORK: ${{ github.workspace }}/p10-safe-package
+      OUT: ${{ github.workspace }}/p10-safe-package/out
+
+    steps:
+      - name: Initialize
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$WORK"
+          mkdir -p "$WORK"/{p10,reference,package,out,evidence}
+          cat > "$WORK/evidence/00-plan.txt" <<EOF
+          DEVICE=VEUX_ONLY
+          ANDROID=13
+          KERNEL=5.4.274
+          RESUKISU=v4.2.0-rc1-830a5aed-p10
+          SUSFS=2.3
+          SOURCE=P10_RUN_${P10_RUN_ID}
+          OUTPUT_1=ORIGINAL_VALIDATED_P10_AK3
+          OUTPUT_2=COMPACT_DIRECT_BOOT_WITH_FLASH_TIME_STOCK_ROLLBACK
+          TARGET_SIZE_CLASS=ABOUT_73_MB
+          NO_KERNEL_REBUILD=YES
+          GITHUB_WRITE=NO
+          EOF
+
+      - name: Download exact successful P10 release artifact
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          curl --fail --location --silent --show-error --retry 3 \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/artifacts/$P10_ARTIFACT_ID/zip" \
+            -o "$WORK/p10-artifact.zip"
+
+          test "$(sha256sum "$WORK/p10-artifact.zip" | awk '{print $1}')" = "$P10_ARTIFACT_SHA256"
+          unzip -t "$WORK/p10-artifact.zip" > "$WORK/evidence/01-p10-outer-crc.txt"
+          unzip -q "$WORK/p10-artifact.zip" -d "$WORK/p10"
+
+          test -s "$WORK/p10/$P10_BOOT_NAME"
+          test -s "$WORK/p10/$P10_AK3_NAME"
+
+          test "$(stat -c '%s' "$WORK/p10/$P10_BOOT_NAME")" = "$P10_BOOT_BYTES"
+          test "$(sha256sum "$WORK/p10/$P10_BOOT_NAME" | awk '{print $1}')" = "$P10_BOOT_SHA256"
+          test "$(sha256sum "$WORK/p10/$P10_AK3_NAME" | awk '{print $1}')" = "$P10_AK3_SHA256"
+
+          cp "$WORK/p10/$P10_AK3_NAME" "$OUT/$P10_AK3_NAME"
+
+      - name: Download exact 73MB Final_Boot safety reference
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          curl --fail --location --silent --show-error --retry 3 \
+            -H "Accept: application/octet-stream" \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/releases/assets/$FINAL_BOOT_ASSET_ID" \
+            -o "$WORK/Final_Boot.zip"
+
+          test "$(stat -c '%s' "$WORK/Final_Boot.zip")" = "$FINAL_BOOT_ZIP_BYTES"
+          test "$(sha256sum "$WORK/Final_Boot.zip" | awk '{print $1}')" = "$FINAL_BOOT_ZIP_SHA256"
+          unzip -t "$WORK/Final_Boot.zip" > "$WORK/evidence/02-reference-crc.txt"
+          unzip -q "$WORK/Final_Boot.zip" -d "$WORK/reference"
+
+          test -s "$WORK/reference/boot.img"
+          test -s "$WORK/reference/rollback_stock_boot.img.gz"
+          test -s "$WORK/reference/anykernel.sh"
+          test -s "$WORK/reference/tools/ak3-core.sh"
+          test -s "$WORK/reference/tools/busybox"
+          test -s "$WORK/reference/META-INF/com/google/android/update-binary"
+          test -s "$WORK/reference/META-INF/com/google/android/updater-script"
+
+          test "$(sha256sum "$WORK/reference/boot.img" | awk '{print $1}')" = \
+            "$FINAL_BOOT_REFERENCE_BOOT_SHA256"
+          test "$(sha256sum "$WORK/reference/rollback_stock_boot.img.gz" | awk '{print $1}')" = \
+            "$ROLLBACK_GZIP_SHA256"
+
+          gzip -t "$WORK/reference/rollback_stock_boot.img.gz"
+          gzip -dc "$WORK/reference/rollback_stock_boot.img.gz" > "$WORK/stock-boot.img"
+          test "$(stat -c '%s' "$WORK/stock-boot.img")" = "$STOCK_BOOT_BYTES"
+          test "$(sha256sum "$WORK/stock-boot.img" | awk '{print $1}')" = "$STOCK_BOOT_SHA256"
+
+      - name: Assemble compact P10 safety package from proven 73MB template
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp -a "$WORK/reference/." "$WORK/package/"
+
+          # Preserve only the exact runtime files needed by the proven direct-write
+          # installer. This deliberately drops stale historical manifests, reports
+          # and every unused tool so the package stays in the ~73 MB class.
+          python3 - "$WORK/package" <<'PY'
+          import sys
+          from pathlib import Path
+
+          root = Path(sys.argv[1])
+          keep = {
+              "boot.img",
+              "rollback_stock_boot.img.gz",
+              "LICENSE",
+              "anykernel.sh",
+              "META-INF/com/google/android/update-binary",
+              "META-INF/com/google/android/updater-script",
+              "tools/ak3-core.sh",
+              "tools/busybox",
+          }
+
+          for path in sorted(root.rglob("*"), reverse=True):
+              if path.is_file():
+                  rel = path.relative_to(root).as_posix()
+                  if rel not in keep:
+                      path.unlink()
+
+          for path in sorted(root.rglob("*"), reverse=True):
+              if path.is_dir():
+                  try:
+                      path.rmdir()
+                  except OSError:
+                      pass
+
+          actual = {
+              p.relative_to(root).as_posix()
+              for p in root.rglob("*")
+              if p.is_file()
+          }
+          if actual != keep:
+              raise SystemExit(
+                  f"runtime template file-set mismatch: missing={sorted(keep-actual)} "
+                  f"extra={sorted(actual-keep)}"
+              )
+          PY
+
+          # Replace only the custom boot payload and installer identity.
+          cp "$WORK/p10/$P10_BOOT_NAME" "$WORK/package/boot.img"
+
+          cat > "$WORK/package/anykernel.sh" <<'EOF'
+          ### AnyKernel3 Ramdisk Mod Script
+          ## VEUX P10 direct boot payload with verified stock rollback
+
+          properties() { '
+          kernel.string=VEUX GEN1 P10 5.4.274 ReSukiSU v4.2.0-rc1 UAPI4 SUSFS 2.3
+          do.devicecheck=1
+          do.modules=0
+          do.systemless=0
+          do.cleanup=1
+          do.cleanuponabort=1
+          device.name1=veux
+          device.name2=
+          device.name3=
+          device.name4=
+          device.name5=
+          supported.versions=13
+          supported.patchlevels=2024-12 - 2024-12
+          supported.vendorpatchlevels=2024-12 - 2024-12
+          '; }
+
+          BLOCK=boot;
+          IS_SLOT_DEVICE=1;
+          SLOT_SELECT=active;
+          PATCH_VBMETA_FLAG=0;
+          NO_VBMETA_PARTITION_PATCH=1;
+          NO_MAGISK_CHECK=1;
+
+          . tools/ak3-core.sh;
+
+          BB="$AKHOME/tools/busybox";
+          PAYLOAD="$AKHOME/boot.img";
+          ROLLBACK_GZ="$AKHOME/rollback_stock_boot.img.gz";
+
+          EXPECT_STOCK_SHA="@@STOCK_SHA@@";
+          EXPECT_FINAL_BOOT_SHA="@@FINAL_BOOT_SHA@@";
+          EXPECT_CUSTOM_SHA="@@P10_SHA@@";
+          EXPECT_BYTES="134217728";
+
+          [ -x "$BB" ] || abort "Missing packaged busybox. Aborting.";
+          [ -f "$PAYLOAD" ] || abort "Missing P10 boot payload. Aborting.";
+          [ -f "$ROLLBACK_GZ" ] || abort "Missing stock rollback image. Aborting.";
+
+          PAYLOAD_BYTES="$($BB wc -c < "$PAYLOAD" | $BB tr -d ' ')";
+          [ "$PAYLOAD_BYTES" = "$EXPECT_BYTES" ] || abort "Unexpected P10 boot payload size.";
+
+          PAYLOAD_LINE="$($BB sha256sum "$PAYLOAD")" || abort "Cannot hash P10 boot payload.";
+          set -- $PAYLOAD_LINE;
+          [ "$1" = "$EXPECT_CUSTOM_SHA" ] || abort "P10 boot payload SHA-256 mismatch.";
+
+          ROLLBACK_LINE="$($BB gzip -dc "$ROLLBACK_GZ" | $BB sha256sum)" || abort \
+            "Cannot verify stock rollback image.";
+          set -- $ROLLBACK_LINE;
+          [ "$1" = "$EXPECT_STOCK_SHA" ] || abort "Stock rollback SHA-256 mismatch.";
+
+          SLOT="$(getprop ro.boot.slot_suffix 2>/dev/null || true)";
+          case "$SLOT" in
+            _a|_b) ;;
+            *) abort "Could not determine a valid active A/B slot. Aborting." ;;
+          esac;
+
+          TARGET="/dev/block/by-name/boot${SLOT}";
+          [ -e "$TARGET" ] || TARGET="/dev/block/bootdevice/by-name/boot${SLOT}";
+          [ -e "$TARGET" ] || abort "Active-slot boot block device not found. Aborting.";
+
+          FLASH_LOCKED="$(getprop ro.boot.flash.locked 2>/dev/null || true)";
+          VBMETA_STATE="$(getprop ro.boot.vbmeta.device_state 2>/dev/null || true)";
+          if [ "$FLASH_LOCKED" != "0" ] && [ "$VBMETA_STATE" != "unlocked" ]; then
+            abort "Positive bootloader-unlocked evidence was not found.";
+          fi;
+
+          CURRENT_LINE="$($BB sha256sum "$TARGET" 2>/dev/null)" || abort \
+            "Cannot hash active boot partition. Aborting.";
+          set -- $CURRENT_LINE;
+          CURRENT_SHA="$1";
+
+          case "$CURRENT_SHA" in
+            "$EXPECT_STOCK_SHA"|"$EXPECT_FINAL_BOOT_SHA")
+              ;;
+            *)
+              abort \
+                "Active boot is not an approved P10 source state." \
+                "Current SHA-256: $CURRENT_SHA";
+              ;;
+          esac;
+
+          restore_stock() {
+            ui_print "Attempting exact stock boot rollback...";
+            $BB gzip -dc "$ROLLBACK_GZ" | $BB dd of="$TARGET" bs=1048576 || return 1;
+            $BB sync;
+            RESTORE_LINE="$($BB sha256sum "$TARGET" 2>/dev/null)" || return 1;
+            set -- $RESTORE_LINE;
+            [ "$1" = "$EXPECT_STOCK_SHA" ];
+          }
+
+          ui_print \
+            " " \
+            "VEUX P10 safety flash" \
+            "Target: boot${SLOT}" \
+            "Source boot SHA-256 approved." \
+            "Stock rollback image verified.";
+
+          if ! $BB dd if="$PAYLOAD" of="$TARGET" bs=1048576; then
+            $BB sync;
+            if restore_stock; then
+              abort "P10 boot write failed. Exact stock boot was restored and verified.";
+            else
+              abort "P10 boot write failed and stock rollback could not be verified.";
+            fi;
+          fi;
+
+          $BB sync;
+
+          WRITTEN_LINE="$($BB sha256sum "$TARGET" 2>/dev/null)" || {
+            if restore_stock; then
+              abort "Could not hash written P10 boot. Exact stock boot was restored.";
+            else
+              abort "Could not hash written P10 boot and rollback could not be verified.";
+            fi;
+          };
+
+          set -- $WRITTEN_LINE;
+          if [ "$1" != "$EXPECT_CUSTOM_SHA" ]; then
+            if restore_stock; then
+              abort "P10 boot readback mismatch. Exact stock boot was restored and verified.";
+            else
+              abort "P10 boot readback mismatch and rollback could not be verified.";
+            fi;
+          fi;
+
+          ui_print "P10 boot payload written and readback verified.";
+          EOF
+
+          sed -i "s|@@STOCK_SHA@@|$STOCK_BOOT_SHA256|g" "$WORK/package/anykernel.sh"
+          sed -i "s|@@FINAL_BOOT_SHA@@|$FINAL_BOOT_REFERENCE_BOOT_SHA256|g" "$WORK/package/anykernel.sh"
+          sed -i "s|@@P10_SHA@@|$P10_BOOT_SHA256|g" "$WORK/package/anykernel.sh"
+
+          chmod 755 "$WORK/package/anykernel.sh"
+          bash -n "$WORK/package/anykernel.sh"
+
+          test "$(sha256sum "$WORK/package/boot.img" | awk '{print $1}')" = "$P10_BOOT_SHA256"
+          test "$(sha256sum "$WORK/package/rollback_stock_boot.img.gz" | awk '{print $1}')" = "$ROLLBACK_GZIP_SHA256"
+
+          grep -Fq 'device.name1=veux' "$WORK/package/anykernel.sh"
+          grep -Fq 'supported.versions=13' "$WORK/package/anykernel.sh"
+          grep -Fq 'restore_stock()' "$WORK/package/anykernel.sh"
+          grep -Fq "$STOCK_BOOT_SHA256" "$WORK/package/anykernel.sh"
+          grep -Fq "$FINAL_BOOT_REFERENCE_BOOT_SHA256" "$WORK/package/anykernel.sh"
+          grep -Fq "$P10_BOOT_SHA256" "$WORK/package/anykernel.sh"
+
+          if grep -Eq '^[[:space:]]*(split_boot|flash_boot);' "$WORK/package/anykernel.sh"; then
+            echo "ERROR: runtime repack/flash_boot path found in direct-write safety package" >&2
+            exit 1
+          fi
+
+      - name: Regenerate package checksums and build compact ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -f "$WORK/package/PACKAGE-SHA256SUMS"
+
+          cat > "$WORK/package/P10-SAFETY-INFO.txt" <<EOF
+          VEUX GEN1 P10 SAFETY PACKAGE
+          ============================
+          Kernel: Linux 5.4.274
+          ReSukiSU: v4.2.0-rc1 / UAPI4
+          SUSFS: 2.3
+          P10 boot SHA-256: $P10_BOOT_SHA256
+          Stock rollback SHA-256: $STOCK_BOOT_SHA256
+          Known-good Final_Boot source SHA-256: $FINAL_BOOT_REFERENCE_BOOT_SHA256
+
+          Safety behavior:
+          - exact P10 payload hash verified before write
+          - exact rollback image hash verified before write
+          - active slot must be detected
+          - unlocked bootloader evidence required
+          - current boot must equal exact stock or exact known-good Final_Boot
+          - write failure => stock rollback + readback verification
+          - readback mismatch => stock rollback + readback verification
+
+          Important:
+          The installer can roll back failures detected DURING flashing.
+          It cannot automatically detect a bootloop AFTER reboot.
+          The compressed stock rollback image remains inside this ZIP.
+          EOF
+
+          (
+            cd "$WORK/package"
+            find . -type f ! -name PACKAGE-SHA256SUMS -print0 \
+              | sort -z \
+              | xargs -0 sha256sum \
+              > PACKAGE-SHA256SUMS
+          )
+
+          (
+            cd "$WORK/package"
+            sha256sum -c PACKAGE-SHA256SUMS
+          ) > "$WORK/evidence/03-package-sha256-verify.txt"
+
+          (
+            cd "$WORK/package"
+            TZ=UTC find . -exec touch -h -d '@1789142400' {} +
+            zip -X -9 -r "$OUT/$SAFETY_ZIP_NAME" . >/dev/null
+          )
+
+          unzip -t "$OUT/$SAFETY_ZIP_NAME" > "$WORK/evidence/04-safety-zip-crc.txt"
+
+          SAFETY_BYTES="$(stat -c '%s' "$OUT/$SAFETY_ZIP_NAME")"
+          SAFETY_SHA="$(sha256sum "$OUT/$SAFETY_ZIP_NAME" | awk '{print $1}')"
+
+          # Keep this in the intended compact class and fail if it ever regresses toward ~108 MB.
+          test "$SAFETY_BYTES" -ge 65000000
+          test "$SAFETY_BYTES" -le 80000000
+
+          printf '%s  %s\n' "$SAFETY_SHA" "$SAFETY_ZIP_NAME" \
+            > "$OUT/$SAFETY_ZIP_NAME.sha256"
+
+          printf '%s  %s\n' "$P10_AK3_SHA256" "$P10_AK3_NAME" \
+            > "$OUT/$P10_AK3_NAME.sha256"
+
+          {
+            echo "P10_SAFE_PACKAGING=PASS"
+            echo "P10_AK3_SHA256=$P10_AK3_SHA256"
+            echo "P10_BOOT_SHA256=$P10_BOOT_SHA256"
+            echo "SAFETY_ZIP_SHA256=$SAFETY_SHA"
+            echo "SAFETY_ZIP_BYTES=$SAFETY_BYTES"
+            echo "SAFETY_SIZE_CLASS_65_TO_80_MB=PASS"
+            echo "ROLLBACK_GZIP_SHA256=$ROLLBACK_GZIP_SHA256"
+            echo "ROLLBACK_DECOMPRESSED_STOCK_SHA256=$STOCK_BOOT_SHA256"
+            echo "APPROVED_PREWRITE_BOOT_1=$STOCK_BOOT_SHA256"
+            echo "APPROVED_PREWRITE_BOOT_2=$FINAL_BOOT_REFERENCE_BOOT_SHA256"
+            echo "FLASH_TIME_WRITE_FAILURE_ROLLBACK=YES"
+            echo "FLASH_TIME_READBACK_FAILURE_ROLLBACK=YES"
+            echo "AUTOMATIC_POST_REBOOT_BOOTLOOP_DETECTION=NO"
+            echo "REAL_DEVICE_TEST=NOT_PERFORMED"
+          } | tee "$OUT/P10-SAFETY-RESULT.txt"
+
+      - name: Independent final validation
+        shell: bash
+        run: |
+          set -euo pipefail
+          TMP="$WORK/final-check"
+          rm -rf "$TMP"
+          mkdir -p "$TMP"
+          unzip -q "$OUT/$SAFETY_ZIP_NAME" -d "$TMP"
+
+          test "$(sha256sum "$TMP/boot.img" | awk '{print $1}')" = "$P10_BOOT_SHA256"
+          test "$(sha256sum "$TMP/rollback_stock_boot.img.gz" | awk '{print $1}')" = "$ROLLBACK_GZIP_SHA256"
+          gzip -dc "$TMP/rollback_stock_boot.img.gz" \
+            | sha256sum \
+            | grep -Fq "$STOCK_BOOT_SHA256"
+
+          bash -n "$TMP/anykernel.sh"
+          grep -Fq "$P10_BOOT_SHA256" "$TMP/anykernel.sh"
+          grep -Fq "$STOCK_BOOT_SHA256" "$TMP/anykernel.sh"
+          grep -Fq "$FINAL_BOOT_REFERENCE_BOOT_SHA256" "$TMP/anykernel.sh"
+
+          (
+            cd "$TMP"
+            sha256sum -c PACKAGE-SHA256SUMS
+          ) > "$WORK/evidence/05-final-checksums.txt"
+
+          test "$(sha256sum "$OUT/$P10_AK3_NAME" | awk '{print $1}')" = "$P10_AK3_SHA256"
+
+          echo "P10_AK3_PLUS_73MB_SAFETY_PACKAGE=PASS" \
+            | tee "$WORK/evidence/FINAL.txt"
+
+      - name: Upload both requested packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: clean-gen1-p10-ak3-and-73mb-safety-${{ github.run_id }}
+          path: |
+            ${{ env.OUT }}/${{ env.P10_AK3_NAME }}
+            ${{ env.OUT }}/${{ env.P10_AK3_NAME }}.sha256
+            ${{ env.OUT }}/${{ env.SAFETY_ZIP_NAME }}
+            ${{ env.OUT }}/${{ env.SAFETY_ZIP_NAME }}.sha256
+            ${{ env.OUT }}/P10-SAFETY-RESULT.txt
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Upload packaging audit
+        uses: actions/upload-artifact@v4
+        with:
+          name: clean-gen1-p10-73mb-safety-audit-${{ github.run_id }}
+          path: ${{ env.WORK }}/evidence/
+          if-no-files-found: error
+          retention-days: 90
