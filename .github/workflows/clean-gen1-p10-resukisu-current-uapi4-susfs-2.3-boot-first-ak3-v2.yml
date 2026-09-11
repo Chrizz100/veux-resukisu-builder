@@ -1,0 +1,1374 @@
+name: CLEAN GEN1 P10 - Current ReSukiSU kernel/UAPI4 + SUSFS 2.3 boot-first AK3 v2
+
+'on':
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: clean-gen1-p10-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-boot-ak3:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 210
+
+    env:
+      TZ: UTC
+      LANG: C.UTF-8
+      LC_ALL: C.UTF-8
+
+      VENDOR_REPO: dereference23/kernel_xiaomi_sm6375
+      VENDOR_TAG: '20240619'
+      EXPECTED_VENDOR_SHA: b2b7a3bbc36d120ee523ebc8d68e0f13a97df632
+
+      # Exact accepted P6-v11 FULL-SUSFS-2.3 backup lineage.
+      P6V11_ARTIFACT_PREFIX: clean-gen1-p6v11-v6-full-susfs-outer-integration-p7-test-boot-
+      EXPECTED_P5I_COMMIT: f353a9475e40ca866d570c1d0ef55e24cf6556e4
+      EXPECTED_P5I_TREE: a947c1f2891c796a08373fc755e29b23139dc761
+      EXPECTED_RESUKISU_HEAD: 42034caa96466e8473fe7553eba8a1888c7f460f
+      EXPECTED_RESUKISU_TREE: d818d965b855d417edfe9eb38b152ff83e75e0fb
+      EXPECTED_KSU_BASELINE_VERSION: '35102'
+      EXPECTED_KSU_TARGET_VERSION: '35126'
+      EXPECTED_KSU_BASELINE_UAPI: '2'
+      EXPECTED_KSU_TARGET_UAPI: '4'
+
+      # Full current ReSukiSU kernel/UAPI import boundary.
+      RESUKISU_REPO: https://github.com/ReSukiSU/ReSukiSU.git
+      RESUKISU_COMMON_BASE: faccf4c5edc7be37776216e7d43dd3dca0239331
+      RESUKISU_OLD_ANCHOR: 419e270b50ad61725185dec74f438b8cb59c6889
+      RESUKISU_TARGET: 830a5aedc742cb7399cccb61df60d55fd7cbcb90
+      RESUKISU_EXCLUDED_MODULE_FILTER: b2ac2fc8703ce9f5226e2a38a59f8b72f8a3005c
+      RESUKISU_VERSION_MATCH: ff765f8507541ed2c959f331ad23e4650cdfbd83
+      RESUKISU_FD_APP_PROFILE: f1ae2cebb3503236cfde52fb3caf8e69f1c083a1
+      RESUKISU_LEGACY_LOCK_FIX: 88695111d70a6c4dc490a8f46be7694f9eea36e0
+      RESUKISU_POLICYDB_FIX: f5992bfce3b292c69989ae8f41e49769563d2db9
+      RESUKISU_WEBVIEW_ALLOWLIST: 5fe98409dc52506f7a5cc1bb8f94d6f5c849b7f0
+      RESUKISU_APK_SIGN_HARDENING: 830a5aedc742cb7399cccb61df60d55fd7cbcb90
+
+      # Proven build identity/toolchain; unchanged from the successful P9 build.
+      CLANG_PREBUILT_COMMIT: aa2e4a514a6c85eebcc4a27149eaf9244e951a1e
+      TOOLCHAIN_DIR: ${{ github.workspace }}/toolchains/clang-r416183b
+      KBUILD_BUILD_USER: builder
+      KBUILD_BUILD_HOST: pangu-build-component-vendor-345942-54r9t-tw0tk-tq90c
+      KBUILD_BUILD_TIMESTAMP: Thu Dec 5 14:47:59 UTC 2024
+      KBUILD_BUILD_VERSION: '1'
+      SOURCE_DATE_EPOCH: '1733410079'
+      KBUILD_FIXED_SCM_SUFFIX: -g82179e362f33
+      STOCK_KERNEL_RELEASE: 5.4.274-qgki-g82179e362f33
+      P10_EFFECTIVE_KCFLAGS: -D__ANDROID_COMMON_KERNEL__
+
+      # P7 calibrated boot-container identity.
+      FINAL_BOOT_RELEASE_TAG: Final_Boot
+      FINAL_BOOT_RELEASE_ASSET: Boot.img.zip
+      FINAL_BOOT_RELEASE_ZIP_SHA256: 920f2aa04d495771506c9e34ef81776de50273bde82835553cadbb73a864b4b8
+      FINAL_BOOT_REFERENCE_BOOT_SHA256: 2baffafce260348c247674c5e8176408d45dc75b35ccbf7ca5834cbb4679398e
+      FINAL_BOOT_REFERENCE_KERNEL_SHA256: e036175ada602df3bcb443da7c390e8cd4b0e900c26fbfa313725db02855ec96
+      ROLLBACK_GZIP_SHA256: 9a1532ccfc57b465256bba97863f927b80823fa8812a4d13e4f4c8bf9af0c78b
+      STOCK_BOOT_SHA256: ac6522e4eed55782dd2ae61362e9d345d01a1f229c87333818511d5537fa79c5
+      STOCK_BOOT_BYTES: '134217728'
+      STOCK_RAMDISK_SHA256: 0bc8b54373b5501818e8b252517419786db207771047b6def7ec9bc89beb607a
+      P10_BOOT_NAME: VEUX-GEN1-P10-5.4.274-ReSukiSU-Current-UAPI4-SUSFS-2.3-boot.img
+
+      # Proven successful AK3 checkpoint from the repository's W89 packaging line.
+      # The previous P9 pin e3849cc81950620f8043e69c06e330935ade2eec does not exist upstream.
+      AK3_REPO: https://github.com/osm0sis/AnyKernel3.git
+      AK3_COMMIT: af770f7b16cf8f8eb7c68614b2a693b3b361c90c
+
+      BACKUP_DIR: ${{ github.workspace }}/p6v11-backup
+      AUDIT_DIR: ${{ github.workspace }}/clean-gen1-p10-audit
+      OUT_A: ${{ github.workspace }}/kernel/out-p10-a
+      OUT_B: ${{ github.workspace }}/kernel/out-p10-b
+      DIST_DIR: ${{ github.workspace }}/clean-gen1-p10-dist
+      BOOT_WORK: ${{ github.workspace }}/p10-boot-calibration
+
+    steps:
+      - name: Initialize audit
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$BACKUP_DIR" "$AUDIT_DIR" "$DIST_DIR" "$BOOT_WORK"
+          mkdir -p "$BACKUP_DIR" "$AUDIT_DIR" "$DIST_DIR" "$BOOT_WORK"
+
+          cat > "$AUDIT_DIR/00-plan.txt" <<'EOF'
+          CLEAN GEN1 P10 current ReSukiSU kernel/UAPI4 boot-first release
+          Base: exact last accepted P6-v11 FULL SUSFS 2.3 restore kit.
+          Device: VEUX / Linux 5.4.274.
+          Release order: Image -> calibrated boot.img -> boot audit -> AnyKernel3 ZIP -> AK3 audit.
+
+          ReSukiSU update policy:
+            1) restore the exact accepted P6-v11 / CLEAN-GEN1 source
+            2) use real upstream common ancestor faccf4c5 as the import base
+            3) import the complete current upstream kernel/ + uapi/ state through 830a5aed
+            4) exclude the b2ac2fc8 module-load-filter runtime integration without reverting unrelated later upstream changes
+            5) reapply only CLEAN-GEN1 outer hook-contract integration and explicit target identity
+            6) upgrade manager-visible compatibility from KSU 35102/UAPI2 to KSU 35126/UAPI4
+
+          No manager/UI/userspace files are copied into the kernel tree.
+          Outer SUSFS 2.3 implementation is byte-preserved.
+          Current upstream main must be kernel/uapi-identical to the pinned 830a5aed target.
+          No real-device boot PASS is claimed by this workflow.
+          EOF
+
+      - name: Install build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            bc bison build-essential ca-certificates curl flex git jq \
+            libelf-dev libssl-dev python3 unzip zip zstd
+
+      - name: Checkout exact VEUX vendor source
+        uses: actions/checkout@v7
+        with:
+          repository: dereference23/kernel_xiaomi_sm6375
+          ref: '20240619'
+          fetch-depth: 0
+          path: kernel
+          persist-credentials: false
+
+      - name: Authenticate vendor source
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_VENDOR_SHA"
+          test "$(make -s kernelversion)" = "5.4.268"
+          {
+            echo "VENDOR_SHA=$(git rev-parse HEAD)"
+            echo "VENDOR_KERNEL_VERSION=$(make -s kernelversion)"
+          } | tee "$AUDIT_DIR/01-vendor.txt"
+
+      - name: Locate newest non-expired P6-v11 FULL-SUSFS backup artifact
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          candidates="$RUNNER_TEMP/p6v11-candidates.tsv"
+          : > "$candidates"
+
+          for page in $(seq 1 20); do
+            json="$RUNNER_TEMP/artifacts-${page}.json"
+            curl --fail --silent --show-error --location \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts?per_page=100&page=${page}" \
+              -o "$json"
+
+            count="$(jq '.artifacts | length' "$json")"
+            jq -r --arg prefix "$P6V11_ARTIFACT_PREFIX" '
+              .artifacts[]
+              | select(.expired == false)
+              | select(.name | startswith($prefix))
+              | [.created_at, (.id|tostring), .name, .archive_download_url]
+              | @tsv
+            ' "$json" >> "$candidates"
+
+            test "$count" -eq 100 || break
+          done
+
+          test -s "$candidates"
+          IFS=$'\t' read -r created artifact_id artifact_name archive_url \
+            < <(LC_ALL=C sort -r "$candidates" | head -n1)
+
+          test -n "$artifact_id"
+          test -n "$artifact_name"
+          test -n "$archive_url"
+
+          {
+            echo "P6V11_BACKUP_CREATED=$created"
+            echo "P6V11_BACKUP_ARTIFACT_ID=$artifact_id"
+            echo "P6V11_BACKUP_ARTIFACT_NAME=$artifact_name"
+          } | tee "$AUDIT_DIR/02-backup-selection.txt"
+
+          curl --fail --silent --show-error --location \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "$archive_url" -o "$RUNNER_TEMP/p6v11-backup.zip"
+
+          unzip -q "$RUNNER_TEMP/p6v11-backup.zip" -d "$BACKUP_DIR"
+
+          restore_dir="$(find "$BACKUP_DIR" -type d -name source-restore-kit -print -quit)"
+          test -n "$restore_dir"
+          test -f "$restore_dir/manifest.json"
+          test -f "$restore_dir/SHA256SUMS"
+          test -f "$restore_dir/p5i/resukisu-p5i-full.bundle"
+
+          result_file="$(find "$BACKUP_DIR" -type f -name 17-result.txt -print -quit)"
+          test -n "$result_file"
+          grep -Fxq 'CLEAN_GEN1_P6V11_FULL_SUSFS_OUTER_INTEGRATION_DETERMINISTIC_BUILD=PASS' \
+            "$result_file"
+
+          echo "RESTORE_DIR=$restore_dir" >> "$GITHUB_ENV"
+          echo "P6V11_RESULT_FILE=$result_file" >> "$GITHUB_ENV"
+
+      - name: Verify backup checksums and manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          (
+            cd "$RESTORE_DIR"
+            sha256sum -c SHA256SUMS
+          ) | tee "$AUDIT_DIR/03-restore-kit-sha256.txt"
+
+          if test -f "$RESTORE_DIR/p5i/SHA256SUMS"; then
+            (
+              cd "$RESTORE_DIR/p5i"
+              sha256sum -c SHA256SUMS
+            ) | tee "$AUDIT_DIR/03b-p5i-sha256.txt"
+          fi
+
+          jq -e \
+            --arg p5commit "$EXPECTED_P5I_COMMIT" \
+            --arg p5tree "$EXPECTED_P5I_TREE" \
+            --arg rhead "$EXPECTED_RESUKISU_HEAD" \
+            --arg rtree "$EXPECTED_RESUKISU_TREE" \
+            '.stage == "CLEAN_GEN1_P6V11_SOURCE"
+             and .p5i_commit == $p5commit
+             and .p5i_tree == $p5tree
+             and .resukisu_head == $rhead
+             and .resukisu_tree == $rtree' \
+            "$RESTORE_DIR/manifest.json" >/dev/null
+
+          cp "$RESTORE_DIR/manifest.json" "$AUDIT_DIR/03-source-manifest.json"
+
+      - name: Restore exact accepted P6-v11 source tree
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git reset --hard "$EXPECTED_VENDOR_SHA"
+          git clean -fdx
+          test "$(git rev-parse HEAD)" = "$EXPECTED_VENDOR_SHA"
+
+          p5_patch="$RESTORE_DIR/p5i/vendor-20240619-to-p5i-outer.patch"
+          p6_patch="$RESTORE_DIR/p5i-to-p6-source-compat.patch"
+          p6v11_patch="$RESTORE_DIR/p6v10-to-p6v11-full-susfs-outer.patch"
+
+          for patch in "$p5_patch" "$p6_patch" "$p6v11_patch"; do
+            test -s "$patch"
+          done
+
+          git apply --check --whitespace=error --binary "$p5_patch"
+          git apply --index --whitespace=error --binary "$p5_patch"
+          test "$(git write-tree)" = "$EXPECTED_P5I_TREE"
+
+          git apply --check --whitespace=error --binary "$p6_patch"
+          git apply --index --whitespace=error --binary "$p6_patch"
+
+          git apply --check --whitespace=error --binary "$p6v11_patch"
+          git apply --index --whitespace=error --binary "$p6v11_patch"
+
+          final_expected_tree="$(jq -r '.p6_source_tree' "$RESTORE_DIR/manifest.json")"
+          test "$final_expected_tree" != "null"
+          test "${#final_expected_tree}" -eq 40
+          test "$(git write-tree)" = "$final_expected_tree"
+          test "$(make -s kernelversion)" = "5.4.274"
+
+          rm -rf KernelSU
+          git init -q KernelSU
+          git -C KernelSU fetch -q \
+            "$RESTORE_DIR/p5i/resukisu-p5i-full.bundle" \
+            refs/heads/clean-gen1-p5i-resukisu:refs/heads/clean-gen1-p5i-resukisu
+          git -C KernelSU checkout -q --detach refs/heads/clean-gen1-p5i-resukisu
+
+          test "$(git -C KernelSU rev-parse HEAD)" = "$EXPECTED_RESUKISU_HEAD"
+          test "$(git -C KernelSU rev-parse HEAD^{tree})" = "$EXPECTED_RESUKISU_TREE"
+
+          {
+            echo "P6V11_OUTER_TREE=$final_expected_tree"
+            echo "P6V11_RESUKISU_HEAD=$(git -C KernelSU rev-parse HEAD)"
+            echo "P6V11_RESUKISU_TREE=$(git -C KernelSU rev-parse HEAD^{tree})"
+          } | tee "$AUDIT_DIR/04-restored-source.txt"
+
+      - name: Freeze SUSFS 2.3 outer baseline before ReSukiSU update
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          grep -Fxq 'CONFIG_KSU=y' arch/arm64/configs/veux_defconfig
+          grep -Fxq '# CONFIG_KSU_MANUAL_HOOK is not set' arch/arm64/configs/veux_defconfig
+          grep -Fxq 'CONFIG_KSU_SUSFS=y' arch/arm64/configs/veux_defconfig
+          grep -Fxq 'CONFIG_KSU_SUSFS_OPEN_REDIRECT=y' arch/arm64/configs/veux_defconfig
+          grep -Fxq 'CONFIG_LOCALVERSION="-qgki"' arch/arm64/configs/veux_defconfig
+
+          grep -Fq 'DEFINE_SRCU(susfs_srcu_open_redirect)' fs/susfs.c
+          grep -Fq 'srcu_read_lock(&susfs_srcu_open_redirect)' fs/susfs.c
+          grep -Fq 'hash_for_each_possible_rcu(OPEN_REDIRECT_HLIST' fs/susfs.c
+          grep -Fq 'srcu_read_unlock(&susfs_srcu_open_redirect' fs/susfs.c
+          grep -Fq 'synchronize_srcu(&susfs_srcu_open_redirect)' fs/susfs.c
+          grep -Fq 'susfs_set_current_proc_no_su' include/linux/susfs_def.h
+          grep -Fq 'susfs_set_current_proc_umounted' include/linux/susfs_def.h
+          grep -Fq 'susfs_set_current_proc_umounted_for_zygote_next' include/linux/susfs_def.h
+          test -s include/linux/ksu_hook_contract.h
+          test -s KernelSU/kernel/tools/susfs_compat.mk
+
+          grep -Eq 'CLEAN_GEN1_UPSTREAM_COMPAT_VERSION.*35102' KernelSU/kernel/Kbuild
+          grep -Eq 'KERNEL_SU_UAPI_VERSION = 2;' KernelSU/uapi/supercall.h
+
+          sha256sum \
+            fs/susfs.c \
+            include/linux/susfs.h \
+            include/linux/susfs_def.h \
+            include/linux/ksu_hook_contract.h \
+            > "$AUDIT_DIR/05-susfs-outer-before.sha256"
+
+          {
+            echo "BASELINE_KSU_VERSION=$EXPECTED_KSU_BASELINE_VERSION"
+            echo "BASELINE_KSU_UAPI=$EXPECTED_KSU_BASELINE_UAPI"
+            echo "OUTER_SUSFS_BASELINE_FROZEN=PASS"
+          } | tee "$AUDIT_DIR/05-baseline.txt"
+
+      - name: Fetch and authenticate current ReSukiSU kernel/UAPI target
+        shell: bash
+        run: |
+          set -euo pipefail
+          up="$GITHUB_WORKSPACE/resukisu-upstream"
+          rm -rf "$up"
+          git clone -q "$RESUKISU_REPO" "$up"
+
+          for sha in \
+            "$RESUKISU_COMMON_BASE" \
+            "$RESUKISU_OLD_ANCHOR" \
+            "$RESUKISU_TARGET" \
+            "$RESUKISU_EXCLUDED_MODULE_FILTER" \
+            "$RESUKISU_VERSION_MATCH" \
+            "$RESUKISU_FD_APP_PROFILE" \
+            "$RESUKISU_LEGACY_LOCK_FIX" \
+            "$RESUKISU_POLICYDB_FIX" \
+            "$RESUKISU_WEBVIEW_ALLOWLIST" \
+            "$RESUKISU_APK_SIGN_HARDENING"; do
+            git -C "$up" cat-file -e "${sha}^{commit}"
+          done
+
+          git -C "$up" merge-base --is-ancestor "$RESUKISU_COMMON_BASE" "$RESUKISU_OLD_ANCHOR"
+          git -C "$up" merge-base --is-ancestor "$RESUKISU_OLD_ANCHOR" "$RESUKISU_TARGET"
+          git -C "$up" merge-base --is-ancestor "$RESUKISU_EXCLUDED_MODULE_FILTER" "$RESUKISU_TARGET"
+
+          old_to_target_count="$(git -C "$up" rev-list --count "$RESUKISU_OLD_ANCHOR..$RESUKISU_TARGET")"
+          test "$old_to_target_count" = '24'
+
+          target_commit_count="$(git -C "$up" rev-list --count "$RESUKISU_TARGET")"
+          target_version="$((30700 + target_commit_count))"
+          test "$target_version" = "$EXPECTED_KSU_TARGET_VERSION"
+
+          target_tag="$(git -C "$up" describe --abbrev=0 --tags "$RESUKISU_TARGET")"
+          test -n "$target_tag"
+
+          main_head="$(git -C "$up" rev-parse HEAD)"
+          git -C "$up" diff --quiet "$RESUKISU_TARGET" "$main_head" -- kernel uapi
+
+          grep -Eq "KERNEL_SU_UAPI_VERSION = ${EXPECTED_KSU_TARGET_UAPI};" \
+            "$up/uapi/supercall.h"
+          grep -Fq 'KSU_GET_INFO_FLAG_BUNDLED' "$up/uapi/supercall.h"
+
+          git -C "$up" log --reverse --format='%H %s' \
+            "$RESUKISU_COMMON_BASE..$RESUKISU_TARGET" -- kernel uapi \
+            > "$AUDIT_DIR/06-upstream-kernel-uapi-history.txt"
+
+          for sha in \
+            "$RESUKISU_VERSION_MATCH" \
+            "$RESUKISU_FD_APP_PROFILE" \
+            "$RESUKISU_LEGACY_LOCK_FIX" \
+            "$RESUKISU_POLICYDB_FIX" \
+            "$RESUKISU_WEBVIEW_ALLOWLIST" \
+            "$RESUKISU_APK_SIGN_HARDENING"; do
+            grep -Fq "$sha" "$AUDIT_DIR/06-upstream-kernel-uapi-history.txt"
+          done
+
+          {
+            echo "RESUKISU_COMMON_BASE=$RESUKISU_COMMON_BASE"
+            echo "RESUKISU_OLD_ANCHOR=$RESUKISU_OLD_ANCHOR"
+            echo "RESUKISU_TARGET=$RESUKISU_TARGET"
+            echo "RESUKISU_CURRENT_MAIN=$main_head"
+            echo "OLD_ANCHOR_TO_TARGET_COMMITS=$old_to_target_count"
+            echo "TARGET_TAG=$target_tag"
+            echo "TARGET_KSU_VERSION=$target_version"
+            echo "TARGET_KSU_UAPI=$EXPECTED_KSU_TARGET_UAPI"
+            echo "CURRENT_MAIN_KERNEL_UAPI_AT_TARGET=PASS"
+          } | tee "$AUDIT_DIR/06-upstream-target.txt"
+
+          echo "P10_TARGET_TAG=$target_tag" >> "$GITHUB_ENV"
+          echo "P10_EXPECTED_VERSION_FRAGMENT=${target_tag}-830a5aed-p10@ReSukiSU" >> "$GITHUB_ENV"
+
+      - name: Construct exact upstream kernel/UAPI target minus excluded module-load filter
+        shell: bash
+        run: |
+          set -euo pipefail
+          up="$GITHUB_WORKSPACE/resukisu-upstream"
+
+          git -C "$up" checkout -q --detach "$RESUKISU_TARGET"
+          git -C "$up" reset --hard -q "$RESUKISU_TARGET"
+          git -C "$up" clean -fdx -q
+
+          # b2ac2fc8 touched userspace and generic compatibility helpers as well as the
+          # actual module-load-filter feature. Reverting the whole historical commit
+          # against today's target conflicts with later upstream work. P10 excludes the
+          # feature itself fail-closed while preserving every unrelated later update.
+          python3 - <<'PY'
+          from pathlib import Path
+
+          import os
+          root = Path(os.environ["GITHUB_WORKSPACE"]) / "resukisu-upstream"
+
+          def remove_exact(path, block, expected=1):
+              p = root / path
+              text = p.read_text()
+              count = text.count(block)
+              if count != expected:
+                  raise SystemExit(f"{path}: expected {expected} occurrence(s), found {count}: {block!r}")
+              p.write_text(text.replace(block, "", expected))
+
+          for rel in (
+              "kernel/feature/module_load_filter.c",
+              "kernel/feature/module_load_filter.h",
+          ):
+              p = root / rel
+              if not p.is_file():
+                  raise SystemExit(f"expected upstream module-load-filter file missing: {rel}")
+              p.unlink()
+
+          remove_exact("kernel/Kbuild", "kernelsu-objs += feature/module_load_filter.o\n")
+          remove_exact("kernel/core/init.c", '#include "feature/module_load_filter.h"\n')
+          remove_exact(
+              "kernel/core/init.c",
+              'char ksu_block_modules[256];\n'
+              'module_param_string(block_modules, ksu_block_modules, sizeof(ksu_block_modules), 0);\n'
+              'MODULE_PARM_DESC(block_modules, "Comma-separated preset module names to acknowledge without loading");\n\n'
+          )
+          remove_exact("kernel/core/init.c", "        ksu_module_load_filter_hook_init();\n\n")
+          remove_exact("kernel/core/init.c", "    ksu_module_load_filter_hook_exit();\n")
+          PY
+
+          test ! -e "$up/kernel/feature/module_load_filter.c"
+          test ! -e "$up/kernel/feature/module_load_filter.h"
+          ! grep -RFn 'module_load_filter' "$up/kernel" "$up/uapi"
+          ! grep -RFn 'ksu_block_modules' "$up/kernel" "$up/uapi"
+          ! grep -RFn 'block_modules' "$up/kernel" "$up/uapi"
+          test -z "$(git -C "$up" ls-files -u)"
+          git -C "$up" diff --check
+
+          patch="$AUDIT_DIR/07-upstream-current-kernel-uapi-minus-module-filter.patch"
+          git -C "$up" diff --binary "$RESUKISU_COMMON_BASE" -- kernel uapi > "$patch"
+          test -s "$patch"
+          git -C "$up" diff --name-only "$RESUKISU_COMMON_BASE" -- kernel uapi \
+            | LC_ALL=C sort > "$AUDIT_DIR/07-upstream-current-paths.txt"
+
+          grep -Fxq 'kernel/feature/sucompat.c' "$AUDIT_DIR/07-upstream-current-paths.txt"
+          grep -Fxq 'kernel/feature/selinux_hide.c' "$AUDIT_DIR/07-upstream-current-paths.txt"
+          grep -Fxq 'kernel/selinux/sepolicy.c' "$AUDIT_DIR/07-upstream-current-paths.txt"
+          grep -Fxq 'kernel/manager/apk_sign.c' "$AUDIT_DIR/07-upstream-current-paths.txt"
+          grep -Fxq 'uapi/supercall.h' "$AUDIT_DIR/07-upstream-current-paths.txt"
+          ! grep -Fxq 'kernel/feature/module_load_filter.c' "$AUDIT_DIR/07-upstream-current-paths.txt"
+          ! grep -Fxq 'kernel/feature/module_load_filter.h' "$AUDIT_DIR/07-upstream-current-paths.txt"
+
+          {
+            echo "FULL_CURRENT_KERNEL_UAPI_PATCH=PASS"
+            echo "MODULE_LOAD_FILTER_FUNCTIONALITY_EXCLUDED_FROM_TARGET=PASS"
+            echo "LATER_UPSTREAM_CHANGES_PRESERVED=PASS"
+            echo "PATCH_SHA256=$(sha256sum "$patch" | awk '{print $1}')"
+            echo "PATCH_PATH_COUNT=$(wc -l < "$AUDIT_DIR/07-upstream-current-paths.txt")"
+          } | tee "$AUDIT_DIR/07-upstream-current-result.txt"
+
+      - name: Replace selected-import KernelSU subtree with full current kernel/UAPI target
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+          up="$GITHUB_WORKSPACE/resukisu-upstream"
+          patch="$AUDIT_DIR/07-upstream-current-kernel-uapi-minus-module-filter.patch"
+
+          test "$(git -C KernelSU rev-parse HEAD)" = "$EXPECTED_RESUKISU_HEAD"
+          test "$(git -C KernelSU rev-parse HEAD^{tree})" = "$EXPECTED_RESUKISU_TREE"
+          git -C KernelSU cat-file -e "${RESUKISU_COMMON_BASE}^{commit}"
+          git -C KernelSU merge-base --is-ancestor "$RESUKISU_COMMON_BASE" HEAD
+
+          git -C KernelSU diff --binary "$RESUKISU_COMMON_BASE" HEAD -- kernel uapi \
+            > "$AUDIT_DIR/08-old-selected-import-kernel-uapi.patch"
+
+          git -C KernelSU reset --hard "$RESUKISU_COMMON_BASE"
+          git -C KernelSU clean -fdx
+          test "$(git -C KernelSU rev-parse HEAD)" = "$RESUKISU_COMMON_BASE"
+
+          git -C KernelSU apply --check --whitespace=error "$patch"
+          git -C KernelSU apply --index --whitespace=error "$patch"
+          test -z "$(git -C KernelSU ls-files -u)"
+          git -C KernelSU diff --cached --check
+
+          parity="$AUDIT_DIR/08-upstream-byte-parity.txt"
+          : > "$parity"
+          if ! diff -qr "$up/kernel" KernelSU/kernel >> "$parity" 2>&1; then
+            cat "$parity"
+            exit 1
+          fi
+          if ! diff -qr "$up/uapi" KernelSU/uapi >> "$parity" 2>&1; then
+            cat "$parity"
+            exit 1
+          fi
+
+          echo 'UPSTREAM_TARGET_MINUS_EXCLUSION_BYTE_MATCH=PASS' | tee -a "$parity"
+
+      - name: Reapply CLEAN-GEN1 integration contract and current target identity
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          from pathlib import Path
+          from textwrap import dedent
+
+          def ensure_include(path, anchor):
+              p = Path(path)
+              text = p.read_text()
+              inc = '#include <linux/ksu_hook_contract.h>'
+              if inc not in text:
+                  if anchor not in text:
+                      raise SystemExit(f'anchor missing in {path}: {anchor!r}')
+                  text = text.replace(anchor, anchor + '\n' + inc, 1)
+                  p.write_text(text)
+
+          ensure_include('KernelSU/kernel/feature/sucompat.h', '#include "compat/kernel_compat.h"')
+          ensure_include('KernelSU/kernel/runtime/ksud_integration.c', '#include <linux/version.h>')
+          ensure_include('KernelSU/kernel/supercall/supercall.c', '#include <linux/anon_inodes.h>')
+
+          p = Path('KernelSU/kernel/Kbuild')
+          text = p.read_text()
+          old = dedent('''\
+          KSU_LOCAL_VERSION := $(shell cd $(KSU_SRC); $(GIT_BIN) rev-list --count HEAD)
+          KSU_VERSION := $(shell expr 30000 + $(KSU_LOCAL_VERSION) + 700)
+
+          KSU_TAG_NAME    := $(shell cd $(KSU_SRC); $(GIT_BIN) describe --abbrev=0 --tags 2>/dev/null || echo "v4.1.0")
+          KSU_COMMIT_SHA  := $(shell cd $(KSU_SRC); $(GIT_BIN) rev-parse --short=8 HEAD 2>/dev/null || echo "unknown")
+          ifneq ($(shell cd $(KSU_SRC); $(GIT_BIN) diff-index --quiet HEAD; echo $$?),0)
+          KSU_COMMIT_SHA  := $(KSU_COMMIT_SHA)-dirty
+          endif
+          KSU_BRANCH_NAME := $(shell cd $(KSU_SRC); $(GIT_BIN) branch --show-current 2>/dev/null || echo "unknown")''')
+          new = dedent('''\
+          KSU_LOCAL_VERSION := $(shell cd $(KSU_SRC); $(GIT_BIN) rev-list --count HEAD)
+          # CLEAN-GEN1 P10: the source tree is an audited import of the pinned upstream
+          # kernel/UAPI target, not a claim that this local git HEAD equals that upstream SHA.
+          CLEAN_GEN1_UPSTREAM_COMPAT_VERSION := 35126
+          CLEAN_GEN1_UPSTREAM_TARGET := 830a5aedc742cb7399cccb61df60d55fd7cbcb90
+          KSU_VERSION := $(CLEAN_GEN1_UPSTREAM_COMPAT_VERSION)
+
+          KSU_TAG_NAME    := $(P10_TARGET_TAG)
+          KSU_COMMIT_SHA  := 830a5aed-p10
+          KSU_BRANCH_NAME := clean-gen1-p10''')
+          if old not in text:
+              raise SystemExit('expected upstream Kbuild version block not found')
+          p.write_text(text.replace(old, new, 1))
+          PY
+
+          git -C KernelSU add kernel uapi
+          git -C KernelSU diff --cached --check
+          test -z "$(git -C KernelSU ls-files -u)"
+
+          grep -Fq '#include <linux/ksu_hook_contract.h>' KernelSU/kernel/feature/sucompat.h
+          grep -Fq '#include <linux/ksu_hook_contract.h>' KernelSU/kernel/runtime/ksud_integration.c
+          grep -Fq '#include <linux/ksu_hook_contract.h>' KernelSU/kernel/supercall/supercall.c
+          grep -Fq 'CLEAN_GEN1_UPSTREAM_COMPAT_VERSION := 35126' KernelSU/kernel/Kbuild
+          grep -Fq 'CLEAN_GEN1_UPSTREAM_TARGET := 830a5aedc742cb7399cccb61df60d55fd7cbcb90' KernelSU/kernel/Kbuild
+          grep -Fq 'KSU_COMMIT_SHA  := 830a5aed-p10' KernelSU/kernel/Kbuild
+          grep -Fq 'KSU_BRANCH_NAME := clean-gen1-p10' KernelSU/kernel/Kbuild
+
+      - name: Verify UAPI4 current ReSukiSU semantics and preserved SUSFS boundary
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          grep -Eq "KERNEL_SU_UAPI_VERSION = ${EXPECTED_KSU_TARGET_UAPI};" KernelSU/uapi/supercall.h
+          grep -Fq 'KSU_GET_INFO_FLAG_BUNDLED' KernelSU/uapi/supercall.h
+          grep -Fq 'ksu_handle_post_execve' KernelSU/kernel/feature/sucompat.c
+          grep -Fq 'rwlock_init(&fake_state.ss->policy_rwlock)' KernelSU/kernel/feature/selinux_hide.c
+
+          # Previously reviewed fixes must all be present in the full target.
+          grep -Fq 'old_db->p_types.nprim * (sizeof(u32) + sizeof(u64))' KernelSU/kernel/selinux/sepolicy.c
+          grep -Fq 'new_db->len = len;' KernelSU/kernel/selinux/sepolicy.c
+          ! grep -RFn 'ksu_webview_zygote_umount_enabled' \
+            KernelSU/kernel/feature/kernel_umount.c \
+            KernelSU/kernel/feature/kernel_umount.h \
+            KernelSU/kernel/hook/setuid_hook.c \
+            KernelSU/kernel/policy/allowlist.c
+          grep -Fq 'new_uid != WEBVIEW_ZYGOTE_UID' KernelSU/kernel/feature/kernel_umount.c
+          grep -Fq 'ksu_uid_should_umount(new_uid)' KernelSU/kernel/feature/kernel_umount.c
+          grep -Fq 'Unexpected signature block id' KernelSU/kernel/manager/apk_sign.c
+          ! grep -Fq 'v3_signing_exist' KernelSU/kernel/manager/apk_sign.c
+
+          # Explicitly excluded upstream feature must still be absent.
+          test ! -e KernelSU/kernel/feature/module_load_filter.c
+          test ! -e KernelSU/kernel/feature/module_load_filter.h
+          ! grep -RFn 'module_load_filter' KernelSU/kernel KernelSU/uapi
+          ! grep -RFn 'ksu_block_modules' KernelSU/kernel KernelSU/uapi
+          ! grep -RFn 'block_modules' KernelSU/kernel KernelSU/uapi
+
+          sha256sum \
+            fs/susfs.c \
+            include/linux/susfs.h \
+            include/linux/susfs_def.h \
+            include/linux/ksu_hook_contract.h \
+            > "$AUDIT_DIR/08-susfs-outer-after.sha256"
+          cmp -s "$AUDIT_DIR/05-susfs-outer-before.sha256" "$AUDIT_DIR/08-susfs-outer-after.sha256"
+
+          {
+            echo "SUSFS_2_3_OUTER_BYTE_PRESERVED=PASS"
+            echo "RESUKISU_CURRENT_KERNEL_UAPI_TARGET=PASS"
+            echo "RESUKISU_TARGET_COMMIT=$RESUKISU_TARGET"
+            echo "KSU_VERSION_BASELINE=$EXPECTED_KSU_BASELINE_VERSION"
+            echo "KSU_VERSION_TARGET=$EXPECTED_KSU_TARGET_VERSION"
+            echo "KSU_UAPI_BASELINE=$EXPECTED_KSU_BASELINE_UAPI"
+            echo "KSU_UAPI_TARGET=$EXPECTED_KSU_TARGET_UAPI"
+            echo "MODULE_LOAD_FILTER_EXCLUDED=PASS"
+            echo "LOCAL_OUTER_HOOK_CONTRACT_REAPPLIED=PASS"
+            echo "UPSTREAM_TARGET_MINUS_EXCLUSION_BYTE_MATCH=PASS"
+            echo "CURRENT_MAIN_KERNEL_UAPI_AT_TARGET=PASS"
+          } | tee "$AUDIT_DIR/08-boundaries.txt"
+
+      - name: Save exact P10 ReSukiSU kernel/UAPI delta and hashes
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+          git -C KernelSU diff --cached --binary HEAD > "$AUDIT_DIR/09-p10-resukisu-delta.patch"
+          test -s "$AUDIT_DIR/09-p10-resukisu-delta.patch"
+          git -C KernelSU diff --cached --name-only | LC_ALL=C sort \
+            > "$AUDIT_DIR/09-p10-resukisu-changed-paths.txt"
+
+          sha256sum \
+            KernelSU/kernel/Kbuild \
+            KernelSU/uapi/supercall.h \
+            KernelSU/kernel/feature/sucompat.c \
+            KernelSU/kernel/feature/sucompat.h \
+            KernelSU/kernel/feature/selinux_hide.c \
+            KernelSU/kernel/selinux/sepolicy.c \
+            KernelSU/kernel/feature/kernel_umount.c \
+            KernelSU/kernel/hook/setuid_hook.c \
+            KernelSU/kernel/manager/apk_sign.c \
+            > "$AUDIT_DIR/09-updated-files.sha256"
+
+          git -C KernelSU diff --cached --check
+          test -z "$(git -C KernelSU ls-files -u)"
+
+      - name: Install pinned Android clang-r416183b
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$TOOLCHAIN_DIR"
+          mkdir -p "$TOOLCHAIN_DIR"
+          url="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/${CLANG_PREBUILT_COMMIT}/clang-r416183b.tar.gz"
+          curl --fail --location --retry 3 "$url" -o "$RUNNER_TEMP/clang-r416183b.tar.gz"
+          tar -xzf "$RUNNER_TEMP/clang-r416183b.tar.gz" -C "$TOOLCHAIN_DIR"
+
+          for tool in clang ld.lld llvm-ar llvm-nm llvm-objcopy llvm-objdump llvm-strip; do
+            test -x "$TOOLCHAIN_DIR/bin/$tool"
+          done
+
+          "$TOOLCHAIN_DIR/bin/clang" --version | tee "$AUDIT_DIR/10-clang-version.txt"
+          sha256sum "$RUNNER_TEMP/clang-r416183b.tar.gz" | tee "$AUDIT_DIR/10-clang-archive.sha256"
+
+      - name: Configure and build A
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH="$TOOLCHAIN_DIR/bin:$PATH"
+          export KBUILD_BUILD_USER KBUILD_BUILD_HOST KBUILD_BUILD_TIMESTAMP
+          export KBUILD_BUILD_VERSION SOURCE_DATE_EPOCH KBUILD_FIXED_SCM_SUFFIX
+
+          rm -rf "$OUT_A"
+          make O="$OUT_A" ARCH=arm64 CC=clang LD=ld.lld LLVM=1 LLVM_IAS=1 veux_defconfig \
+            2>&1 | tee "$AUDIT_DIR/11-build-a-config.log"
+
+          grep -Fxq 'CONFIG_KSU=y' "$OUT_A/.config"
+          grep -Fxq 'CONFIG_KSU_SUSFS=y' "$OUT_A/.config"
+          grep -Fxq 'CONFIG_KSU_SUSFS_OPEN_REDIRECT=y' "$OUT_A/.config"
+          grep -Fxq '# CONFIG_KSU_MANUAL_HOOK is not set' "$OUT_A/.config"
+
+          make -j"$(nproc)" \
+            O="$OUT_A" ARCH=arm64 CC=clang LD=ld.lld LLVM=1 LLVM_IAS=1 \
+            KCFLAGS="$P10_EFFECTIVE_KCFLAGS" Image dtbs \
+            2>&1 | tee "$AUDIT_DIR/11-build-a.log"
+
+          image="$OUT_A/arch/arm64/boot/Image"
+          test -s "$image"
+          test "$(stat -c '%s' "$image")" -gt 20000000
+
+          strings -a "$image" > "$AUDIT_DIR/11-image-a-strings.txt"
+          grep -Fq "Linux version $STOCK_KERNEL_RELEASE ($KBUILD_BUILD_USER@$KBUILD_BUILD_HOST)" \
+            "$AUDIT_DIR/11-image-a-strings.txt"
+          grep -Fq "#1 SMP PREEMPT $KBUILD_BUILD_TIMESTAMP" "$AUDIT_DIR/11-image-a-strings.txt"
+          grep -Fq "$P10_EXPECTED_VERSION_FRAGMENT" "$AUDIT_DIR/11-image-a-strings.txt"
+          printf 'P10_MANAGER_VISIBLE_VERSION_FRAGMENT=%s\n' "$P10_EXPECTED_VERSION_FRAGMENT" \
+            | tee "$AUDIT_DIR/11-resukisu-version.txt"
+
+          sha256sum "$image" | tee "$AUDIT_DIR/11-image-a.sha256"
+          (
+            cd "$OUT_A"
+            find arch/arm64/boot/dts -type f -name '*.dtb' -print0 \
+              | LC_ALL=C sort -z | xargs -0 sha256sum
+          ) > "$AUDIT_DIR/11-dtbs-a.sha256"
+
+      - name: Configure and build B for reproducibility
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH="$TOOLCHAIN_DIR/bin:$PATH"
+          export KBUILD_BUILD_USER KBUILD_BUILD_HOST KBUILD_BUILD_TIMESTAMP
+          export KBUILD_BUILD_VERSION SOURCE_DATE_EPOCH KBUILD_FIXED_SCM_SUFFIX
+
+          rm -rf "$OUT_B"
+          make O="$OUT_B" ARCH=arm64 CC=clang LD=ld.lld LLVM=1 LLVM_IAS=1 veux_defconfig \
+            2>&1 | tee "$AUDIT_DIR/12-build-b-config.log"
+
+          cmp -s "$OUT_A/.config" "$OUT_B/.config"
+
+          make -j"$(nproc)" \
+            O="$OUT_B" ARCH=arm64 CC=clang LD=ld.lld LLVM=1 LLVM_IAS=1 \
+            KCFLAGS="$P10_EFFECTIVE_KCFLAGS" Image dtbs \
+            2>&1 | tee "$AUDIT_DIR/12-build-b.log"
+
+          image_a="$OUT_A/arch/arm64/boot/Image"
+          image_b="$OUT_B/arch/arm64/boot/Image"
+          image_a_sha="$(sha256sum "$image_a" | awk '{print $1}')"
+          image_b_sha="$(sha256sum "$image_b" | awk '{print $1}')"
+          if cmp -s "$image_a" "$image_b"; then
+            image_reproducible=PASS
+          else
+            image_reproducible=NO
+          fi
+
+          (
+            cd "$OUT_B"
+            find arch/arm64/boot/dts -type f -name '*.dtb' -print0 \
+              | LC_ALL=C sort -z | xargs -0 sha256sum
+          ) > "$AUDIT_DIR/12-dtbs-b.sha256"
+          cmp -s "$AUDIT_DIR/11-dtbs-a.sha256" "$AUDIT_DIR/12-dtbs-b.sha256"
+
+          {
+            echo "IMAGE_REPRODUCIBLE=$image_reproducible"
+            echo "DTBS_REPRODUCIBLE=PASS"
+            echo "IMAGE_A_SHA256=$image_a_sha"
+            echo "IMAGE_B_SHA256=$image_b_sha"
+            echo "IMAGE_SHA256=$image_a_sha"
+            echo "IMAGE_BYTES=$(stat -c '%s' "$image_a")"
+          } | tee "$AUDIT_DIR/12-reproducibility.txt"
+
+          cp "$image_a" "$DIST_DIR/Image"
+          (cd "$DIST_DIR" && sha256sum Image > Image.sha256)
+
+      - name: Recover exact current-phone Final_Boot calibration inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$BOOT_WORK/reference"
+          mkdir -p "$BOOT_WORK/reference"
+          release_zip="$BOOT_WORK/$FINAL_BOOT_RELEASE_ASSET"
+
+          curl --fail --location --silent --show-error \
+            --retry 5 --retry-delay 2 \
+            "https://github.com/${GITHUB_REPOSITORY}/releases/download/${FINAL_BOOT_RELEASE_TAG}/${FINAL_BOOT_RELEASE_ASSET}" \
+            -o "$release_zip"
+
+          test "$(sha256sum "$release_zip" | awk '{print $1}')" = "$FINAL_BOOT_RELEASE_ZIP_SHA256"
+          unzip -t "$release_zip" >/dev/null
+          unzip -q "$release_zip" -d "$BOOT_WORK/reference"
+
+          test -s "$BOOT_WORK/reference/boot.img"
+          test -s "$BOOT_WORK/reference/rollback_stock_boot.img.gz"
+          test "$(sha256sum "$BOOT_WORK/reference/boot.img" | awk '{print $1}')" = \
+            "$FINAL_BOOT_REFERENCE_BOOT_SHA256"
+          test "$(sha256sum "$BOOT_WORK/reference/rollback_stock_boot.img.gz" | awk '{print $1}')" = \
+            "$ROLLBACK_GZIP_SHA256"
+
+          gzip -t "$BOOT_WORK/reference/rollback_stock_boot.img.gz"
+          gzip -dc "$BOOT_WORK/reference/rollback_stock_boot.img.gz" > "$BOOT_WORK/stock_boot.img"
+
+          test "$(stat -c '%s' "$BOOT_WORK/stock_boot.img")" = "$STOCK_BOOT_BYTES"
+          test "$(sha256sum "$BOOT_WORK/stock_boot.img" | awk '{print $1}')" = "$STOCK_BOOT_SHA256"
+
+          {
+            echo "P10_FINAL_BOOT_RELEASE_CALIBRATION_INPUT=PASS"
+            echo "FINAL_BOOT_RELEASE_ZIP_SHA256=$FINAL_BOOT_RELEASE_ZIP_SHA256"
+            echo "FINAL_BOOT_REFERENCE_BOOT_SHA256=$FINAL_BOOT_REFERENCE_BOOT_SHA256"
+            echo "STOCK_BOOT_SHA256=$STOCK_BOOT_SHA256"
+            echo "STOCK_RAMDISK_SHA256=$STOCK_RAMDISK_SHA256"
+          } | tee "$AUDIT_DIR/13-final-boot-calibration-input.txt"
+
+      - name: Build calibrated P10 boot image first
+        shell: bash
+        run: |
+          set -euo pipefail
+          image="$OUT_A/arch/arm64/boot/Image"
+          test_boot="$DIST_DIR/$P10_BOOT_NAME"
+          test -s "$image"
+
+          python3 - \
+            "$BOOT_WORK/stock_boot.img" \
+            "$BOOT_WORK/reference/boot.img" \
+            "$image" \
+            "$test_boot" \
+            "$AUDIT_DIR/14-boot-build.json" \
+            "$AUDIT_DIR/14-boot-build.txt" <<'PY'
+          import hashlib
+          import json
+          import struct
+          import sys
+          from pathlib import Path
+
+          stock_path = Path(sys.argv[1])
+          old_boot_path = Path(sys.argv[2])
+          new_image_path = Path(sys.argv[3])
+          out_path = Path(sys.argv[4])
+          json_out = Path(sys.argv[5])
+          txt_out = Path(sys.argv[6])
+
+          STOCK_SHA = "ac6522e4eed55782dd2ae61362e9d345d01a1f229c87333818511d5537fa79c5"
+          OLD_BOOT_SHA = "2baffafce260348c247674c5e8176408d45dc75b35ccbf7ca5834cbb4679398e"
+          OLD_KERNEL_SHA = "e036175ada602df3bcb443da7c390e8cd4b0e900c26fbfa313725db02855ec96"
+          RAMDISK_SHA = "0bc8b54373b5501818e8b252517419786db207771047b6def7ec9bc89beb607a"
+          BOOT_BYTES = 134217728
+          PAGE = 4096
+
+          def sha(data):
+              return hashlib.sha256(data).hexdigest()
+
+          def align(value):
+              return (value + PAGE - 1) // PAGE * PAGE
+
+          def need(condition, message):
+              if not condition:
+                  raise SystemExit("ERROR: " + message)
+
+          def parse_footer(data):
+              raw = data[-64:]
+              need(raw[:4] == b"AVBf", "AVB footer magic")
+              major, minor = struct.unpack_from(">II", raw, 4)
+              original, offset, size = struct.unpack_from(">QQQ", raw, 12)
+              need(offset + size <= len(data) - 64, "AVB footer geometry")
+              return {
+                  "major": major, "minor": minor, "original": original,
+                  "offset": offset, "size": size, "raw": raw,
+                  "vbmeta": data[offset:offset + size],
+              }
+
+          def parse_vbmeta(vb):
+              need(vb[:4] == b"AVB0", "AVB0 magic")
+              auth_size, aux_size = struct.unpack_from(">QQ", vb, 12)
+              algorithm_type = struct.unpack_from(">I", vb, 28)[0]
+              values = struct.unpack_from(">QQQQQQQQQQQ", vb, 32)
+              descriptors_offset = values[8]
+              descriptors_size = values[9]
+              aux_start = 256 + auth_size
+              pos = aux_start + descriptors_offset
+              end = pos + descriptors_size
+              need(end <= aux_start + aux_size, "AVB descriptor geometry")
+              items = []
+              while pos < end:
+                  tag, following = struct.unpack_from(">QQ", vb, pos)
+                  raw = vb[pos:pos + 16 + following]
+                  need(len(raw) == 16 + following, "truncated AVB descriptor")
+                  item = {"tag": tag, "offset": pos}
+                  if tag == 2:
+                      image_size = struct.unpack_from(">Q", raw, 16)[0]
+                      algorithm = raw[24:56].split(b"\0", 1)[0].decode("ascii", "replace")
+                      name_len, salt_len, digest_len, flags = struct.unpack_from(">IIII", raw, 56)
+                      q = 132
+                      partition = raw[q:q + name_len].decode("ascii", "replace")
+                      q += name_len
+                      salt = raw[q:q + salt_len]
+                      q += salt_len
+                      digest = raw[q:q + digest_len]
+                      item.update({
+                          "type": "hash", "image_size": image_size,
+                          "hash_algorithm": algorithm, "partition": partition,
+                          "salt": salt, "digest": digest,
+                          "digest_offset": pos + q, "digest_len": digest_len,
+                          "image_size_offset": pos + 16, "flags": flags,
+                      })
+                  else:
+                      item["type"] = "other"
+                  items.append(item)
+                  pos += 16 + following
+              need(pos == end, "AVB descriptor parse end")
+              return {"algorithm_type": algorithm_type, "descriptors": items}
+
+          def boot_descriptor(info):
+              found = [d for d in info["descriptors"]
+                       if d.get("type") == "hash" and d.get("partition") == "boot"]
+              need(len(found) == 1, "exactly one boot hash descriptor")
+              return found[0]
+
+          def verify_descriptor(data, desc):
+              need(desc["hash_algorithm"] == "sha256", "AVB hash algorithm")
+              calculated = hashlib.sha256(desc["salt"] + data[:desc["image_size"]]).digest()
+              return calculated == desc["digest"], calculated
+
+          stock = stock_path.read_bytes()
+          old_boot = old_boot_path.read_bytes()
+          new_image = new_image_path.read_bytes()
+
+          need(len(stock) == BOOT_BYTES, "stock boot size")
+          need(sha(stock) == STOCK_SHA, "stock boot hash")
+          need(len(old_boot) == BOOT_BYTES, "reference boot size")
+          need(sha(old_boot) == OLD_BOOT_SHA, "reference boot hash")
+          need(stock[:8] == b"ANDROID!", "stock Android magic")
+          need(old_boot[:8] == b"ANDROID!", "reference Android magic")
+          need(len(new_image) > 1024 * 1024, "candidate Image too small")
+
+          stock_kernel_size = struct.unpack_from("<I", stock, 8)[0]
+          ramdisk_size = struct.unpack_from("<I", stock, 12)[0]
+          header_size = struct.unpack_from("<I", stock, 20)[0]
+          header_version = struct.unpack_from("<I", stock, 40)[0]
+          need(header_version == 3, "Boot header v3")
+          need(header_size == 1580, "Boot header size")
+          need(stock_kernel_size == 45480448, "stock kernel size")
+          need(ramdisk_size == 22061278, "stock ramdisk size")
+
+          stock_ramdisk_offset = PAGE + align(stock_kernel_size)
+          ramdisk = stock[stock_ramdisk_offset:stock_ramdisk_offset + ramdisk_size]
+          need(sha(ramdisk) == RAMDISK_SHA, "stock ramdisk hash")
+
+          stock_footer = parse_footer(stock)
+          stock_vbmeta = parse_vbmeta(stock_footer["vbmeta"])
+          need(stock_vbmeta["algorithm_type"] == 0, "stock vbmeta algorithm NONE")
+          stock_desc = boot_descriptor(stock_vbmeta)
+          valid, _ = verify_descriptor(stock, stock_desc)
+          need(valid, "stock embedded AVB descriptor")
+
+          old_kernel_size = struct.unpack_from("<I", old_boot, 8)[0]
+          old_kernel = old_boot[PAGE:PAGE + old_kernel_size]
+          need(sha(old_kernel) == OLD_KERNEL_SHA, "reference embedded kernel hash")
+
+          def build_custom(image):
+              ramdisk_offset = PAGE + align(len(image))
+              payload_end = ramdisk_offset + align(len(ramdisk))
+              footer_len = 64
+              vbmeta_size = len(stock_footer["vbmeta"])
+              need(payload_end + vbmeta_size <= BOOT_BYTES - footer_len,
+                   "candidate boot payload exceeds partition")
+
+              output = bytearray(BOOT_BYTES)
+              header = bytearray(stock[:PAGE])
+              struct.pack_into("<I", header, 8, len(image))
+              output[:PAGE] = header
+              output[PAGE:PAGE + len(image)] = image
+              output[ramdisk_offset:ramdisk_offset + len(ramdisk)] = ramdisk
+
+              vbmeta = bytearray(stock_footer["vbmeta"])
+              struct.pack_into(">Q", vbmeta, stock_desc["image_size_offset"], payload_end)
+              digest = hashlib.sha256(stock_desc["salt"] + bytes(output[:payload_end])).digest()
+              d0 = stock_desc["digest_offset"]
+              d1 = d0 + stock_desc["digest_len"]
+              vbmeta[d0:d1] = digest
+              output[payload_end:payload_end + len(vbmeta)] = vbmeta
+
+              footer = bytearray(stock_footer["raw"])
+              struct.pack_into(">Q", footer, 12, payload_end)
+              struct.pack_into(">Q", footer, 20, payload_end)
+              output[-64:] = footer
+
+              result = bytes(output)
+              parsed_footer = parse_footer(result)
+              parsed_vbmeta = parse_vbmeta(parsed_footer["vbmeta"])
+              parsed_desc = boot_descriptor(parsed_vbmeta)
+              ok, calculated = verify_descriptor(result, parsed_desc)
+              need(ok, "rebuilt embedded AVB descriptor")
+              need(calculated == digest, "rebuilt AVB digest")
+              return {
+                  "bytes": result, "ramdisk_offset": ramdisk_offset,
+                  "payload_end": payload_end, "digest": digest.hex(),
+              }
+
+          calibration = build_custom(old_kernel)
+          need(calibration["bytes"] == old_boot, "Final_Boot calibration byte identity")
+          need(sha(calibration["bytes"]) == OLD_BOOT_SHA, "Final_Boot calibration hash")
+
+          candidate = build_custom(new_image)
+          data = candidate["bytes"]
+          kernel_size = struct.unpack_from("<I", data, 8)[0]
+          embedded_kernel = data[PAGE:PAGE + kernel_size]
+          embedded_ramdisk = data[candidate["ramdisk_offset"]:candidate["ramdisk_offset"] + ramdisk_size]
+          need(embedded_kernel == new_image, "candidate embedded kernel byte identity")
+          need(sha(embedded_ramdisk) == RAMDISK_SHA, "candidate stock ramdisk identity")
+
+          need(len(new_image) >= 64, "ARM64 Image header")
+          text_offset, arm_image_size, arm_flags = struct.unpack_from("<QQQ", new_image, 8)
+          arm_magic, arm_res5 = struct.unpack_from("<II", new_image, 56)
+          need(text_offset == 0x80000, "ARM64 text offset")
+          need(arm_magic == 0x644D5241, "ARM64 magic")
+          need(arm_flags == 0xA, "ARM64 flags")
+          need(arm_res5 == 0x40, "ARM64 res5")
+          need(b"Linux version 5.4.274-qgki-g82179e362f33 "
+               b"(builder@pangu-build-component-vendor-345942-54r9t-tw0tk-tq90c)" in new_image,
+               "verified stock kernel identity")
+          need(b"#1 SMP PREEMPT Thu Dec 5 14:47:59 UTC 2024" in new_image,
+               "verified stock build timestamp")
+
+          out_path.write_bytes(data)
+          report = {
+              "result": "PASS_P10_CALIBRATED_BOOT",
+              "historical_final_boot_calibration_byte_identical": True,
+              "stock_boot_sha256": STOCK_SHA,
+              "stock_ramdisk_sha256": RAMDISK_SHA,
+              "candidate_image_sha256": sha(new_image),
+              "candidate_image_bytes": len(new_image),
+              "candidate_boot_sha256": sha(data),
+              "candidate_boot_bytes": len(data),
+              "ramdisk_offset": candidate["ramdisk_offset"],
+              "payload_end": candidate["payload_end"],
+              "embedded_avb_digest": candidate["digest"],
+              "verified_kernel_release": "5.4.274-qgki-g82179e362f33",
+              "arm64_text_offset": text_offset,
+              "arm64_image_size": arm_image_size,
+              "arm64_flags": arm_flags,
+          }
+          json_out.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+          lines = [
+              "P10_CALIBRATED_BOOT=PASS",
+              "HISTORICAL_FINAL_BOOT_CALIBRATION=PASS",
+              "HISTORICAL_FINAL_BOOT_CALIBRATION_BYTE_IDENTICAL=YES",
+              "SAME_STOCK_BOOT_TEMPLATE=YES",
+              "SAME_STOCK_RAMDISK=YES",
+              "BOOT_HEADER_VERSION=3",
+              "BOOT_BYTES=134217728",
+              "P10_IMAGE_SHA256=" + sha(new_image),
+              "P10_IMAGE_BYTES=" + str(len(new_image)),
+              "P10_BOOT_SHA256=" + sha(data),
+              "P10_BOOT_BYTES=" + str(len(data)),
+              "STOCK_RAMDISK_SHA256=" + RAMDISK_SHA,
+              "P10_EMBEDDED_AVB_VERIFIES=YES",
+          ]
+          txt_out.write_text("\n".join(lines) + "\n", encoding="utf-8")
+          print("\n".join(lines))
+          PY
+
+          test -s "$test_boot"
+          test "$(stat -c '%s' "$test_boot")" = "$STOCK_BOOT_BYTES"
+          (cd "$DIST_DIR" && sha256sum "$P10_BOOT_NAME" > "$P10_BOOT_NAME.sha256")
+          grep -Fxq 'P10_CALIBRATED_BOOT=PASS' "$AUDIT_DIR/14-boot-build.txt"
+          grep -Fxq 'HISTORICAL_FINAL_BOOT_CALIBRATION_BYTE_IDENTICAL=YES' "$AUDIT_DIR/14-boot-build.txt"
+          grep -Fxq 'P10_EMBEDDED_AVB_VERIFIES=YES' "$AUDIT_DIR/14-boot-build.txt"
+
+      - name: Independently validate P10 boot image
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' | tee "$AUDIT_DIR/15-boot-independent-audit.txt"
+          import hashlib
+          import os
+          import struct
+          from pathlib import Path
+
+          dist = Path(os.environ["DIST_DIR"])
+          boot = (dist / os.environ["P10_BOOT_NAME"]).read_bytes()
+          image = Path(os.environ["OUT_A"] + "/arch/arm64/boot/Image").read_bytes()
+
+          def sha(data):
+              return hashlib.sha256(data).hexdigest()
+
+          def need(condition, message):
+              if not condition:
+                  raise SystemExit("ERROR: " + message)
+
+          need(len(boot) == 134217728, "boot size")
+          need(boot[:8] == b"ANDROID!", "Android magic")
+          kernel_size = struct.unpack_from("<I", boot, 8)[0]
+          ramdisk_size = struct.unpack_from("<I", boot, 12)[0]
+          header_size = struct.unpack_from("<I", boot, 20)[0]
+          header_version = struct.unpack_from("<I", boot, 40)[0]
+          need(kernel_size == len(image), "kernel size")
+          need(header_size == 1580, "header size")
+          need(header_version == 3, "header version")
+          need(ramdisk_size == 22061278, "ramdisk size")
+
+          page = 4096
+          align = lambda n: (n + page - 1) // page * page
+          ramdisk_offset = page + align(kernel_size)
+          kernel = boot[page:page + kernel_size]
+          ramdisk = boot[ramdisk_offset:ramdisk_offset + ramdisk_size]
+          need(kernel == image, "embedded kernel byte identity")
+          need(sha(ramdisk) == os.environ["STOCK_RAMDISK_SHA256"], "stock ramdisk hash")
+
+          expected_banner = (
+              "Linux version " + os.environ["STOCK_KERNEL_RELEASE"] +
+              " (" + os.environ["KBUILD_BUILD_USER"] + "@" + os.environ["KBUILD_BUILD_HOST"] + ")"
+          ).encode()
+          need(expected_banner in kernel, "embedded verified kernel identity")
+          need(("#1 SMP PREEMPT " + os.environ["KBUILD_BUILD_TIMESTAMP"]).encode() in kernel,
+               "embedded verified build timestamp")
+
+          footer = boot[-64:]
+          need(footer[:4] == b"AVBf", "AVB footer")
+          major, minor = struct.unpack_from(">II", footer, 4)
+          original, vbmeta_offset, vbmeta_size = struct.unpack_from(">QQQ", footer, 12)
+          need((major, minor) == (1, 0), "AVB footer version")
+          need(original == vbmeta_offset, "AVB original/vbmeta offset")
+          need(vbmeta_size == 896, "vbmeta size")
+
+          vbmeta = boot[vbmeta_offset:vbmeta_offset + vbmeta_size]
+          need(vbmeta[:4] == b"AVB0", "vbmeta magic")
+          need(struct.unpack_from(">I", vbmeta, 28)[0] == 0, "vbmeta algorithm NONE")
+          auth_size, aux_size = struct.unpack_from(">QQ", vbmeta, 12)
+          vals = struct.unpack_from(">QQQQQQQQQQQ", vbmeta, 32)
+          desc_off, desc_size = vals[8], vals[9]
+          pos = 256 + auth_size + desc_off
+          end = pos + desc_size
+          found = None
+
+          while pos < end:
+              tag, following = struct.unpack_from(">QQ", vbmeta, pos)
+              raw = vbmeta[pos:pos + 16 + following]
+              need(len(raw) == 16 + following, "descriptor length")
+              if tag == 2:
+                  image_size = struct.unpack_from(">Q", raw, 16)[0]
+                  algo = raw[24:56].split(b"\0", 1)[0].decode()
+                  name_len, salt_len, digest_len, flags = struct.unpack_from(">IIII", raw, 56)
+                  q = 132
+                  part = raw[q:q + name_len].decode()
+                  q += name_len
+                  salt = raw[q:q + salt_len]
+                  q += salt_len
+                  digest = raw[q:q + digest_len]
+                  if part == "boot":
+                      need(found is None, "duplicate boot descriptor")
+                      found = (image_size, algo, salt, digest, flags)
+              pos += 16 + following
+
+          need(found is not None, "boot hash descriptor")
+          image_size, algo, salt, digest, flags = found
+          need(algo == "sha256", "descriptor hash algorithm")
+          need(flags == 0, "descriptor flags")
+          need(image_size == original, "descriptor image size")
+          calculated = hashlib.sha256(salt + boot[:image_size]).digest()
+          need(calculated == digest, "embedded AVB digest")
+
+          print("P10_BOOT_INDEPENDENT_AUDIT=PASS")
+          print("P10_BOOT_SHA256=" + sha(boot))
+          print("P10_IMAGE_SHA256=" + sha(image))
+          print("P10_STOCK_RAMDISK_SHA256=" + sha(ramdisk))
+          print("P10_EMBEDDED_AVB_VERIFIES=YES")
+          print("P10_EMBEDDED_KERNEL_BYTE_IDENTICAL=YES")
+          PY
+
+          grep -Fxq 'P10_BOOT_INDEPENDENT_AUDIT=PASS' "$AUDIT_DIR/15-boot-independent-audit.txt"
+          grep -Fxq 'P10_EMBEDDED_AVB_VERIFIES=YES' "$AUDIT_DIR/15-boot-independent-audit.txt"
+          grep -Fxq 'P10_EMBEDDED_KERNEL_BYTE_IDENTICAL=YES' "$AUDIT_DIR/15-boot-independent-audit.txt"
+
+      - name: Checkout proven AnyKernel3 checkpoint
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$GITHUB_WORKSPACE/AnyKernel3"
+          git clone -q "$AK3_REPO" "$GITHUB_WORKSPACE/AnyKernel3"
+          git -C "$GITHUB_WORKSPACE/AnyKernel3" checkout -q --detach "$AK3_COMMIT"
+          test "$(git -C "$GITHUB_WORKSPACE/AnyKernel3" rev-parse HEAD)" = "$AK3_COMMIT"
+          {
+            echo "AK3_CHECKOUT=PASS"
+            echo "AK3_COMMIT=$AK3_COMMIT"
+          } | tee "$AUDIT_DIR/16-ak3-checkout.txt"
+
+      - name: Build VEUX AnyKernel3 package after boot validation
+        shell: bash
+        run: |
+          set -euo pipefail
+          ak3="$GITHUB_WORKSPACE/AnyKernel3"
+          test -s "$DIST_DIR/$P10_BOOT_NAME"
+          grep -Fxq 'P10_BOOT_INDEPENDENT_AUDIT=PASS' "$AUDIT_DIR/15-boot-independent-audit.txt"
+
+          rm -f "$ak3/Image" "$ak3/Image.gz" "$ak3/Image.gz-dtb" "$ak3/dtb" "$ak3/dtbo.img"
+          cp "$OUT_A/arch/arm64/boot/Image" "$ak3/Image"
+          test -s "$ak3/Image"
+
+          cat > "$ak3/anykernel.sh" <<'EOF'
+          # AnyKernel3 Ramdisk Mod Script
+          # osm0sis @ xda-developers
+
+          properties() { '
+          kernel.string=VEUX GEN1 P10 Linux 5.4.274 current ReSukiSU UAPI4 + SUSFS 2.3
+          do.devicecheck=1
+          do.modules=0
+          do.systemless=1
+          do.cleanup=1
+          do.cleanuponabort=0
+          device.name1=veux
+          supported.versions=13
+          supported.patchlevels=
+          '; }
+
+          block=/dev/block/bootdevice/by-name/boot;
+          is_slot_device=1;
+          ramdisk_compression=auto;
+          patch_vbmeta_flag=auto;
+
+          . tools/ak3-core.sh;
+          dump_boot;
+          write_boot;
+          EOF
+          chmod 0755 "$ak3/anykernel.sh"
+
+          cat > "$ak3/P10-AUDIT-NOTE.txt" <<EOF
+          CLEAN GEN1 P10
+          Base: P6-v11 FULL SUSFS 2.3
+          Linux: 5.4.274
+          Device: veux
+          Restored ReSukiSU base: $EXPECTED_RESUKISU_HEAD
+          Current upstream kernel/UAPI target: $RESUKISU_TARGET
+          Current target tag: $P10_TARGET_TAG
+          KSU compatibility version: $EXPECTED_KSU_TARGET_VERSION
+          KernelSU UAPI: $EXPECTED_KSU_TARGET_UAPI
+          Full kernel/uapi import from common ancestor: $RESUKISU_COMMON_BASE
+          Explicitly excluded module-load-filter commit: $RESUKISU_EXCLUDED_MODULE_FILTER
+          Outer SUSFS 2.3 changed by P10: NO
+          CLEAN-GEN1 hook-contract integration reapplied: YES
+          Real-device boot test: NOT PERFORMED
+          EOF
+
+          rm -rf "$ak3/.git" "$ak3/.github"
+          rm -f "$ak3/README.md"
+          find "$ak3" -type f -name '*placeholder' -delete
+
+          zip_name="VEUX-GEN1-P10-5.4.274-ReSukiSU-Current-UAPI4-SUSFS-2.3-AK3.zip"
+          (
+            cd "$ak3"
+            zip -r9 "$DIST_DIR/$zip_name" . \
+              -x '.github/*' 'README.md' '*placeholder'
+          )
+          test -s "$DIST_DIR/$zip_name"
+          echo "AK3_ZIP=$DIST_DIR/$zip_name" >> "$GITHUB_ENV"
+          {
+            echo "AK3_BUILD=PASS"
+            echo "AK3_ZIP=$zip_name"
+          } | tee "$AUDIT_DIR/17-ak3-build.txt"
+
+      - name: Validate VEUX AnyKernel3 package
+        shell: bash
+        run: |
+          set -euo pipefail
+          zip_name="$(basename "$AK3_ZIP")"
+          cd "$DIST_DIR"
+          test -s "$zip_name"
+          unzip -t "$zip_name" | tee "$AUDIT_DIR/18-ak3-unzip-test.txt"
+          unzip -l "$zip_name" | tee "$AUDIT_DIR/18-ak3-contents.txt"
+
+          for required in anykernel.sh tools/ak3-core.sh Image; do
+            unzip -Z1 "$zip_name" | grep -Fxq "$required" || {
+              echo "ERROR: AK3 payload missing $required"
+              exit 1
+            }
+          done
+
+          tmpdir="$(mktemp -d)"
+          trap 'rm -rf "$tmpdir"' EXIT
+          unzip -p "$zip_name" Image > "$tmpdir/Image"
+          cmp -s Image "$tmpdir/Image"
+          cmp -s "$OUT_A/arch/arm64/boot/Image" "$tmpdir/Image"
+
+          unzip -p "$zip_name" anykernel.sh > "$tmpdir/anykernel.sh"
+          grep -Fqx 'device.name1=veux' "$tmpdir/anykernel.sh"
+          grep -Fqx 'block=/dev/block/bootdevice/by-name/boot;' "$tmpdir/anykernel.sh"
+          grep -Fqx 'is_slot_device=1;' "$tmpdir/anykernel.sh"
+          grep -Fqx 'supported.versions=13' "$tmpdir/anykernel.sh"
+
+          sha256sum "$zip_name" > "$zip_name.sha256"
+          file_count="$(unzip -Z1 "$zip_name" | grep -Ev '/$' | wc -l)"
+          {
+            echo "P10_AK3_VALIDATION=PASS"
+            echo "AK3_ZIP=$zip_name"
+            echo "AK3_ZIP_SHA256=$(sha256sum "$zip_name" | awk '{print $1}')"
+            echo "AK3_FILE_COUNT=$file_count"
+            echo "AK3_PIN=$AK3_COMMIT"
+            echo "AK3_IMAGE_BYTE_IDENTICAL=YES"
+          } | tee "$AUDIT_DIR/18-ak3-validation.txt"
+
+      - name: Final fail-closed boot-first release gate
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          grep -Fxq 'SUSFS_2_3_OUTER_BYTE_PRESERVED=PASS' "$AUDIT_DIR/08-boundaries.txt"
+          grep -Fxq 'RESUKISU_CURRENT_KERNEL_UAPI_TARGET=PASS' "$AUDIT_DIR/08-boundaries.txt"
+          grep -Fxq 'MODULE_LOAD_FILTER_EXCLUDED=PASS' "$AUDIT_DIR/08-boundaries.txt"
+          grep -Fxq 'LOCAL_OUTER_HOOK_CONTRACT_REAPPLIED=PASS' "$AUDIT_DIR/08-boundaries.txt"
+          grep -Fxq 'UPSTREAM_TARGET_MINUS_EXCLUSION_BYTE_MATCH=PASS' "$AUDIT_DIR/08-boundaries.txt"
+          grep -Fxq 'CURRENT_MAIN_KERNEL_UAPI_AT_TARGET=PASS' "$AUDIT_DIR/08-boundaries.txt"
+          grep -Eq '^IMAGE_REPRODUCIBLE=(PASS|NO)$' "$AUDIT_DIR/12-reproducibility.txt"
+          grep -Fxq 'DTBS_REPRODUCIBLE=PASS' "$AUDIT_DIR/12-reproducibility.txt"
+          grep -Fxq 'P10_CALIBRATED_BOOT=PASS' "$AUDIT_DIR/14-boot-build.txt"
+          grep -Fxq 'P10_BOOT_INDEPENDENT_AUDIT=PASS' "$AUDIT_DIR/15-boot-independent-audit.txt"
+          grep -Fxq 'AK3_CHECKOUT=PASS' "$AUDIT_DIR/16-ak3-checkout.txt"
+          grep -Fxq 'AK3_BUILD=PASS' "$AUDIT_DIR/17-ak3-build.txt"
+          grep -Fxq 'P10_AK3_VALIDATION=PASS' "$AUDIT_DIR/18-ak3-validation.txt"
+
+          boot_file="$DIST_DIR/$P10_BOOT_NAME"
+          test -s "$boot_file"
+          test "$(stat -c '%s' "$boot_file")" = "$STOCK_BOOT_BYTES"
+
+          test "$(find "$DIST_DIR" -maxdepth 1 -type f -name '*.zip' | wc -l)" -eq 1
+          zip_file="$(find "$DIST_DIR" -maxdepth 1 -type f -name '*.zip' -print -quit)"
+          test -s "$zip_file"
+
+          cp "$AUDIT_DIR/00-plan.txt" "$DIST_DIR/P10-WORKFLOW-POLICY.txt"
+          cp "$AUDIT_DIR/12-reproducibility.txt" "$DIST_DIR/P10-REPRODUCIBILITY.txt"
+          cp "$AUDIT_DIR/08-boundaries.txt" "$DIST_DIR/P10-BOUNDARIES.txt"
+          cp "$AUDIT_DIR/09-p10-resukisu-delta.patch" "$DIST_DIR/P10-RESUKISU-DELTA.patch"
+          cp "$AUDIT_DIR/14-boot-build.txt" "$DIST_DIR/P10-BOOT-BUILD.txt"
+          cp "$AUDIT_DIR/15-boot-independent-audit.txt" "$DIST_DIR/P10-BOOT-AUDIT.txt"
+          cp "$AUDIT_DIR/18-ak3-validation.txt" "$DIST_DIR/P10-AK3-VALIDATION.txt"
+
+          {
+            echo "CLEAN_GEN1_P10_BOOT_FIRST_AK3_RELEASE=PASS"
+            echo "RESTORED_RESUKISU_BASE=$EXPECTED_RESUKISU_HEAD"
+            echo "RESUKISU_COMMON_BASE=$RESUKISU_COMMON_BASE"
+            echo "RESUKISU_KERNEL_UAPI_TARGET=$RESUKISU_TARGET"
+            echo "RESUKISU_TARGET_TAG=$P10_TARGET_TAG"
+            echo "KSU_VERSION=$EXPECTED_KSU_TARGET_VERSION"
+            echo "KSU_UAPI=$EXPECTED_KSU_TARGET_UAPI"
+            echo "MODULE_LOAD_FILTER_EXCLUDED=$RESUKISU_EXCLUDED_MODULE_FILTER"
+            echo "SUSFS_OUTER_CHANGED=NO"
+            echo "BOOT=$(basename "$boot_file")"
+            echo "BOOT_SHA256=$(sha256sum "$boot_file" | awk '{print $1}')"
+            echo "AK3=$(basename "$zip_file")"
+            echo "AK3_SHA256=$(sha256sum "$zip_file" | awk '{print $1}')"
+            echo "AK3_PIN=$AK3_COMMIT"
+            echo "REAL_DEVICE_BOOT_TEST=NOT_PERFORMED"
+          } | tee "$DIST_DIR/FINAL-RESULT.txt"
+
+          (
+            cd "$DIST_DIR"
+            sha256sum \
+              Image Image.sha256 \
+              "$P10_BOOT_NAME" "$P10_BOOT_NAME.sha256" \
+              "$(basename "$zip_file")" "$(basename "$zip_file").sha256" \
+              P10-WORKFLOW-POLICY.txt P10-REPRODUCIBILITY.txt P10-BOUNDARIES.txt \
+              P10-RESUKISU-DELTA.patch P10-BOOT-BUILD.txt P10-BOOT-AUDIT.txt \
+              P10-AK3-VALIDATION.txt FINAL-RESULT.txt \
+              > SUPPORT-SHA256SUMS
+          )
+
+      - name: Upload P10 boot + AK3 release
+        uses: actions/upload-artifact@v7
+        with:
+          name: clean-gen1-p10-veux-5.4.274-resukisu-current-uapi4-susfs-2.3-boot-ak3-${{ github.run_id }}
+          path: clean-gen1-p10-dist/
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 0
+
+      - name: Upload P10 audit evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: clean-gen1-p10-audit-${{ github.run_id }}
+          path: clean-gen1-p10-audit/
+          if-no-files-found: warn
+          retention-days: 90
