@@ -1,0 +1,687 @@
+name: CLEAN GEN1 P11 - Fresh ReSukiSU current + SUSFS 2.3 full rebuild AK3 v1
+
+'on':
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: clean-gen1-p11-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  clean-rebuild-ak3:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 210
+
+    env:
+      ARCH: arm64
+      TZ: UTC
+      LANG: C.UTF-8
+      LC_ALL: C.UTF-8
+
+      VENDOR_REPO: dereference23/kernel_xiaomi_sm6375
+      VENDOR_TAG: '20240619'
+      EXPECTED_VENDOR_SHA: b2b7a3bbc36d120ee523ebc8d68e0f13a97df632
+
+      # Proven CLEAN-GEN1 / P7-compatible source restoration line.
+      P6V11_ARTIFACT_PREFIX: clean-gen1-p6v11-v6-full-susfs-outer-integration-p7-test-boot-
+      EXPECTED_P5I_COMMIT: f353a9475e40ca866d570c1d0ef55e24cf6556e4
+      EXPECTED_P5I_TREE: a947c1f2891c796a08373fc755e29b23139dc761
+      EXPECTED_RESUKISU_BASE_HEAD: 42034caa96466e8473fe7553eba8a1888c7f460f
+      EXPECTED_RESUKISU_BASE_TREE: d818d965b855d417edfe9eb38b152ff83e75e0fb
+
+      # ReSukiSU current kernel/UAPI pin verified 2026-09-11.
+      RESUKISU_REPO: https://github.com/ReSukiSU/ReSukiSU.git
+      RESUKISU_COMMON_BASE: faccf4c5edc7be37776216e7d43dd3dca0239331
+      RESUKISU_TARGET: 052ca27775cc9c8570e3b1ba3db7c29486d6020e
+      RESUKISU_EXCLUDED_MODULE_FILTER: b2ac2fc8703ce9f5226e2a38a59f8b72f8a3005c
+      EXPECTED_KSU_UAPI: '4'
+
+      # Proven VEUX toolchain/build identity.
+      CLANG_PREBUILT_COMMIT: aa2e4a514a6c85eebcc4a27149eaf9244e951a1e
+      TOOLCHAIN_DIR: ${{ github.workspace }}/toolchains/clang-r416183b
+      OUT_DIR: ${{ github.workspace }}/kernel/out-p11
+      AUDIT_DIR: ${{ github.workspace }}/clean-gen1-p11-audit
+      DIST_DIR: ${{ github.workspace }}/clean-gen1-p11-dist
+      BACKUP_DIR: ${{ github.workspace }}/p6v11-backup
+
+      KBUILD_BUILD_USER: builder
+      KBUILD_BUILD_HOST: pangu-build-component-vendor-345942-54r9t-tw0tk-tq90c
+      KBUILD_BUILD_TIMESTAMP: Thu Dec 5 14:47:59 UTC 2024
+      KBUILD_BUILD_VERSION: '1'
+      SOURCE_DATE_EPOCH: '1733410079'
+      KBUILD_FIXED_SCM_SUFFIX: -g82179e362f33
+      STOCK_KERNEL_RELEASE: 5.4.274-qgki-g82179e362f33
+      EFFECTIVE_KCFLAGS: -D__ANDROID_COMMON_KERNEL__
+
+      # Proven AnyKernel3 checkpoint.
+      AK3_REPO: https://github.com/osm0sis/AnyKernel3.git
+      AK3_COMMIT: af770f7b16cf8f8eb7c68614b2a693b3b361c90c
+
+    steps:
+      - name: Initialize clean rebuild
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$BACKUP_DIR" "$AUDIT_DIR" "$DIST_DIR" "$OUT_DIR" \
+                 "$GITHUB_WORKSPACE/resukisu-upstream" \
+                 "$GITHUB_WORKSPACE/AnyKernel3" \
+                 "$GITHUB_WORKSPACE/toolchains"
+          mkdir -p "$BACKUP_DIR" "$AUDIT_DIR" "$DIST_DIR" "$TOOLCHAIN_DIR"
+
+          cat > "$AUDIT_DIR/00-plan.txt" <<'EOF'
+          CLEAN GEN1 P11 - fresh full kernel rebuild
+          Device: VEUX
+          Kernel: Linux 5.4.274
+          ReSukiSU target: 052ca27775cc9c8570e3b1ba3db7c29486d6020e
+          SUSFS: verified CLEAN-GEN1 2.3 outer integration
+          Output: Image + VEUX DTB + normal AnyKernel3 ZIP
+
+          Policy:
+          - fresh vendor checkout
+          - restore only the proven P7-compatible CLEAN-GEN1 source patches
+          - no compiled object or previous out/ directory is reused
+          - import current pinned ReSukiSU kernel/uapi source
+          - keep the previously excluded module-load-filter feature excluded
+          - keep the existing SUSFS 2.3 outer source byte-identical
+          - do not force UAPI2; accept the pinned upstream UAPI as source truth
+          - no P10 safety/rollback installer gate
+          - AK3 payload is Image-only, as in the proven VEUX packaging line
+          - no real-device PASS is claimed by this workflow
+          EOF
+
+      - name: Install build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            bc bison build-essential ca-certificates curl flex git jq \
+            libelf-dev libncurses-dev libssl-dev patch python3 rsync unzip zip xz-utils zstd
+
+      - name: Checkout exact VEUX vendor source
+        uses: actions/checkout@v7
+        with:
+          repository: dereference23/kernel_xiaomi_sm6375
+          ref: '20240619'
+          fetch-depth: 0
+          path: kernel
+          persist-credentials: false
+
+      - name: Authenticate clean vendor source
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_VENDOR_SHA"
+          test "$(make -s kernelversion)" = "5.4.268"
+          test ! -e out-p11
+          {
+            echo "VENDOR_SHA=$(git rev-parse HEAD)"
+            echo "VENDOR_KERNEL_VERSION=$(make -s kernelversion)"
+            echo "FRESH_VENDOR_CHECKOUT=PASS"
+          } | tee "$AUDIT_DIR/01-vendor.txt"
+
+      - name: Locate proven P6-v11 FULL-SUSFS restore kit
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          candidates="$RUNNER_TEMP/p6v11-candidates.tsv"
+          : > "$candidates"
+
+          for page in $(seq 1 20); do
+            json="$RUNNER_TEMP/artifacts-${page}.json"
+            curl --fail --silent --show-error --location \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts?per_page=100&page=${page}" \
+              -o "$json"
+
+            count="$(jq '.artifacts | length' "$json")"
+            jq -r --arg prefix "$P6V11_ARTIFACT_PREFIX" '
+              .artifacts[]
+              | select(.expired == false)
+              | select(.name | startswith($prefix))
+              | [.created_at, (.id|tostring), .name, .archive_download_url]
+              | @tsv
+            ' "$json" >> "$candidates"
+
+            test "$count" -eq 100 || break
+          done
+
+          test -s "$candidates"
+          IFS=$'\t' read -r created artifact_id artifact_name archive_url \
+            < <(LC_ALL=C sort -r "$candidates" | head -n1)
+
+          test -n "$artifact_id"
+          test -n "$archive_url"
+
+          curl --fail --silent --show-error --location \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "$archive_url" -o "$RUNNER_TEMP/p6v11-backup.zip"
+
+          unzip -q "$RUNNER_TEMP/p6v11-backup.zip" -d "$BACKUP_DIR"
+          restore_dir="$(find "$BACKUP_DIR" -type d -name source-restore-kit -print -quit)"
+          test -n "$restore_dir"
+          test -f "$restore_dir/manifest.json"
+          test -f "$restore_dir/SHA256SUMS"
+
+          result_file="$(find "$BACKUP_DIR" -type f -name 17-result.txt -print -quit)"
+          test -n "$result_file"
+          grep -Fxq 'CLEAN_GEN1_P6V11_FULL_SUSFS_OUTER_INTEGRATION_DETERMINISTIC_BUILD=PASS' \
+            "$result_file"
+
+          echo "RESTORE_DIR=$restore_dir" >> "$GITHUB_ENV"
+          {
+            echo "RESTORE_ARTIFACT_CREATED=$created"
+            echo "RESTORE_ARTIFACT_ID=$artifact_id"
+            echo "RESTORE_ARTIFACT_NAME=$artifact_name"
+          } | tee "$AUDIT_DIR/02-restore-selection.txt"
+
+      - name: Verify restore kit and rebuild source tree from clean vendor
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          (
+            cd "$RESTORE_DIR"
+            sha256sum -c SHA256SUMS
+          ) | tee "$AUDIT_DIR/03-restore-sha256.txt"
+
+          jq -e \
+            --arg p5commit "$EXPECTED_P5I_COMMIT" \
+            --arg p5tree "$EXPECTED_P5I_TREE" \
+            --arg rhead "$EXPECTED_RESUKISU_BASE_HEAD" \
+            --arg rtree "$EXPECTED_RESUKISU_BASE_TREE" \
+            '.stage == "CLEAN_GEN1_P6V11_SOURCE"
+             and .p5i_commit == $p5commit
+             and .p5i_tree == $p5tree
+             and .resukisu_head == $rhead
+             and .resukisu_tree == $rtree' \
+            "$RESTORE_DIR/manifest.json" >/dev/null
+
+          git reset --hard "$EXPECTED_VENDOR_SHA"
+          git clean -fdx
+          rm -rf "$OUT_DIR"
+
+          p5_patch="$RESTORE_DIR/p5i/vendor-20240619-to-p5i-outer.patch"
+          p6_patch="$RESTORE_DIR/p5i-to-p6-source-compat.patch"
+          p6v11_patch="$RESTORE_DIR/p6v10-to-p6v11-full-susfs-outer.patch"
+
+          for p in "$p5_patch" "$p6_patch" "$p6v11_patch"; do
+            test -s "$p"
+            git apply --check --whitespace=error --binary "$p"
+            git apply --index --whitespace=error --binary "$p"
+          done
+
+          final_expected_tree="$(jq -r '.p6_source_tree' "$RESTORE_DIR/manifest.json")"
+          test "$final_expected_tree" != "null"
+          test "${#final_expected_tree}" -eq 40
+          test "$(git write-tree)" = "$final_expected_tree"
+          test "$(make -s kernelversion)" = "5.4.274"
+
+          grep -Fxq 'CONFIG_KSU=y' arch/arm64/configs/veux_defconfig
+          grep -Fxq 'CONFIG_KSU_SUSFS=y' arch/arm64/configs/veux_defconfig
+          grep -Fxq '# CONFIG_KSU_MANUAL_HOOK is not set' arch/arm64/configs/veux_defconfig
+          grep -Fxq 'CONFIG_KSU_SUSFS_OPEN_REDIRECT=y' arch/arm64/configs/veux_defconfig
+          grep -Fxq 'CONFIG_LOCALVERSION="-qgki"' arch/arm64/configs/veux_defconfig
+
+          grep -Fq 'DEFINE_SRCU(susfs_srcu_open_redirect)' fs/susfs.c
+          grep -Fq 'susfs_set_current_proc_no_su' include/linux/susfs_def.h
+          test -s include/linux/ksu_hook_contract.h
+
+          sha256sum fs/susfs.c include/linux/susfs.h include/linux/susfs_def.h \
+            include/linux/ksu_hook_contract.h > "$AUDIT_DIR/04-susfs-before.sha256"
+
+          {
+            echo "CLEAN_SOURCE_RECONSTRUCTION=PASS"
+            echo "OUTER_SOURCE_TREE=$final_expected_tree"
+            echo "KERNEL_VERSION=$(make -s kernelversion)"
+          } | tee "$AUDIT_DIR/04-source.txt"
+
+      - name: Fetch and authenticate current ReSukiSU target
+        shell: bash
+        run: |
+          set -euo pipefail
+          up="$GITHUB_WORKSPACE/resukisu-upstream"
+          rm -rf "$up"
+          git clone -q "$RESUKISU_REPO" "$up"
+
+          git -C "$up" cat-file -e "${RESUKISU_COMMON_BASE}^{commit}"
+          git -C "$up" cat-file -e "${RESUKISU_TARGET}^{commit}"
+          git -C "$up" cat-file -e "${RESUKISU_EXCLUDED_MODULE_FILTER}^{commit}"
+          git -C "$up" merge-base --is-ancestor "$RESUKISU_COMMON_BASE" "$RESUKISU_TARGET"
+
+          target_count="$(git -C "$up" rev-list --count "$RESUKISU_TARGET")"
+          target_version="$((30700 + target_count))"
+          target_tag="$(git -C "$up" describe --abbrev=0 --tags "$RESUKISU_TARGET")"
+          target_short="$(git -C "$up" rev-parse --short=8 "$RESUKISU_TARGET")"
+          main_head="$(git -C "$up" rev-parse origin/main)"
+
+          # Allow later manager-only commits, but fail if kernel/uapi changed after our pin.
+          git -C "$up" diff --quiet "$RESUKISU_TARGET" "$main_head" -- kernel uapi
+
+          git -C "$up" show "$RESUKISU_TARGET:uapi/supercall.h" \
+            | grep -Eq "KERNEL_SU_UAPI_VERSION = ${EXPECTED_KSU_UAPI};"
+
+          {
+            echo "RESUKISU_TARGET=$RESUKISU_TARGET"
+            echo "RESUKISU_CURRENT_MAIN=$main_head"
+            echo "TARGET_TAG=$target_tag"
+            echo "TARGET_SHORT=$target_short"
+            echo "TARGET_KSU_VERSION=$target_version"
+            echo "TARGET_KSU_UAPI=$EXPECTED_KSU_UAPI"
+            echo "CURRENT_MAIN_KERNEL_UAPI_MATCHES_PIN=PASS"
+          } | tee "$AUDIT_DIR/05-resukisu-target.txt"
+
+          echo "P11_KSU_VERSION=$target_version" >> "$GITHUB_ENV"
+          echo "P11_TARGET_TAG=$target_tag" >> "$GITHUB_ENV"
+          echo "P11_TARGET_SHORT=$target_short" >> "$GITHUB_ENV"
+
+      - name: Construct current ReSukiSU kernel/UAPI without excluded module-load filter
+        shell: bash
+        run: |
+          set -euo pipefail
+          up="$GITHUB_WORKSPACE/resukisu-upstream"
+          git -C "$up" checkout -q --detach "$RESUKISU_TARGET"
+          git -C "$up" reset --hard -q "$RESUKISU_TARGET"
+          git -C "$up" clean -fdx -q
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import os
+
+          root = Path(os.environ["GITHUB_WORKSPACE"]) / "resukisu-upstream"
+
+          def remove_exact(path, block, expected=1):
+              p = root / path
+              text = p.read_text(encoding="utf-8")
+              count = text.count(block)
+              if count != expected:
+                  raise SystemExit(f"{path}: expected {expected}, found {count}: {block!r}")
+              p.write_text(text.replace(block, "", expected), encoding="utf-8")
+
+          for rel in (
+              "kernel/feature/module_load_filter.c",
+              "kernel/feature/module_load_filter.h",
+          ):
+              p = root / rel
+              if not p.is_file():
+                  raise SystemExit(f"missing expected file: {rel}")
+              p.unlink()
+
+          remove_exact("kernel/Kbuild", "kernelsu-objs += feature/module_load_filter.o\n")
+          remove_exact("kernel/core/init.c", '#include "feature/module_load_filter.h"\n')
+          remove_exact(
+              "kernel/core/init.c",
+              'char ksu_block_modules[256];\n'
+              'module_param_string(block_modules, ksu_block_modules, sizeof(ksu_block_modules), 0);\n'
+              'MODULE_PARM_DESC(block_modules, "Comma-separated preset module names to acknowledge without loading");\n\n'
+          )
+          remove_exact("kernel/core/init.c", "        ksu_module_load_filter_hook_init();\n\n")
+          remove_exact("kernel/core/init.c", "    ksu_module_load_filter_hook_exit();\n")
+          PY
+
+          test ! -e "$up/kernel/feature/module_load_filter.c"
+          test ! -e "$up/kernel/feature/module_load_filter.h"
+          ! grep -RFn 'module_load_filter' "$up/kernel" "$up/uapi"
+          ! grep -RFn 'ksu_block_modules' "$up/kernel" "$up/uapi"
+          ! grep -RFn 'block_modules' "$up/kernel" "$up/uapi"
+
+          patch="$AUDIT_DIR/06-current-kernel-uapi-minus-module-filter.patch"
+          git -C "$up" diff --binary "$RESUKISU_COMMON_BASE" -- kernel uapi > "$patch"
+          test -s "$patch"
+
+          {
+            echo "CURRENT_KERNEL_UAPI_PATCH=PASS"
+            echo "MODULE_LOAD_FILTER_EXCLUDED=PASS"
+            echo "PATCH_SHA256=$(sha256sum "$patch" | awk '{print $1}')"
+          } | tee "$AUDIT_DIR/06-current-import.txt"
+
+      - name: Replace ReSukiSU subtree with authenticated current kernel/UAPI
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+          up="$GITHUB_WORKSPACE/resukisu-upstream"
+          patch="$AUDIT_DIR/06-current-kernel-uapi-minus-module-filter.patch"
+
+          rm -rf KernelSU
+          git clone -q "$RESUKISU_REPO" KernelSU
+          git -C KernelSU checkout -q --detach "$RESUKISU_COMMON_BASE"
+          git -C KernelSU reset --hard -q "$RESUKISU_COMMON_BASE"
+          git -C KernelSU clean -fdx -q
+
+          git -C KernelSU apply --check --whitespace=nowarn "$patch"
+          git -C KernelSU apply --index --whitespace=nowarn "$patch"
+          test -z "$(git -C KernelSU ls-files -u)"
+
+          if ! diff -qr "$up/kernel" KernelSU/kernel > "$AUDIT_DIR/07-kernel-parity.txt" 2>&1; then
+            cat "$AUDIT_DIR/07-kernel-parity.txt"
+            exit 1
+          fi
+          if ! diff -qr "$up/uapi" KernelSU/uapi > "$AUDIT_DIR/07-uapi-parity.txt" 2>&1; then
+            cat "$AUDIT_DIR/07-uapi-parity.txt"
+            exit 1
+          fi
+
+          echo 'UPSTREAM_CURRENT_MINUS_EXCLUSION_BYTE_MATCH=PASS' \
+            | tee "$AUDIT_DIR/07-import-parity.txt"
+
+      - name: Reapply only required CLEAN-GEN1 5.4 integration contract
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          from pathlib import Path
+          from textwrap import dedent
+          import os
+
+          def ensure_include(path, anchor):
+              p = Path(path)
+              text = p.read_text(encoding="utf-8")
+              inc = '#include <linux/ksu_hook_contract.h>'
+              if inc not in text:
+                  if anchor not in text:
+                      raise SystemExit(f"anchor missing in {path}: {anchor!r}")
+                  text = text.replace(anchor, anchor + "\n" + inc, 1)
+                  p.write_text(text, encoding="utf-8")
+
+          ensure_include("KernelSU/kernel/feature/sucompat.h", '#include "compat/kernel_compat.h"')
+          ensure_include("KernelSU/kernel/runtime/ksud_integration.c", "#include <linux/version.h>")
+          ensure_include("KernelSU/kernel/supercall/supercall.c", "#include <linux/anon_inodes.h>")
+
+          p = Path("KernelSU/kernel/Kbuild")
+          text = p.read_text(encoding="utf-8")
+          old = dedent("""\
+          KSU_LOCAL_VERSION := $(shell cd $(KSU_SRC); $(GIT_BIN) rev-list --count HEAD)
+          KSU_VERSION := $(shell expr 30000 + $(KSU_LOCAL_VERSION) + 700)
+
+          KSU_TAG_NAME    := $(shell cd $(KSU_SRC); $(GIT_BIN) describe --abbrev=0 --tags 2>/dev/null || echo "v4.1.0")
+          KSU_COMMIT_SHA  := $(shell cd $(KSU_SRC); $(GIT_BIN) rev-parse --short=8 HEAD 2>/dev/null || echo "unknown")
+          ifneq ($(shell cd $(KSU_SRC); $(GIT_BIN) diff-index --quiet HEAD; echo $$?),0)
+          KSU_COMMIT_SHA  := $(KSU_COMMIT_SHA)-dirty
+          endif
+          KSU_BRANCH_NAME := $(shell cd $(KSU_SRC); $(GIT_BIN) branch --show-current 2>/dev/null || echo "unknown")""")
+          version = os.environ["P11_KSU_VERSION"]
+          tag = os.environ["P11_TARGET_TAG"]
+          short = os.environ["P11_TARGET_SHORT"]
+          target = os.environ["RESUKISU_TARGET"]
+          new = dedent(f"""\
+          KSU_LOCAL_VERSION := $(shell cd $(KSU_SRC); $(GIT_BIN) rev-list --count HEAD)
+          CLEAN_GEN1_UPSTREAM_COMPAT_VERSION := {version}
+          CLEAN_GEN1_UPSTREAM_TARGET := {target}
+          KSU_VERSION := $(CLEAN_GEN1_UPSTREAM_COMPAT_VERSION)
+
+          KSU_TAG_NAME    := {tag}
+          KSU_COMMIT_SHA  := {short}-p11
+          KSU_BRANCH_NAME := clean-gen1-p11""")
+          if old not in text:
+              raise SystemExit("expected current ReSukiSU Kbuild version block not found")
+          p.write_text(text.replace(old, new, 1), encoding="utf-8")
+          PY
+
+          git -C KernelSU add kernel uapi
+          test -z "$(git -C KernelSU ls-files -u)"
+
+          grep -Fq '#include <linux/ksu_hook_contract.h>' KernelSU/kernel/feature/sucompat.h
+          grep -Fq '#include <linux/ksu_hook_contract.h>' KernelSU/kernel/runtime/ksud_integration.c
+          grep -Fq '#include <linux/ksu_hook_contract.h>' KernelSU/kernel/supercall/supercall.c
+          grep -Fq "CLEAN_GEN1_UPSTREAM_COMPAT_VERSION := $P11_KSU_VERSION" KernelSU/kernel/Kbuild
+          grep -Fq "CLEAN_GEN1_UPSTREAM_TARGET := $RESUKISU_TARGET" KernelSU/kernel/Kbuild
+
+      - name: Verify newest old-SUSFS compatibility fix and boundaries
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          grep -Eq "KERNEL_SU_UAPI_VERSION = ${EXPECTED_KSU_UAPI};" KernelSU/uapi/supercall.h
+          grep -Fq 'KSU_GET_INFO_FLAG_BUNDLED' KernelSU/uapi/supercall.h
+
+          # 052ca277: current old-SUSFS / old-kernel compatibility fix.
+          grep -Fq 'always flag that, to avoid old version of susfs hang in boot' \
+            KernelSU/kernel/feature/sucompat.c
+          grep -Fq '#define TIF_PROC_IN_KSU_EXECVE 61' KernelSU/kernel/feature/sucompat.h
+          grep -Fq '#include <linux/sched/task_stack.h>' KernelSU/kernel/feature/adb_root.c
+
+          test ! -e KernelSU/kernel/feature/module_load_filter.c
+          test ! -e KernelSU/kernel/feature/module_load_filter.h
+          ! grep -RFn 'module_load_filter' KernelSU/kernel KernelSU/uapi
+          ! grep -RFn 'block_modules' KernelSU/kernel KernelSU/uapi
+
+          sha256sum fs/susfs.c include/linux/susfs.h include/linux/susfs_def.h \
+            include/linux/ksu_hook_contract.h > "$AUDIT_DIR/08-susfs-after.sha256"
+          cmp -s "$AUDIT_DIR/04-susfs-before.sha256" "$AUDIT_DIR/08-susfs-after.sha256"
+
+          {
+            echo "RESUKISU_TARGET=$RESUKISU_TARGET"
+            echo "KSU_VERSION=$P11_KSU_VERSION"
+            echo "KSU_UAPI=$EXPECTED_KSU_UAPI"
+            echo "OLD_SUSFS_COMPAT_FIX_052CA277=PASS"
+            echo "SUSFS_2_3_OUTER_BYTE_PRESERVED=PASS"
+            echo "MODULE_LOAD_FILTER_EXCLUDED=PASS"
+            echo "CLEAN_GEN1_5_4_INTEGRATION_REAPPLIED=PASS"
+          } | tee "$AUDIT_DIR/08-boundaries.txt"
+
+      - name: Install pinned Android clang-r416183b
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$TOOLCHAIN_DIR"
+          mkdir -p "$TOOLCHAIN_DIR"
+          url="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/${CLANG_PREBUILT_COMMIT}/clang-r416183b.tar.gz"
+          curl --fail --location --retry 3 "$url" -o "$RUNNER_TEMP/clang-r416183b.tar.gz"
+          tar -xzf "$RUNNER_TEMP/clang-r416183b.tar.gz" -C "$TOOLCHAIN_DIR"
+
+          for tool in clang ld.lld llvm-ar llvm-nm llvm-objcopy llvm-objdump llvm-strip; do
+            test -x "$TOOLCHAIN_DIR/bin/$tool"
+          done
+
+          "$TOOLCHAIN_DIR/bin/clang" --version | tee "$AUDIT_DIR/09-clang.txt"
+
+      - name: Configure fresh out directory and build complete kernel
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH="$TOOLCHAIN_DIR/bin:$PATH"
+          export KBUILD_BUILD_USER KBUILD_BUILD_HOST KBUILD_BUILD_TIMESTAMP
+          export KBUILD_BUILD_VERSION SOURCE_DATE_EPOCH KBUILD_FIXED_SCM_SUFFIX
+
+          rm -rf "$OUT_DIR"
+          make O="$OUT_DIR" ARCH=arm64 CC=clang LD=ld.lld LLVM=1 LLVM_IAS=1 \
+            veux_defconfig 2>&1 | tee "$AUDIT_DIR/10-config.log"
+
+          grep -Fxq 'CONFIG_KSU=y' "$OUT_DIR/.config"
+          grep -Fxq 'CONFIG_KSU_SUSFS=y' "$OUT_DIR/.config"
+          grep -Fxq '# CONFIG_KSU_MANUAL_HOOK is not set' "$OUT_DIR/.config"
+          grep -Fxq 'CONFIG_KSU_SUSFS_OPEN_REDIRECT=y' "$OUT_DIR/.config"
+
+          make -j"$(nproc)" \
+            O="$OUT_DIR" ARCH=arm64 CC=clang LD=ld.lld LLVM=1 LLVM_IAS=1 \
+            KCFLAGS="$EFFECTIVE_KCFLAGS" Image dtbs \
+            2>&1 | tee "$AUDIT_DIR/10-build.log"
+
+          image="$OUT_DIR/arch/arm64/boot/Image"
+          dtb="$OUT_DIR/arch/arm64/boot/dts/vendor/xiaomi/veux.dtb"
+          test -s "$image"
+          test -s "$dtb"
+          test "$(stat -c '%s' "$image")" -gt 20000000
+
+          strings -a "$image" > "$AUDIT_DIR/10-image-strings.txt"
+          grep -Fq "Linux version $STOCK_KERNEL_RELEASE ($KBUILD_BUILD_USER@$KBUILD_BUILD_HOST)" \
+            "$AUDIT_DIR/10-image-strings.txt"
+          grep -Fq "$P11_TARGET_TAG-$P11_TARGET_SHORT-p11@ReSukiSU" \
+            "$AUDIT_DIR/10-image-strings.txt"
+
+          cp "$image" "$DIST_DIR/Image"
+          cp "$dtb" "$DIST_DIR/veux.dtb"
+          sha256sum "$DIST_DIR/Image" "$DIST_DIR/veux.dtb" \
+            | tee "$DIST_DIR/BUILD-SHA256SUMS"
+
+          {
+            echo "FRESH_KERNEL_BUILD=PASS"
+            echo "IMAGE_BYTES=$(stat -c '%s' "$image")"
+            echo "IMAGE_SHA256=$(sha256sum "$image" | awk '{print $1}')"
+            echo "VEUX_DTB_SHA256=$(sha256sum "$dtb" | awk '{print $1}')"
+            echo "KSU_VERSION=$P11_KSU_VERSION"
+            echo "KSU_UAPI=$EXPECTED_KSU_UAPI"
+          } | tee "$AUDIT_DIR/10-build-result.txt"
+
+      - name: Checkout proven AnyKernel3 checkpoint
+        shell: bash
+        run: |
+          set -euo pipefail
+          ak3="$GITHUB_WORKSPACE/AnyKernel3"
+          rm -rf "$ak3"
+          git clone -q "$AK3_REPO" "$ak3"
+          git -C "$ak3" checkout -q --detach "$AK3_COMMIT"
+          test "$(git -C "$ak3" rev-parse HEAD)" = "$AK3_COMMIT"
+          echo "AK3_CHECKOUT=PASS" | tee "$AUDIT_DIR/11-ak3.txt"
+
+      - name: Build normal VEUX AnyKernel3 package
+        shell: bash
+        run: |
+          set -euo pipefail
+          ak3="$GITHUB_WORKSPACE/AnyKernel3"
+          image="$OUT_DIR/arch/arm64/boot/Image"
+          test -s "$image"
+
+          rm -f "$ak3/Image" "$ak3/Image.gz" "$ak3/Image.gz-dtb" "$ak3/dtb" "$ak3/dtbo.img"
+          cp "$image" "$ak3/Image"
+
+          cat > "$ak3/anykernel.sh" <<EOF
+          # AnyKernel3 Ramdisk Mod Script
+          # osm0sis @ xda-developers
+
+          properties() { '
+          kernel.string=VEUX GEN1 P11 Linux 5.4.274 ReSukiSU ${P11_TARGET_SHORT} UAPI${EXPECTED_KSU_UAPI} + SUSFS 2.3
+          do.devicecheck=1
+          do.modules=0
+          do.systemless=1
+          do.cleanup=1
+          do.cleanuponabort=0
+          device.name1=veux
+          supported.versions=13
+          supported.patchlevels=
+          '; }
+
+          block=/dev/block/bootdevice/by-name/boot;
+          is_slot_device=1;
+          ramdisk_compression=auto;
+          patch_vbmeta_flag=auto;
+
+          . tools/ak3-core.sh;
+          dump_boot;
+          write_boot;
+          EOF
+          chmod 0755 "$ak3/anykernel.sh"
+
+          cat > "$ak3/P11-BUILD-INFO.txt" <<EOF
+          CLEAN GEN1 P11 fresh full rebuild
+          Device: veux
+          Linux: 5.4.274
+          ReSukiSU target: $RESUKISU_TARGET
+          ReSukiSU tag: $P11_TARGET_TAG
+          KSU version: $P11_KSU_VERSION
+          KernelSU UAPI: $EXPECTED_KSU_UAPI
+          SUSFS: 2.3 CLEAN-GEN1 outer integration
+          Module-load-filter: deliberately excluded
+          AK3 payload: Image only
+          Real-device boot test: NOT PERFORMED
+          EOF
+
+          rm -rf "$ak3/.git" "$ak3/.github"
+          rm -f "$ak3/README.md"
+          find "$ak3" -type f -name '*placeholder' -delete
+
+          zip_name="VEUX-GEN1-P11-5.4.274-ReSukiSU-${P11_TARGET_SHORT}-UAPI${EXPECTED_KSU_UAPI}-SUSFS-2.3-AK3.zip"
+          (
+            cd "$ak3"
+            zip -r9 "$DIST_DIR/$zip_name" . \
+              -x '.github/*' 'README.md' '*placeholder'
+          )
+
+          test -s "$DIST_DIR/$zip_name"
+          echo "AK3_ZIP=$DIST_DIR/$zip_name" >> "$GITHUB_ENV"
+          echo "AK3_BUILD=PASS" | tee "$AUDIT_DIR/12-ak3-build.txt"
+
+      - name: Validate AnyKernel3 package and final result
+        shell: bash
+        run: |
+          set -euo pipefail
+          zip_name="$(basename "$AK3_ZIP")"
+
+          unzip -t "$AK3_ZIP" | tee "$AUDIT_DIR/13-ak3-unzip.txt"
+          for required in anykernel.sh tools/ak3-core.sh Image P11-BUILD-INFO.txt; do
+            unzip -Z1 "$AK3_ZIP" | grep -Fxq "$required"
+          done
+
+          tmp="$(mktemp -d)"
+          trap 'rm -rf "$tmp"' EXIT
+          unzip -p "$AK3_ZIP" Image > "$tmp/Image"
+          cmp -s "$DIST_DIR/Image" "$tmp/Image"
+
+          unzip -p "$AK3_ZIP" anykernel.sh > "$tmp/anykernel.sh"
+          grep -Fqx 'device.name1=veux' "$tmp/anykernel.sh"
+          grep -Fqx 'block=/dev/block/bootdevice/by-name/boot;' "$tmp/anykernel.sh"
+          grep -Fqx 'is_slot_device=1;' "$tmp/anykernel.sh"
+          grep -Fqx 'supported.versions=13' "$tmp/anykernel.sh"
+
+          sha256sum "$AK3_ZIP" > "$AK3_ZIP.sha256"
+
+          grep -Fxq 'OLD_SUSFS_COMPAT_FIX_052CA277=PASS' "$AUDIT_DIR/08-boundaries.txt"
+          grep -Fxq 'SUSFS_2_3_OUTER_BYTE_PRESERVED=PASS' "$AUDIT_DIR/08-boundaries.txt"
+          grep -Fxq 'MODULE_LOAD_FILTER_EXCLUDED=PASS' "$AUDIT_DIR/08-boundaries.txt"
+          grep -Fxq 'FRESH_KERNEL_BUILD=PASS' "$AUDIT_DIR/10-build-result.txt"
+          grep -Fxq 'AK3_BUILD=PASS' "$AUDIT_DIR/12-ak3-build.txt"
+
+          {
+            echo "CLEAN_GEN1_P11_FRESH_REBUILD_AK3=PASS"
+            echo "RESUKISU_TARGET=$RESUKISU_TARGET"
+            echo "RESUKISU_TAG=$P11_TARGET_TAG"
+            echo "KSU_VERSION=$P11_KSU_VERSION"
+            echo "KSU_UAPI=$EXPECTED_KSU_UAPI"
+            echo "IMAGE_SHA256=$(sha256sum "$DIST_DIR/Image" | awk '{print $1}')"
+            echo "VEUX_DTB_SHA256=$(sha256sum "$DIST_DIR/veux.dtb" | awk '{print $1}')"
+            echo "AK3=$(basename "$AK3_ZIP")"
+            echo "AK3_SHA256=$(sha256sum "$AK3_ZIP" | awk '{print $1}')"
+            echo "AK3_PIN=$AK3_COMMIT"
+            echo "REAL_DEVICE_BOOT_TEST=NOT_PERFORMED"
+          } | tee "$DIST_DIR/FINAL-RESULT.txt"
+
+          (
+            cd "$DIST_DIR"
+            sha256sum Image veux.dtb "$(basename "$AK3_ZIP")" \
+              "$(basename "$AK3_ZIP").sha256" FINAL-RESULT.txt \
+              > SUPPORT-SHA256SUMS
+          )
+
+      - name: Upload P11 kernel + AK3
+        uses: actions/upload-artifact@v7
+        with:
+          name: clean-gen1-p11-veux-current-resukisu-susfs23-ak3-${{ github.run_id }}
+          path: clean-gen1-p11-dist/
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 0
+
+      - name: Upload P11 audit evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: clean-gen1-p11-audit-${{ github.run_id }}
+          path: clean-gen1-p11-audit/
+          if-no-files-found: warn
+          retention-days: 90
