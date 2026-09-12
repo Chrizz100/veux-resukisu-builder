@@ -1,0 +1,891 @@
+name: Irena X 7371 COMPAT4 mandatory Fixup gate + optional AppComponentFactory
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  IRENA_REPO: silvzr/LSP-IrenaX
+  IRENA_COMMIT: da439fbbed506dac6c66074af7fda8982aa4fc6a
+  CURRENT_LSPLANT_SHA: c5b46bb4f6a99ffe0c77ce3ab006d3f67d5a2b1c
+  CURRENT_DOBBY_SHA: dc7b4be06ad6c5dcfb0bb4ca2082b007d69eaed5
+  OFFICIAL_RELEASE_URL: https://github.com/silvzr/LSP-IrenaX/releases/download/v2.0.1/LSPosed-v2.0.1-7371-IrenaX-release.zip
+  OFFICIAL_RELEASE_SHA256: 99e7aaf54dda0e6fa746c55613483a80620174f255dd05e102713778a9966d2f
+  R1_DEVICE_PACKAGE_SHA256: 7ed948db19d92b0dd7776c424f93783e10210082ea807345228e901ab9ce4af7
+  FINAL_ZIP: LSPosed-v2.0.1-7371-IrenaX-COMPAT4-R1-base-Fixup-Gate-AppComponentFactory-compatibility.zip
+
+jobs:
+  build:
+    name: Build COMPAT4 Fixup gate + AppComponentFactory compatibility
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Freeze COMPAT4 compatibility contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p compat4-output
+          {
+            echo "PARENT=R1-v2 immutable Framework checkpoint"
+            echo "PARENT_DEVICE_PACKAGE_SHA256=$R1_DEVICE_PACKAGE_SHA256"
+            echo "BASE=official Irena X 7371 source + exact R1-v2 mIncludeCode compatibility fix"
+            echo "OLD_WORKING_FRAMEWORK=LSPosed_mod 7244"
+            echo "OLD_WORKING_LSPLANT=f492475a76777c0b40e419fe1908871cde88f627"
+            echo "OLD_BASELINE_CAPTURE_SHA256=38649e81f3acd60e913f873c307fcf34a3f8d1ea97686ad30be538856efe774b"
+            echo "OLD_BASELINE_RESULT=FixupStaticTrampolines unavailable -> ClassLinker init fails closed -> LSPlant init fails -> modules still load -> Ingress/PairIP stable for 50s"
+            echo "CL1_RESULT=FIXUP_GROUP_RESULT_0 + cutoff -> PairIP stable"
+            echo "CL2_RESULT=FIXUP_GROUP_RESULT_0 + RegisterNative group active -> PairIP +0x65768"
+            echo "CL2F_RESULT=FIXUP_GROUP_RESULT_0 + no RegisterNative fallback + controlled LSPlant init failure -> PairIP stable"
+            echo "COMPAT1_RESULT=RegisterNativeClassLinker skipped but later current LSPlant init continued -> PairIP +0x65768"
+            echo "COMPAT2_RESULT=Jit::Init additionally skipped but later current LSPlant init continued -> PairIP +0x65768"
+            echo "COMPAT4_PARENT_NATIVE=COMPAT3 mandatory Fixup gate DEVICE PASS for PairIP on the controlled test system"
+            echo "COMPAT4_ONLY_NEW_FUNCTIONAL_DELTA=make LoadedApk.mAppComponentFactory capability-optional so a missing field cannot abort package dispatch before XC_LoadPackage.callAll/onPackageLoaded/onPackageReady"
+            echo "COMPAT4_APP_FACTORY_RULE=field present -> preserve current 7371 behavior; field absent -> continue package dispatch without preloading AppComponentFactory"
+            echo "COMPAT4_NATIVE_GATE=identical mandatory FixupStaticTrampolines fail-closed semantic carried forward from COMPAT3"
+            echo "COMPAT4_GATE_RULE=if no FixupStaticTrampolines candidate hooks successfully, ClassLinker::Init returns false before RegisterNative/UnregisterNative/visibility/entrypoint work"
+            echo "COMPAT4_SUCCESS_PATH=if FixupStaticTrampolines succeeds, preserve the current upstream ClassLinker path unchanged"
+            echo "COMPAT4_EXPECTED_FAIL_MARKER_1=LSPLANT-COMPAT4: FIXUP_GROUP_RESULT=0"
+            echo "COMPAT4_EXPECTED_FAIL_MARKER_2=LSPLANT-COMPAT4: MANDATORY_FIXUP_GATE_ABORT=1"
+            echo "COMPAT4_EXPECTED_PASS_MARKER_1=LSPLANT-COMPAT4: FIXUP_GROUP_RESULT=1"
+            echo "COMPAT4_EXPECTED_PASS_MARKER_2=LSPLANT-COMPAT4: MANDATORY_FIXUP_GATE_PASS=1"
+            echo "CURRENT_LSPLANT=$CURRENT_LSPLANT_SHA"
+            echo "CURRENT_DOBBY=$CURRENT_DOBBY_SHA"
+            echo "JIT=UNCHANGED_CURRENT_7371"
+            echo "REGISTERNATIVE=UNCHANGED_CURRENT_7371_AFTER_GATE_PASS"
+            echo "MAPP_COMPONENT_FACTORY_FIX=CAPABILITY_OPTIONAL_FAIL_OPEN_AT_PRE_DISPATCH"
+            echo "R9_CHANGES=NONE"
+            echo "DEX2OAT_MOUNT_CHANGES=NONE"
+            echo "PAIRIP_BYPASS=NONE"
+            echo "STATIC_PASS_IS_NOT_DEVICE_PASS=YES"
+          } | tee compat4-output/COMPAT4_COMPATIBILITY_CONTRACT.txt
+
+      - name: Checkout pinned Irena X 7371
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.IRENA_REPO }}
+          ref: ${{ env.IRENA_COMMIT }}
+          submodules: recursive
+          fetch-depth: 0
+          path: LSP-IrenaX
+          persist-credentials: false
+
+      - name: Verify exact pristine pins and COMPAT4 source preconditions
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C LSP-IrenaX rev-parse HEAD)" = "$IRENA_COMMIT"
+          test -z "$(git -C LSP-IrenaX status --porcelain)"
+          test "$(git -C LSP-IrenaX/external/lsplant rev-parse HEAD)" = "$CURRENT_LSPLANT_SHA"
+          test "$(git -C LSP-IrenaX/external/dobby rev-parse HEAD)" = "$CURRENT_DOBBY_SHA"
+          test -z "$(git -C LSP-IrenaX/external/lsplant status --porcelain)"
+          test -z "$(git -C LSP-IrenaX/external/dobby status --porcelain)"
+
+          java_file="LSP-IrenaX/core/src/main/java/org/lsposed/lspd/hooker/LoadedApkCtorHooker.java"
+          createcl_file="LSP-IrenaX/core/src/main/java/org/lsposed/lspd/hooker/LoadedApkCreateCLHooker.java"
+          helpers_file="LSP-IrenaX/core/src/main/java/de/robv/android/xposed/XposedHelpers.java"
+          native_file="LSP-IrenaX/external/lsplant/lsplant/src/main/jni/lsplant.cc"
+          cl_file="LSP-IrenaX/external/lsplant/lsplant/src/main/jni/art/runtime/class_linker.cxx"
+          test -f "$java_file"
+          test -f "$createcl_file"
+          test -f "$helpers_file"
+          test -f "$native_file"
+          test -f "$cl_file"
+
+          grep -Fq 'boolean includeCode = XposedHelpers.getBooleanField(loadedApk, "mIncludeCode");' "$java_file"
+          grep -Fq 'public static Field findFieldIfExists(Class<?> clazz, String fieldName)' "$helpers_file"
+          grep -Fq 'private AppComponentFactory appComponentFactory;' "$createcl_file"
+          grep -Fq 'param.setAppComponentFactory((AppComponentFactory) XposedHelpers.getObjectField(loadedApk, "mAppComponentFactory"));' "$createcl_file"
+          grep -Fq 'return (AppComponentFactory) XposedHelpers.getObjectField(loadedApk, "mAppComponentFactory");' "$createcl_file"
+          if grep -Fq 'LSPOSED-COMPAT4:' "$createcl_file"; then
+            echo "COMPAT4 Java marker already exists in pristine source"
+            exit 1
+          fi
+          grep -Fq 'if (!Runtime::Init(handler)) {' "$native_file"
+          grep -Fq 'if (!ClassLinker::Init(env, handler)) {' "$native_file"
+          grep -Fq 'if (!ScopedSuspendAll::Init(handler)) {' "$native_file"
+          grep -Fq 'if (!Jit::Init(handler)) {' "$native_file"
+
+          grep -Fq 'if constexpr (is_arch_v<Arch::kX86>) {' "$cl_file"
+          grep -Fq 'handler(FixupStaticTrampolinesWithThread_, FixupStaticTrampolines_,' "$cl_file"
+          grep -Fq 'auto register_native_hooked = sdk_int >= kSdkOreo && sdk_int < kSdkPie' "$cl_file"
+          grep -Fq 'handler(RegisterNativeClassLinker_, RegisterNative_,' "$cl_file"
+          grep -Fq '!handler(UnregisterNativeClassLinker_, UnregisterNative_,' "$cl_file"
+
+          if grep -Fq 'LSPLANT-COMPAT4:' "$native_file" "$cl_file"; then
+            echo "COMPAT4 marker already exists in pristine source"
+            exit 1
+          fi
+
+          # The current source must NOT already contain the mandatory all-architecture gate.
+          if grep -Fq 'MANDATORY_FIXUP_GATE_ABORT' "$cl_file"; then
+            echo "mandatory Fixup gate unexpectedly already exists"
+            exit 1
+          fi
+
+          {
+            echo "IRENA=$(git -C LSP-IrenaX rev-parse HEAD)"
+            echo "LSPLANT=$(git -C LSP-IrenaX/external/lsplant rev-parse HEAD)"
+            echo "DOBBY=$(git -C LSP-IrenaX/external/dobby rev-parse HEAD)"
+            echo "R1_M_INCLUDE_CODE_PRECONDITION=PRESENT"
+            echo "CURRENT_JIT_INIT=PRESENT_AND_MUST_REMAIN_UNCHANGED"
+            echo "CURRENT_REGISTER_NATIVE_BLOCK=PRESENT_AND_MUST_REMAIN_UNCHANGED_AFTER_GATE_PASS"
+            echo "CURRENT_MANDATORY_FIXUP_GATE=ABSENT"
+            echo "CURRENT_APP_COMPONENT_FACTORY_PRELOAD=HARD_GETOBJECTFIELD"
+            echo "CURRENT_APP_COMPONENT_FACTORY_OPTIONAL_LOOKUP=ABSENT"
+          } | tee compat4-output/COMPAT4_SOURCE_PINS_AND_PRECONDITIONS.txt
+
+      - name: Setup Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          log-accepted-android-sdk-licenses: 'false'
+          packages: ''
+
+      - name: Setup ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          max-size: 2G
+          key: irena-x-compat4-${{ runner.os }}
+          restore-keys: |
+            irena-x-${{ runner.os }}
+          save: false
+
+      - name: Setup Ninja 1.12.1
+        uses: seanmiddleditch/gha-setup-ninja@master
+        with:
+          version: 1.12.1
+
+      - name: Remove Android bundled CMake
+        shell: bash
+        run: rm -rf "$ANDROID_HOME/cmake"
+
+      - name: Configure Gradle
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.gradle
+          {
+            echo 'org.gradle.caching=true'
+            echo 'org.gradle.parallel=true'
+            echo 'org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8 -XX:+UseParallelGC'
+            echo 'android.native.buildOutput=verbose'
+          } >> ~/.gradle/gradle.properties
+
+      - name: Download and verify official Irena 7371 release
+        id: official
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 3 -o OFFICIAL_RELEASE.zip "$OFFICIAL_RELEASE_URL"
+          echo "$OFFICIAL_RELEASE_SHA256  OFFICIAL_RELEASE.zip" | sha256sum -c -
+          unzip -t OFFICIAL_RELEASE.zip
+          rm -rf officialcmp
+          mkdir officialcmp
+          unzip -q OFFICIAL_RELEASE.zip -d officialcmp
+          python3 - <<'PY'
+          import zipfile
+          with zipfile.ZipFile('OFFICIAL_RELEASE.zip') as z:
+              names = z.namelist()
+              if len(names) != len(set(names)):
+                  raise SystemExit('duplicate names in official release')
+              files = [n for n in names if not n.endswith('/')]
+              if len(files) != 56:
+                  raise SystemExit(f'official release file count is {len(files)}, expected 56')
+              bad = z.testzip()
+              if bad:
+                  raise SystemExit(f'official CRC failure: {bad}')
+          PY
+          sha256sum OFFICIAL_RELEASE.zip > compat4-output/COMPAT4_OFFICIAL_RELEASE_SHA256.txt
+
+      - name: Apply exact R1-v2 mIncludeCode compatibility fix
+        id: r1patch
+        if: steps.official.outcome == 'success'
+        working-directory: LSP-IrenaX
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          p = Path('core/src/main/java/org/lsposed/lspd/hooker/LoadedApkCtorHooker.java')
+          s = p.read_text()
+          line = '            boolean includeCode = XposedHelpers.getBooleanField(loadedApk, "mIncludeCode");\n'
+          branch = (
+              '            } else if (!includeCode) {\n'
+              '                Hookers.logD("LoadedApk#<init> has no code, skip: " + mAppDir);\n'
+              '                return;\n'
+          )
+          if s.count(line) != 1:
+              raise SystemExit(f'expected one mIncludeCode read, got {s.count(line)}')
+          if s.count(branch) != 1:
+              raise SystemExit(f'expected one no-code branch, got {s.count(branch)}')
+          s = s.replace(line, '', 1).replace(branch, '', 1)
+          expected = (
+              '            if (packageName.equals("android")) {\n'
+              '                if (XposedInit.startsSystemServer) {\n'
+              '                    Hookers.logD("LoadedApk#<init> is android, skip: " + mAppDir);\n'
+              '                    return;\n'
+              '                } else {\n'
+              '                    packageName = "system";\n'
+              '                }\n'
+              '            }\n'
+              '\n'
+              '            if (!XposedInit.loadedPackagesInProcess.add(packageName)) {\n'
+          )
+          if expected not in s:
+              raise SystemExit('R1-v2 post-patch control flow mismatch')
+          if 'mIncludeCode' in s:
+              raise SystemExit('mIncludeCode survived R1-v2 patch')
+          p.write_text(s)
+          PY
+          git diff --check
+
+      - name: Apply COMPAT4 optional AppComponentFactory compatibility
+        id: compat4java
+        if: steps.r1patch.outcome == 'success'
+        working-directory: LSP-IrenaX
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          p = Path('core/src/main/java/org/lsposed/lspd/hooker/LoadedApkCreateCLHooker.java')
+          s = p.read_text()
+
+          field_anchor = (
+              '    private final static Field defaultClassLoaderField;\n'
+              '\n'
+              '    private final static Set<LoadedApk> loadedApks = ConcurrentHashMap.newKeySet();\n'
+          )
+          field_repl = (
+              '    private final static Field defaultClassLoaderField;\n'
+              '    private final static Field appComponentFactoryField;\n'
+              '\n'
+              '    private final static Set<LoadedApk> loadedApks = ConcurrentHashMap.newKeySet();\n'
+          )
+          if s.count(field_anchor) != 1:
+              raise SystemExit(f'expected one field declaration anchor, got {s.count(field_anchor)}')
+          s = s.replace(field_anchor, field_repl, 1)
+
+          static_anchor = (
+              '        defaultClassLoaderField = field;\n'
+              '    }\n'
+          )
+          static_repl = (
+              '        defaultClassLoaderField = field;\n'
+              '        appComponentFactoryField = Build.VERSION.SDK_INT >= Build.VERSION_CODES.P\n'
+              '                ? XposedHelpers.findFieldIfExists(LoadedApk.class, "mAppComponentFactory")\n'
+              '                : null;\n'
+              '    }\n'
+          )
+          if s.count(static_anchor) != 1:
+              raise SystemExit(f'expected one static-field init anchor, got {s.count(static_anchor)}')
+          s = s.replace(static_anchor, static_repl, 1)
+
+          preload_anchor = (
+              '            var param = new PackageLoadParam(loadedApk, isFirstPackage);\n'
+              '            param.setClassLoader(classLoader);\n'
+              '            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {\n'
+              '                param.setAppComponentFactory((AppComponentFactory) XposedHelpers.getObjectField(loadedApk, "mAppComponentFactory"));\n'
+              '            }\n'
+              '\n'
+              '            XC_LoadPackage.LoadPackageParam lpparam = new XC_LoadPackage.LoadPackageParam(\n'
+          )
+          preload_repl = (
+              '            var param = new PackageLoadParam(loadedApk, isFirstPackage);\n'
+              '            param.setClassLoader(classLoader);\n'
+              '            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {\n'
+              '                if (appComponentFactoryField != null) {\n'
+              '                    try {\n'
+              '                        param.setAppComponentFactory((AppComponentFactory) appComponentFactoryField.get(loadedApk));\n'
+              '                        Hookers.logD("LSPOSED-COMPAT4: APP_COMPONENT_FACTORY_AVAILABLE=1");\n'
+              '                    } catch (IllegalAccessException e) {\n'
+              '                        throw new IllegalStateException(e);\n'
+              '                    }\n'
+              '                } else {\n'
+              '                    Hookers.logD("LSPOSED-COMPAT4: APP_COMPONENT_FACTORY_UNAVAILABLE_CONTINUE=1");\n'
+              '                }\n'
+              '            }\n'
+              '\n'
+              '            XC_LoadPackage.LoadPackageParam lpparam = new XC_LoadPackage.LoadPackageParam(\n'
+          )
+          if s.count(preload_anchor) != 1:
+              raise SystemExit(f'expected one pre-dispatch AppComponentFactory block, got {s.count(preload_anchor)}')
+          s = s.replace(preload_anchor, preload_repl, 1)
+
+          dispatch_anchor = (
+              '            Hookers.logD("Call handleLoadedPackage: packageName=" + lpparam.packageName + " processName=" + lpparam.processName + " isFirstPackage=" + isFirstPackage + " classLoader=" + lpparam.classLoader + " appInfo=" + lpparam.appInfo);\n'
+              '            XC_LoadPackage.callAll(lpparam);\n'
+              '\n'
+              "            // fire every lifecycle callback and let each module ignore what it didn't\n"
+          )
+          dispatch_repl = (
+              '            Hookers.logD("Call handleLoadedPackage: packageName=" + lpparam.packageName + " processName=" + lpparam.processName + " isFirstPackage=" + isFirstPackage + " classLoader=" + lpparam.classLoader + " appInfo=" + lpparam.appInfo);\n'
+              '            Hookers.logD("LSPOSED-COMPAT4: LEGACY_DISPATCH_REACHED=1");\n'
+              '            XC_LoadPackage.callAll(lpparam);\n'
+              '\n'
+              "            // fire every lifecycle callback and let each module ignore what it didn't\n"
+          )
+          if s.count(dispatch_anchor) != 1:
+              raise SystemExit(f'expected one legacy dispatch anchor, got {s.count(dispatch_anchor)}')
+          s = s.replace(dispatch_anchor, dispatch_repl, 1)
+
+          callbacks_anchor = (
+              '            LSPosedContext.callOnPackageLoaded(param);\n'
+              '            LSPosedContext.callOnPackageReady(param);\n'
+          )
+          callbacks_repl = (
+              '            LSPosedContext.callOnPackageLoaded(param);\n'
+              '            LSPosedContext.callOnPackageReady(param);\n'
+              '            Hookers.logD("LSPOSED-COMPAT4: PACKAGE_CALLBACKS_COMPLETE=1");\n'
+          )
+          if s.count(callbacks_anchor) != 1:
+              raise SystemExit(f'expected one package-callback block, got {s.count(callbacks_anchor)}')
+          s = s.replace(callbacks_anchor, callbacks_repl, 1)
+
+          getter_anchor = (
+              '        @NonNull\n'
+              '        @Override\n'
+              '        public AppComponentFactory getAppComponentFactory() {\n'
+              '            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P) {\n'
+              '                throw new UnsupportedOperationException();\n'
+              '            }\n'
+              '            if (appComponentFactory != null) {\n'
+              '                return appComponentFactory;\n'
+              '            }\n'
+              '            return (AppComponentFactory) XposedHelpers.getObjectField(loadedApk, "mAppComponentFactory");\n'
+              '        }\n'
+          )
+          getter_repl = (
+              '        @NonNull\n'
+              '        @Override\n'
+              '        public AppComponentFactory getAppComponentFactory() {\n'
+              '            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P || appComponentFactoryField == null) {\n'
+              '                throw new UnsupportedOperationException("AppComponentFactory unavailable on this ART/framework build");\n'
+              '            }\n'
+              '            if (appComponentFactory != null) {\n'
+              '                return appComponentFactory;\n'
+              '            }\n'
+              '            try {\n'
+              '                return (AppComponentFactory) appComponentFactoryField.get(loadedApk);\n'
+              '            } catch (IllegalAccessException e) {\n'
+              '                throw new IllegalStateException(e);\n'
+              '            }\n'
+              '        }\n'
+          )
+          if s.count(getter_anchor) != 1:
+              raise SystemExit(f'expected one getAppComponentFactory method, got {s.count(getter_anchor)}')
+          s = s.replace(getter_anchor, getter_repl, 1)
+
+          required = (
+              'XposedHelpers.findFieldIfExists(LoadedApk.class, "mAppComponentFactory")',
+              'LSPOSED-COMPAT4: APP_COMPONENT_FACTORY_AVAILABLE=1',
+              'LSPOSED-COMPAT4: APP_COMPONENT_FACTORY_UNAVAILABLE_CONTINUE=1',
+              'LSPOSED-COMPAT4: LEGACY_DISPATCH_REACHED=1',
+              'LSPOSED-COMPAT4: PACKAGE_CALLBACKS_COMPLETE=1',
+          )
+          for token in required:
+              if s.count(token) != 1:
+                  raise SystemExit(f'COMPAT4 Java token count mismatch for {token}: {s.count(token)}')
+
+          # The hard pre-dispatch getObjectField call must be gone.
+          hard = 'param.setAppComponentFactory((AppComponentFactory) XposedHelpers.getObjectField(loadedApk, "mAppComponentFactory"));'
+          if hard in s:
+              raise SystemExit('hard pre-dispatch mAppComponentFactory getObjectField survived COMPAT4')
+
+          p.write_text(s)
+          PY
+
+          git diff --check
+
+          # COMPAT4 may change only the R1-v2 ctor file plus this CreateCL compatibility file at Java level.
+          mapfile -t java_changed < <(git diff --name-only -- 'core/src/main/java/org/lsposed/lspd/hooker/*.java' | sort)
+          printf '%s\n' "${java_changed[@]}" | tee ../compat4-output/COMPAT4_JAVA_DIFF_NAMES.txt
+          test "${#java_changed[@]}" -eq 2
+          test "${java_changed[0]}" = "core/src/main/java/org/lsposed/lspd/hooker/LoadedApkCreateCLHooker.java"
+          test "${java_changed[1]}" = "core/src/main/java/org/lsposed/lspd/hooker/LoadedApkCtorHooker.java"
+
+          target="core/src/main/java/org/lsposed/lspd/hooker/LoadedApkCreateCLHooker.java"
+          grep -Fq 'LSPOSED-COMPAT4: APP_COMPONENT_FACTORY_UNAVAILABLE_CONTINUE=1' "$target"
+          grep -Fq 'LSPOSED-COMPAT4: LEGACY_DISPATCH_REACHED=1' "$target"
+          grep -Fq 'LSPOSED-COMPAT4: PACKAGE_CALLBACKS_COMPLETE=1' "$target"
+
+      - name: Apply COMPAT4 mandatory Fixup gate
+        id: compat4patch
+        if: steps.compat4java.outcome == 'success'
+        working-directory: LSP-IrenaX
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          p = Path('external/lsplant/lsplant/src/main/jni/art/runtime/class_linker.cxx')
+          s = p.read_text()
+
+          # COMPAT4 restores the old LSPlant fail-closed semantic without importing
+          # the old backend: at least one FixupStaticTrampolines candidate must hook
+          # successfully before current RegisterNative/UnregisterNative/visibility/
+          # entrypoint logic is allowed to run.
+          init_anchor = (
+              '        if (sdk_int >= kSdkNougat && sdk_int < kSdkTiramisu) {\n'
+              '            handler(ShouldUseInterpreterEntrypoint_);\n'
+              '        }\n'
+              '\n'
+              '        if constexpr (is_arch_v<Arch::kX86>) {\n'
+          )
+          init_repl = (
+              '        if (sdk_int >= kSdkNougat && sdk_int < kSdkTiramisu) {\n'
+              '            handler(ShouldUseInterpreterEntrypoint_);\n'
+              '        }\n'
+              '\n'
+              '        bool compat4_fixup_group_hooked = false;\n'
+              '        if constexpr (is_arch_v<Arch::kX86>) {\n'
+          )
+          if s.count(init_anchor) != 1:
+              raise SystemExit(
+                  f'expected one ClassLinker Init pre-fixup boundary, got {s.count(init_anchor)}'
+              )
+          s = s.replace(init_anchor, init_repl, 1)
+
+          x86_success_anchor = (
+              '            if (handler(FixupStaticTrampolinesWithThread_)) [[likely]] {\n'
+          )
+          x86_success_repl = (
+              '            if (handler(FixupStaticTrampolinesWithThread_)) [[likely]] {\n'
+              '                compat4_fixup_group_hooked = true;\n'
+          )
+          if s.count(x86_success_anchor) != 1:
+              raise SystemExit(
+                  f'expected one x86 FixupWithThread success branch, got {s.count(x86_success_anchor)}'
+              )
+          s = s.replace(x86_success_anchor, x86_success_repl, 1)
+
+          x86_fallback = (
+              '            } else {\n'
+              '                handler(FixupStaticTrampolines_, FixupStaticTrampolinesRaw_);\n'
+              '            }\n'
+              '        } else {\n'
+              '            handler(FixupStaticTrampolinesWithThread_, FixupStaticTrampolines_,\n'
+              '                    FixupStaticTrampolinesRaw_);\n'
+              '        }\n'
+              '\n'
+              '        auto register_native_hooked = sdk_int >= kSdkOreo && sdk_int < kSdkPie\n'
+          )
+          gated = (
+              '            } else {\n'
+              '                compat4_fixup_group_hooked =\n'
+              '                        handler(FixupStaticTrampolines_, FixupStaticTrampolinesRaw_);\n'
+              '            }\n'
+              '        } else {\n'
+              '            compat4_fixup_group_hooked =\n'
+              '                    handler(FixupStaticTrampolinesWithThread_, FixupStaticTrampolines_,\n'
+              '                            FixupStaticTrampolinesRaw_);\n'
+              '        }\n'
+              '\n'
+              '        LOGE("LSPLANT-COMPAT4: FIXUP_GROUP_RESULT=%d",\n'
+              '             compat4_fixup_group_hooked ? 1 : 0);\n'
+              '        if (!compat4_fixup_group_hooked) {\n'
+              '            LOGE("LSPLANT-COMPAT4: MANDATORY_FIXUP_GATE_ABORT=1");\n'
+              '            return false;\n'
+              '        }\n'
+              '        LOGE("LSPLANT-COMPAT4: MANDATORY_FIXUP_GATE_PASS=1");\n'
+              '\n'
+              '        auto register_native_hooked = sdk_int >= kSdkOreo && sdk_int < kSdkPie\n'
+          )
+          if s.count(x86_fallback) != 1:
+              raise SystemExit(
+                  f'expected one current Fixup->RegisterNative boundary, got {s.count(x86_fallback)}'
+              )
+          s = s.replace(x86_fallback, gated, 1)
+
+          required = (
+              'LSPLANT-COMPAT4: FIXUP_GROUP_RESULT=%d',
+              'LSPLANT-COMPAT4: MANDATORY_FIXUP_GATE_ABORT=1',
+              'LSPLANT-COMPAT4: MANDATORY_FIXUP_GATE_PASS=1',
+          )
+          for marker in required:
+              if s.count(marker) != 1:
+                  raise SystemExit(f'COMPAT4 marker count mismatch: {marker}')
+
+          # The current upstream RegisterNative block must remain byte-for-byte present
+          # after the newly inserted gate.
+          register_block = (
+              '        auto register_native_hooked = sdk_int >= kSdkOreo && sdk_int < kSdkPie\n'
+              '                                          ? handler(RegisterNativeFastWithReturn_)\n'
+              '                                          : handler(RegisterNativeClassLinker_, RegisterNative_,\n'
+              '                                                    RegisterNativeFast_, RegisterNativeThread_);\n'
+              '        if (!register_native_hooked ||\n'
+              '            !handler(UnregisterNativeClassLinker_, UnregisterNative_,\n'
+              '                     UnregisterNativeThread_)) {\n'
+              '            return false;\n'
+              '        }\n'
+          )
+          if s.count(register_block) != 1:
+              raise SystemExit('current upstream RegisterNative/UnregisterNative block changed unexpectedly')
+
+          p.write_text(s)
+
+          # Explicitly prove COMPAT1/2 behavior did NOT leak into COMPAT4.
+          native = Path('external/lsplant/lsplant/src/main/jni/lsplant.cc').read_text()
+          if native.count('if (!Jit::Init(handler)) {') != 1:
+              raise SystemExit('current Jit::Init block is not preserved exactly once')
+          forbidden = (
+              'LSPLANT-COMPAT1:',
+              'LSPLANT-COMPAT2:',
+              'JIT_INIT_SKIPPED',
+              'ANDROID13_ARM64_NO_FIXUP_COMPAT',
+              'REGISTER_NATIVE_PROPAGATION_OPTIONAL_CONTINUE',
+          )
+          combined = s + native
+          for token in forbidden:
+              if token in combined:
+                  raise SystemExit(f'forbidden prior diagnostic token survived into COMPAT4 source: {token}')
+          PY
+
+          git -C external/lsplant diff --check
+          mapfile -t ls_changed < <(git -C external/lsplant diff --name-only | sort)
+          printf '%s\n' "${ls_changed[@]}" | tee ../compat4-output/COMPAT4_LSPLANT_DIFF_NAMES.txt
+          test "${#ls_changed[@]}" -eq 1
+          test "${ls_changed[0]}" = "lsplant/src/main/jni/art/runtime/class_linker.cxx"
+
+          mapfile -t top_changed < <(git diff --name-only | sort)
+          printf '%s\n' "${top_changed[@]}" | tee ../compat4-output/COMPAT4_SOURCE_DIFF_NAMES.txt
+          test "${#top_changed[@]}" -eq 3
+          test "${top_changed[0]}" = "core/src/main/java/org/lsposed/lspd/hooker/LoadedApkCreateCLHooker.java"
+          test "${top_changed[1]}" = "core/src/main/java/org/lsposed/lspd/hooker/LoadedApkCtorHooker.java"
+          test "${top_changed[2]}" = "external/lsplant"
+
+          # Freeze all unrelated paths and the rest of LSPlant.
+          git diff --exit-code "$IRENA_COMMIT" -- \
+            core/src/main/java/org/lsposed/lspd/core/Startup.java \
+            core/src/main/java/org/lsposed/lspd/hooker/AttachHooker.java \
+            core/src/main/java/org/lsposed/lspd/impl/LSPosedBridge.java \
+            core/src/main/java/org/lsposed/lspd/impl/LSPosedHelper.java \
+            core/src/main/jni/src/jni/hook_bridge.cpp \
+            core/src/main/jni/src/native_api.cpp \
+            daemon/src/main/java/org/lsposed/lspd/service/Dex2OatService.java \
+            magisk-loader/src/main/jni/api/zygisk_main.cpp \
+            magisk-loader/src/main/jni/src/magisk_loader.cpp \
+            magisk-loader/src/main/jni/src/atexit.cpp
+
+          test "$(git -C external/dobby rev-parse HEAD)" = "$CURRENT_DOBBY_SHA"
+          test -z "$(git -C external/dobby status --porcelain)"
+
+          # Only class_linker.cxx may differ inside LSPlant.
+          git -C external/lsplant diff --exit-code "$CURRENT_LSPLANT_SHA" -- \
+            lsplant/src/main/jni/lsplant.cc \
+            lsplant/src/main/jni/art/runtime/jit/jit.cxx \
+            lsplant/src/main/jni/art/runtime/jit/jit_code_cache.cxx \
+            lsplant/src/main/jni/art/runtime/runtime.cxx \
+            lsplant/src/main/jni/art/runtime/thread_list.cxx
+
+          git diff > ../compat4-output/COMPAT4_TOPLEVEL_SOURCE.patch
+          git -C external/lsplant diff > ../compat4-output/COMPAT4_LSPLANT_SOURCE.patch
+          {
+            echo "SOURCE_DELTA_TOPLEVEL=LoadedApkCtorHooker.java + LoadedApkCreateCLHooker.java + external/lsplant submodule"
+            echo "SOURCE_DELTA_LSPLANT=class_linker.cxx only"
+            echo "R1_V2_M_INCLUDE_CODE_FIX=PRESERVED"
+            echo "COMPAT4_MANDATORY_FIXUP_GATE=GLOBAL_ALL_ARCHITECTURES"
+            echo "COMPAT4_FIXUP_FAIL_ACTION=RETURN_FALSE_BEFORE_REGISTERNATIVE"
+            echo "COMPAT4_FIXUP_PASS_ACTION=CONTINUE_CURRENT_UPSTREAM_CLASSLINKER_UNCHANGED"
+            echo "COMPAT4_REGISTERNATIVE_BLOCK=UNCHANGED_CURRENT_7371"
+            echo "COMPAT4_UNREGISTERNATIVE_BLOCK=UNCHANGED_CURRENT_7371"
+            echo "COMPAT4_VISIBILITY_ENTRYPOINT_PATH=UNCHANGED_CURRENT_7371_AFTER_GATE_PASS"
+            echo "COMPAT4_JIT_INIT=UNCHANGED_CURRENT_7371"
+            echo "COMPAT4_SCOPED_SUSPEND_ALL_AND_LATER_INIT=UNCHANGED_CURRENT_7371"
+            echo "MAPP_COMPONENT_FACTORY_FIX=OPTIONAL_FIELD_CAPABILITY_GUARD_WITH_DISPATCH_CONTINUATION"
+            echo "R9=ABSENT"
+            echo "DEX2OAT=UNCHANGED_OFFICIAL_7371"
+            echo "PAIRIP_BYPASS=ABSENT"
+          } | tee ../compat4-output/COMPAT4_PROVENANCE.txt
+
+      - name: Build COMPAT4 Fixup gate + AppComponentFactory compatibility candidate
+        id: compat4build
+        if: steps.compat4patch.outcome == 'success'
+        working-directory: LSP-IrenaX
+        shell: bash
+        run: |
+          set -uo pipefail
+          set +e
+          ./gradlew clean zipAll --stacktrace --info 2>&1 | tee ../compat4-build.log
+          rc=${PIPESTATUS[0]}
+          set -e
+          echo "$rc" > ../COMPAT4_BUILD_EXIT_CODE.txt
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Extract COMPAT4 build and verify native + Java marker payload
+        id: built
+        if: steps.compat4build.outputs.rc == '0'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t rel < <(find LSP-IrenaX/magisk-loader/release -maxdepth 1 -type f \
+            -name 'LSPosed-v*-IrenaX-release.zip' -print | sort)
+          test "${#rel[@]}" -eq 1
+          cp "${rel[0]}" COMPAT4_BUILD_RELEASE.zip
+          unzip -t COMPAT4_BUILD_RELEASE.zip
+          rm -rf compat4buildcmp
+          mkdir compat4buildcmp
+          unzip -q COMPAT4_BUILD_RELEASE.zip -d compat4buildcmp
+
+          test -f compat4buildcmp/framework/lspd.dex
+          strings compat4buildcmp/framework/lspd.dex | grep -Fq 'LSPOSED-COMPAT4: APP_COMPONENT_FACTORY_UNAVAILABLE_CONTINUE=1'
+          strings compat4buildcmp/framework/lspd.dex | grep -Fq 'LSPOSED-COMPAT4: LEGACY_DISPATCH_REACHED=1'
+          strings compat4buildcmp/framework/lspd.dex | grep -Fq 'LSPOSED-COMPAT4: PACKAGE_CALLBACKS_COMPLETE=1'
+          for abi in arm64-v8a armeabi-v7a x86 x86_64; do
+            test -f "compat4buildcmp/lib/$abi/liblspd.so"
+            readelf -h "compat4buildcmp/lib/$abi/liblspd.so" >/dev/null
+            strings "compat4buildcmp/lib/$abi/liblspd.so" | grep -Fq 'LSPLANT-COMPAT4: FIXUP_GROUP_RESULT=%d'
+            strings "compat4buildcmp/lib/$abi/liblspd.so" | grep -Fq 'LSPLANT-COMPAT4: MANDATORY_FIXUP_GATE_ABORT=1'
+            strings "compat4buildcmp/lib/$abi/liblspd.so" | grep -Fq 'LSPLANT-COMPAT4: MANDATORY_FIXUP_GATE_PASS=1'
+            if strings "compat4buildcmp/lib/$abi/liblspd.so" | grep -Fq 'LSPLANT-COMPAT2:'; then
+              echo "COMPAT2 marker leaked into $abi"
+              exit 1
+            fi
+          done
+
+          sha256sum compat4buildcmp/framework/lspd.dex > compat4-output/COMPAT4_REBUILT_FRAMEWORK_DEX_SHA256.txt
+          sha256sum compat4buildcmp/lib/*/liblspd.so > compat4-output/COMPAT4_REBUILT_LIBLSPD_SHA256.txt
+
+      - name: Create official-base COMPAT4 install package
+        id: package
+        if: steps.built.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib, zipfile
+
+          official = Path('OFFICIAL_RELEASE.zip')
+          built = Path('compat4buildcmp')
+          out = Path('${{ env.FINAL_ZIP }}')
+          abis = ('arm64-v8a','armeabi-v7a','x86','x86_64')
+          payload = {'framework/lspd.dex'} | {f'lib/{abi}/liblspd.so' for abi in abis}
+          sidecars = {x + '.sha256' for x in payload}
+          replacements = {}
+          for name in payload:
+              data = (built / name).read_bytes()
+              replacements[name] = data
+              replacements[name + '.sha256'] = hashlib.sha256(data).hexdigest().encode()
+
+          with zipfile.ZipFile(official, 'r') as zin, zipfile.ZipFile(out, 'w') as zout:
+              infos = zin.infolist()
+              names = [i.filename for i in infos]
+              if len(names) != len(set(names)):
+                  raise SystemExit('duplicate names in official ZIP')
+              if not (payload | sidecars).issubset(set(names)):
+                  raise SystemExit('official ZIP misses one or more COMPAT4 replacement targets')
+              for info in infos:
+                  zout.writestr(info, replacements.get(info.filename, zin.read(info.filename)))
+
+          def tree(path):
+              with zipfile.ZipFile(path) as z:
+                  names = z.namelist()
+                  if len(names) != len(set(names)):
+                      raise SystemExit(f'duplicate names: {path}')
+                  bad = z.testzip()
+                  if bad:
+                      raise SystemExit(f'CRC failure {path}: {bad}')
+                  return {n: hashlib.sha256(z.read(n)).hexdigest() for n in names if not n.endswith('/')}
+
+          a, b = tree(official), tree(out)
+          if set(a) != set(b):
+              raise SystemExit('official/COMPAT4 file sets differ')
+          if len(a) != 56:
+              raise SystemExit(f'expected 56 files, got {len(a)}')
+          diff = sorted(k for k in a if a[k] != b[k])
+          expected = sorted(payload | sidecars)
+          if diff != expected:
+              raise SystemExit(f'unexpected official->COMPAT4 package delta: {diff}')
+
+          # Keep manager/daemon/scripts exact official 7371; only target-process native libs + R1 dex change.
+          for rel in ('manager.apk','daemon.apk'):
+              if a[rel] != b[rel]:
+                  raise SystemExit(f'official control payload changed: {rel}')
+
+          with zipfile.ZipFile(out) as z:
+              names = set(z.namelist())
+              checked = 0
+              for n in sorted(names):
+                  if not n.endswith('.sha256'):
+                      continue
+                  p = n[:-7]
+                  if p not in names:
+                      continue
+                  expected_hash = z.read(n).decode().strip().split()[0]
+                  actual_hash = hashlib.sha256(z.read(p)).hexdigest()
+                  if expected_hash != actual_hash:
+                      raise SystemExit(f'sidecar mismatch: {n}')
+                  checked += 1
+              if checked != 28:
+                  raise SystemExit(f'expected 28 verified sidecars, got {checked}')
+
+          sha = hashlib.sha256(out.read_bytes()).hexdigest()
+          Path('compat4-output/COMPAT4_FINAL_PACKAGE_SHA256.txt').write_text(f'{sha}  {out.name}\n')
+          Path('compat4-output/COMPAT4_FINAL_PACKAGE_DIFF.txt').write_text('\n'.join(expected) + '\n')
+          Path('compat4-output/COMPAT4_FINAL_SCOPE.txt').write_text(
+              'BASE=official Irena X 7371 release\n'
+              'PARENT_SEMANTICS=R1-v2 mIncludeCode fix preserved in framework/lspd.dex\n'
+              'COMPAT4_NATIVE_BEHAVIOR=carries forward the COMPAT3 mandatory FixupStaticTrampolines fail-closed gate unchanged\n'
+              'COMPAT4_JAVA_BEHAVIOR=mAppComponentFactory is capability-optional; a missing field no longer aborts package dispatch before legacy/new package callbacks\n'
+              'FINAL_PACKAGE_DELTA=framework/lspd.dex+sidecar + 4 liblspd.so+sidecars\n'
+              'MANAGER=official 7371 byte-identical\n'
+              'DAEMON=official 7371 byte-identical\n'
+              'DEX2OAT=official 7371 unchanged\n'
+              'DOBBY=official/current 7371 unchanged\n'
+              'R9_CHANGES=none\n'
+              'PAIRIP_BYPASS=none\n'
+              'DEVICE_RUNTIME_STATUS=not tested\n'
+          )
+          PY
+          unzip -t "$FINAL_ZIP"
+          cp "$FINAL_ZIP" "compat4-output/INSTALL_THIS_${FINAL_ZIP}"
+
+      - name: Write COMPAT4 device test plan
+        if: steps.package.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > compat4-output/COMPAT4_DEVICE_TEST_PLAN.txt <<'EOF'
+          COMPAT4 FIXUP GATE + OPTIONAL APPCOMPONENTFACTORY
+
+          PURPOSE
+          - Preserve the COMPAT3 native PairIP fix exactly.
+          - Add one Java compatibility change derived from the COMPAT3-vs-old-7244 LSPosed logs:
+            a missing LoadedApk.mAppComponentFactory must not abort LoadedApk#createClassLoader package dispatch.
+          - This is capability-based, not Ingress-, VEUX-, Android-13- or module-specific.
+          - Modules/scopes remain unchanged.
+
+          EXPECTED NATIVE MARKERS ON A FIXUP-UNAVAILABLE SYSTEM
+          LSPLANT-COMPAT4: FIXUP_GROUP_RESULT=0
+          LSPLANT-COMPAT4: MANDATORY_FIXUP_GATE_ABORT=1
+          Failed to init class linker
+          Failed to init lsplant
+
+          EXPECTED JAVA MARKERS WHEN mAppComponentFactory IS ABSENT
+          LSPOSED-COMPAT4: APP_COMPONENT_FACTORY_UNAVAILABLE_CONTINUE=1
+          LSPOSED-COMPAT4: LEGACY_DISPATCH_REACHED=1
+          LSPOSED-COMPAT4: PACKAGE_CALLBACKS_COMPLETE=1
+
+          EXPECTED JAVA MARKERS WHEN mAppComponentFactory IS PRESENT
+          LSPOSED-COMPAT4: APP_COMPONENT_FACTORY_AVAILABLE=1
+          LSPOSED-COMPAT4: LEGACY_DISPATCH_REACHED=1
+          LSPOSED-COMPAT4: PACKAGE_CALLBACKS_COMPLETE=1
+
+          CONTROLLED TEST
+          1. Install only the inner INSTALL_THIS_*.zip and reboot.
+          2. Do NOT change modules or scopes.
+          3. Keep GPSSetter and Hide Mock Location enabled.
+          4. Start Ingress once and export the complete LSPosed logs.
+          5. Record whether the scanner still shows "Scanner deaktiviert, ungenauer Standort."
+
+          PASS TARGET
+          - native COMPAT4 Fixup gate behaves exactly like COMPAT3;
+          - no PairIP +0x65768 crash;
+          - no top-level "error when hooking LoadedApk#createClassLoader" caused by mAppComponentFactory;
+          - APP_COMPONENT_FACTORY_UNAVAILABLE_CONTINUE=1 (on the known affected framework);
+          - LEGACY_DISPATCH_REACHED=1;
+          - PACKAGE_CALLBACKS_COMPLETE=1;
+          - GPSSetter and Hide Mock Location remain loaded;
+          - Ingress stays alive;
+          - scanner/location behavior is checked separately as the functional module result.
+
+          IMPORTANT
+          STATIC PASS != DEVICE PASS.
+          PACKAGE_CALLBACKS_COMPLETE proves framework dispatch completion, not by itself that every module's behavior is correct.
+          EOF
+
+      - name: Collect COMPAT4 evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p compat4-output/native
+          cp COMPAT4_BUILD_EXIT_CODE.txt compat4-output/ 2>/dev/null || true
+          cp compat4-build.log compat4-output/ 2>/dev/null || true
+          cp COMPAT4_BUILD_RELEASE.zip compat4-output/ 2>/dev/null || true
+          cp OFFICIAL_RELEASE.zip compat4-output/OFFICIAL_7371_RELEASE_REFERENCE.zip 2>/dev/null || true
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib
+          out = Path('compat4-output')
+          manifest = out / 'COMPAT4_EVIDENCE_SHA256SUMS.txt'
+          files = sorted(p for p in out.rglob('*') if p.is_file() and p != manifest)
+          with manifest.open('w') as f:
+              for p in files:
+                  f.write(f"{hashlib.sha256(p.read_bytes()).hexdigest()}  {p.relative_to(out).as_posix()}\n")
+          PY
+          (cd compat4-output && sha256sum -c COMPAT4_EVIDENCE_SHA256SUMS.txt)
+
+      - name: Final COMPAT4 fail-closed static gate
+        id: finalgate
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f COMPAT4_BUILD_EXIT_CODE.txt
+          test "$(cat COMPAT4_BUILD_EXIT_CODE.txt)" = "0"
+
+          grep -q '^R1_V2_M_INCLUDE_CODE_FIX=PRESERVED$' compat4-output/COMPAT4_PROVENANCE.txt
+          grep -q '^COMPAT4_MANDATORY_FIXUP_GATE=GLOBAL_ALL_ARCHITECTURES$' compat4-output/COMPAT4_PROVENANCE.txt
+          grep -q '^COMPAT4_FIXUP_FAIL_ACTION=RETURN_FALSE_BEFORE_REGISTERNATIVE$' compat4-output/COMPAT4_PROVENANCE.txt
+          grep -q '^COMPAT4_FIXUP_PASS_ACTION=CONTINUE_CURRENT_UPSTREAM_CLASSLINKER_UNCHANGED$' compat4-output/COMPAT4_PROVENANCE.txt
+          grep -q '^COMPAT4_REGISTERNATIVE_BLOCK=UNCHANGED_CURRENT_7371$' compat4-output/COMPAT4_PROVENANCE.txt
+          grep -q '^COMPAT4_UNREGISTERNATIVE_BLOCK=UNCHANGED_CURRENT_7371$' compat4-output/COMPAT4_PROVENANCE.txt
+          grep -q '^COMPAT4_JIT_INIT=UNCHANGED_CURRENT_7371$' compat4-output/COMPAT4_PROVENANCE.txt
+          grep -q '^MAPP_COMPONENT_FACTORY_FIX=OPTIONAL_FIELD_CAPABILITY_GUARD_WITH_DISPATCH_CONTINUATION$' compat4-output/COMPAT4_PROVENANCE.txt
+          grep -q '^R9=ABSENT$' compat4-output/COMPAT4_PROVENANCE.txt
+          grep -q '^DEX2OAT=UNCHANGED_OFFICIAL_7371$' compat4-output/COMPAT4_PROVENANCE.txt
+          grep -q '^PAIRIP_BYPASS=ABSENT$' compat4-output/COMPAT4_PROVENANCE.txt
+
+          test -f "compat4-output/INSTALL_THIS_${FINAL_ZIP}"
+          strings compat4buildcmp/framework/lspd.dex | grep -Fq 'LSPOSED-COMPAT4: APP_COMPONENT_FACTORY_UNAVAILABLE_CONTINUE=1'
+          strings compat4buildcmp/framework/lspd.dex | grep -Fq 'LSPOSED-COMPAT4: LEGACY_DISPATCH_REACHED=1'
+          strings compat4buildcmp/framework/lspd.dex | grep -Fq 'LSPOSED-COMPAT4: PACKAGE_CALLBACKS_COMPLETE=1'
+          for abi in arm64-v8a armeabi-v7a x86 x86_64; do
+            strings "compat4buildcmp/lib/$abi/liblspd.so" | grep -Fq 'LSPLANT-COMPAT4: FIXUP_GROUP_RESULT=%d'
+            strings "compat4buildcmp/lib/$abi/liblspd.so" | grep -Fq 'LSPLANT-COMPAT4: MANDATORY_FIXUP_GATE_ABORT=1'
+            strings "compat4buildcmp/lib/$abi/liblspd.so" | grep -Fq 'LSPLANT-COMPAT4: MANDATORY_FIXUP_GATE_PASS=1'
+            if strings "compat4buildcmp/lib/$abi/liblspd.so" | grep -Eq 'LSPLANT-COMPAT[12]:|JIT_INIT_SKIPPED|ANDROID13_ARM64_NO_FIXUP_COMPAT'; then
+              echo "prior compatibility marker leaked into $abi"
+              exit 1
+            fi
+          done
+
+          (cd compat4-output && sha256sum -c COMPAT4_EVIDENCE_SHA256SUMS.txt)
+          {
+            echo "RESULT=COMPAT4_STATIC_FULL_PASS_FIXUP_GATE_PLUS_OPTIONAL_APPCOMPONENTFACTORY_CREATED"
+            echo "PARENT=COMPAT3 native PairIP checkpoint rebuilt from official 7371 + R1-v2"
+            echo "FUNCTIONAL_DELTA=preserve mandatory Fixup gate and add capability-optional mAppComponentFactory pre-dispatch handling"
+            echo "FIXUP_FAIL=return false before RegisterNative and every later ClassLinker hook group"
+            echo "FIXUP_PASS=current upstream ClassLinker and later InitNative behavior unchanged"
+            echo "FINAL_PAYLOAD=official 7371 + rebuilt R1+COMPAT4 framework dex + rebuilt COMPAT4 liblspd.so for 4 ABIs"
+            echo "MANAGER_DAEMON=official 7371 byte-identical"
+            echo "DEVICE_RUNTIME_STATUS=NOT_TESTED_BY_WORKFLOW"
+            echo "STATIC_PASS_IS_NOT_DEVICE_PASS=YES"
+          } | tee compat4-output/COMPAT4_STATIC_PASS_MARKER.txt
+
+      - name: Upload COMPAT4 diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: irena-x-v2.0.1-7371-compat4-mandatory-fixup-gate-${{ github.run_id }}
+          path: compat4-output
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 30
+
