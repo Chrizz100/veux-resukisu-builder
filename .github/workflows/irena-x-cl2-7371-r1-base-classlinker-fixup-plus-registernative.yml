@@ -1,0 +1,604 @@
+name: Irena X 7371 CL2 ClassLinker FixupStaticTrampolines + RegisterNative isolation
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  IRENA_REPO: silvzr/LSP-IrenaX
+  IRENA_COMMIT: da439fbbed506dac6c66074af7fda8982aa4fc6a
+  CURRENT_LSPLANT_SHA: c5b46bb4f6a99ffe0c77ce3ab006d3f67d5a2b1c
+  CURRENT_DOBBY_SHA: dc7b4be06ad6c5dcfb0bb4ca2082b007d69eaed5
+  OFFICIAL_RELEASE_URL: https://github.com/silvzr/LSP-IrenaX/releases/download/v2.0.1/LSPosed-v2.0.1-7371-IrenaX-release.zip
+  OFFICIAL_RELEASE_SHA256: 99e7aaf54dda0e6fa746c55613483a80620174f255dd05e102713778a9966d2f
+  R1_DEVICE_PACKAGE_SHA256: 7ed948db19d92b0dd7776c424f93783e10210082ea807345228e901ab9ce4af7
+  FINAL_ZIP: LSPosed-v2.0.1-7371-IrenaX-CL2-R1-base-ClassLinker-Fixup-plus-RegisterNative-diagnostic.zip
+
+jobs:
+  build:
+    name: Build CL2 ClassLinker Fixup + RegisterNative diagnostic
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Freeze CL2 diagnostic contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p cl2-output
+          {
+            echo "PARENT=R1-v2 immutable Framework checkpoint"
+            echo "PARENT_DEVICE_PACKAGE_SHA256=$R1_DEVICE_PACKAGE_SHA256"
+            echo "BASE=official Irena X 7371 source + exact R1-v2 mIncludeCode compatibility fix"
+            echo "CL2_ONLY_NEW_FUNCTIONAL_CHANGE=relative to CL1 keep the same FixupStaticTrampolines group, additionally execute only the RegisterNative candidate group, then return true before UnregisterNative; InitNative immediately returns false after ClassLinker as in N1"
+            echo "CL2_PURPOSE=test whether adding the RegisterNative ClassLinker hook group is sufficient to restore the PairIP crash"
+            echo "N0_DEVICE_RESULT=VALID_SAME_PID_MARKER_THEN_PAIRIP_LOAD_NO_FATAL_PROCESS_ALIVE_35S"
+            echo "N1_DEVICE_RESULT=VALID_SAME_PID_MARKER_THEN_PAIRIP_LOAD_THEN_SEGV_ACCERR_AT_LIBPAIRIPCORE_PLUS_0x65768"
+            echo "CL1_DEVICE_RESULT=VALID_FIXUP_GROUP_RESULT_0_THEN_PAIRIP_LOAD_NO_FATAL"
+            echo "CL1_JOYSTICK_RESULT=PAIRIP_STABLE_BUT_SCANNER_VISIBLE_DISABLED_WHEN_JOYSTICK_ACTIVE_SEPARATE_LOCATION_ISSUE"
+            echo "CL2_EXPECTED_MARKER=LSPLANT-CL2: CLASSLINKER_CUTOFF_AFTER_REGISTER_NATIVE_GROUP"
+            echo "CURRENT_LSPLANT=$CURRENT_LSPLANT_SHA"
+            echo "CURRENT_DOBBY=$CURRENT_DOBBY_SHA"
+            echo "R9_CHANGES=NONE"
+            echo "DEX2OAT_MOUNT_CHANGES=NONE"
+            echo "PAIRIP_BYPASS=NONE"
+            echo "STATIC_PASS_IS_NOT_DEVICE_PASS=YES"
+          } | tee cl2-output/CL2_DIAGNOSTIC_CONTRACT.txt
+
+      - name: Checkout pinned Irena X 7371
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.IRENA_REPO }}
+          ref: ${{ env.IRENA_COMMIT }}
+          submodules: recursive
+          fetch-depth: 0
+          path: LSP-IrenaX
+          persist-credentials: false
+
+      - name: Verify exact pristine pins and CL2 source preconditions
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C LSP-IrenaX rev-parse HEAD)" = "$IRENA_COMMIT"
+          test -z "$(git -C LSP-IrenaX status --porcelain)"
+          test "$(git -C LSP-IrenaX/external/lsplant rev-parse HEAD)" = "$CURRENT_LSPLANT_SHA"
+          test "$(git -C LSP-IrenaX/external/dobby rev-parse HEAD)" = "$CURRENT_DOBBY_SHA"
+          test -z "$(git -C LSP-IrenaX/external/lsplant status --porcelain)"
+          test -z "$(git -C LSP-IrenaX/external/dobby status --porcelain)"
+
+          java_file="LSP-IrenaX/core/src/main/java/org/lsposed/lspd/hooker/LoadedApkCtorHooker.java"
+          native_file="LSP-IrenaX/external/lsplant/lsplant/src/main/jni/lsplant.cc"
+          cl_file="LSP-IrenaX/external/lsplant/lsplant/src/main/jni/art/runtime/class_linker.cxx"
+          test -f "$java_file"
+          test -f "$native_file"
+          test -f "$cl_file"
+          grep -Fq 'boolean includeCode = XposedHelpers.getBooleanField(loadedApk, "mIncludeCode");' "$java_file"
+          grep -Fq 'if (!Runtime::Init(handler)) {' "$native_file"
+          grep -Fq 'if (!ClassLinker::Init(env, handler)) {' "$native_file"
+          grep -Fq 'if (!ScopedSuspendAll::Init(handler)) {' "$native_file"
+          grep -Fq 'auto register_native_hooked = sdk_int >= kSdkOreo && sdk_int < kSdkPie' "$cl_file"
+          grep -Fq 'handler(RegisterNativeClassLinker_, RegisterNative_,' "$cl_file"
+          grep -Fq '!handler(UnregisterNativeClassLinker_, UnregisterNative_,' "$cl_file"
+          if grep -Fq 'LSPLANT-CL2:' "$native_file" "$cl_file"; then
+            echo "CL2 marker already exists in pristine source"
+            exit 1
+          fi
+
+          {
+            echo "IRENA=$(git -C LSP-IrenaX rev-parse HEAD)"
+            echo "LSPLANT=$(git -C LSP-IrenaX/external/lsplant rev-parse HEAD)"
+            echo "DOBBY=$(git -C LSP-IrenaX/external/dobby rev-parse HEAD)"
+            echo "R1_M_INCLUDE_CODE_PRECONDITION=PRESENT"
+            echo "CL2_CLASSLINKER_REGISTER_NATIVE_THEN_UNREGISTER_NATIVE_PRECONDITION=PRESENT"
+          } | tee cl2-output/CL2_SOURCE_PINS_AND_PRECONDITIONS.txt
+
+      - name: Setup Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          log-accepted-android-sdk-licenses: 'false'
+          packages: ''
+
+      - name: Setup ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          max-size: 2G
+          key: irena-x-cl2-${{ runner.os }}
+          restore-keys: |
+            irena-x-${{ runner.os }}
+          save: false
+
+      - name: Setup Ninja 1.12.1
+        uses: seanmiddleditch/gha-setup-ninja@master
+        with:
+          version: 1.12.1
+
+      - name: Remove Android bundled CMake
+        shell: bash
+        run: rm -rf "$ANDROID_HOME/cmake"
+
+      - name: Configure Gradle
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.gradle
+          {
+            echo 'org.gradle.caching=true'
+            echo 'org.gradle.parallel=true'
+            echo 'org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8 -XX:+UseParallelGC'
+            echo 'android.native.buildOutput=verbose'
+          } >> ~/.gradle/gradle.properties
+
+      - name: Download and verify official Irena 7371 release
+        id: official
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 3 -o OFFICIAL_RELEASE.zip "$OFFICIAL_RELEASE_URL"
+          echo "$OFFICIAL_RELEASE_SHA256  OFFICIAL_RELEASE.zip" | sha256sum -c -
+          unzip -t OFFICIAL_RELEASE.zip
+          rm -rf officialcmp
+          mkdir officialcmp
+          unzip -q OFFICIAL_RELEASE.zip -d officialcmp
+          python3 - <<'PY'
+          import zipfile
+          with zipfile.ZipFile('OFFICIAL_RELEASE.zip') as z:
+              names = z.namelist()
+              if len(names) != len(set(names)):
+                  raise SystemExit('duplicate names in official release')
+              files = [n for n in names if not n.endswith('/')]
+              if len(files) != 56:
+                  raise SystemExit(f'official release file count is {len(files)}, expected 56')
+              bad = z.testzip()
+              if bad:
+                  raise SystemExit(f'official CRC failure: {bad}')
+          PY
+          sha256sum OFFICIAL_RELEASE.zip > cl2-output/CL2_OFFICIAL_RELEASE_SHA256.txt
+
+      - name: Apply exact R1-v2 mIncludeCode compatibility fix
+        id: r1patch
+        if: steps.official.outcome == 'success'
+        working-directory: LSP-IrenaX
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          p = Path('core/src/main/java/org/lsposed/lspd/hooker/LoadedApkCtorHooker.java')
+          s = p.read_text()
+          line = '            boolean includeCode = XposedHelpers.getBooleanField(loadedApk, "mIncludeCode");\n'
+          branch = (
+              '            } else if (!includeCode) {\n'
+              '                Hookers.logD("LoadedApk#<init> has no code, skip: " + mAppDir);\n'
+              '                return;\n'
+          )
+          if s.count(line) != 1:
+              raise SystemExit(f'expected one mIncludeCode read, got {s.count(line)}')
+          if s.count(branch) != 1:
+              raise SystemExit(f'expected one no-code branch, got {s.count(branch)}')
+          s = s.replace(line, '', 1).replace(branch, '', 1)
+          expected = (
+              '            if (packageName.equals("android")) {\n'
+              '                if (XposedInit.startsSystemServer) {\n'
+              '                    Hookers.logD("LoadedApk#<init> is android, skip: " + mAppDir);\n'
+              '                    return;\n'
+              '                } else {\n'
+              '                    packageName = "system";\n'
+              '                }\n'
+              '            }\n'
+              '\n'
+              '            if (!XposedInit.loadedPackagesInProcess.add(packageName)) {\n'
+          )
+          if expected not in s:
+              raise SystemExit('R1-v2 post-patch control flow mismatch')
+          if 'mIncludeCode' in s:
+              raise SystemExit('mIncludeCode survived R1-v2 patch')
+          p.write_text(s)
+          PY
+          git diff --check
+
+      - name: Apply CL2 ClassLinker Fixup + RegisterNative isolation
+        id: cl2patch
+        if: steps.r1patch.outcome == 'success'
+        working-directory: LSP-IrenaX
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          # Keep the N1 outer cutoff: ClassLinker may run, nothing after it may run.
+          p = Path('external/lsplant/lsplant/src/main/jni/lsplant.cc')
+          s = p.read_text()
+          old = (
+              '    if (!ClassLinker::Init(env, handler)) {\n'
+              '        LOGE("Failed to init class linker");\n'
+              '        return false;\n'
+              '    }\n'
+              '    if (!ScopedSuspendAll::Init(handler)) {\n'
+              '        LOGE("Failed to init scoped suspend all");\n'
+              '        return false;\n'
+              '    }\n'
+          )
+          new = (
+              '    if (!ClassLinker::Init(env, handler)) {\n'
+              '        LOGE("Failed to init class linker");\n'
+              '        return false;\n'
+              '    }\n'
+              '    LOGE("LSPLANT-CL2: CLASSLINKER_CUTOFF_AFTER_REGISTER_NATIVE_GROUP");\n'
+              '    return false;\n'
+              '    if (!ScopedSuspendAll::Init(handler)) {\n'
+              '        LOGE("Failed to init scoped suspend all");\n'
+              '        return false;\n'
+              '    }\n'
+          )
+          if s.count(old) != 1:
+              raise SystemExit(f'expected one ClassLinker->ScopedSuspendAll boundary, got {s.count(old)}')
+          s = s.replace(old, new, 1)
+          p.write_text(s)
+
+          # ARM64 CL2 = exact CL1 Fixup group + exactly one new group: RegisterNative.
+          # Return from ClassLinker before UnregisterNative and every later group.
+          p = Path('external/lsplant/lsplant/src/main/jni/art/runtime/class_linker.cxx')
+          s = p.read_text()
+          old_fixup = (
+              '        } else {\n'
+              '            handler(FixupStaticTrampolinesWithThread_, FixupStaticTrampolines_,\n'
+              '                    FixupStaticTrampolinesRaw_);\n'
+              '        }\n'
+              '\n'
+              '        auto register_native_hooked = sdk_int >= kSdkOreo && sdk_int < kSdkPie\n'
+          )
+          new_fixup = (
+              '        } else {\n'
+              '            auto cl2_fixup_group_hooked =\n'
+              '                    handler(FixupStaticTrampolinesWithThread_, FixupStaticTrampolines_,\n'
+              '                            FixupStaticTrampolinesRaw_);\n'
+              '            LOGE("LSPLANT-CL2: FIXUP_GROUP_RESULT=%d", cl2_fixup_group_hooked ? 1 : 0);\n'
+              '        }\n'
+              '\n'
+              '        auto register_native_hooked = sdk_int >= kSdkOreo && sdk_int < kSdkPie\n'
+          )
+          if s.count(old_fixup) != 1:
+              raise SystemExit(f'expected exactly one non-x86 Fixup group boundary, got {s.count(old_fixup)}')
+          s = s.replace(old_fixup, new_fixup, 1)
+
+          old_register = (
+              '        auto register_native_hooked = sdk_int >= kSdkOreo && sdk_int < kSdkPie\n'
+              '                                          ? handler(RegisterNativeFastWithReturn_)\n'
+              '                                          : handler(RegisterNativeClassLinker_, RegisterNative_,\n'
+              '                                                    RegisterNativeFast_, RegisterNativeThread_);\n'
+              '        if (!register_native_hooked ||\n'
+              '            !handler(UnregisterNativeClassLinker_, UnregisterNative_,\n'
+              '                     UnregisterNativeThread_)) {\n'
+          )
+          new_register = (
+              '        auto register_native_hooked = sdk_int >= kSdkOreo && sdk_int < kSdkPie\n'
+              '                                          ? handler(RegisterNativeFastWithReturn_)\n'
+              '                                          : handler(RegisterNativeClassLinker_, RegisterNative_,\n'
+              '                                                    RegisterNativeFast_, RegisterNativeThread_);\n'
+              '        LOGE("LSPLANT-CL2: REGISTER_NATIVE_GROUP_RESULT=%d", register_native_hooked ? 1 : 0);\n'
+              '        LOGE("LSPLANT-CL2: CLASSLINKER_CUTOFF_AFTER_REGISTER_NATIVE_GROUP");\n'
+              '        return true;\n'
+              '        if (!register_native_hooked ||\n'
+              '            !handler(UnregisterNativeClassLinker_, UnregisterNative_,\n'
+              '                     UnregisterNativeThread_)) {\n'
+          )
+          if s.count(old_register) != 1:
+              raise SystemExit(f'expected exactly one RegisterNative->UnregisterNative boundary, got {s.count(old_register)}')
+          s = s.replace(old_register, new_register, 1)
+
+          if s.count('LSPLANT-CL2: FIXUP_GROUP_RESULT=%d') != 1:
+              raise SystemExit('CL2 fixup result marker count mismatch')
+          if s.count('LSPLANT-CL2: REGISTER_NATIVE_GROUP_RESULT=%d') != 1:
+              raise SystemExit('CL2 register result marker count mismatch')
+          if s.count('LSPLANT-CL2: CLASSLINKER_CUTOFF_AFTER_REGISTER_NATIVE_GROUP') != 1:
+              raise SystemExit('CL2 class-linker cutoff marker count mismatch')
+          p.write_text(s)
+          PY
+
+          git -C external/lsplant diff --check
+          mapfile -t ls_changed < <(git -C external/lsplant diff --name-only | sort)
+          printf '%s\n' "${ls_changed[@]}" | tee ../cl2-output/CL2_LSPLANT_DIFF_NAMES.txt
+          test "${#ls_changed[@]}" -eq 2
+          test "${ls_changed[0]}" = "lsplant/src/main/jni/art/runtime/class_linker.cxx"
+          test "${ls_changed[1]}" = "lsplant/src/main/jni/lsplant.cc"
+
+          mapfile -t top_changed < <(git diff --name-only | sort)
+          printf '%s\n' "${top_changed[@]}" | tee ../cl2-output/CL2_SOURCE_DIFF_NAMES.txt
+          test "${#top_changed[@]}" -eq 2
+          test "${top_changed[0]}" = "core/src/main/java/org/lsposed/lspd/hooker/LoadedApkCtorHooker.java"
+          test "${top_changed[1]}" = "external/lsplant"
+
+          # Freeze all unrelated paths.
+          git diff --exit-code "$IRENA_COMMIT" -- \
+            core/src/main/java/org/lsposed/lspd/core/Startup.java \
+            core/src/main/java/org/lsposed/lspd/hooker/LoadedApkCreateCLHooker.java \
+            core/src/main/java/org/lsposed/lspd/hooker/AttachHooker.java \
+            core/src/main/java/org/lsposed/lspd/impl/LSPosedBridge.java \
+            core/src/main/java/org/lsposed/lspd/impl/LSPosedHelper.java \
+            core/src/main/jni/src/jni/hook_bridge.cpp \
+            core/src/main/jni/src/native_api.cpp \
+            daemon/src/main/java/org/lsposed/lspd/service/Dex2OatService.java \
+            magisk-loader/src/main/jni/api/zygisk_main.cpp \
+            magisk-loader/src/main/jni/src/magisk_loader.cpp \
+            magisk-loader/src/main/jni/src/atexit.cpp
+
+          test "$(git -C external/dobby rev-parse HEAD)" = "$CURRENT_DOBBY_SHA"
+          test -z "$(git -C external/dobby status --porcelain)"
+
+          git diff > ../cl2-output/CL2_TOPLEVEL_SOURCE.patch
+          git -C external/lsplant diff > ../cl2-output/CL2_LSPLANT_SOURCE.patch
+          {
+            echo "SOURCE_DELTA_TOPLEVEL=LoadedApkCtorHooker.java + external/lsplant submodule"
+            echo "SOURCE_DELTA_LSPLANT=class_linker.cxx + lsplant.cc only"
+            echo "R1_V2_M_INCLUDE_CODE_FIX=PRESERVED"
+            echo "N0_DEVICE_RESULT=NO_PAIRIP_FATAL_WITHOUT_CLASSLINKER"
+            echo "N1_DEVICE_RESULT=PAIRIP_SEGV_ACCERR_PLUS_0x65768_WITH_FULL_CLASSLINKER_INIT"
+            echo "CL1_DEVICE_RESULT=FIXUP_GROUP_RESULT_0_PAIRIP_LOAD_NO_FATAL"
+            echo "CL2_FIXUP_GROUP=SAME_AS_CL1"
+            echo "CL2_REGISTER_NATIVE_GROUP=REACHED_AND_ONLY_NEW_CLASSLINKER_GROUP"
+            echo "CL2_UNREGISTER_NATIVE_GROUP=NOT_REACHED"
+            echo "CL2_VISIBILITY_GROUP=NOT_REACHED"
+            echo "CL2_ENTRYPOINT_GROUP=NOT_REACHED"
+            echo "CL2_OUTER_CUTOFF_BEFORE=ScopedSuspendAll::Init(handler)"
+            echo "R9=ABSENT"
+            echo "DEX2OAT=UNCHANGED_OFFICIAL_7371"
+            echo "PAIRIP_BYPASS=ABSENT"
+          } | tee ../cl2-output/CL2_PROVENANCE.txt
+
+      - name: Build CL2 Fixup + RegisterNative diagnostic candidate
+        id: cl2build
+        if: steps.cl2patch.outcome == 'success'
+        working-directory: LSP-IrenaX
+        shell: bash
+        run: |
+          set -uo pipefail
+          set +e
+          ./gradlew clean zipAll --stacktrace --info 2>&1 | tee ../cl2-build.log
+          rc=${PIPESTATUS[0]}
+          set -e
+          echo "$rc" > ../CL2_BUILD_EXIT_CODE.txt
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Extract CL2 build and verify marker payload
+        id: built
+        if: steps.cl2build.outputs.rc == '0'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t rel < <(find LSP-IrenaX/magisk-loader/release -maxdepth 1 -type f \
+            -name 'LSPosed-v*-IrenaX-release.zip' -print | sort)
+          test "${#rel[@]}" -eq 1
+          cp "${rel[0]}" CL2_BUILD_RELEASE.zip
+          unzip -t CL2_BUILD_RELEASE.zip
+          rm -rf cl2buildcmp
+          mkdir cl2buildcmp
+          unzip -q CL2_BUILD_RELEASE.zip -d cl2buildcmp
+
+          test -f cl2buildcmp/framework/lspd.dex
+          for abi in arm64-v8a armeabi-v7a x86 x86_64; do
+            test -f "cl2buildcmp/lib/$abi/liblspd.so"
+            strings "cl2buildcmp/lib/$abi/liblspd.so" | grep -Fq 'LSPLANT-CL2: CLASSLINKER_CUTOFF_AFTER_REGISTER_NATIVE_GROUP'
+            strings "cl2buildcmp/lib/$abi/liblspd.so" | grep -Fq 'LSPLANT-CL2: REGISTER_NATIVE_GROUP_RESULT=%d'
+            readelf -h "cl2buildcmp/lib/$abi/liblspd.so" >/dev/null
+          done
+
+          sha256sum cl2buildcmp/framework/lspd.dex > cl2-output/CL2_REBUILT_FRAMEWORK_DEX_SHA256.txt
+          sha256sum cl2buildcmp/lib/*/liblspd.so > cl2-output/CL2_REBUILT_LIBLSPD_SHA256.txt
+
+      - name: Create official-base CL2 install package
+        id: package
+        if: steps.built.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib, zipfile
+
+          official = Path('OFFICIAL_RELEASE.zip')
+          built = Path('cl2buildcmp')
+          out = Path('${{ env.FINAL_ZIP }}')
+          abis = ('arm64-v8a','armeabi-v7a','x86','x86_64')
+          payload = {'framework/lspd.dex'} | {f'lib/{abi}/liblspd.so' for abi in abis}
+          sidecars = {x + '.sha256' for x in payload}
+          replacements = {}
+          for name in payload:
+              data = (built / name).read_bytes()
+              replacements[name] = data
+              replacements[name + '.sha256'] = hashlib.sha256(data).hexdigest().encode()
+
+          with zipfile.ZipFile(official, 'r') as zin, zipfile.ZipFile(out, 'w') as zout:
+              infos = zin.infolist()
+              names = [i.filename for i in infos]
+              if len(names) != len(set(names)):
+                  raise SystemExit('duplicate names in official ZIP')
+              if not (payload | sidecars).issubset(set(names)):
+                  raise SystemExit('official ZIP misses one or more CL2 replacement targets')
+              for info in infos:
+                  zout.writestr(info, replacements.get(info.filename, zin.read(info.filename)))
+
+          def tree(path):
+              with zipfile.ZipFile(path) as z:
+                  names = z.namelist()
+                  if len(names) != len(set(names)):
+                      raise SystemExit(f'duplicate names: {path}')
+                  bad = z.testzip()
+                  if bad:
+                      raise SystemExit(f'CRC failure {path}: {bad}')
+                  return {n: hashlib.sha256(z.read(n)).hexdigest() for n in names if not n.endswith('/')}
+
+          a, b = tree(official), tree(out)
+          if set(a) != set(b):
+              raise SystemExit('official/CL2 file sets differ')
+          if len(a) != 56:
+              raise SystemExit(f'expected 56 files, got {len(a)}')
+          diff = sorted(k for k in a if a[k] != b[k])
+          expected = sorted(payload | sidecars)
+          if diff != expected:
+              raise SystemExit(f'unexpected official->CL2 package delta: {diff}')
+
+          # Keep manager/daemon/scripts exact official 7371; only target-process native libs + R1 dex change.
+          for rel in ('manager.apk','daemon.apk'):
+              if a[rel] != b[rel]:
+                  raise SystemExit(f'official control payload changed: {rel}')
+
+          with zipfile.ZipFile(out) as z:
+              names = set(z.namelist())
+              checked = 0
+              for n in sorted(names):
+                  if not n.endswith('.sha256'):
+                      continue
+                  p = n[:-7]
+                  if p not in names:
+                      continue
+                  expected_hash = z.read(n).decode().strip().split()[0]
+                  actual_hash = hashlib.sha256(z.read(p)).hexdigest()
+                  if expected_hash != actual_hash:
+                      raise SystemExit(f'sidecar mismatch: {n}')
+                  checked += 1
+              if checked != 28:
+                  raise SystemExit(f'expected 28 verified sidecars, got {checked}')
+
+          sha = hashlib.sha256(out.read_bytes()).hexdigest()
+          Path('cl2-output/CL2_FINAL_PACKAGE_SHA256.txt').write_text(f'{sha}  {out.name}\n')
+          Path('cl2-output/CL2_FINAL_PACKAGE_DIFF.txt').write_text('\n'.join(expected) + '\n')
+          Path('cl2-output/CL2_FINAL_SCOPE.txt').write_text(
+              'BASE=official Irena X 7371 release\n'
+              'PARENT_SEMANTICS=R1-v2 mIncludeCode fix preserved in framework/lspd.dex\n'
+              'CL2_NEW_NATIVE_CHANGE=ClassLinker runs CL1 Fixup group plus RegisterNative candidate group, then returns before UnregisterNative; outer cutoff remains before ScopedSuspendAll::Init\n'
+              'FINAL_PACKAGE_DELTA=framework/lspd.dex+sidecar + 4 liblspd.so+sidecars\n'
+              'MANAGER=official 7371 byte-identical\n'
+              'DAEMON=official 7371 byte-identical\n'
+              'DEX2OAT=official 7371 unchanged\n'
+              'DOBBY=official/current 7371 unchanged\n'
+              'R9_CHANGES=none\n'
+              'PAIRIP_BYPASS=none\n'
+              'DEVICE_RUNTIME_STATUS=not tested\n'
+          )
+          PY
+          unzip -t "$FINAL_ZIP"
+          cp "$FINAL_ZIP" "cl2-output/INSTALL_THIS_${FINAL_ZIP}"
+
+      - name: Write CL2 device test plan
+        if: steps.package.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > cl2-output/CL2_DEVICE_TEST_PLAN.txt <<'EOF'
+          CL2 CLASSLINKER FIXUP + REGISTERNATIVE DIAGNOSTIC
+
+          PURPOSE
+          - N0: no ClassLinker -> PairIP loads without historical +0x65768 fatal.
+          - N1: full ClassLinker -> historical PairIP +0x65768 fatal returns.
+          - CL1: FixupStaticTrampolines group only, runtime result=0 -> PairIP loads and Ingress survives.
+          - CL2 keeps the exact CL1 Fixup group and adds only the RegisterNative candidate group.
+          - CL2 returns before UnregisterNative and stops before ScopedSuspendAll.
+
+          REQUIRED RUNTIME MARKERS IN THE SAME INGRESS PID
+          LSPLANT-CL2: FIXUP_GROUP_RESULT=0
+          LSPLANT-CL2: REGISTER_NATIVE_GROUP_RESULT=1
+          LSPLANT-CL2: CLASSLINKER_CUTOFF_AFTER_REGISTER_NATIVE_GROUP
+
+          DEVICE ORDER
+          1. Install only the inner INSTALL_THIS_*.zip and reboot.
+          2. Confirm Android and the LSPosed/Irena manager are usable enough for the diagnostic.
+          3. Clear logcat, force-stop Ingress and cold-start it once.
+          4. Capture:
+             su -c 'logcat -b all -d -v threadtime | grep -E "LSPLANT-CL2|Failed to init lsplant|libpairipcore|SIGSEGV|SEGV_|Fatal signal" > /sdcard/Download/cl2-registernative-group-isolation.txt'
+
+          VALIDITY
+          - FIXUP_GROUP_RESULT should remain 0 as in CL1 on the same device/ART.
+          - REGISTER_NATIVE_GROUP_RESULT should be 1 because N1 full ClassLinker reached its successful outer marker on this same environment.
+          - If either expectation changes, stop and recheck before causal interpretation.
+
+          INTERPRETATION
+          - Fixup=0 + RegisterNative=1 + same libpairipcore.so +0x65768 crash:
+            RegisterNative candidate group is sufficient to recreate the crash.
+            Next step isolates the concrete RegisterNative candidate hook(s).
+          - Fixup=0 + RegisterNative=1 + Ingress survives PairIP load:
+            RegisterNative alone is not sufficient. Next CL3 adds only UnregisterNative.
+          - Marker absent or RegisterNative=0:
+            diagnostic is not comparable; do not infer causality.
+
+          JOYSTICK/SCANNER
+          - CL1 already showed the separate location issue: scanner becomes visibly disabled when joystick is active.
+          - Do not mix that result into this PairIP/ClassLinker causal test.
+
+          STATIC PASS != DEVICE PASS.
+          CL2 never becomes a release parent.
+          EOF
+
+      - name: Collect CL2 evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p cl2-output/native
+          cp CL2_BUILD_EXIT_CODE.txt cl2-output/ 2>/dev/null || true
+          cp cl2-build.log cl2-output/ 2>/dev/null || true
+          cp CL2_BUILD_RELEASE.zip cl2-output/ 2>/dev/null || true
+          cp OFFICIAL_RELEASE.zip cl2-output/OFFICIAL_7371_RELEASE_REFERENCE.zip 2>/dev/null || true
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib
+          out = Path('cl2-output')
+          manifest = out / 'CL2_EVIDENCE_SHA256SUMS.txt'
+          files = sorted(p for p in out.rglob('*') if p.is_file() and p != manifest)
+          with manifest.open('w') as f:
+              for p in files:
+                  f.write(f"{hashlib.sha256(p.read_bytes()).hexdigest()}  {p.relative_to(out).as_posix()}\n")
+          PY
+          (cd cl2-output && sha256sum -c CL2_EVIDENCE_SHA256SUMS.txt)
+
+      - name: Final CL2 fail-closed static gate
+        id: finalgate
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f CL2_BUILD_EXIT_CODE.txt
+          test "$(cat CL2_BUILD_EXIT_CODE.txt)" = "0"
+          grep -q '^R1_V2_M_INCLUDE_CODE_FIX=PRESERVED$' cl2-output/CL2_PROVENANCE.txt
+          grep -q '^CL2_FIXUP_GROUP=SAME_AS_CL1$' cl2-output/CL2_PROVENANCE.txt
+          grep -q '^CL2_REGISTER_NATIVE_GROUP=REACHED_AND_ONLY_NEW_CLASSLINKER_GROUP$' cl2-output/CL2_PROVENANCE.txt
+          grep -q '^CL2_UNREGISTER_NATIVE_GROUP=NOT_REACHED$' cl2-output/CL2_PROVENANCE.txt
+          grep -q '^CL2_OUTER_CUTOFF_BEFORE=ScopedSuspendAll::Init(handler)$' cl2-output/CL2_PROVENANCE.txt
+          grep -q '^R9=ABSENT$' cl2-output/CL2_PROVENANCE.txt
+          grep -q '^DEX2OAT=UNCHANGED_OFFICIAL_7371$' cl2-output/CL2_PROVENANCE.txt
+          grep -q '^PAIRIP_BYPASS=ABSENT$' cl2-output/CL2_PROVENANCE.txt
+          test -f "cl2-output/INSTALL_THIS_${FINAL_ZIP}"
+          strings cl2buildcmp/lib/arm64-v8a/liblspd.so | grep -Fq 'LSPLANT-CL2: CLASSLINKER_CUTOFF_AFTER_REGISTER_NATIVE_GROUP'
+          strings cl2buildcmp/lib/arm64-v8a/liblspd.so | grep -Fq 'LSPLANT-CL2: REGISTER_NATIVE_GROUP_RESULT=%d'
+          (cd cl2-output && sha256sum -c CL2_EVIDENCE_SHA256SUMS.txt)
+          {
+            echo "RESULT=CL2_STATIC_FULL_PASS_DEVICE_DIAGNOSTIC_CREATED"
+            echo "PARENT=R1-v2 immutable Framework checkpoint"
+            echo "ONLY_NEW_FUNCTIONAL_VARIABLE_VS_CL1=RegisterNative candidate group; Fixup group preserved; no UnregisterNative or later ClassLinker groups"
+            echo "FINAL_PAYLOAD=official 7371 + R1 dex + rebuilt CL2 liblspd.so for 4 ABIs"
+            echo "MANAGER_DAEMON=official 7371 byte-identical"
+            echo "DEVICE_RUNTIME_STATUS=NOT_TESTED_BY_WORKFLOW"
+            echo "STATIC_PASS_IS_NOT_DEVICE_PASS=YES"
+          } | tee cl2-output/CL2_STATIC_PASS_MARKER.txt
+
+      - name: Upload CL2 diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: irena-x-v2.0.1-7371-cl2-fixup-plus-registernative-${{ github.run_id }}
+          path: cl2-output
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 30
