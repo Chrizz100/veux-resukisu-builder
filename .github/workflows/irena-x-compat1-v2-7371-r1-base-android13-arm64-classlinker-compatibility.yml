@@ -1,0 +1,695 @@
+name: Irena X 7371 COMPAT1 Android 13 ARM64 ClassLinker compatibility
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  IRENA_REPO: silvzr/LSP-IrenaX
+  IRENA_COMMIT: da439fbbed506dac6c66074af7fda8982aa4fc6a
+  CURRENT_LSPLANT_SHA: c5b46bb4f6a99ffe0c77ce3ab006d3f67d5a2b1c
+  CURRENT_DOBBY_SHA: dc7b4be06ad6c5dcfb0bb4ca2082b007d69eaed5
+  OFFICIAL_RELEASE_URL: https://github.com/silvzr/LSP-IrenaX/releases/download/v2.0.1/LSPosed-v2.0.1-7371-IrenaX-release.zip
+  OFFICIAL_RELEASE_SHA256: 99e7aaf54dda0e6fa746c55613483a80620174f255dd05e102713778a9966d2f
+  R1_DEVICE_PACKAGE_SHA256: 7ed948db19d92b0dd7776c424f93783e10210082ea807345228e901ab9ce4af7
+  FINAL_ZIP: LSPosed-v2.0.1-7371-IrenaX-COMPAT1-R1-base-Android13-ARM64-ClassLinker-compatibility.zip
+
+jobs:
+  build:
+    name: Build COMPAT1 Android 13 ARM64 ClassLinker compatibility
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Freeze COMPAT1 compatibility contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p compat1-output
+          {
+            echo "PARENT=R1-v2 immutable Framework checkpoint"
+            echo "PARENT_DEVICE_PACKAGE_SHA256=$R1_DEVICE_PACKAGE_SHA256"
+            echo "BASE=official Irena X 7371 source + exact R1-v2 mIncludeCode compatibility fix"
+            echo "COMPAT1_FUNCTIONAL_DELTA=Android 13 ARM64 only: if FixupStaticTrampolines group is unavailable, never attempt RegisterNativeClassLinker_; try only the already-device-safe plain/fast/thread fallback group; if none exists, treat native RegisterNative propagation as optional and continue the full current LSPlant init"
+            echo "COMPAT1_PURPOSE=turn the CL2F PairIP-safe state into a full LSPlant initialization candidate without reintroducing the CL2I/CL2P crash trigger"
+            echo "CL2F_DEVICE_RESULT=PAIRIP_DEVICE_PASS; FIXUP_0; REGISTER_NATIVE_FALLBACK_GROUP_0; NO_SIGSEGV; INGRESS_ONCREATE_ONSTART_ONRESUME"
+            echo "CL2P_DEVICE_RESULT=DEVICE_FAIL; FIXUP_0; REGISTERNATIVECLASSLINKER_1; PASSTHROUGH_NO_MAYGETBACKUP; SEGV_ACCERR_AT_LIBPAIRIPCORE_PLUS_0x65768"
+            echo "COMPAT1_EXPECTED_MARKER_1=LSPLANT-COMPAT1: FIXUP_GROUP_RESULT=0"
+            echo "COMPAT1_EXPECTED_MARKER_2=LSPLANT-COMPAT1: ANDROID13_ARM64_NO_FIXUP_COMPAT=1"
+            echo "COMPAT1_EXPECTED_MARKER_3=LSPLANT-COMPAT1: REGISTER_NATIVE_FALLBACK_GROUP_RESULT=0"
+            echo "COMPAT1_EXPECTED_MARKER_4=LSPLANT-COMPAT1: CLASSLINKER_INIT_CONTINUED_TO_SUCCESS"
+            echo "COMPAT1_EXPECTED_MARKER_5=LSPLANT-COMPAT1: INIT_NATIVE_FULL_SUCCESS"
+            echo "CURRENT_LSPLANT=$CURRENT_LSPLANT_SHA"
+            echo "CURRENT_DOBBY=$CURRENT_DOBBY_SHA"
+            echo "MAPP_COMPONENT_FACTORY_FIX=ABSENT"
+            echo "R9_CHANGES=NONE"
+            echo "DEX2OAT_MOUNT_CHANGES=NONE"
+            echo "PAIRIP_BYPASS=NONE"
+            echo "STATIC_PASS_IS_NOT_DEVICE_PASS=YES"
+          } | tee compat1-output/COMPAT1_COMPATIBILITY_CONTRACT.txt
+
+      - name: Checkout pinned Irena X 7371
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.IRENA_REPO }}
+          ref: ${{ env.IRENA_COMMIT }}
+          submodules: recursive
+          fetch-depth: 0
+          path: LSP-IrenaX
+          persist-credentials: false
+
+      - name: Verify exact pristine pins and COMPAT1 source preconditions
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C LSP-IrenaX rev-parse HEAD)" = "$IRENA_COMMIT"
+          test -z "$(git -C LSP-IrenaX status --porcelain)"
+          test "$(git -C LSP-IrenaX/external/lsplant rev-parse HEAD)" = "$CURRENT_LSPLANT_SHA"
+          test "$(git -C LSP-IrenaX/external/dobby rev-parse HEAD)" = "$CURRENT_DOBBY_SHA"
+          test -z "$(git -C LSP-IrenaX/external/lsplant status --porcelain)"
+          test -z "$(git -C LSP-IrenaX/external/dobby status --porcelain)"
+
+          java_file="LSP-IrenaX/core/src/main/java/org/lsposed/lspd/hooker/LoadedApkCtorHooker.java"
+          native_file="LSP-IrenaX/external/lsplant/lsplant/src/main/jni/lsplant.cc"
+          cl_file="LSP-IrenaX/external/lsplant/lsplant/src/main/jni/art/runtime/class_linker.cxx"
+          test -f "$java_file"
+          test -f "$native_file"
+          test -f "$cl_file"
+          grep -Fq 'boolean includeCode = XposedHelpers.getBooleanField(loadedApk, "mIncludeCode");' "$java_file"
+          grep -Fq 'if (!Runtime::Init(handler)) {' "$native_file"
+          grep -Fq 'if (!ClassLinker::Init(env, handler)) {' "$native_file"
+          grep -Fq 'if (!ScopedSuspendAll::Init(handler)) {' "$native_file"
+          grep -Fq 'auto register_native_hooked = sdk_int >= kSdkOreo && sdk_int < kSdkPie' "$cl_file"
+          grep -Fq 'handler(RegisterNativeClassLinker_, RegisterNative_,' "$cl_file"
+          grep -Fq '!handler(UnregisterNativeClassLinker_, UnregisterNative_,' "$cl_file"
+          if grep -Fq 'LSPLANT-COMPAT1:' "$native_file" "$cl_file"; then
+            echo "COMPAT1 marker already exists in pristine source"
+            exit 1
+          fi
+
+          {
+            echo "IRENA=$(git -C LSP-IrenaX rev-parse HEAD)"
+            echo "LSPLANT=$(git -C LSP-IrenaX/external/lsplant rev-parse HEAD)"
+            echo "DOBBY=$(git -C LSP-IrenaX/external/dobby rev-parse HEAD)"
+            echo "R1_M_INCLUDE_CODE_PRECONDITION=PRESENT"
+            echo "COMPAT1_ORIGINAL_REGISTER_NATIVE_GROUP_THEN_UNREGISTER_NATIVE_PRECONDITION=PRESENT"
+          } | tee compat1-output/COMPAT1_SOURCE_PINS_AND_PRECONDITIONS.txt
+
+      - name: Setup Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          log-accepted-android-sdk-licenses: 'false'
+          packages: ''
+
+      - name: Setup ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          max-size: 2G
+          key: irena-x-compat1-${{ runner.os }}
+          restore-keys: |
+            irena-x-${{ runner.os }}
+          save: false
+
+      - name: Setup Ninja 1.12.1
+        uses: seanmiddleditch/gha-setup-ninja@master
+        with:
+          version: 1.12.1
+
+      - name: Remove Android bundled CMake
+        shell: bash
+        run: rm -rf "$ANDROID_HOME/cmake"
+
+      - name: Configure Gradle
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.gradle
+          {
+            echo 'org.gradle.caching=true'
+            echo 'org.gradle.parallel=true'
+            echo 'org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8 -XX:+UseParallelGC'
+            echo 'android.native.buildOutput=verbose'
+          } >> ~/.gradle/gradle.properties
+
+      - name: Download and verify official Irena 7371 release
+        id: official
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 3 -o OFFICIAL_RELEASE.zip "$OFFICIAL_RELEASE_URL"
+          echo "$OFFICIAL_RELEASE_SHA256  OFFICIAL_RELEASE.zip" | sha256sum -c -
+          unzip -t OFFICIAL_RELEASE.zip
+          rm -rf officialcmp
+          mkdir officialcmp
+          unzip -q OFFICIAL_RELEASE.zip -d officialcmp
+          python3 - <<'PY'
+          import zipfile
+          with zipfile.ZipFile('OFFICIAL_RELEASE.zip') as z:
+              names = z.namelist()
+              if len(names) != len(set(names)):
+                  raise SystemExit('duplicate names in official release')
+              files = [n for n in names if not n.endswith('/')]
+              if len(files) != 56:
+                  raise SystemExit(f'official release file count is {len(files)}, expected 56')
+              bad = z.testzip()
+              if bad:
+                  raise SystemExit(f'official CRC failure: {bad}')
+          PY
+          sha256sum OFFICIAL_RELEASE.zip > compat1-output/COMPAT1_OFFICIAL_RELEASE_SHA256.txt
+
+      - name: Apply exact R1-v2 mIncludeCode compatibility fix
+        id: r1patch
+        if: steps.official.outcome == 'success'
+        working-directory: LSP-IrenaX
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          p = Path('core/src/main/java/org/lsposed/lspd/hooker/LoadedApkCtorHooker.java')
+          s = p.read_text()
+          line = '            boolean includeCode = XposedHelpers.getBooleanField(loadedApk, "mIncludeCode");\n'
+          branch = (
+              '            } else if (!includeCode) {\n'
+              '                Hookers.logD("LoadedApk#<init> has no code, skip: " + mAppDir);\n'
+              '                return;\n'
+          )
+          if s.count(line) != 1:
+              raise SystemExit(f'expected one mIncludeCode read, got {s.count(line)}')
+          if s.count(branch) != 1:
+              raise SystemExit(f'expected one no-code branch, got {s.count(branch)}')
+          s = s.replace(line, '', 1).replace(branch, '', 1)
+          expected = (
+              '            if (packageName.equals("android")) {\n'
+              '                if (XposedInit.startsSystemServer) {\n'
+              '                    Hookers.logD("LoadedApk#<init> is android, skip: " + mAppDir);\n'
+              '                    return;\n'
+              '                } else {\n'
+              '                    packageName = "system";\n'
+              '                }\n'
+              '            }\n'
+              '\n'
+              '            if (!XposedInit.loadedPackagesInProcess.add(packageName)) {\n'
+          )
+          if expected not in s:
+              raise SystemExit('R1-v2 post-patch control flow mismatch')
+          if 'mIncludeCode' in s:
+              raise SystemExit('mIncludeCode survived R1-v2 patch')
+          p.write_text(s)
+          PY
+          git diff --check
+
+      - name: Apply COMPAT1 Android 13 ARM64 ClassLinker compatibility
+        id: compat1patch
+        if: steps.r1patch.outcome == 'success'
+        working-directory: LSP-IrenaX
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          # Functional change: only ClassLinker::Init policy on Android 13 / ARM64 when
+          # FixupStaticTrampolines is unavailable. Never install RegisterNativeClassLinker_
+          # in that state. Reuse the CL2F-proven-safe fallback group; if no fallback exists,
+          # native RegisterNative propagation is optional and ClassLinker continues.
+          p = Path('external/lsplant/lsplant/src/main/jni/art/runtime/class_linker.cxx')
+          s = p.read_text()
+
+          init_anchor = (
+              '        if (sdk_int >= kSdkNougat && sdk_int < kSdkTiramisu) {\n'
+              '            handler(ShouldUseInterpreterEntrypoint_);\n'
+              '        }\n'
+              '\n'
+              '        if constexpr (is_arch_v<Arch::kX86>) {\n'
+          )
+          if s.count(init_anchor) != 1:
+              raise SystemExit(f'expected one ClassLinker Init pre-fixup boundary, got {s.count(init_anchor)}')
+          init_repl = (
+              '        if (sdk_int >= kSdkNougat && sdk_int < kSdkTiramisu) {\n'
+              '            handler(ShouldUseInterpreterEntrypoint_);\n'
+              '        }\n'
+              '\n'
+              '        bool compat1_fixup_group_hooked = false;\n'
+              '        if constexpr (is_arch_v<Arch::kX86>) {\n'
+          )
+          s = s.replace(init_anchor, init_repl, 1)
+
+          old_fixup = (
+              '        } else {\n'
+              '            handler(FixupStaticTrampolinesWithThread_, FixupStaticTrampolines_,\n'
+              '                    FixupStaticTrampolinesRaw_);\n'
+              '        }\n'
+              '\n'
+              '        auto register_native_hooked = sdk_int >= kSdkOreo && sdk_int < kSdkPie\n'
+          )
+          new_fixup = (
+              '        } else {\n'
+              '            compat1_fixup_group_hooked =\n'
+              '                    handler(FixupStaticTrampolinesWithThread_, FixupStaticTrampolines_,\n'
+              '                            FixupStaticTrampolinesRaw_);\n'
+              '            LOGE("LSPLANT-COMPAT1: FIXUP_GROUP_RESULT=%d",\n'
+              '                 compat1_fixup_group_hooked ? 1 : 0);\n'
+              '        }\n'
+              '\n'
+              '        auto register_native_hooked = sdk_int >= kSdkOreo && sdk_int < kSdkPie\n'
+          )
+          if s.count(old_fixup) != 1:
+              raise SystemExit(f'expected one non-x86 Fixup boundary, got {s.count(old_fixup)}')
+          s = s.replace(old_fixup, new_fixup, 1)
+
+          old_register = (
+              '        auto register_native_hooked = sdk_int >= kSdkOreo && sdk_int < kSdkPie\n'
+              '                                          ? handler(RegisterNativeFastWithReturn_)\n'
+              '                                          : handler(RegisterNativeClassLinker_, RegisterNative_,\n'
+              '                                                    RegisterNativeFast_, RegisterNativeThread_);\n'
+              '        if (!register_native_hooked ||\n'
+              '            !handler(UnregisterNativeClassLinker_, UnregisterNative_,\n'
+              '                     UnregisterNativeThread_)) {\n'
+              '            return false;\n'
+              '        }\n'
+          )
+          new_register = (
+              '        const bool compat1_android13_arm64_no_fixup =\n'
+              '                sdk_int == kSdkTiramisu && is_arch_v<Arch::kAArch64> &&\n'
+              '                !compat1_fixup_group_hooked;\n'
+              '        if (compat1_android13_arm64_no_fixup) {\n'
+              '            LOGE("LSPLANT-COMPAT1: ANDROID13_ARM64_NO_FIXUP_COMPAT=1");\n'
+              '            auto compat1_register_native_fallback_hooked =\n'
+              '                    handler(RegisterNative_, RegisterNativeFast_, RegisterNativeThread_);\n'
+              '            LOGE("LSPLANT-COMPAT1: REGISTER_NATIVE_FALLBACK_GROUP_RESULT=%d",\n'
+              '                 compat1_register_native_fallback_hooked ? 1 : 0);\n'
+              '            LOGE("LSPLANT-COMPAT1: REGISTER_NATIVE_FALLBACK_SELECTED plain=%d fast=%d thread=%d",\n'
+              '                 RegisterNative_ ? 1 : 0, RegisterNativeFast_ ? 1 : 0,\n'
+              '                 RegisterNativeThread_ ? 1 : 0);\n'
+              '            if (compat1_register_native_fallback_hooked) {\n'
+              '                auto compat1_unregister_native_fallback_hooked =\n'
+              '                        handler(UnregisterNative_, UnregisterNativeThread_);\n'
+              '                LOGE("LSPLANT-COMPAT1: UNREGISTER_NATIVE_FALLBACK_GROUP_RESULT=%d",\n'
+              '                     compat1_unregister_native_fallback_hooked ? 1 : 0);\n'
+              '                if (!compat1_unregister_native_fallback_hooked) {\n'
+              '                    return false;\n'
+              '                }\n'
+              '            } else {\n'
+              '                LOGE("LSPLANT-COMPAT1: REGISTER_NATIVE_PROPAGATION_OPTIONAL_CONTINUE=1");\n'
+              '            }\n'
+              '        } else {\n'
+              '            auto register_native_hooked = sdk_int >= kSdkOreo && sdk_int < kSdkPie\n'
+              '                                              ? handler(RegisterNativeFastWithReturn_)\n'
+              '                                              : handler(RegisterNativeClassLinker_, RegisterNative_,\n'
+              '                                                        RegisterNativeFast_, RegisterNativeThread_);\n'
+              '            if (!register_native_hooked ||\n'
+              '                !handler(UnregisterNativeClassLinker_, UnregisterNative_,\n'
+              '                         UnregisterNativeThread_)) {\n'
+              '                return false;\n'
+              '            }\n'
+              '        }\n'
+          )
+          if s.count(old_register) != 1:
+              raise SystemExit(f'expected one upstream RegisterNative block, got {s.count(old_register)}')
+          s = s.replace(old_register, new_register, 1)
+
+          # Add a marker at the normal successful end of ClassLinker::Init.
+          end_anchor = (
+              '            LOGD("art_quick_to_interpreter_bridge = %p", &art_quick_to_interpreter_bridge_);\n'
+              '        }\n'
+              '        return true;\n'
+              '    }\n'
+          )
+          end_repl = (
+              '            LOGD("art_quick_to_interpreter_bridge = %p", &art_quick_to_interpreter_bridge_);\n'
+              '        }\n'
+              '        LOGE("LSPLANT-COMPAT1: CLASSLINKER_INIT_CONTINUED_TO_SUCCESS");\n'
+              '        return true;\n'
+              '    }\n'
+          )
+          if s.count(end_anchor) != 1:
+              raise SystemExit(f'expected one ClassLinker success boundary, got {s.count(end_anchor)}')
+          s = s.replace(end_anchor, end_repl, 1)
+
+          # Fail-closed source assertions.
+          required = [
+              'LSPLANT-COMPAT1: FIXUP_GROUP_RESULT=%d',
+              'LSPLANT-COMPAT1: ANDROID13_ARM64_NO_FIXUP_COMPAT=1',
+              'LSPLANT-COMPAT1: REGISTER_NATIVE_FALLBACK_GROUP_RESULT=%d',
+              'LSPLANT-COMPAT1: REGISTER_NATIVE_PROPAGATION_OPTIONAL_CONTINUE=1',
+              'LSPLANT-COMPAT1: CLASSLINKER_INIT_CONTINUED_TO_SUCCESS',
+          ]
+          for marker in required:
+              if s.count(marker) != 1:
+                  raise SystemExit(f'COMPAT1 marker count mismatch: {marker}')
+          compat_start = s.index('if (compat1_android13_arm64_no_fixup) {')
+          compat_end = s.index('        } else {\n            auto register_native_hooked =', compat_start)
+          compat_block = s[compat_start:compat_end]
+          if 'handler(RegisterNativeClassLinker_' in compat_block:
+              raise SystemExit('RegisterNativeClassLinker must be absent from COMPAT1 compatibility branch')
+          if 'handler(RegisterNative_, RegisterNativeFast_, RegisterNativeThread_)' not in compat_block:
+              raise SystemExit('safe CL2F fallback group missing from COMPAT1 branch')
+          p.write_text(s)
+
+          # Observer-only marker: prove the complete InitNative chain reached its normal success return.
+          p = Path('external/lsplant/lsplant/src/main/jni/lsplant.cc')
+          s = p.read_text()
+          old = (
+              '    if (IsJavaDebuggable(env)) {\n'
+              '        // Make the runtime non-debuggable as a workaround\n'
+              '        // when ShouldUseInterpreterEntrypoint inlined\n'
+              '        Runtime::Current()->SetJavaDebuggable(Runtime::RuntimeDebugState::kNonJavaDebuggable);\n'
+              '    }\n'
+              '    return true;\n'
+          )
+          new = (
+              '    if (IsJavaDebuggable(env)) {\n'
+              '        // Make the runtime non-debuggable as a workaround\n'
+              '        // when ShouldUseInterpreterEntrypoint inlined\n'
+              '        Runtime::Current()->SetJavaDebuggable(Runtime::RuntimeDebugState::kNonJavaDebuggable);\n'
+              '    }\n'
+              '    LOGE("LSPLANT-COMPAT1: INIT_NATIVE_FULL_SUCCESS");\n'
+              '    return true;\n'
+          )
+          if s.count(old) != 1:
+              raise SystemExit(f'expected one InitNative success boundary, got {s.count(old)}')
+          s = s.replace(old, new, 1)
+          if s.count('LSPLANT-COMPAT1: INIT_NATIVE_FULL_SUCCESS') != 1:
+              raise SystemExit('InitNative full-success marker mismatch')
+          p.write_text(s)
+          PY
+
+          git -C external/lsplant diff --check
+          mapfile -t ls_changed < <(git -C external/lsplant diff --name-only | sort)
+          printf '%s\n' "${ls_changed[@]}" | tee ../compat1-output/COMPAT1_LSPLANT_DIFF_NAMES.txt
+          test "${#ls_changed[@]}" -eq 2
+          test "${ls_changed[0]}" = "lsplant/src/main/jni/art/runtime/class_linker.cxx"
+          test "${ls_changed[1]}" = "lsplant/src/main/jni/lsplant.cc"
+
+          mapfile -t top_changed < <(git diff --name-only | sort)
+          printf '%s\n' "${top_changed[@]}" | tee ../compat1-output/COMPAT1_SOURCE_DIFF_NAMES.txt
+          test "${#top_changed[@]}" -eq 2
+          test "${top_changed[0]}" = "core/src/main/java/org/lsposed/lspd/hooker/LoadedApkCtorHooker.java"
+          test "${top_changed[1]}" = "external/lsplant"
+
+          # Freeze all unrelated paths.
+          git diff --exit-code "$IRENA_COMMIT" -- \
+            core/src/main/java/org/lsposed/lspd/core/Startup.java \
+            core/src/main/java/org/lsposed/lspd/hooker/LoadedApkCreateCLHooker.java \
+            core/src/main/java/org/lsposed/lspd/hooker/AttachHooker.java \
+            core/src/main/java/org/lsposed/lspd/impl/LSPosedBridge.java \
+            core/src/main/java/org/lsposed/lspd/impl/LSPosedHelper.java \
+            core/src/main/jni/src/jni/hook_bridge.cpp \
+            core/src/main/jni/src/native_api.cpp \
+            daemon/src/main/java/org/lsposed/lspd/service/Dex2OatService.java \
+            magisk-loader/src/main/jni/api/zygisk_main.cpp \
+            magisk-loader/src/main/jni/src/magisk_loader.cpp \
+            magisk-loader/src/main/jni/src/atexit.cpp
+
+          test "$(git -C external/dobby rev-parse HEAD)" = "$CURRENT_DOBBY_SHA"
+          test -z "$(git -C external/dobby status --porcelain)"
+
+          git diff > ../compat1-output/COMPAT1_TOPLEVEL_SOURCE.patch
+          git -C external/lsplant diff > ../compat1-output/COMPAT1_LSPLANT_SOURCE.patch
+          {
+            echo "SOURCE_DELTA_TOPLEVEL=LoadedApkCtorHooker.java + external/lsplant submodule"
+            echo "SOURCE_DELTA_LSPLANT=class_linker.cxx functional compatibility policy + lsplant.cc observer-only success marker"
+            echo "R1_V2_M_INCLUDE_CODE_FIX=PRESERVED"
+            echo "COMPAT1_ANDROID13_ARM64_NO_FIXUP_POLICY=ACTIVE_ONLY_WHEN_SDK_33_ARM64_AND_FIXUP_GROUP_FALSE"
+            echo "COMPAT1_REGISTER_NATIVE_CLASSLINKER=SKIPPED_IN_COMPAT_BRANCH"
+            echo "COMPAT1_REGISTER_NATIVE_FALLBACKS=CL2F_SAFE_PLAIN_FAST_THREAD_ORDER"
+            echo "COMPAT1_REGISTER_NATIVE_PROPAGATION=OPTIONAL_IF_NO_FALLBACK_EXISTS"
+            echo "COMPAT1_UNREGISTER_NATIVE_FALLBACK=REQUIRED_ONLY_IF_REGISTER_FALLBACK_INSTALLED"
+            echo "COMPAT1_LATER_CLASSLINKER_GROUPS=CONTINUE_NORMAL_CURRENT_UPSTREAM"
+            echo "COMPAT1_SCOPED_SUSPEND_ALL_AND_LATER_INIT=CONTINUE_NORMAL_CURRENT_UPSTREAM"
+            echo "MAPP_COMPONENT_FACTORY_FIX=ABSENT"
+            echo "R9=ABSENT"
+            echo "DEX2OAT=UNCHANGED_OFFICIAL_7371"
+            echo "PAIRIP_BYPASS=ABSENT"
+          } | tee ../compat1-output/COMPAT1_PROVENANCE.txt
+
+      - name: Build COMPAT1 Android 13 ARM64 ClassLinker compatibility candidate
+        id: compat1build
+        if: steps.compat1patch.outcome == 'success'
+        working-directory: LSP-IrenaX
+        shell: bash
+        run: |
+          set -uo pipefail
+          set +e
+          ./gradlew clean zipAll --stacktrace --info 2>&1 | tee ../compat1-build.log
+          rc=${PIPESTATUS[0]}
+          set -e
+          echo "$rc" > ../COMPAT1_BUILD_EXIT_CODE.txt
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Extract COMPAT1 build and verify marker payload
+        id: built
+        if: steps.compat1build.outputs.rc == '0'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t rel < <(find LSP-IrenaX/magisk-loader/release -maxdepth 1 -type f \
+            -name 'LSPosed-v*-IrenaX-release.zip' -print | sort)
+          test "${#rel[@]}" -eq 1
+          cp "${rel[0]}" COMPAT1_BUILD_RELEASE.zip
+          unzip -t COMPAT1_BUILD_RELEASE.zip
+          rm -rf compat1buildcmp
+          mkdir compat1buildcmp
+          unzip -q COMPAT1_BUILD_RELEASE.zip -d compat1buildcmp
+
+          test -f compat1buildcmp/framework/lspd.dex
+          for abi in arm64-v8a armeabi-v7a x86 x86_64; do
+            test -f "compat1buildcmp/lib/$abi/liblspd.so"
+            readelf -h "compat1buildcmp/lib/$abi/liblspd.so" >/dev/null
+            strings "compat1buildcmp/lib/$abi/liblspd.so" | grep -Fq 'LSPLANT-COMPAT1: CLASSLINKER_INIT_CONTINUED_TO_SUCCESS'
+            strings "compat1buildcmp/lib/$abi/liblspd.so" | grep -Fq 'LSPLANT-COMPAT1: INIT_NATIVE_FULL_SUCCESS'
+          done
+          # Functional compatibility branch is ARM64-only; do not require its dead-code strings in other ABIs.
+          strings compat1buildcmp/lib/arm64-v8a/liblspd.so | grep -Fq 'LSPLANT-COMPAT1: FIXUP_GROUP_RESULT=%d'
+          strings compat1buildcmp/lib/arm64-v8a/liblspd.so | grep -Fq 'LSPLANT-COMPAT1: ANDROID13_ARM64_NO_FIXUP_COMPAT=1'
+          strings compat1buildcmp/lib/arm64-v8a/liblspd.so | grep -Fq 'LSPLANT-COMPAT1: REGISTER_NATIVE_FALLBACK_GROUP_RESULT=%d'
+          strings compat1buildcmp/lib/arm64-v8a/liblspd.so | grep -Fq 'LSPLANT-COMPAT1: REGISTER_NATIVE_PROPAGATION_OPTIONAL_CONTINUE=1'
+
+          sha256sum compat1buildcmp/framework/lspd.dex > compat1-output/COMPAT1_REBUILT_FRAMEWORK_DEX_SHA256.txt
+          sha256sum compat1buildcmp/lib/*/liblspd.so > compat1-output/COMPAT1_REBUILT_LIBLSPD_SHA256.txt
+
+      - name: Create official-base COMPAT1 install package
+        id: package
+        if: steps.built.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib, zipfile
+
+          official = Path('OFFICIAL_RELEASE.zip')
+          built = Path('compat1buildcmp')
+          out = Path('${{ env.FINAL_ZIP }}')
+          abis = ('arm64-v8a','armeabi-v7a','x86','x86_64')
+          payload = {'framework/lspd.dex'} | {f'lib/{abi}/liblspd.so' for abi in abis}
+          sidecars = {x + '.sha256' for x in payload}
+          replacements = {}
+          for name in payload:
+              data = (built / name).read_bytes()
+              replacements[name] = data
+              replacements[name + '.sha256'] = hashlib.sha256(data).hexdigest().encode()
+
+          with zipfile.ZipFile(official, 'r') as zin, zipfile.ZipFile(out, 'w') as zout:
+              infos = zin.infolist()
+              names = [i.filename for i in infos]
+              if len(names) != len(set(names)):
+                  raise SystemExit('duplicate names in official ZIP')
+              if not (payload | sidecars).issubset(set(names)):
+                  raise SystemExit('official ZIP misses one or more COMPAT1 replacement targets')
+              for info in infos:
+                  zout.writestr(info, replacements.get(info.filename, zin.read(info.filename)))
+
+          def tree(path):
+              with zipfile.ZipFile(path) as z:
+                  names = z.namelist()
+                  if len(names) != len(set(names)):
+                      raise SystemExit(f'duplicate names: {path}')
+                  bad = z.testzip()
+                  if bad:
+                      raise SystemExit(f'CRC failure {path}: {bad}')
+                  return {n: hashlib.sha256(z.read(n)).hexdigest() for n in names if not n.endswith('/')}
+
+          a, b = tree(official), tree(out)
+          if set(a) != set(b):
+              raise SystemExit('official/COMPAT1 file sets differ')
+          if len(a) != 56:
+              raise SystemExit(f'expected 56 files, got {len(a)}')
+          diff = sorted(k for k in a if a[k] != b[k])
+          expected = sorted(payload | sidecars)
+          if diff != expected:
+              raise SystemExit(f'unexpected official->COMPAT1 package delta: {diff}')
+
+          # Keep manager/daemon/scripts exact official 7371; only target-process native libs + R1 dex change.
+          for rel in ('manager.apk','daemon.apk'):
+              if a[rel] != b[rel]:
+                  raise SystemExit(f'official control payload changed: {rel}')
+
+          with zipfile.ZipFile(out) as z:
+              names = set(z.namelist())
+              checked = 0
+              for n in sorted(names):
+                  if not n.endswith('.sha256'):
+                      continue
+                  p = n[:-7]
+                  if p not in names:
+                      continue
+                  expected_hash = z.read(n).decode().strip().split()[0]
+                  actual_hash = hashlib.sha256(z.read(p)).hexdigest()
+                  if expected_hash != actual_hash:
+                      raise SystemExit(f'sidecar mismatch: {n}')
+                  checked += 1
+              if checked != 28:
+                  raise SystemExit(f'expected 28 verified sidecars, got {checked}')
+
+          sha = hashlib.sha256(out.read_bytes()).hexdigest()
+          Path('compat1-output/COMPAT1_FINAL_PACKAGE_SHA256.txt').write_text(f'{sha}  {out.name}\n')
+          Path('compat1-output/COMPAT1_FINAL_PACKAGE_DIFF.txt').write_text('\n'.join(expected) + '\n')
+          Path('compat1-output/COMPAT1_FINAL_SCOPE.txt').write_text(
+              'BASE=official Irena X 7371 release\n'
+              'PARENT_SEMANTICS=R1-v2 mIncludeCode fix preserved in framework/lspd.dex\n'
+              'COMPAT1_NATIVE_BEHAVIOR=on Android 13 ARM64 only, when FixupStaticTrampolines group is unavailable, RegisterNativeClassLinker_ is never attempted; CL2F-safe RegisterNative_->RegisterNativeFast_->RegisterNativeThread_ fallbacks are optional; when no fallback exists, native propagation is treated as optional and the normal current ClassLinker plus full InitNative chain continues\n'
+              'FINAL_PACKAGE_DELTA=framework/lspd.dex+sidecar + 4 liblspd.so+sidecars\n'
+              'MANAGER=official 7371 byte-identical\n'
+              'DAEMON=official 7371 byte-identical\n'
+              'DEX2OAT=official 7371 unchanged\n'
+              'DOBBY=official/current 7371 unchanged\n'
+              'R9_CHANGES=none\n'
+              'PAIRIP_BYPASS=none\n'
+              'DEVICE_RUNTIME_STATUS=not tested\n'
+          )
+          PY
+          unzip -t "$FINAL_ZIP"
+          cp "$FINAL_ZIP" "compat1-output/INSTALL_THIS_${FINAL_ZIP}"
+
+      - name: Write COMPAT1 device test plan
+        if: steps.package.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > compat1-output/COMPAT1_DEVICE_TEST_PLAN.txt <<'EOF'
+          COMPAT1 ANDROID 13 ARM64 CLASSLINKER COMPATIBILITY CANDIDATE
+
+          PURPOSE
+          - CL2F proved PairIP survives when RegisterNativeClassLinker_ is skipped and no fallback exists.
+          - CL2P proved even a pass-through RegisterNativeClassLinker_ inline hook is sufficient to restore PairIP +0x65768.
+          - COMPAT1 therefore reuses the CL2F-safe branch but does NOT cut off ClassLinker or InitNative.
+          - Android 13 / ARM64 / Fixup=0 is the only compatibility condition.
+          - RegisterNativeClassLinker_ is never attempted in that condition.
+          - Plain/Fast/Thread RegisterNative fallbacks remain optional; on this VEUX CL2F already measured all three as unavailable.
+          - All later current LSPlant initialization stages continue normally.
+          - mAppComponentFactory remains untouched to preserve one functional repair variable.
+
+          REQUIRED RUNTIME MARKERS IN THE SAME INGRESS PID
+          LSPLANT-COMPAT1: FIXUP_GROUP_RESULT=0
+          LSPLANT-COMPAT1: ANDROID13_ARM64_NO_FIXUP_COMPAT=1
+          LSPLANT-COMPAT1: REGISTER_NATIVE_FALLBACK_GROUP_RESULT=0
+          LSPLANT-COMPAT1: REGISTER_NATIVE_PROPAGATION_OPTIONAL_CONTINUE=1
+          LSPLANT-COMPAT1: CLASSLINKER_INIT_CONTINUED_TO_SUCCESS
+          LSPLANT-COMPAT1: INIT_NATIVE_FULL_SUCCESS
+
+          DEVICE ORDER -- ONE TEST ONLY
+          1. Install only the inner INSTALL_THIS_*.zip and reboot.
+          2. Confirm LSPosed/Irena manager opens.
+          3. Clear logcat, force-stop Ingress, cold-start once and use the app normally for at least several seconds.
+          4. Capture broad log:
+             su -c 'logcat -b all -d -v threadtime > /sdcard/Download/Log.txt'
+
+          PASS TARGET
+          - all six COMPAT1 markers in the same Ingress PID;
+          - no "Failed to init lsplant";
+          - no SIGSEGV / libpairipcore +0x65768;
+          - Ingress reaches Activity onCreate/onStart/onResume and remains alive;
+          - scoped modules visibly initialize/function enough to prove framework injection still works.
+
+          FAILURE INTERPRETATION
+          - PairIP crash returns before INIT_NATIVE_FULL_SUCCESS: later current LSPlant init stage is incompatible; stop this current-line repair strategy.
+          - INIT_NATIVE_FULL_SUCCESS appears but modules do not function: native RegisterNative propagation is required for framework semantics on this setup; do not call release-ready.
+          - Full markers + Ingress stable + modules work: first real compatibility DEVICE PASS candidate.
+
+          STATIC PASS != DEVICE PASS.
+          COMPAT1 is a compatibility candidate, not a release until this one device test passes.
+          EOF
+
+      - name: Collect COMPAT1 evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p compat1-output/native
+          cp COMPAT1_BUILD_EXIT_CODE.txt compat1-output/ 2>/dev/null || true
+          cp compat1-build.log compat1-output/ 2>/dev/null || true
+          cp COMPAT1_BUILD_RELEASE.zip compat1-output/ 2>/dev/null || true
+          cp OFFICIAL_RELEASE.zip compat1-output/OFFICIAL_7371_RELEASE_REFERENCE.zip 2>/dev/null || true
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib
+          out = Path('compat1-output')
+          manifest = out / 'COMPAT1_EVIDENCE_SHA256SUMS.txt'
+          files = sorted(p for p in out.rglob('*') if p.is_file() and p != manifest)
+          with manifest.open('w') as f:
+              for p in files:
+                  f.write(f"{hashlib.sha256(p.read_bytes()).hexdigest()}  {p.relative_to(out).as_posix()}\n")
+          PY
+          (cd compat1-output && sha256sum -c COMPAT1_EVIDENCE_SHA256SUMS.txt)
+
+      - name: Final COMPAT1 fail-closed static gate
+        id: finalgate
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f COMPAT1_BUILD_EXIT_CODE.txt
+          test "$(cat COMPAT1_BUILD_EXIT_CODE.txt)" = "0"
+          grep -q '^R1_V2_M_INCLUDE_CODE_FIX=PRESERVED$' compat1-output/COMPAT1_PROVENANCE.txt
+          grep -q '^COMPAT1_ANDROID13_ARM64_NO_FIXUP_POLICY=ACTIVE_ONLY_WHEN_SDK_33_ARM64_AND_FIXUP_GROUP_FALSE$' compat1-output/COMPAT1_PROVENANCE.txt
+          grep -q '^COMPAT1_REGISTER_NATIVE_CLASSLINKER=SKIPPED_IN_COMPAT_BRANCH$' compat1-output/COMPAT1_PROVENANCE.txt
+          grep -q '^COMPAT1_REGISTER_NATIVE_FALLBACKS=CL2F_SAFE_PLAIN_FAST_THREAD_ORDER$' compat1-output/COMPAT1_PROVENANCE.txt
+          grep -q '^COMPAT1_REGISTER_NATIVE_PROPAGATION=OPTIONAL_IF_NO_FALLBACK_EXISTS$' compat1-output/COMPAT1_PROVENANCE.txt
+          grep -q '^COMPAT1_LATER_CLASSLINKER_GROUPS=CONTINUE_NORMAL_CURRENT_UPSTREAM$' compat1-output/COMPAT1_PROVENANCE.txt
+          grep -q '^COMPAT1_SCOPED_SUSPEND_ALL_AND_LATER_INIT=CONTINUE_NORMAL_CURRENT_UPSTREAM$' compat1-output/COMPAT1_PROVENANCE.txt
+          grep -q '^MAPP_COMPONENT_FACTORY_FIX=ABSENT$' compat1-output/COMPAT1_PROVENANCE.txt
+          grep -q '^R9=ABSENT$' compat1-output/COMPAT1_PROVENANCE.txt
+          grep -q '^DEX2OAT=UNCHANGED_OFFICIAL_7371$' compat1-output/COMPAT1_PROVENANCE.txt
+          grep -q '^PAIRIP_BYPASS=ABSENT$' compat1-output/COMPAT1_PROVENANCE.txt
+          test -f "compat1-output/INSTALL_THIS_${FINAL_ZIP}"
+          strings compat1buildcmp/lib/arm64-v8a/liblspd.so | grep -Fq 'LSPLANT-COMPAT1: FIXUP_GROUP_RESULT=%d'
+          strings compat1buildcmp/lib/arm64-v8a/liblspd.so | grep -Fq 'LSPLANT-COMPAT1: ANDROID13_ARM64_NO_FIXUP_COMPAT=1'
+          strings compat1buildcmp/lib/arm64-v8a/liblspd.so | grep -Fq 'LSPLANT-COMPAT1: REGISTER_NATIVE_FALLBACK_GROUP_RESULT=%d'
+          strings compat1buildcmp/lib/arm64-v8a/liblspd.so | grep -Fq 'LSPLANT-COMPAT1: REGISTER_NATIVE_PROPAGATION_OPTIONAL_CONTINUE=1'
+          strings compat1buildcmp/lib/arm64-v8a/liblspd.so | grep -Fq 'LSPLANT-COMPAT1: CLASSLINKER_INIT_CONTINUED_TO_SUCCESS'
+          strings compat1buildcmp/lib/arm64-v8a/liblspd.so | grep -Fq 'LSPLANT-COMPAT1: INIT_NATIVE_FULL_SUCCESS'
+          (cd compat1-output && sha256sum -c COMPAT1_EVIDENCE_SHA256SUMS.txt)
+          {
+            echo "RESULT=COMPAT1_STATIC_FULL_PASS_ANDROID13_ARM64_CLASSLINKER_COMPATIBILITY_CREATED"
+            echo "PARENT=R1-v2 immutable Framework checkpoint"
+            echo "FUNCTIONAL_DELTA=conditional Android13 ARM64 no-Fixup ClassLinker compatibility policy; problematic RegisterNativeClassLinker_ skipped; CL2F-safe fallbacks optional; full current LSPlant init continues"
+            echo "OBSERVER_DELTA=one InitNative full-success log marker only"
+            echo "FINAL_PAYLOAD=official 7371 + R1 dex + rebuilt COMPAT1 liblspd.so for 4 ABIs"
+            echo "MANAGER_DAEMON=official 7371 byte-identical"
+            echo "DEVICE_RUNTIME_STATUS=NOT_TESTED_BY_WORKFLOW"
+            echo "STATIC_PASS_IS_NOT_DEVICE_PASS=YES"
+          } | tee compat1-output/COMPAT1_STATIC_PASS_MARKER.txt
+
+      - name: Upload COMPAT1 diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: irena-x-v2.0.1-7371-compat1-android13-arm64-classlinker-${{ github.run_id }}
+          path: compat1-output
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 30
