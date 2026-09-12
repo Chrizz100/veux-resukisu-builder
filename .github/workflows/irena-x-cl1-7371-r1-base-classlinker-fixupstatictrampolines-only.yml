@@ -1,0 +1,557 @@
+name: Irena X 7371 CL1 ClassLinker FixupStaticTrampolines-only isolation
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  IRENA_REPO: silvzr/LSP-IrenaX
+  IRENA_COMMIT: da439fbbed506dac6c66074af7fda8982aa4fc6a
+  CURRENT_LSPLANT_SHA: c5b46bb4f6a99ffe0c77ce3ab006d3f67d5a2b1c
+  CURRENT_DOBBY_SHA: dc7b4be06ad6c5dcfb0bb4ca2082b007d69eaed5
+  OFFICIAL_RELEASE_URL: https://github.com/silvzr/LSP-IrenaX/releases/download/v2.0.1/LSPosed-v2.0.1-7371-IrenaX-release.zip
+  OFFICIAL_RELEASE_SHA256: 99e7aaf54dda0e6fa746c55613483a80620174f255dd05e102713778a9966d2f
+  R1_DEVICE_PACKAGE_SHA256: 7ed948db19d92b0dd7776c424f93783e10210082ea807345228e901ab9ce4af7
+  FINAL_ZIP: LSPosed-v2.0.1-7371-IrenaX-CL1-R1-base-ClassLinker-FixupStaticTrampolines-only-diagnostic.zip
+
+jobs:
+  build:
+    name: Build CL1 ClassLinker FixupStaticTrampolines-only diagnostic
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Freeze CL1 diagnostic contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p cl1-output
+          {
+            echo "PARENT=R1-v2 immutable Framework checkpoint"
+            echo "PARENT_DEVICE_PACKAGE_SHA256=$R1_DEVICE_PACKAGE_SHA256"
+            echo "BASE=official Irena X 7371 source + exact R1-v2 mIncludeCode compatibility fix"
+            echo "CL1_ONLY_NEW_FUNCTIONAL_CHANGE=inside current ClassLinker::Init execute only first ARM64 FixupStaticTrampolines candidate group then return true; InitNative immediately returns false after ClassLinker as in N1"
+            echo "CL1_PURPOSE=test whether the first ClassLinker FixupStaticTrampolines hook group alone is sufficient to restore the PairIP crash"
+            echo "N0_DEVICE_RESULT=VALID_SAME_PID_MARKER_THEN_PAIRIP_LOAD_NO_FATAL_PROCESS_ALIVE_35S"
+            echo "N1_DEVICE_RESULT=VALID_SAME_PID_MARKER_THEN_PAIRIP_LOAD_THEN_SEGV_ACCERR_AT_LIBPAIRIPCORE_PLUS_0x65768"
+            echo "CL1_EXPECTED_MARKER=LSPLANT-CL1: CLASSLINKER_CUTOFF_AFTER_FIXUP_GROUP"
+            echo "CURRENT_LSPLANT=$CURRENT_LSPLANT_SHA"
+            echo "CURRENT_DOBBY=$CURRENT_DOBBY_SHA"
+            echo "R9_CHANGES=NONE"
+            echo "DEX2OAT_MOUNT_CHANGES=NONE"
+            echo "PAIRIP_BYPASS=NONE"
+            echo "STATIC_PASS_IS_NOT_DEVICE_PASS=YES"
+          } | tee cl1-output/CL1_DIAGNOSTIC_CONTRACT.txt
+
+      - name: Checkout pinned Irena X 7371
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.IRENA_REPO }}
+          ref: ${{ env.IRENA_COMMIT }}
+          submodules: recursive
+          fetch-depth: 0
+          path: LSP-IrenaX
+          persist-credentials: false
+
+      - name: Verify exact pristine pins and CL1 source preconditions
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C LSP-IrenaX rev-parse HEAD)" = "$IRENA_COMMIT"
+          test -z "$(git -C LSP-IrenaX status --porcelain)"
+          test "$(git -C LSP-IrenaX/external/lsplant rev-parse HEAD)" = "$CURRENT_LSPLANT_SHA"
+          test "$(git -C LSP-IrenaX/external/dobby rev-parse HEAD)" = "$CURRENT_DOBBY_SHA"
+          test -z "$(git -C LSP-IrenaX/external/lsplant status --porcelain)"
+          test -z "$(git -C LSP-IrenaX/external/dobby status --porcelain)"
+
+          java_file="LSP-IrenaX/core/src/main/java/org/lsposed/lspd/hooker/LoadedApkCtorHooker.java"
+          native_file="LSP-IrenaX/external/lsplant/lsplant/src/main/jni/lsplant.cc"
+          cl_file="LSP-IrenaX/external/lsplant/lsplant/src/main/jni/art/runtime/class_linker.cxx"
+          test -f "$java_file"
+          test -f "$native_file"
+          test -f "$cl_file"
+          grep -Fq 'boolean includeCode = XposedHelpers.getBooleanField(loadedApk, "mIncludeCode");' "$java_file"
+          grep -Fq 'if (!Runtime::Init(handler)) {' "$native_file"
+          grep -Fq 'if (!ClassLinker::Init(env, handler)) {' "$native_file"
+          grep -Fq 'if (!ScopedSuspendAll::Init(handler)) {' "$native_file"
+          if grep -Fq 'LSPLANT-CL1:' "$native_file" "$cl_file"; then
+            echo "CL1 marker already exists in pristine source"
+            exit 1
+          fi
+
+          {
+            echo "IRENA=$(git -C LSP-IrenaX rev-parse HEAD)"
+            echo "LSPLANT=$(git -C LSP-IrenaX/external/lsplant rev-parse HEAD)"
+            echo "DOBBY=$(git -C LSP-IrenaX/external/dobby rev-parse HEAD)"
+            echo "R1_M_INCLUDE_CODE_PRECONDITION=PRESENT"
+            echo "CL1_CLASSLINKER_THEN_SCOPED_SUSPEND_ALL_PRECONDITION=PRESENT"
+          } | tee cl1-output/CL1_SOURCE_PINS_AND_PRECONDITIONS.txt
+
+      - name: Setup Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          log-accepted-android-sdk-licenses: 'false'
+          packages: ''
+
+      - name: Setup ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          max-size: 2G
+          key: irena-x-cl1-${{ runner.os }}
+          restore-keys: |
+            irena-x-${{ runner.os }}
+          save: false
+
+      - name: Setup Ninja 1.12.1
+        uses: seanmiddleditch/gha-setup-ninja@master
+        with:
+          version: 1.12.1
+
+      - name: Remove Android bundled CMake
+        shell: bash
+        run: rm -rf "$ANDROID_HOME/cmake"
+
+      - name: Configure Gradle
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.gradle
+          {
+            echo 'org.gradle.caching=true'
+            echo 'org.gradle.parallel=true'
+            echo 'org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8 -XX:+UseParallelGC'
+            echo 'android.native.buildOutput=verbose'
+          } >> ~/.gradle/gradle.properties
+
+      - name: Download and verify official Irena 7371 release
+        id: official
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 3 -o OFFICIAL_RELEASE.zip "$OFFICIAL_RELEASE_URL"
+          echo "$OFFICIAL_RELEASE_SHA256  OFFICIAL_RELEASE.zip" | sha256sum -c -
+          unzip -t OFFICIAL_RELEASE.zip
+          rm -rf officialcmp
+          mkdir officialcmp
+          unzip -q OFFICIAL_RELEASE.zip -d officialcmp
+          python3 - <<'PY'
+          import zipfile
+          with zipfile.ZipFile('OFFICIAL_RELEASE.zip') as z:
+              names = z.namelist()
+              if len(names) != len(set(names)):
+                  raise SystemExit('duplicate names in official release')
+              files = [n for n in names if not n.endswith('/')]
+              if len(files) != 56:
+                  raise SystemExit(f'official release file count is {len(files)}, expected 56')
+              bad = z.testzip()
+              if bad:
+                  raise SystemExit(f'official CRC failure: {bad}')
+          PY
+          sha256sum OFFICIAL_RELEASE.zip > cl1-output/CL1_OFFICIAL_RELEASE_SHA256.txt
+
+      - name: Apply exact R1-v2 mIncludeCode compatibility fix
+        id: r1patch
+        if: steps.official.outcome == 'success'
+        working-directory: LSP-IrenaX
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          p = Path('core/src/main/java/org/lsposed/lspd/hooker/LoadedApkCtorHooker.java')
+          s = p.read_text()
+          line = '            boolean includeCode = XposedHelpers.getBooleanField(loadedApk, "mIncludeCode");\n'
+          branch = (
+              '            } else if (!includeCode) {\n'
+              '                Hookers.logD("LoadedApk#<init> has no code, skip: " + mAppDir);\n'
+              '                return;\n'
+          )
+          if s.count(line) != 1:
+              raise SystemExit(f'expected one mIncludeCode read, got {s.count(line)}')
+          if s.count(branch) != 1:
+              raise SystemExit(f'expected one no-code branch, got {s.count(branch)}')
+          s = s.replace(line, '', 1).replace(branch, '', 1)
+          expected = (
+              '            if (packageName.equals("android")) {\n'
+              '                if (XposedInit.startsSystemServer) {\n'
+              '                    Hookers.logD("LoadedApk#<init> is android, skip: " + mAppDir);\n'
+              '                    return;\n'
+              '                } else {\n'
+              '                    packageName = "system";\n'
+              '                }\n'
+              '            }\n'
+              '\n'
+              '            if (!XposedInit.loadedPackagesInProcess.add(packageName)) {\n'
+          )
+          if expected not in s:
+              raise SystemExit('R1-v2 post-patch control flow mismatch')
+          if 'mIncludeCode' in s:
+              raise SystemExit('mIncludeCode survived R1-v2 patch')
+          p.write_text(s)
+          PY
+          git diff --check
+
+      - name: Apply CL1 ClassLinker FixupStaticTrampolines-only isolation
+        id: cl1patch
+        if: steps.r1patch.outcome == 'success'
+        working-directory: LSP-IrenaX
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          # Keep the N1 outer cutoff: ClassLinker may run, nothing after it may run.
+          p = Path('external/lsplant/lsplant/src/main/jni/lsplant.cc')
+          s = p.read_text()
+          old = (
+              '    if (!ClassLinker::Init(env, handler)) {\n'
+              '        LOGE("Failed to init class linker");\n'
+              '        return false;\n'
+              '    }\n'
+              '    if (!ScopedSuspendAll::Init(handler)) {\n'
+              '        LOGE("Failed to init scoped suspend all");\n'
+              '        return false;\n'
+              '    }\n'
+          )
+          new = (
+              '    if (!ClassLinker::Init(env, handler)) {\n'
+              '        LOGE("Failed to init class linker");\n'
+              '        return false;\n'
+              '    }\n'
+              '    LOGE("LSPLANT-CL1: CLASSLINKER_CUTOFF_AFTER_FIXUP_GROUP");\n'
+              '    return false;\n'
+              '    if (!ScopedSuspendAll::Init(handler)) {\n'
+              '        LOGE("Failed to init scoped suspend all");\n'
+              '        return false;\n'
+              '    }\n'
+          )
+          if s.count(old) != 1:
+              raise SystemExit(f'expected one ClassLinker->ScopedSuspendAll boundary, got {s.count(old)}')
+          s = s.replace(old, new, 1)
+          p.write_text(s)
+
+          # Inside ClassLinker keep only the first ARM64 hook group: FixupStaticTrampolines candidates.
+          p = Path('external/lsplant/lsplant/src/main/jni/art/runtime/class_linker.cxx')
+          s = p.read_text()
+          old = (
+              '        } else {\n'
+              '            handler(FixupStaticTrampolinesWithThread_, FixupStaticTrampolines_,\n'
+              '                    FixupStaticTrampolinesRaw_);\n'
+              '        }\n'
+              '\n'
+              '        auto register_native_hooked = sdk_int >= kSdkOreo && sdk_int < kSdkPie\n'
+          )
+          new = (
+              '        } else {\n'
+              '            auto cl1_fixup_group_hooked =\n'
+              '                    handler(FixupStaticTrampolinesWithThread_, FixupStaticTrampolines_,\n'
+              '                            FixupStaticTrampolinesRaw_);\n'
+              '            LOGE("LSPLANT-CL1: FIXUP_GROUP_RESULT=%d", cl1_fixup_group_hooked ? 1 : 0);\n'
+              '            LOGE("LSPLANT-CL1: CLASSLINKER_CUTOFF_AFTER_FIXUP_GROUP");\n'
+              '            return true;\n'
+              '        }\n'
+              '\n'
+              '        auto register_native_hooked = sdk_int >= kSdkOreo && sdk_int < kSdkPie\n'
+          )
+          if s.count(old) != 1:
+              raise SystemExit(f'expected exactly one non-x86 FixupStaticTrampolines group boundary, got {s.count(old)}')
+          s = s.replace(old, new, 1)
+          if s.count('LSPLANT-CL1: CLASSLINKER_CUTOFF_AFTER_FIXUP_GROUP') != 1:
+              raise SystemExit('CL1 class-linker cutoff marker count mismatch')
+          if s.count('LSPLANT-CL1: FIXUP_GROUP_RESULT=%d') != 1:
+              raise SystemExit('CL1 result marker count mismatch')
+          p.write_text(s)
+          PY
+
+          git -C external/lsplant diff --check
+          mapfile -t ls_changed < <(git -C external/lsplant diff --name-only | sort)
+          printf '%s\n' "${ls_changed[@]}" | tee ../cl1-output/CL1_LSPLANT_DIFF_NAMES.txt
+          test "${#ls_changed[@]}" -eq 2
+          test "${ls_changed[0]}" = "lsplant/src/main/jni/art/runtime/class_linker.cxx"
+          test "${ls_changed[1]}" = "lsplant/src/main/jni/lsplant.cc"
+
+          mapfile -t top_changed < <(git diff --name-only | sort)
+          printf '%s\n' "${top_changed[@]}" | tee ../cl1-output/CL1_SOURCE_DIFF_NAMES.txt
+          test "${#top_changed[@]}" -eq 2
+          test "${top_changed[0]}" = "core/src/main/java/org/lsposed/lspd/hooker/LoadedApkCtorHooker.java"
+          test "${top_changed[1]}" = "external/lsplant"
+
+          # Freeze all unrelated paths.
+          git diff --exit-code "$IRENA_COMMIT" -- \
+            core/src/main/java/org/lsposed/lspd/core/Startup.java \
+            core/src/main/java/org/lsposed/lspd/hooker/LoadedApkCreateCLHooker.java \
+            core/src/main/java/org/lsposed/lspd/hooker/AttachHooker.java \
+            core/src/main/java/org/lsposed/lspd/impl/LSPosedBridge.java \
+            core/src/main/java/org/lsposed/lspd/impl/LSPosedHelper.java \
+            core/src/main/jni/src/jni/hook_bridge.cpp \
+            core/src/main/jni/src/native_api.cpp \
+            daemon/src/main/java/org/lsposed/lspd/service/Dex2OatService.java \
+            magisk-loader/src/main/jni/api/zygisk_main.cpp \
+            magisk-loader/src/main/jni/src/magisk_loader.cpp \
+            magisk-loader/src/main/jni/src/atexit.cpp
+
+          test "$(git -C external/dobby rev-parse HEAD)" = "$CURRENT_DOBBY_SHA"
+          test -z "$(git -C external/dobby status --porcelain)"
+
+          git diff > ../cl1-output/CL1_TOPLEVEL_SOURCE.patch
+          git -C external/lsplant diff > ../cl1-output/CL1_LSPLANT_SOURCE.patch
+          {
+            echo "SOURCE_DELTA_TOPLEVEL=LoadedApkCtorHooker.java + external/lsplant submodule"
+            echo "SOURCE_DELTA_LSPLANT=class_linker.cxx + lsplant.cc only"
+            echo "R1_V2_M_INCLUDE_CODE_FIX=PRESERVED"
+            echo "N0_DEVICE_RESULT=NO_PAIRIP_FATAL_WITHOUT_CLASSLINKER"
+            echo "N1_DEVICE_RESULT=PAIRIP_SEGV_ACCERR_PLUS_0x65768_WITH_FULL_CLASSLINKER_INIT"
+            echo "CL1_ONLY_CLASSLINKER_GROUP=FixupStaticTrampolines candidates"
+            echo "CL1_REGISTER_NATIVE_GROUP=NOT_REACHED"
+            echo "CL1_UNREGISTER_NATIVE_GROUP=NOT_REACHED"
+            echo "CL1_VISIBILITY_GROUP=NOT_REACHED"
+            echo "CL1_ENTRYPOINT_GROUP=NOT_REACHED"
+            echo "CL1_OUTER_CUTOFF_BEFORE=ScopedSuspendAll::Init(handler)"
+            echo "R9=ABSENT"
+            echo "DEX2OAT=UNCHANGED_OFFICIAL_7371"
+            echo "PAIRIP_BYPASS=ABSENT"
+          } | tee ../cl1-output/CL1_PROVENANCE.txt
+
+      - name: Build CL1 FixupStaticTrampolines-only diagnostic candidate
+        id: cl1build
+        if: steps.cl1patch.outcome == 'success'
+        working-directory: LSP-IrenaX
+        shell: bash
+        run: |
+          set -uo pipefail
+          set +e
+          ./gradlew clean zipAll --stacktrace --info 2>&1 | tee ../cl1-build.log
+          rc=${PIPESTATUS[0]}
+          set -e
+          echo "$rc" > ../CL1_BUILD_EXIT_CODE.txt
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Extract CL1 build and verify marker payload
+        id: built
+        if: steps.cl1build.outputs.rc == '0'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t rel < <(find LSP-IrenaX/magisk-loader/release -maxdepth 1 -type f \
+            -name 'LSPosed-v*-IrenaX-release.zip' -print | sort)
+          test "${#rel[@]}" -eq 1
+          cp "${rel[0]}" CL1_BUILD_RELEASE.zip
+          unzip -t CL1_BUILD_RELEASE.zip
+          rm -rf cl1buildcmp
+          mkdir cl1buildcmp
+          unzip -q CL1_BUILD_RELEASE.zip -d cl1buildcmp
+
+          test -f cl1buildcmp/framework/lspd.dex
+          for abi in arm64-v8a armeabi-v7a x86 x86_64; do
+            test -f "cl1buildcmp/lib/$abi/liblspd.so"
+            strings "cl1buildcmp/lib/$abi/liblspd.so" | grep -Fq 'LSPLANT-CL1: CLASSLINKER_CUTOFF_AFTER_FIXUP_GROUP'
+            readelf -h "cl1buildcmp/lib/$abi/liblspd.so" >/dev/null
+          done
+
+          sha256sum cl1buildcmp/framework/lspd.dex > cl1-output/CL1_REBUILT_FRAMEWORK_DEX_SHA256.txt
+          sha256sum cl1buildcmp/lib/*/liblspd.so > cl1-output/CL1_REBUILT_LIBLSPD_SHA256.txt
+
+      - name: Create official-base CL1 install package
+        id: package
+        if: steps.built.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib, zipfile
+
+          official = Path('OFFICIAL_RELEASE.zip')
+          built = Path('cl1buildcmp')
+          out = Path('${{ env.FINAL_ZIP }}')
+          abis = ('arm64-v8a','armeabi-v7a','x86','x86_64')
+          payload = {'framework/lspd.dex'} | {f'lib/{abi}/liblspd.so' for abi in abis}
+          sidecars = {x + '.sha256' for x in payload}
+          replacements = {}
+          for name in payload:
+              data = (built / name).read_bytes()
+              replacements[name] = data
+              replacements[name + '.sha256'] = hashlib.sha256(data).hexdigest().encode()
+
+          with zipfile.ZipFile(official, 'r') as zin, zipfile.ZipFile(out, 'w') as zout:
+              infos = zin.infolist()
+              names = [i.filename for i in infos]
+              if len(names) != len(set(names)):
+                  raise SystemExit('duplicate names in official ZIP')
+              if not (payload | sidecars).issubset(set(names)):
+                  raise SystemExit('official ZIP misses one or more CL1 replacement targets')
+              for info in infos:
+                  zout.writestr(info, replacements.get(info.filename, zin.read(info.filename)))
+
+          def tree(path):
+              with zipfile.ZipFile(path) as z:
+                  names = z.namelist()
+                  if len(names) != len(set(names)):
+                      raise SystemExit(f'duplicate names: {path}')
+                  bad = z.testzip()
+                  if bad:
+                      raise SystemExit(f'CRC failure {path}: {bad}')
+                  return {n: hashlib.sha256(z.read(n)).hexdigest() for n in names if not n.endswith('/')}
+
+          a, b = tree(official), tree(out)
+          if set(a) != set(b):
+              raise SystemExit('official/CL1 file sets differ')
+          if len(a) != 56:
+              raise SystemExit(f'expected 56 files, got {len(a)}')
+          diff = sorted(k for k in a if a[k] != b[k])
+          expected = sorted(payload | sidecars)
+          if diff != expected:
+              raise SystemExit(f'unexpected official->CL1 package delta: {diff}')
+
+          # Keep manager/daemon/scripts exact official 7371; only target-process native libs + R1 dex change.
+          for rel in ('manager.apk','daemon.apk'):
+              if a[rel] != b[rel]:
+                  raise SystemExit(f'official control payload changed: {rel}')
+
+          with zipfile.ZipFile(out) as z:
+              names = set(z.namelist())
+              checked = 0
+              for n in sorted(names):
+                  if not n.endswith('.sha256'):
+                      continue
+                  p = n[:-7]
+                  if p not in names:
+                      continue
+                  expected_hash = z.read(n).decode().strip().split()[0]
+                  actual_hash = hashlib.sha256(z.read(p)).hexdigest()
+                  if expected_hash != actual_hash:
+                      raise SystemExit(f'sidecar mismatch: {n}')
+                  checked += 1
+              if checked != 28:
+                  raise SystemExit(f'expected 28 verified sidecars, got {checked}')
+
+          sha = hashlib.sha256(out.read_bytes()).hexdigest()
+          Path('cl1-output/CL1_FINAL_PACKAGE_SHA256.txt').write_text(f'{sha}  {out.name}\n')
+          Path('cl1-output/CL1_FINAL_PACKAGE_DIFF.txt').write_text('\n'.join(expected) + '\n')
+          Path('cl1-output/CL1_FINAL_SCOPE.txt').write_text(
+              'BASE=official Irena X 7371 release\n'
+              'PARENT_SEMANTICS=R1-v2 mIncludeCode fix preserved in framework/lspd.dex\n'
+              'CL1_NEW_NATIVE_CHANGE=ClassLinker limited to FixupStaticTrampolines candidate group; outer cutoff remains before ScopedSuspendAll::Init\n'
+              'FINAL_PACKAGE_DELTA=framework/lspd.dex+sidecar + 4 liblspd.so+sidecars\n'
+              'MANAGER=official 7371 byte-identical\n'
+              'DAEMON=official 7371 byte-identical\n'
+              'DEX2OAT=official 7371 unchanged\n'
+              'DOBBY=official/current 7371 unchanged\n'
+              'R9_CHANGES=none\n'
+              'PAIRIP_BYPASS=none\n'
+              'DEVICE_RUNTIME_STATUS=not tested\n'
+          )
+          PY
+          unzip -t "$FINAL_ZIP"
+          cp "$FINAL_ZIP" "cl1-output/INSTALL_THIS_${FINAL_ZIP}"
+
+      - name: Write CL1 device test plan
+        if: steps.package.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > cl1-output/CL1_DEVICE_TEST_PLAN.txt <<'EOF'
+          CL1 CLASSLINKER FIXUPSTATICTRAMPOLINES-ONLY DIAGNOSTIC
+
+          PURPOSE
+          - N0 proved current LSPlant through Runtime::Init can reach PairIP without the historical +0x65768 fatal.
+          - CL1 executes only the first ClassLinker hook group (FixupStaticTrampolines candidates), then returns from ClassLinker and stops before ScopedSuspendAll.
+          - This tests whether the first ClassLinker FixupStaticTrampolines candidate group alone is sufficient for the PairIP crash.
+
+          REQUIRED RUNTIME MARKER
+          LSPLANT-CL1: CLASSLINKER_CUTOFF_AFTER_FIXUP_GROUP
+
+          DEVICE ORDER
+          1. Install only the inner INSTALL_THIS_*.zip and reboot.
+          2. Confirm Android and the LSPosed/Irena manager are usable enough for the diagnostic.
+          3. Clear logcat, force-stop Ingress and cold-start it once.
+          4. Capture:
+             su -c 'logcat -b all -d -v threadtime | grep -E "LSPLANT-CL1|Failed to init lsplant|libpairipcore|SIGSEGV|SEGV_|Fatal signal" > /sdcard/Download/cl1-fixup-group-isolation.txt'
+
+          VALID CL1 requires the LSPLANT-CL1 marker in the same Ingress process before PairIP outcome.
+
+          INTERPRETATION
+          - Marker + same libpairipcore.so +0x65768 crash:
+            the FixupStaticTrampolines candidate group is sufficient to recreate the crash.
+            Next step isolates its concrete candidate hooks.
+          - Marker + Ingress survives PairIP load:
+            FixupStaticTrampolines group alone is not sufficient. Next CL2 adds only the RegisterNative group.
+          - Marker absent:
+            diagnostic invalid; do not infer causality.
+
+          STATIC PASS != DEVICE PASS.
+          CL1 never becomes a release parent.
+          EOF
+
+      - name: Collect CL1 evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p cl1-output/native
+          cp CL1_BUILD_EXIT_CODE.txt cl1-output/ 2>/dev/null || true
+          cp cl1-build.log cl1-output/ 2>/dev/null || true
+          cp CL1_BUILD_RELEASE.zip cl1-output/ 2>/dev/null || true
+          cp OFFICIAL_RELEASE.zip cl1-output/OFFICIAL_7371_RELEASE_REFERENCE.zip 2>/dev/null || true
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib
+          out = Path('cl1-output')
+          manifest = out / 'CL1_EVIDENCE_SHA256SUMS.txt'
+          files = sorted(p for p in out.rglob('*') if p.is_file() and p != manifest)
+          with manifest.open('w') as f:
+              for p in files:
+                  f.write(f"{hashlib.sha256(p.read_bytes()).hexdigest()}  {p.relative_to(out).as_posix()}\n")
+          PY
+          (cd cl1-output && sha256sum -c CL1_EVIDENCE_SHA256SUMS.txt)
+
+      - name: Final CL1 fail-closed static gate
+        id: finalgate
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f CL1_BUILD_EXIT_CODE.txt
+          test "$(cat CL1_BUILD_EXIT_CODE.txt)" = "0"
+          grep -q '^R1_V2_M_INCLUDE_CODE_FIX=PRESERVED$' cl1-output/CL1_PROVENANCE.txt
+          grep -q '^CL1_ONLY_CLASSLINKER_GROUP=FixupStaticTrampolines candidates$' cl1-output/CL1_PROVENANCE.txt
+          grep -q '^CL1_REGISTER_NATIVE_GROUP=NOT_REACHED$' cl1-output/CL1_PROVENANCE.txt
+          grep -q '^CL1_OUTER_CUTOFF_BEFORE=ScopedSuspendAll::Init(handler)$' cl1-output/CL1_PROVENANCE.txt
+          grep -q '^R9=ABSENT$' cl1-output/CL1_PROVENANCE.txt
+          grep -q '^DEX2OAT=UNCHANGED_OFFICIAL_7371$' cl1-output/CL1_PROVENANCE.txt
+          grep -q '^PAIRIP_BYPASS=ABSENT$' cl1-output/CL1_PROVENANCE.txt
+          test -f "cl1-output/INSTALL_THIS_${FINAL_ZIP}"
+          strings cl1buildcmp/lib/arm64-v8a/liblspd.so | grep -Fq 'LSPLANT-CL1: CLASSLINKER_CUTOFF_AFTER_FIXUP_GROUP'
+          (cd cl1-output && sha256sum -c CL1_EVIDENCE_SHA256SUMS.txt)
+          {
+            echo "RESULT=CL1_STATIC_FULL_PASS_DEVICE_DIAGNOSTIC_CREATED"
+            echo "PARENT=R1-v2 immutable Framework checkpoint"
+            echo "ONLY_NEW_FUNCTIONAL_VARIABLE=ClassLinker FixupStaticTrampolines candidate group only; no later ClassLinker groups"
+            echo "FINAL_PAYLOAD=official 7371 + R1 dex + rebuilt CL1 liblspd.so for 4 ABIs"
+            echo "MANAGER_DAEMON=official 7371 byte-identical"
+            echo "DEVICE_RUNTIME_STATUS=NOT_TESTED_BY_WORKFLOW"
+            echo "STATIC_PASS_IS_NOT_DEVICE_PASS=YES"
+          } | tee cl1-output/CL1_STATIC_PASS_MARKER.txt
+
+      - name: Upload CL1 diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: irena-x-v2.0.1-7371-cl1-fixupstatictrampolines-only-${{ github.run_id }}
+          path: cl1-output
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 30
