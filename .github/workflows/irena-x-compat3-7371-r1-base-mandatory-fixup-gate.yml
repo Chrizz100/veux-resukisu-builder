@@ -1,0 +1,692 @@
+name: Irena X 7371 COMPAT3 restore mandatory Fixup gate
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  IRENA_REPO: silvzr/LSP-IrenaX
+  IRENA_COMMIT: da439fbbed506dac6c66074af7fda8982aa4fc6a
+  CURRENT_LSPLANT_SHA: c5b46bb4f6a99ffe0c77ce3ab006d3f67d5a2b1c
+  CURRENT_DOBBY_SHA: dc7b4be06ad6c5dcfb0bb4ca2082b007d69eaed5
+  OFFICIAL_RELEASE_URL: https://github.com/silvzr/LSP-IrenaX/releases/download/v2.0.1/LSPosed-v2.0.1-7371-IrenaX-release.zip
+  OFFICIAL_RELEASE_SHA256: 99e7aaf54dda0e6fa746c55613483a80620174f255dd05e102713778a9966d2f
+  R1_DEVICE_PACKAGE_SHA256: 7ed948db19d92b0dd7776c424f93783e10210082ea807345228e901ab9ce4af7
+  FINAL_ZIP: LSPosed-v2.0.1-7371-IrenaX-COMPAT3-R1-base-Mandatory-Fixup-Gate-compatibility.zip
+
+jobs:
+  build:
+    name: Build COMPAT3 mandatory Fixup gate compatibility
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Freeze COMPAT3 compatibility contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p compat3-output
+          {
+            echo "PARENT=R1-v2 immutable Framework checkpoint"
+            echo "PARENT_DEVICE_PACKAGE_SHA256=$R1_DEVICE_PACKAGE_SHA256"
+            echo "BASE=official Irena X 7371 source + exact R1-v2 mIncludeCode compatibility fix"
+            echo "OLD_WORKING_FRAMEWORK=LSPosed_mod 7244"
+            echo "OLD_WORKING_LSPLANT=f492475a76777c0b40e419fe1908871cde88f627"
+            echo "OLD_BASELINE_CAPTURE_SHA256=38649e81f3acd60e913f873c307fcf34a3f8d1ea97686ad30be538856efe774b"
+            echo "OLD_BASELINE_RESULT=FixupStaticTrampolines unavailable -> ClassLinker init fails closed -> LSPlant init fails -> modules still load -> Ingress/PairIP stable for 50s"
+            echo "CL1_RESULT=FIXUP_GROUP_RESULT_0 + cutoff -> PairIP stable"
+            echo "CL2_RESULT=FIXUP_GROUP_RESULT_0 + RegisterNative group active -> PairIP +0x65768"
+            echo "CL2F_RESULT=FIXUP_GROUP_RESULT_0 + no RegisterNative fallback + controlled LSPlant init failure -> PairIP stable"
+            echo "COMPAT1_RESULT=RegisterNativeClassLinker skipped but later current LSPlant init continued -> PairIP +0x65768"
+            echo "COMPAT2_RESULT=Jit::Init additionally skipped but later current LSPlant init continued -> PairIP +0x65768"
+            echo "COMPAT3_FUNCTIONAL_DELTA=restore the historical mandatory FixupStaticTrampolines success gate in current ClassLinker::Init for every architecture"
+            echo "COMPAT3_GATE_RULE=if no FixupStaticTrampolines candidate hooks successfully, ClassLinker::Init returns false before RegisterNative/UnregisterNative/visibility/entrypoint work"
+            echo "COMPAT3_SUCCESS_PATH=if FixupStaticTrampolines succeeds, preserve the current upstream ClassLinker path unchanged"
+            echo "COMPAT3_EXPECTED_FAIL_MARKER_1=LSPLANT-COMPAT3: FIXUP_GROUP_RESULT=0"
+            echo "COMPAT3_EXPECTED_FAIL_MARKER_2=LSPLANT-COMPAT3: MANDATORY_FIXUP_GATE_ABORT=1"
+            echo "COMPAT3_EXPECTED_PASS_MARKER_1=LSPLANT-COMPAT3: FIXUP_GROUP_RESULT=1"
+            echo "COMPAT3_EXPECTED_PASS_MARKER_2=LSPLANT-COMPAT3: MANDATORY_FIXUP_GATE_PASS=1"
+            echo "CURRENT_LSPLANT=$CURRENT_LSPLANT_SHA"
+            echo "CURRENT_DOBBY=$CURRENT_DOBBY_SHA"
+            echo "JIT=UNCHANGED_CURRENT_7371"
+            echo "REGISTERNATIVE=UNCHANGED_CURRENT_7371_AFTER_GATE_PASS"
+            echo "MAPP_COMPONENT_FACTORY_FIX=ABSENT"
+            echo "R9_CHANGES=NONE"
+            echo "DEX2OAT_MOUNT_CHANGES=NONE"
+            echo "PAIRIP_BYPASS=NONE"
+            echo "STATIC_PASS_IS_NOT_DEVICE_PASS=YES"
+          } | tee compat3-output/COMPAT3_COMPATIBILITY_CONTRACT.txt
+
+      - name: Checkout pinned Irena X 7371
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.IRENA_REPO }}
+          ref: ${{ env.IRENA_COMMIT }}
+          submodules: recursive
+          fetch-depth: 0
+          path: LSP-IrenaX
+          persist-credentials: false
+
+      - name: Verify exact pristine pins and COMPAT3 source preconditions
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C LSP-IrenaX rev-parse HEAD)" = "$IRENA_COMMIT"
+          test -z "$(git -C LSP-IrenaX status --porcelain)"
+          test "$(git -C LSP-IrenaX/external/lsplant rev-parse HEAD)" = "$CURRENT_LSPLANT_SHA"
+          test "$(git -C LSP-IrenaX/external/dobby rev-parse HEAD)" = "$CURRENT_DOBBY_SHA"
+          test -z "$(git -C LSP-IrenaX/external/lsplant status --porcelain)"
+          test -z "$(git -C LSP-IrenaX/external/dobby status --porcelain)"
+
+          java_file="LSP-IrenaX/core/src/main/java/org/lsposed/lspd/hooker/LoadedApkCtorHooker.java"
+          native_file="LSP-IrenaX/external/lsplant/lsplant/src/main/jni/lsplant.cc"
+          cl_file="LSP-IrenaX/external/lsplant/lsplant/src/main/jni/art/runtime/class_linker.cxx"
+          test -f "$java_file"
+          test -f "$native_file"
+          test -f "$cl_file"
+
+          grep -Fq 'boolean includeCode = XposedHelpers.getBooleanField(loadedApk, "mIncludeCode");' "$java_file"
+          grep -Fq 'if (!Runtime::Init(handler)) {' "$native_file"
+          grep -Fq 'if (!ClassLinker::Init(env, handler)) {' "$native_file"
+          grep -Fq 'if (!ScopedSuspendAll::Init(handler)) {' "$native_file"
+          grep -Fq 'if (!Jit::Init(handler)) {' "$native_file"
+
+          grep -Fq 'if constexpr (is_arch_v<Arch::kX86>) {' "$cl_file"
+          grep -Fq 'handler(FixupStaticTrampolinesWithThread_, FixupStaticTrampolines_,' "$cl_file"
+          grep -Fq 'auto register_native_hooked = sdk_int >= kSdkOreo && sdk_int < kSdkPie' "$cl_file"
+          grep -Fq 'handler(RegisterNativeClassLinker_, RegisterNative_,' "$cl_file"
+          grep -Fq '!handler(UnregisterNativeClassLinker_, UnregisterNative_,' "$cl_file"
+
+          if grep -Fq 'LSPLANT-COMPAT3:' "$native_file" "$cl_file"; then
+            echo "COMPAT3 marker already exists in pristine source"
+            exit 1
+          fi
+
+          # The current source must NOT already contain the mandatory all-architecture gate.
+          if grep -Fq 'MANDATORY_FIXUP_GATE_ABORT' "$cl_file"; then
+            echo "mandatory Fixup gate unexpectedly already exists"
+            exit 1
+          fi
+
+          {
+            echo "IRENA=$(git -C LSP-IrenaX rev-parse HEAD)"
+            echo "LSPLANT=$(git -C LSP-IrenaX/external/lsplant rev-parse HEAD)"
+            echo "DOBBY=$(git -C LSP-IrenaX/external/dobby rev-parse HEAD)"
+            echo "R1_M_INCLUDE_CODE_PRECONDITION=PRESENT"
+            echo "CURRENT_JIT_INIT=PRESENT_AND_MUST_REMAIN_UNCHANGED"
+            echo "CURRENT_REGISTER_NATIVE_BLOCK=PRESENT_AND_MUST_REMAIN_UNCHANGED_AFTER_GATE_PASS"
+            echo "CURRENT_MANDATORY_FIXUP_GATE=ABSENT"
+          } | tee compat3-output/COMPAT3_SOURCE_PINS_AND_PRECONDITIONS.txt
+
+      - name: Setup Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          log-accepted-android-sdk-licenses: 'false'
+          packages: ''
+
+      - name: Setup ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          max-size: 2G
+          key: irena-x-compat3-${{ runner.os }}
+          restore-keys: |
+            irena-x-${{ runner.os }}
+          save: false
+
+      - name: Setup Ninja 1.12.1
+        uses: seanmiddleditch/gha-setup-ninja@master
+        with:
+          version: 1.12.1
+
+      - name: Remove Android bundled CMake
+        shell: bash
+        run: rm -rf "$ANDROID_HOME/cmake"
+
+      - name: Configure Gradle
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.gradle
+          {
+            echo 'org.gradle.caching=true'
+            echo 'org.gradle.parallel=true'
+            echo 'org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8 -XX:+UseParallelGC'
+            echo 'android.native.buildOutput=verbose'
+          } >> ~/.gradle/gradle.properties
+
+      - name: Download and verify official Irena 7371 release
+        id: official
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 3 -o OFFICIAL_RELEASE.zip "$OFFICIAL_RELEASE_URL"
+          echo "$OFFICIAL_RELEASE_SHA256  OFFICIAL_RELEASE.zip" | sha256sum -c -
+          unzip -t OFFICIAL_RELEASE.zip
+          rm -rf officialcmp
+          mkdir officialcmp
+          unzip -q OFFICIAL_RELEASE.zip -d officialcmp
+          python3 - <<'PY'
+          import zipfile
+          with zipfile.ZipFile('OFFICIAL_RELEASE.zip') as z:
+              names = z.namelist()
+              if len(names) != len(set(names)):
+                  raise SystemExit('duplicate names in official release')
+              files = [n for n in names if not n.endswith('/')]
+              if len(files) != 56:
+                  raise SystemExit(f'official release file count is {len(files)}, expected 56')
+              bad = z.testzip()
+              if bad:
+                  raise SystemExit(f'official CRC failure: {bad}')
+          PY
+          sha256sum OFFICIAL_RELEASE.zip > compat3-output/COMPAT3_OFFICIAL_RELEASE_SHA256.txt
+
+      - name: Apply exact R1-v2 mIncludeCode compatibility fix
+        id: r1patch
+        if: steps.official.outcome == 'success'
+        working-directory: LSP-IrenaX
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          p = Path('core/src/main/java/org/lsposed/lspd/hooker/LoadedApkCtorHooker.java')
+          s = p.read_text()
+          line = '            boolean includeCode = XposedHelpers.getBooleanField(loadedApk, "mIncludeCode");\n'
+          branch = (
+              '            } else if (!includeCode) {\n'
+              '                Hookers.logD("LoadedApk#<init> has no code, skip: " + mAppDir);\n'
+              '                return;\n'
+          )
+          if s.count(line) != 1:
+              raise SystemExit(f'expected one mIncludeCode read, got {s.count(line)}')
+          if s.count(branch) != 1:
+              raise SystemExit(f'expected one no-code branch, got {s.count(branch)}')
+          s = s.replace(line, '', 1).replace(branch, '', 1)
+          expected = (
+              '            if (packageName.equals("android")) {\n'
+              '                if (XposedInit.startsSystemServer) {\n'
+              '                    Hookers.logD("LoadedApk#<init> is android, skip: " + mAppDir);\n'
+              '                    return;\n'
+              '                } else {\n'
+              '                    packageName = "system";\n'
+              '                }\n'
+              '            }\n'
+              '\n'
+              '            if (!XposedInit.loadedPackagesInProcess.add(packageName)) {\n'
+          )
+          if expected not in s:
+              raise SystemExit('R1-v2 post-patch control flow mismatch')
+          if 'mIncludeCode' in s:
+              raise SystemExit('mIncludeCode survived R1-v2 patch')
+          p.write_text(s)
+          PY
+          git diff --check
+
+      - name: Apply COMPAT3 mandatory Fixup gate
+        id: compat3patch
+        if: steps.r1patch.outcome == 'success'
+        working-directory: LSP-IrenaX
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          p = Path('external/lsplant/lsplant/src/main/jni/art/runtime/class_linker.cxx')
+          s = p.read_text()
+
+          # COMPAT3 restores the old LSPlant fail-closed semantic without importing
+          # the old backend: at least one FixupStaticTrampolines candidate must hook
+          # successfully before current RegisterNative/UnregisterNative/visibility/
+          # entrypoint logic is allowed to run.
+          init_anchor = (
+              '        if (sdk_int >= kSdkNougat && sdk_int < kSdkTiramisu) {\n'
+              '            handler(ShouldUseInterpreterEntrypoint_);\n'
+              '        }\n'
+              '\n'
+              '        if constexpr (is_arch_v<Arch::kX86>) {\n'
+          )
+          init_repl = (
+              '        if (sdk_int >= kSdkNougat && sdk_int < kSdkTiramisu) {\n'
+              '            handler(ShouldUseInterpreterEntrypoint_);\n'
+              '        }\n'
+              '\n'
+              '        bool compat3_fixup_group_hooked = false;\n'
+              '        if constexpr (is_arch_v<Arch::kX86>) {\n'
+          )
+          if s.count(init_anchor) != 1:
+              raise SystemExit(
+                  f'expected one ClassLinker Init pre-fixup boundary, got {s.count(init_anchor)}'
+              )
+          s = s.replace(init_anchor, init_repl, 1)
+
+          x86_success_anchor = (
+              '            if (handler(FixupStaticTrampolinesWithThread_)) [[likely]] {\n'
+          )
+          x86_success_repl = (
+              '            if (handler(FixupStaticTrampolinesWithThread_)) [[likely]] {\n'
+              '                compat3_fixup_group_hooked = true;\n'
+          )
+          if s.count(x86_success_anchor) != 1:
+              raise SystemExit(
+                  f'expected one x86 FixupWithThread success branch, got {s.count(x86_success_anchor)}'
+              )
+          s = s.replace(x86_success_anchor, x86_success_repl, 1)
+
+          x86_fallback = (
+              '            } else {\n'
+              '                handler(FixupStaticTrampolines_, FixupStaticTrampolinesRaw_);\n'
+              '            }\n'
+              '        } else {\n'
+              '            handler(FixupStaticTrampolinesWithThread_, FixupStaticTrampolines_,\n'
+              '                    FixupStaticTrampolinesRaw_);\n'
+              '        }\n'
+              '\n'
+              '        auto register_native_hooked = sdk_int >= kSdkOreo && sdk_int < kSdkPie\n'
+          )
+          gated = (
+              '            } else {\n'
+              '                compat3_fixup_group_hooked =\n'
+              '                        handler(FixupStaticTrampolines_, FixupStaticTrampolinesRaw_);\n'
+              '            }\n'
+              '        } else {\n'
+              '            compat3_fixup_group_hooked =\n'
+              '                    handler(FixupStaticTrampolinesWithThread_, FixupStaticTrampolines_,\n'
+              '                            FixupStaticTrampolinesRaw_);\n'
+              '        }\n'
+              '\n'
+              '        LOGE("LSPLANT-COMPAT3: FIXUP_GROUP_RESULT=%d",\n'
+              '             compat3_fixup_group_hooked ? 1 : 0);\n'
+              '        if (!compat3_fixup_group_hooked) {\n'
+              '            LOGE("LSPLANT-COMPAT3: MANDATORY_FIXUP_GATE_ABORT=1");\n'
+              '            return false;\n'
+              '        }\n'
+              '        LOGE("LSPLANT-COMPAT3: MANDATORY_FIXUP_GATE_PASS=1");\n'
+              '\n'
+              '        auto register_native_hooked = sdk_int >= kSdkOreo && sdk_int < kSdkPie\n'
+          )
+          if s.count(x86_fallback) != 1:
+              raise SystemExit(
+                  f'expected one current Fixup->RegisterNative boundary, got {s.count(x86_fallback)}'
+              )
+          s = s.replace(x86_fallback, gated, 1)
+
+          required = (
+              'LSPLANT-COMPAT3: FIXUP_GROUP_RESULT=%d',
+              'LSPLANT-COMPAT3: MANDATORY_FIXUP_GATE_ABORT=1',
+              'LSPLANT-COMPAT3: MANDATORY_FIXUP_GATE_PASS=1',
+          )
+          for marker in required:
+              if s.count(marker) != 1:
+                  raise SystemExit(f'COMPAT3 marker count mismatch: {marker}')
+
+          # The current upstream RegisterNative block must remain byte-for-byte present
+          # after the newly inserted gate.
+          register_block = (
+              '        auto register_native_hooked = sdk_int >= kSdkOreo && sdk_int < kSdkPie\n'
+              '                                          ? handler(RegisterNativeFastWithReturn_)\n'
+              '                                          : handler(RegisterNativeClassLinker_, RegisterNative_,\n'
+              '                                                    RegisterNativeFast_, RegisterNativeThread_);\n'
+              '        if (!register_native_hooked ||\n'
+              '            !handler(UnregisterNativeClassLinker_, UnregisterNative_,\n'
+              '                     UnregisterNativeThread_)) {\n'
+              '            return false;\n'
+              '        }\n'
+          )
+          if s.count(register_block) != 1:
+              raise SystemExit('current upstream RegisterNative/UnregisterNative block changed unexpectedly')
+
+          p.write_text(s)
+
+          # Explicitly prove COMPAT1/2 behavior did NOT leak into COMPAT3.
+          native = Path('external/lsplant/lsplant/src/main/jni/lsplant.cc').read_text()
+          if native.count('if (!Jit::Init(handler)) {') != 1:
+              raise SystemExit('current Jit::Init block is not preserved exactly once')
+          forbidden = (
+              'LSPLANT-COMPAT1:',
+              'LSPLANT-COMPAT2:',
+              'JIT_INIT_SKIPPED',
+              'ANDROID13_ARM64_NO_FIXUP_COMPAT',
+              'REGISTER_NATIVE_PROPAGATION_OPTIONAL_CONTINUE',
+          )
+          combined = s + native
+          for token in forbidden:
+              if token in combined:
+                  raise SystemExit(f'forbidden prior diagnostic token survived into COMPAT3 source: {token}')
+          PY
+
+          git -C external/lsplant diff --check
+          mapfile -t ls_changed < <(git -C external/lsplant diff --name-only | sort)
+          printf '%s\n' "${ls_changed[@]}" | tee ../compat3-output/COMPAT3_LSPLANT_DIFF_NAMES.txt
+          test "${#ls_changed[@]}" -eq 1
+          test "${ls_changed[0]}" = "lsplant/src/main/jni/art/runtime/class_linker.cxx"
+
+          mapfile -t top_changed < <(git diff --name-only | sort)
+          printf '%s\n' "${top_changed[@]}" | tee ../compat3-output/COMPAT3_SOURCE_DIFF_NAMES.txt
+          test "${#top_changed[@]}" -eq 2
+          test "${top_changed[0]}" = "core/src/main/java/org/lsposed/lspd/hooker/LoadedApkCtorHooker.java"
+          test "${top_changed[1]}" = "external/lsplant"
+
+          # Freeze all unrelated paths and the rest of LSPlant.
+          git diff --exit-code "$IRENA_COMMIT" -- \
+            core/src/main/java/org/lsposed/lspd/core/Startup.java \
+            core/src/main/java/org/lsposed/lspd/hooker/LoadedApkCreateCLHooker.java \
+            core/src/main/java/org/lsposed/lspd/hooker/AttachHooker.java \
+            core/src/main/java/org/lsposed/lspd/impl/LSPosedBridge.java \
+            core/src/main/java/org/lsposed/lspd/impl/LSPosedHelper.java \
+            core/src/main/jni/src/jni/hook_bridge.cpp \
+            core/src/main/jni/src/native_api.cpp \
+            daemon/src/main/java/org/lsposed/lspd/service/Dex2OatService.java \
+            magisk-loader/src/main/jni/api/zygisk_main.cpp \
+            magisk-loader/src/main/jni/src/magisk_loader.cpp \
+            magisk-loader/src/main/jni/src/atexit.cpp
+
+          test "$(git -C external/dobby rev-parse HEAD)" = "$CURRENT_DOBBY_SHA"
+          test -z "$(git -C external/dobby status --porcelain)"
+
+          # Only class_linker.cxx may differ inside LSPlant.
+          git -C external/lsplant diff --exit-code "$CURRENT_LSPLANT_SHA" -- \
+            lsplant/src/main/jni/lsplant.cc \
+            lsplant/src/main/jni/art/runtime/jit/jit.cxx \
+            lsplant/src/main/jni/art/runtime/jit/jit_code_cache.cxx \
+            lsplant/src/main/jni/art/runtime/runtime.cxx \
+            lsplant/src/main/jni/art/runtime/thread_list.cxx
+
+          git diff > ../compat3-output/COMPAT3_TOPLEVEL_SOURCE.patch
+          git -C external/lsplant diff > ../compat3-output/COMPAT3_LSPLANT_SOURCE.patch
+          {
+            echo "SOURCE_DELTA_TOPLEVEL=LoadedApkCtorHooker.java + external/lsplant submodule"
+            echo "SOURCE_DELTA_LSPLANT=class_linker.cxx only"
+            echo "R1_V2_M_INCLUDE_CODE_FIX=PRESERVED"
+            echo "COMPAT3_MANDATORY_FIXUP_GATE=GLOBAL_ALL_ARCHITECTURES"
+            echo "COMPAT3_FIXUP_FAIL_ACTION=RETURN_FALSE_BEFORE_REGISTERNATIVE"
+            echo "COMPAT3_FIXUP_PASS_ACTION=CONTINUE_CURRENT_UPSTREAM_CLASSLINKER_UNCHANGED"
+            echo "COMPAT3_REGISTERNATIVE_BLOCK=UNCHANGED_CURRENT_7371"
+            echo "COMPAT3_UNREGISTERNATIVE_BLOCK=UNCHANGED_CURRENT_7371"
+            echo "COMPAT3_VISIBILITY_ENTRYPOINT_PATH=UNCHANGED_CURRENT_7371_AFTER_GATE_PASS"
+            echo "COMPAT3_JIT_INIT=UNCHANGED_CURRENT_7371"
+            echo "COMPAT3_SCOPED_SUSPEND_ALL_AND_LATER_INIT=UNCHANGED_CURRENT_7371"
+            echo "MAPP_COMPONENT_FACTORY_FIX=ABSENT"
+            echo "R9=ABSENT"
+            echo "DEX2OAT=UNCHANGED_OFFICIAL_7371"
+            echo "PAIRIP_BYPASS=ABSENT"
+          } | tee ../compat3-output/COMPAT3_PROVENANCE.txt
+
+      - name: Build COMPAT3 mandatory Fixup gate compatibility candidate
+        id: compat3build
+        if: steps.compat3patch.outcome == 'success'
+        working-directory: LSP-IrenaX
+        shell: bash
+        run: |
+          set -uo pipefail
+          set +e
+          ./gradlew clean zipAll --stacktrace --info 2>&1 | tee ../compat3-build.log
+          rc=${PIPESTATUS[0]}
+          set -e
+          echo "$rc" > ../COMPAT3_BUILD_EXIT_CODE.txt
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Extract COMPAT3 build and verify marker payload
+        id: built
+        if: steps.compat3build.outputs.rc == '0'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t rel < <(find LSP-IrenaX/magisk-loader/release -maxdepth 1 -type f \
+            -name 'LSPosed-v*-IrenaX-release.zip' -print | sort)
+          test "${#rel[@]}" -eq 1
+          cp "${rel[0]}" COMPAT3_BUILD_RELEASE.zip
+          unzip -t COMPAT3_BUILD_RELEASE.zip
+          rm -rf compat3buildcmp
+          mkdir compat3buildcmp
+          unzip -q COMPAT3_BUILD_RELEASE.zip -d compat3buildcmp
+
+          test -f compat3buildcmp/framework/lspd.dex
+          for abi in arm64-v8a armeabi-v7a x86 x86_64; do
+            test -f "compat3buildcmp/lib/$abi/liblspd.so"
+            readelf -h "compat3buildcmp/lib/$abi/liblspd.so" >/dev/null
+            strings "compat3buildcmp/lib/$abi/liblspd.so" | grep -Fq 'LSPLANT-COMPAT3: FIXUP_GROUP_RESULT=%d'
+            strings "compat3buildcmp/lib/$abi/liblspd.so" | grep -Fq 'LSPLANT-COMPAT3: MANDATORY_FIXUP_GATE_ABORT=1'
+            strings "compat3buildcmp/lib/$abi/liblspd.so" | grep -Fq 'LSPLANT-COMPAT3: MANDATORY_FIXUP_GATE_PASS=1'
+            if strings "compat3buildcmp/lib/$abi/liblspd.so" | grep -Fq 'LSPLANT-COMPAT2:'; then
+              echo "COMPAT2 marker leaked into $abi"
+              exit 1
+            fi
+          done
+
+          sha256sum compat3buildcmp/framework/lspd.dex > compat3-output/COMPAT3_REBUILT_FRAMEWORK_DEX_SHA256.txt
+          sha256sum compat3buildcmp/lib/*/liblspd.so > compat3-output/COMPAT3_REBUILT_LIBLSPD_SHA256.txt
+
+      - name: Create official-base COMPAT3 install package
+        id: package
+        if: steps.built.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib, zipfile
+
+          official = Path('OFFICIAL_RELEASE.zip')
+          built = Path('compat3buildcmp')
+          out = Path('${{ env.FINAL_ZIP }}')
+          abis = ('arm64-v8a','armeabi-v7a','x86','x86_64')
+          payload = {'framework/lspd.dex'} | {f'lib/{abi}/liblspd.so' for abi in abis}
+          sidecars = {x + '.sha256' for x in payload}
+          replacements = {}
+          for name in payload:
+              data = (built / name).read_bytes()
+              replacements[name] = data
+              replacements[name + '.sha256'] = hashlib.sha256(data).hexdigest().encode()
+
+          with zipfile.ZipFile(official, 'r') as zin, zipfile.ZipFile(out, 'w') as zout:
+              infos = zin.infolist()
+              names = [i.filename for i in infos]
+              if len(names) != len(set(names)):
+                  raise SystemExit('duplicate names in official ZIP')
+              if not (payload | sidecars).issubset(set(names)):
+                  raise SystemExit('official ZIP misses one or more COMPAT3 replacement targets')
+              for info in infos:
+                  zout.writestr(info, replacements.get(info.filename, zin.read(info.filename)))
+
+          def tree(path):
+              with zipfile.ZipFile(path) as z:
+                  names = z.namelist()
+                  if len(names) != len(set(names)):
+                      raise SystemExit(f'duplicate names: {path}')
+                  bad = z.testzip()
+                  if bad:
+                      raise SystemExit(f'CRC failure {path}: {bad}')
+                  return {n: hashlib.sha256(z.read(n)).hexdigest() for n in names if not n.endswith('/')}
+
+          a, b = tree(official), tree(out)
+          if set(a) != set(b):
+              raise SystemExit('official/COMPAT3 file sets differ')
+          if len(a) != 56:
+              raise SystemExit(f'expected 56 files, got {len(a)}')
+          diff = sorted(k for k in a if a[k] != b[k])
+          expected = sorted(payload | sidecars)
+          if diff != expected:
+              raise SystemExit(f'unexpected official->COMPAT3 package delta: {diff}')
+
+          # Keep manager/daemon/scripts exact official 7371; only target-process native libs + R1 dex change.
+          for rel in ('manager.apk','daemon.apk'):
+              if a[rel] != b[rel]:
+                  raise SystemExit(f'official control payload changed: {rel}')
+
+          with zipfile.ZipFile(out) as z:
+              names = set(z.namelist())
+              checked = 0
+              for n in sorted(names):
+                  if not n.endswith('.sha256'):
+                      continue
+                  p = n[:-7]
+                  if p not in names:
+                      continue
+                  expected_hash = z.read(n).decode().strip().split()[0]
+                  actual_hash = hashlib.sha256(z.read(p)).hexdigest()
+                  if expected_hash != actual_hash:
+                      raise SystemExit(f'sidecar mismatch: {n}')
+                  checked += 1
+              if checked != 28:
+                  raise SystemExit(f'expected 28 verified sidecars, got {checked}')
+
+          sha = hashlib.sha256(out.read_bytes()).hexdigest()
+          Path('compat3-output/COMPAT3_FINAL_PACKAGE_SHA256.txt').write_text(f'{sha}  {out.name}\n')
+          Path('compat3-output/COMPAT3_FINAL_PACKAGE_DIFF.txt').write_text('\n'.join(expected) + '\n')
+          Path('compat3-output/COMPAT3_FINAL_SCOPE.txt').write_text(
+              'BASE=official Irena X 7371 release\n'
+              'PARENT_SEMANTICS=R1-v2 mIncludeCode fix preserved in framework/lspd.dex\n'
+              'COMPAT3_NATIVE_BEHAVIOR=restores the historical mandatory FixupStaticTrampolines success gate globally; on Fixup failure ClassLinker::Init returns false before later ClassLinker/ART hooks; on Fixup success the current upstream path remains unchanged\n'
+              'FINAL_PACKAGE_DELTA=framework/lspd.dex+sidecar + 4 liblspd.so+sidecars\n'
+              'MANAGER=official 7371 byte-identical\n'
+              'DAEMON=official 7371 byte-identical\n'
+              'DEX2OAT=official 7371 unchanged\n'
+              'DOBBY=official/current 7371 unchanged\n'
+              'R9_CHANGES=none\n'
+              'PAIRIP_BYPASS=none\n'
+              'DEVICE_RUNTIME_STATUS=not tested\n'
+          )
+          PY
+          unzip -t "$FINAL_ZIP"
+          cp "$FINAL_ZIP" "compat3-output/INSTALL_THIS_${FINAL_ZIP}"
+
+      - name: Write COMPAT3 device test plan
+        if: steps.package.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > compat3-output/COMPAT3_DEVICE_TEST_PLAN.txt <<'EOF'
+          COMPAT3 RESTORE MANDATORY FIXUP GATE
+
+          PURPOSE
+          - Reproduce in current LSPlant the fail-closed ClassLinker behavior observed in the working old 7244/LSPlant_mod baseline.
+          - This is capability-based, not VEUX-, Ingress-, module-, SDK33- or ARM64-specific.
+          - If no FixupStaticTrampolines candidate hooks, ClassLinker::Init returns false before RegisterNative, UnregisterNative, visibility and entrypoint handling.
+          - If FixupStaticTrampolines succeeds, current upstream ClassLinker behavior continues unchanged.
+          - Jit::Init and every later InitNative stage remain unchanged; they are reached only when ClassLinker succeeds.
+          - Modules/scopes must remain unchanged for A/B comparability.
+
+          EXPECTED FAIL-CLOSED RUNTIME MARKERS WHEN FIXUP IS UNAVAILABLE
+          LSPLANT-COMPAT3: FIXUP_GROUP_RESULT=0
+          LSPLANT-COMPAT3: MANDATORY_FIXUP_GATE_ABORT=1
+          followed by the existing framework messages:
+          Failed to init class linker
+          Failed to init lsplant
+
+          EXPECTED PASS-PATH MARKERS WHEN FIXUP IS AVAILABLE
+          LSPLANT-COMPAT3: FIXUP_GROUP_RESULT=1
+          LSPLANT-COMPAT3: MANDATORY_FIXUP_GATE_PASS=1
+          followed by the unchanged current ClassLinker/InitNative path.
+
+          CONTROLLED TEST ORDER
+          1. Install only the inner INSTALL_THIS_*.zip and reboot.
+          2. Do NOT change modules or scopes.
+          3. Confirm LSPosed/Irena manager opens.
+          4. Capture the same broad baseline as before while cold-starting Ingress.
+          5. Keep GPSSetter and Hide Mock Location enabled so module load order stays comparable.
+
+          PASS TARGET ON THE KNOWN FIXUP-UNAVAILABLE TEST SYSTEM
+          - same Ingress PID contains FIXUP_GROUP_RESULT=0 and MANDATORY_FIXUP_GATE_ABORT=1;
+          - no RegisterNative/COMPAT1/COMPAT2 continuation markers;
+          - existing "Failed to init class linker" and "Failed to init lsplant" appear;
+          - GPSSetter and Hide Mock Location still load;
+          - libpairipcore.so loads;
+          - no SIGSEGV / libpairipcore +0x65768;
+          - Ingress remains alive, matching the old 7244 baseline behavior.
+
+          IMPORTANT
+          STATIC PASS != DEVICE PASS.
+          A pass on one device validates that device/configuration only. The gate itself is intentionally generic:
+          devices/ART variants with a usable Fixup hook continue through current upstream LSPlant; devices without one fail closed.
+          EOF
+
+      - name: Collect COMPAT3 evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p compat3-output/native
+          cp COMPAT3_BUILD_EXIT_CODE.txt compat3-output/ 2>/dev/null || true
+          cp compat3-build.log compat3-output/ 2>/dev/null || true
+          cp COMPAT3_BUILD_RELEASE.zip compat3-output/ 2>/dev/null || true
+          cp OFFICIAL_RELEASE.zip compat3-output/OFFICIAL_7371_RELEASE_REFERENCE.zip 2>/dev/null || true
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib
+          out = Path('compat3-output')
+          manifest = out / 'COMPAT3_EVIDENCE_SHA256SUMS.txt'
+          files = sorted(p for p in out.rglob('*') if p.is_file() and p != manifest)
+          with manifest.open('w') as f:
+              for p in files:
+                  f.write(f"{hashlib.sha256(p.read_bytes()).hexdigest()}  {p.relative_to(out).as_posix()}\n")
+          PY
+          (cd compat3-output && sha256sum -c COMPAT3_EVIDENCE_SHA256SUMS.txt)
+
+      - name: Final COMPAT3 fail-closed static gate
+        id: finalgate
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f COMPAT3_BUILD_EXIT_CODE.txt
+          test "$(cat COMPAT3_BUILD_EXIT_CODE.txt)" = "0"
+
+          grep -q '^R1_V2_M_INCLUDE_CODE_FIX=PRESERVED$' compat3-output/COMPAT3_PROVENANCE.txt
+          grep -q '^COMPAT3_MANDATORY_FIXUP_GATE=GLOBAL_ALL_ARCHITECTURES$' compat3-output/COMPAT3_PROVENANCE.txt
+          grep -q '^COMPAT3_FIXUP_FAIL_ACTION=RETURN_FALSE_BEFORE_REGISTERNATIVE$' compat3-output/COMPAT3_PROVENANCE.txt
+          grep -q '^COMPAT3_FIXUP_PASS_ACTION=CONTINUE_CURRENT_UPSTREAM_CLASSLINKER_UNCHANGED$' compat3-output/COMPAT3_PROVENANCE.txt
+          grep -q '^COMPAT3_REGISTERNATIVE_BLOCK=UNCHANGED_CURRENT_7371$' compat3-output/COMPAT3_PROVENANCE.txt
+          grep -q '^COMPAT3_UNREGISTERNATIVE_BLOCK=UNCHANGED_CURRENT_7371$' compat3-output/COMPAT3_PROVENANCE.txt
+          grep -q '^COMPAT3_JIT_INIT=UNCHANGED_CURRENT_7371$' compat3-output/COMPAT3_PROVENANCE.txt
+          grep -q '^MAPP_COMPONENT_FACTORY_FIX=ABSENT$' compat3-output/COMPAT3_PROVENANCE.txt
+          grep -q '^R9=ABSENT$' compat3-output/COMPAT3_PROVENANCE.txt
+          grep -q '^DEX2OAT=UNCHANGED_OFFICIAL_7371$' compat3-output/COMPAT3_PROVENANCE.txt
+          grep -q '^PAIRIP_BYPASS=ABSENT$' compat3-output/COMPAT3_PROVENANCE.txt
+
+          test -f "compat3-output/INSTALL_THIS_${FINAL_ZIP}"
+          for abi in arm64-v8a armeabi-v7a x86 x86_64; do
+            strings "compat3buildcmp/lib/$abi/liblspd.so" | grep -Fq 'LSPLANT-COMPAT3: FIXUP_GROUP_RESULT=%d'
+            strings "compat3buildcmp/lib/$abi/liblspd.so" | grep -Fq 'LSPLANT-COMPAT3: MANDATORY_FIXUP_GATE_ABORT=1'
+            strings "compat3buildcmp/lib/$abi/liblspd.so" | grep -Fq 'LSPLANT-COMPAT3: MANDATORY_FIXUP_GATE_PASS=1'
+            if strings "compat3buildcmp/lib/$abi/liblspd.so" | grep -Eq 'LSPLANT-COMPAT[12]:|JIT_INIT_SKIPPED|ANDROID13_ARM64_NO_FIXUP_COMPAT'; then
+              echo "prior compatibility marker leaked into $abi"
+              exit 1
+            fi
+          done
+
+          (cd compat3-output && sha256sum -c COMPAT3_EVIDENCE_SHA256SUMS.txt)
+          {
+            echo "RESULT=COMPAT3_STATIC_FULL_PASS_MANDATORY_FIXUP_GATE_CREATED"
+            echo "PARENT=R1-v2 immutable Framework checkpoint"
+            echo "FUNCTIONAL_DELTA=restore old fail-closed FixupStaticTrampolines requirement in current ClassLinker::Init"
+            echo "FIXUP_FAIL=return false before RegisterNative and every later ClassLinker hook group"
+            echo "FIXUP_PASS=current upstream ClassLinker and later InitNative behavior unchanged"
+            echo "FINAL_PAYLOAD=official 7371 + R1 dex + rebuilt COMPAT3 liblspd.so for 4 ABIs"
+            echo "MANAGER_DAEMON=official 7371 byte-identical"
+            echo "DEVICE_RUNTIME_STATUS=NOT_TESTED_BY_WORKFLOW"
+            echo "STATIC_PASS_IS_NOT_DEVICE_PASS=YES"
+          } | tee compat3-output/COMPAT3_STATIC_PASS_MARKER.txt
+
+      - name: Upload COMPAT3 diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: irena-x-v2.0.1-7371-compat3-mandatory-fixup-gate-${{ github.run_id }}
+          path: compat3-output
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 30
+
