@@ -1,0 +1,516 @@
+name: Irena X 7371 N0 current-LSPlant cutoff before ClassLinker
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  IRENA_REPO: silvzr/LSP-IrenaX
+  IRENA_COMMIT: da439fbbed506dac6c66074af7fda8982aa4fc6a
+  CURRENT_LSPLANT_SHA: c5b46bb4f6a99ffe0c77ce3ab006d3f67d5a2b1c
+  CURRENT_DOBBY_SHA: dc7b4be06ad6c5dcfb0bb4ca2082b007d69eaed5
+  OFFICIAL_RELEASE_URL: https://github.com/silvzr/LSP-IrenaX/releases/download/v2.0.1/LSPosed-v2.0.1-7371-IrenaX-release.zip
+  OFFICIAL_RELEASE_SHA256: 99e7aaf54dda0e6fa746c55613483a80620174f255dd05e102713778a9966d2f
+  R1_DEVICE_PACKAGE_SHA256: 7ed948db19d92b0dd7776c424f93783e10210082ea807345228e901ab9ce4af7
+  FINAL_ZIP: LSPosed-v2.0.1-7371-IrenaX-N0-R1-base-current-LSPlant-cutoff-before-ClassLinker-diagnostic.zip
+
+jobs:
+  build:
+    name: Build N0 current-LSPlant pre-ClassLinker cutoff diagnostic
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Freeze N0 diagnostic contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p n0-output
+          {
+            echo "PARENT=R1-v2 immutable Framework checkpoint"
+            echo "PARENT_DEVICE_PACKAGE_SHA256=$R1_DEVICE_PACKAGE_SHA256"
+            echo "BASE=official Irena X 7371 source + exact R1-v2 mIncludeCode compatibility fix"
+            echo "N0_ONLY_NEW_FUNCTIONAL_CHANGE=current LSPlant InitNative returns false immediately after Runtime::Init and before ClassLinker::Init"
+            echo "N0_PURPOSE=bisect PairIP-sensitive native ART state at the ClassLinker boundary"
+            echo "N0_EXPECTED_MARKER=LSPLANT-N0: CUTOFF_BEFORE_CLASSLINKER"
+            echo "CURRENT_LSPLANT=$CURRENT_LSPLANT_SHA"
+            echo "CURRENT_DOBBY=$CURRENT_DOBBY_SHA"
+            echo "R9_CHANGES=NONE"
+            echo "DEX2OAT_MOUNT_CHANGES=NONE"
+            echo "PAIRIP_BYPASS=NONE"
+            echo "STATIC_PASS_IS_NOT_DEVICE_PASS=YES"
+          } | tee n0-output/N0_DIAGNOSTIC_CONTRACT.txt
+
+      - name: Checkout pinned Irena X 7371
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.IRENA_REPO }}
+          ref: ${{ env.IRENA_COMMIT }}
+          submodules: recursive
+          fetch-depth: 0
+          path: LSP-IrenaX
+          persist-credentials: false
+
+      - name: Verify exact pristine pins and N0 source preconditions
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C LSP-IrenaX rev-parse HEAD)" = "$IRENA_COMMIT"
+          test -z "$(git -C LSP-IrenaX status --porcelain)"
+          test "$(git -C LSP-IrenaX/external/lsplant rev-parse HEAD)" = "$CURRENT_LSPLANT_SHA"
+          test "$(git -C LSP-IrenaX/external/dobby rev-parse HEAD)" = "$CURRENT_DOBBY_SHA"
+          test -z "$(git -C LSP-IrenaX/external/lsplant status --porcelain)"
+          test -z "$(git -C LSP-IrenaX/external/dobby status --porcelain)"
+
+          java_file="LSP-IrenaX/core/src/main/java/org/lsposed/lspd/hooker/LoadedApkCtorHooker.java"
+          native_file="LSP-IrenaX/external/lsplant/lsplant/src/main/jni/lsplant.cc"
+          test -f "$java_file"
+          test -f "$native_file"
+          grep -Fq 'boolean includeCode = XposedHelpers.getBooleanField(loadedApk, "mIncludeCode");' "$java_file"
+          grep -Fq 'if (!Runtime::Init(handler)) {' "$native_file"
+          grep -Fq 'if (!ClassLinker::Init(env, handler)) {' "$native_file"
+          if grep -Fq 'LSPLANT-N0: CUTOFF_BEFORE_CLASSLINKER' "$native_file"; then
+            echo "N0 marker already exists in pristine source"
+            exit 1
+          fi
+
+          {
+            echo "IRENA=$(git -C LSP-IrenaX rev-parse HEAD)"
+            echo "LSPLANT=$(git -C LSP-IrenaX/external/lsplant rev-parse HEAD)"
+            echo "DOBBY=$(git -C LSP-IrenaX/external/dobby rev-parse HEAD)"
+            echo "R1_M_INCLUDE_CODE_PRECONDITION=PRESENT"
+            echo "N0_RUNTIME_THEN_CLASSLINKER_PRECONDITION=PRESENT"
+          } | tee n0-output/N0_SOURCE_PINS_AND_PRECONDITIONS.txt
+
+      - name: Setup Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          log-accepted-android-sdk-licenses: 'false'
+          packages: ''
+
+      - name: Setup ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          max-size: 2G
+          key: irena-x-n0-${{ runner.os }}
+          restore-keys: |
+            irena-x-${{ runner.os }}
+          save: false
+
+      - name: Setup Ninja 1.12.1
+        uses: seanmiddleditch/gha-setup-ninja@master
+        with:
+          version: 1.12.1
+
+      - name: Remove Android bundled CMake
+        shell: bash
+        run: rm -rf "$ANDROID_HOME/cmake"
+
+      - name: Configure Gradle
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.gradle
+          {
+            echo 'org.gradle.caching=true'
+            echo 'org.gradle.parallel=true'
+            echo 'org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8 -XX:+UseParallelGC'
+            echo 'android.native.buildOutput=verbose'
+          } >> ~/.gradle/gradle.properties
+
+      - name: Download and verify official Irena 7371 release
+        id: official
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 3 -o OFFICIAL_RELEASE.zip "$OFFICIAL_RELEASE_URL"
+          echo "$OFFICIAL_RELEASE_SHA256  OFFICIAL_RELEASE.zip" | sha256sum -c -
+          unzip -t OFFICIAL_RELEASE.zip
+          rm -rf officialcmp
+          mkdir officialcmp
+          unzip -q OFFICIAL_RELEASE.zip -d officialcmp
+          python3 - <<'PY'
+          import zipfile
+          with zipfile.ZipFile('OFFICIAL_RELEASE.zip') as z:
+              names = z.namelist()
+              if len(names) != len(set(names)):
+                  raise SystemExit('duplicate names in official release')
+              files = [n for n in names if not n.endswith('/')]
+              if len(files) != 56:
+                  raise SystemExit(f'official release file count is {len(files)}, expected 56')
+              bad = z.testzip()
+              if bad:
+                  raise SystemExit(f'official CRC failure: {bad}')
+          PY
+          sha256sum OFFICIAL_RELEASE.zip > n0-output/N0_OFFICIAL_RELEASE_SHA256.txt
+
+      - name: Apply exact R1-v2 mIncludeCode compatibility fix
+        id: r1patch
+        if: steps.official.outcome == 'success'
+        working-directory: LSP-IrenaX
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          p = Path('core/src/main/java/org/lsposed/lspd/hooker/LoadedApkCtorHooker.java')
+          s = p.read_text()
+          line = '            boolean includeCode = XposedHelpers.getBooleanField(loadedApk, "mIncludeCode");\n'
+          branch = (
+              '            } else if (!includeCode) {\n'
+              '                Hookers.logD("LoadedApk#<init> has no code, skip: " + mAppDir);\n'
+              '                return;\n'
+          )
+          if s.count(line) != 1:
+              raise SystemExit(f'expected one mIncludeCode read, got {s.count(line)}')
+          if s.count(branch) != 1:
+              raise SystemExit(f'expected one no-code branch, got {s.count(branch)}')
+          s = s.replace(line, '', 1).replace(branch, '', 1)
+          expected = (
+              '            if (packageName.equals("android")) {\n'
+              '                if (XposedInit.startsSystemServer) {\n'
+              '                    Hookers.logD("LoadedApk#<init> is android, skip: " + mAppDir);\n'
+              '                    return;\n'
+              '                } else {\n'
+              '                    packageName = "system";\n'
+              '                }\n'
+              '            }\n'
+              '\n'
+              '            if (!XposedInit.loadedPackagesInProcess.add(packageName)) {\n'
+          )
+          if expected not in s:
+              raise SystemExit('R1-v2 post-patch control flow mismatch')
+          if 'mIncludeCode' in s:
+              raise SystemExit('mIncludeCode survived R1-v2 patch')
+          p.write_text(s)
+          PY
+          git diff --check
+
+      - name: Apply N0 native cutoff before ClassLinker only
+        id: n0patch
+        if: steps.r1patch.outcome == 'success'
+        working-directory: LSP-IrenaX
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          p = Path('external/lsplant/lsplant/src/main/jni/lsplant.cc')
+          s = p.read_text()
+          old = (
+              '    if (!Runtime::Init(handler)) {\n'
+              '        LOGE("Failed to init runtime");\n'
+              '        return false;\n'
+              '    }\n'
+              '    if (!ClassLinker::Init(env, handler)) {\n'
+              '        LOGE("Failed to init class linker");\n'
+              '        return false;\n'
+              '    }\n'
+          )
+          new = (
+              '    if (!Runtime::Init(handler)) {\n'
+              '        LOGE("Failed to init runtime");\n'
+              '        return false;\n'
+              '    }\n'
+              '    LOGE("LSPLANT-N0: CUTOFF_BEFORE_CLASSLINKER");\n'
+              '    return false;\n'
+              '    if (!ClassLinker::Init(env, handler)) {\n'
+              '        LOGE("Failed to init class linker");\n'
+              '        return false;\n'
+              '    }\n'
+          )
+          if s.count(old) != 1:
+              raise SystemExit(f'expected exactly one Runtime->ClassLinker boundary, got {s.count(old)}')
+          s = s.replace(old, new, 1)
+          if s.count('LSPLANT-N0: CUTOFF_BEFORE_CLASSLINKER') != 1:
+              raise SystemExit('N0 marker count mismatch')
+          p.write_text(s)
+          PY
+
+          git -C external/lsplant diff --check
+          mapfile -t ls_changed < <(git -C external/lsplant diff --name-only | sort)
+          test "${#ls_changed[@]}" -eq 1
+          test "${ls_changed[0]}" = "lsplant/src/main/jni/lsplant.cc"
+
+          mapfile -t top_changed < <(git diff --name-only | sort)
+          printf '%s\n' "${top_changed[@]}" | tee ../n0-output/N0_SOURCE_DIFF_NAMES.txt
+          test "${#top_changed[@]}" -eq 2
+          test "${top_changed[0]}" = "core/src/main/java/org/lsposed/lspd/hooker/LoadedApkCtorHooker.java"
+          test "${top_changed[1]}" = "external/lsplant"
+
+          # Freeze all other investigated areas. N0 is native-init boundary only.
+          git diff --exit-code "$IRENA_COMMIT" -- \
+            core/src/main/java/org/lsposed/lspd/core/Startup.java \
+            core/src/main/java/org/lsposed/lspd/hooker/LoadedApkCreateCLHooker.java \
+            core/src/main/java/org/lsposed/lspd/hooker/AttachHooker.java \
+            core/src/main/java/org/lsposed/lspd/impl/LSPosedBridge.java \
+            core/src/main/java/org/lsposed/lspd/impl/LSPosedHelper.java \
+            core/src/main/jni/src/jni/hook_bridge.cpp \
+            core/src/main/jni/src/native_api.cpp \
+            daemon/src/main/java/org/lsposed/lspd/service/Dex2OatService.java \
+            magisk-loader/src/main/jni/api/zygisk_main.cpp \
+            magisk-loader/src/main/jni/src/magisk_loader.cpp \
+            magisk-loader/src/main/jni/src/atexit.cpp
+
+          test "$(git -C external/dobby rev-parse HEAD)" = "$CURRENT_DOBBY_SHA"
+          test -z "$(git -C external/dobby status --porcelain)"
+
+          git diff > ../n0-output/N0_TOPLEVEL_SOURCE.patch
+          git -C external/lsplant diff > ../n0-output/N0_LSPLANT_SOURCE.patch
+          {
+            echo "SOURCE_DELTA_TOPLEVEL=LoadedApkCtorHooker.java + external/lsplant submodule"
+            echo "SOURCE_DELTA_LSPLANT=lsplant/src/main/jni/lsplant.cc only"
+            echo "R1_V2_M_INCLUDE_CODE_FIX=PRESERVED"
+            echo "N0_CUTOFF_AFTER=Runtime::Init(handler)"
+            echo "N0_CUTOFF_BEFORE=ClassLinker::Init(env, handler)"
+            echo "N0_MARKER=LSPLANT-N0: CUTOFF_BEFORE_CLASSLINKER"
+            echo "DOBBY=UNCHANGED_CURRENT_7371"
+            echo "R9=ABSENT"
+            echo "DEX2OAT=UNCHANGED_OFFICIAL_7371"
+            echo "PAIRIP_BYPASS=ABSENT"
+          } | tee ../n0-output/N0_PROVENANCE.txt
+
+      - name: Build N0 diagnostic candidate
+        id: n0build
+        if: steps.n0patch.outcome == 'success'
+        working-directory: LSP-IrenaX
+        shell: bash
+        run: |
+          set -uo pipefail
+          set +e
+          ./gradlew clean zipAll --stacktrace --info 2>&1 | tee ../n0-build.log
+          rc=${PIPESTATUS[0]}
+          set -e
+          echo "$rc" > ../N0_BUILD_EXIT_CODE.txt
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Extract N0 build and verify marker payload
+        id: built
+        if: steps.n0build.outputs.rc == '0'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t rel < <(find LSP-IrenaX/magisk-loader/release -maxdepth 1 -type f \
+            -name 'LSPosed-v*-IrenaX-release.zip' -print | sort)
+          test "${#rel[@]}" -eq 1
+          cp "${rel[0]}" N0_BUILD_RELEASE.zip
+          unzip -t N0_BUILD_RELEASE.zip
+          rm -rf n0buildcmp
+          mkdir n0buildcmp
+          unzip -q N0_BUILD_RELEASE.zip -d n0buildcmp
+
+          test -f n0buildcmp/framework/lspd.dex
+          for abi in arm64-v8a armeabi-v7a x86 x86_64; do
+            test -f "n0buildcmp/lib/$abi/liblspd.so"
+            strings "n0buildcmp/lib/$abi/liblspd.so" | grep -Fq 'LSPLANT-N0: CUTOFF_BEFORE_CLASSLINKER'
+            readelf -h "n0buildcmp/lib/$abi/liblspd.so" >/dev/null
+          done
+
+          sha256sum n0buildcmp/framework/lspd.dex > n0-output/N0_REBUILT_FRAMEWORK_DEX_SHA256.txt
+          sha256sum n0buildcmp/lib/*/liblspd.so > n0-output/N0_REBUILT_LIBLSPD_SHA256.txt
+
+      - name: Create official-base N0 install package
+        id: package
+        if: steps.built.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib, zipfile
+
+          official = Path('OFFICIAL_RELEASE.zip')
+          built = Path('n0buildcmp')
+          out = Path('${{ env.FINAL_ZIP }}')
+          abis = ('arm64-v8a','armeabi-v7a','x86','x86_64')
+          payload = {'framework/lspd.dex'} | {f'lib/{abi}/liblspd.so' for abi in abis}
+          sidecars = {x + '.sha256' for x in payload}
+          replacements = {}
+          for name in payload:
+              data = (built / name).read_bytes()
+              replacements[name] = data
+              replacements[name + '.sha256'] = hashlib.sha256(data).hexdigest().encode()
+
+          with zipfile.ZipFile(official, 'r') as zin, zipfile.ZipFile(out, 'w') as zout:
+              infos = zin.infolist()
+              names = [i.filename for i in infos]
+              if len(names) != len(set(names)):
+                  raise SystemExit('duplicate names in official ZIP')
+              if not (payload | sidecars).issubset(set(names)):
+                  raise SystemExit('official ZIP misses one or more N0 replacement targets')
+              for info in infos:
+                  zout.writestr(info, replacements.get(info.filename, zin.read(info.filename)))
+
+          def tree(path):
+              with zipfile.ZipFile(path) as z:
+                  names = z.namelist()
+                  if len(names) != len(set(names)):
+                      raise SystemExit(f'duplicate names: {path}')
+                  bad = z.testzip()
+                  if bad:
+                      raise SystemExit(f'CRC failure {path}: {bad}')
+                  return {n: hashlib.sha256(z.read(n)).hexdigest() for n in names if not n.endswith('/')}
+
+          a, b = tree(official), tree(out)
+          if set(a) != set(b):
+              raise SystemExit('official/N0 file sets differ')
+          if len(a) != 56:
+              raise SystemExit(f'expected 56 files, got {len(a)}')
+          diff = sorted(k for k in a if a[k] != b[k])
+          expected = sorted(payload | sidecars)
+          if diff != expected:
+              raise SystemExit(f'unexpected official->N0 package delta: {diff}')
+
+          # Keep manager/daemon/scripts exact official 7371; only target-process native libs + R1 dex change.
+          for rel in ('manager.apk','daemon.apk'):
+              if a[rel] != b[rel]:
+                  raise SystemExit(f'official control payload changed: {rel}')
+
+          with zipfile.ZipFile(out) as z:
+              names = set(z.namelist())
+              checked = 0
+              for n in sorted(names):
+                  if not n.endswith('.sha256'):
+                      continue
+                  p = n[:-7]
+                  if p not in names:
+                      continue
+                  expected_hash = z.read(n).decode().strip().split()[0]
+                  actual_hash = hashlib.sha256(z.read(p)).hexdigest()
+                  if expected_hash != actual_hash:
+                      raise SystemExit(f'sidecar mismatch: {n}')
+                  checked += 1
+              if checked != 28:
+                  raise SystemExit(f'expected 28 verified sidecars, got {checked}')
+
+          sha = hashlib.sha256(out.read_bytes()).hexdigest()
+          Path('n0-output/N0_FINAL_PACKAGE_SHA256.txt').write_text(f'{sha}  {out.name}\n')
+          Path('n0-output/N0_FINAL_PACKAGE_DIFF.txt').write_text('\n'.join(expected) + '\n')
+          Path('n0-output/N0_FINAL_SCOPE.txt').write_text(
+              'BASE=official Irena X 7371 release\n'
+              'PARENT_SEMANTICS=R1-v2 mIncludeCode fix preserved in framework/lspd.dex\n'
+              'N0_NEW_NATIVE_CHANGE=current LSPlant cutoff after Runtime::Init and before ClassLinker::Init\n'
+              'FINAL_PACKAGE_DELTA=framework/lspd.dex+sidecar + 4 liblspd.so+sidecars\n'
+              'MANAGER=official 7371 byte-identical\n'
+              'DAEMON=official 7371 byte-identical\n'
+              'DEX2OAT=official 7371 unchanged\n'
+              'DOBBY=official/current 7371 unchanged\n'
+              'R9_CHANGES=none\n'
+              'PAIRIP_BYPASS=none\n'
+              'DEVICE_RUNTIME_STATUS=not tested\n'
+          )
+          PY
+          unzip -t "$FINAL_ZIP"
+          cp "$FINAL_ZIP" "n0-output/INSTALL_THIS_${FINAL_ZIP}"
+
+      - name: Write N0 device test plan
+        if: steps.package.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > n0-output/N0_DEVICE_TEST_PLAN.txt <<'EOF'
+          N0 CURRENT-LSPLANT PRE-CLASSLINKER CUTOFF DIAGNOSTIC
+
+          PURPOSE
+          - Test whether the PairIP-sensitive ART state is already created by
+            ArtMethod + Thread + Class + Runtime, or only at ClassLinker/later LSPlant init.
+          - This is intentionally NOT a Framework release and NOT a permanent fix.
+
+          REQUIRED RUNTIME MARKER
+          LSPLANT-N0: CUTOFF_BEFORE_CLASSLINKER
+
+          DEVICE ORDER
+          1. Install only the inner INSTALL_THIS_*.zip and reboot.
+          2. Confirm Android is stable enough to open the LSPosed/Irena manager once.
+             Record any manager regression; do not call N0 a Framework PASS.
+          3. Clear logcat, force-stop Ingress and cold-start it once.
+          4. Capture:
+             su -c 'logcat -b all -d -v threadtime | grep -E "LSPLANT-N0|Failed to init lsplant|libpairipcore|SIGSEGV|SEGV_|Fatal signal" > /sdcard/Download/n0-pre-classlinker-cutoff.txt'
+
+          VALID N0 requires the LSPLANT-N0 marker in the same Ingress process before PairIP outcome.
+
+          INTERPRETATION
+          - Marker + same libpairipcore.so +0x65768 crash:
+            trigger is already in ArtMethod/Thread/Class/Runtime or earlier native state.
+            Next diagnostic bisects BEFORE Runtime.
+          - Marker + Ingress survives PairIP load:
+            trigger is in ClassLinker or one of the later LSPlant InitNative components.
+            Next diagnostic N1 allows ClassLinker and cuts off immediately after it.
+          - Marker absent:
+            diagnostic invalid; do not infer causality.
+
+          STATIC PASS != DEVICE PASS.
+          N0 never becomes a release parent.
+          EOF
+
+      - name: Collect N0 evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p n0-output/native
+          cp N0_BUILD_EXIT_CODE.txt n0-output/ 2>/dev/null || true
+          cp n0-build.log n0-output/ 2>/dev/null || true
+          cp N0_BUILD_RELEASE.zip n0-output/ 2>/dev/null || true
+          cp OFFICIAL_RELEASE.zip n0-output/OFFICIAL_7371_RELEASE_REFERENCE.zip 2>/dev/null || true
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib
+          out = Path('n0-output')
+          manifest = out / 'N0_EVIDENCE_SHA256SUMS.txt'
+          files = sorted(p for p in out.rglob('*') if p.is_file() and p != manifest)
+          with manifest.open('w') as f:
+              for p in files:
+                  f.write(f"{hashlib.sha256(p.read_bytes()).hexdigest()}  {p.relative_to(out).as_posix()}\n")
+          PY
+          (cd n0-output && sha256sum -c N0_EVIDENCE_SHA256SUMS.txt)
+
+      - name: Final N0 fail-closed static gate
+        id: finalgate
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f N0_BUILD_EXIT_CODE.txt
+          test "$(cat N0_BUILD_EXIT_CODE.txt)" = "0"
+          grep -q '^R1_V2_M_INCLUDE_CODE_FIX=PRESERVED$' n0-output/N0_PROVENANCE.txt
+          grep -q '^N0_CUTOFF_AFTER=Runtime::Init(handler)$' n0-output/N0_PROVENANCE.txt
+          grep -q '^N0_CUTOFF_BEFORE=ClassLinker::Init(env, handler)$' n0-output/N0_PROVENANCE.txt
+          grep -q '^R9=ABSENT$' n0-output/N0_PROVENANCE.txt
+          grep -q '^DEX2OAT=UNCHANGED_OFFICIAL_7371$' n0-output/N0_PROVENANCE.txt
+          grep -q '^PAIRIP_BYPASS=ABSENT$' n0-output/N0_PROVENANCE.txt
+          test -f "n0-output/INSTALL_THIS_${FINAL_ZIP}"
+          strings n0buildcmp/lib/arm64-v8a/liblspd.so | grep -Fq 'LSPLANT-N0: CUTOFF_BEFORE_CLASSLINKER'
+          (cd n0-output && sha256sum -c N0_EVIDENCE_SHA256SUMS.txt)
+          {
+            echo "RESULT=N0_STATIC_FULL_PASS_DEVICE_DIAGNOSTIC_CREATED"
+            echo "PARENT=R1-v2 immutable Framework checkpoint"
+            echo "ONLY_NEW_FUNCTIONAL_VARIABLE=current LSPlant cutoff after Runtime and before ClassLinker"
+            echo "FINAL_PAYLOAD=official 7371 + R1 dex + rebuilt N0 liblspd.so for 4 ABIs"
+            echo "MANAGER_DAEMON=official 7371 byte-identical"
+            echo "DEVICE_RUNTIME_STATUS=NOT_TESTED_BY_WORKFLOW"
+            echo "STATIC_PASS_IS_NOT_DEVICE_PASS=YES"
+          } | tee n0-output/N0_STATIC_PASS_MARKER.txt
+
+      - name: Upload N0 diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: irena-x-v2.0.1-7371-n0-pre-classlinker-cutoff-${{ github.run_id }}
+          path: n0-output
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 30
