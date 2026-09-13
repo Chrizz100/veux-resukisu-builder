@@ -1,0 +1,493 @@
+name: Irena X API102 One APK Full E2E V6 ReadOnly-Safe
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  EXAMPLE_REPO: https://github.com/libxposed/example.git
+  EXAMPLE_COMMIT: b94ee7e5f53d7039d38446b61605d6fa2a393c8f
+  ANDROID_HOME: /usr/local/lib/android/sdk
+  ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
+
+jobs:
+  build-one-apk-api102-e2e:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Set up JDK 21
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Use stable Android SDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          test -x "$SDKMANAGER"
+          yes | "$SDKMANAGER" --licenses >/dev/null || true
+          "$SDKMANAGER" 'platforms;android-35' 'build-tools;36.0.0' 'platform-tools'
+          test -f "$ANDROID_HOME/platforms/android-35/android.jar"
+          test -x "$ANDROID_HOME/build-tools/36.0.0/apksigner"
+
+      - name: Clone pinned official API102 example
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --no-tags "$EXAMPLE_REPO" api102-e2e
+          git -C api102-e2e checkout --detach "$EXAMPLE_COMMIT"
+          test "$(git -C api102-e2e rev-parse HEAD)" = "$EXAMPLE_COMMIT"
+          grep -Fq 'xposed-api = "102.0.0"' api102-e2e/gradle/libs.versions.toml
+          grep -Fq 'xposed-service = "102.0.0"' api102-e2e/gradle/libs.versions.toml
+
+      - name: Fetch official API102 bytecode as local JAR bridge
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p api102-e2e/app/libs
+          for artifact in api service interface; do
+            mvn -q -ntp dependency:get -Dartifact="io.github.libxposed:${artifact}:102.0.0:aar" -Dtransitive=false
+            aar="$HOME/.m2/repository/io/github/libxposed/${artifact}/102.0.0/${artifact}-102.0.0.aar"
+            test -s "$aar"
+            unzip -p "$aar" classes.jar > "api102-e2e/app/libs/libxposed-${artifact}-102.jar"
+            test -s "api102-e2e/app/libs/libxposed-${artifact}-102.jar"
+          done
+          jar tf api102-e2e/app/libs/libxposed-api-102.jar | grep -Fxq 'io/github/libxposed/api/XposedModule.class'
+          jar tf api102-e2e/app/libs/libxposed-service-102.jar | grep -Fxq 'io/github/libxposed/service/XposedService.class'
+          jar tf api102-e2e/app/libs/libxposed-interface-102.jar | grep -Fxq 'io/github/libxposed/service/IHotReloadCallback.class'
+
+      - name: Generate full E2E source
+        working-directory: api102-e2e
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import shutil
+
+          def w(path, text):
+              p = Path(path)
+              p.parent.mkdir(parents=True, exist_ok=True)
+              p.write_text(text, encoding='utf-8')
+
+          for p in (Path('app/src/main/java'), Path('app/src/main/res'), Path('app/src/main/resources'), Path('app/src/main/assets')):
+              if p.exists(): shutil.rmtree(p)
+
+          w('app/build.gradle.kts', '''plugins {
+              alias(libs.plugins.agp.app)
+          }
+          android {
+              namespace = "io.github.libxposed.example"
+              compileSdk = 35
+              buildToolsVersion = "36.0.0"
+              defaultConfig {
+                  applicationId = "io.github.libxposed.api102test"
+                  minSdk = 26
+                  targetSdk = 33
+                  versionCode = 10202
+                  versionName = "102-one-apk-e2e-g2"
+              }
+              buildTypes {
+                  release {
+                      isMinifyEnabled = false
+                      isShrinkResources = false
+                      signingConfig = signingConfigs["debug"]
+                  }
+              }
+              compileOptions {
+                  sourceCompatibility = JavaVersion.VERSION_21
+                  targetCompatibility = JavaVersion.VERSION_21
+              }
+              packaging { resources { merges += "META-INF/xposed/*"; excludes += "META-INF/*.version" } }
+              lint { abortOnError = true; checkReleaseBuilds = false }
+          }
+          dependencies {
+              compileOnly(files("libs/libxposed-api-102.jar"))
+              implementation(files("libs/libxposed-interface-102.jar"))
+              implementation(files("libs/libxposed-service-102.jar"))
+          }
+          ''')
+
+          w('app/src/main/AndroidManifest.xml', '''<?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+              <application android:name=".App" android:label="API102 Full E2E" android:theme="@android:style/Theme.Material.Light.NoActionBar">
+                  <provider android:name="io.github.libxposed.service.XposedProvider" android:authorities="${applicationId}.XposedService" android:exported="true" />
+                  <provider android:name=".ApkProvider" android:authorities="${applicationId}.apk" android:exported="true" android:grantUriPermissions="true" />
+                  <activity android:name=".MainActivity" android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+              </application>
+          </manifest>
+          ''')
+
+          w('app/src/main/resources/META-INF/xposed/java_init.list', 'io.github.libxposed.example.ModuleMain\n')
+          w('app/src/main/resources/META-INF/xposed/module.prop', 'minApiVersion=102\ntargetApiVersion=102\nstaticScope=true\nautoHotReload=false\n')
+          w('app/src/main/resources/META-INF/xposed/scope.list', 'system\n')
+
+          w('app/src/main/java/io/github/libxposed/example/Generation.java', '''package io.github.libxposed.example;
+          public final class Generation { public static final int VALUE = 2; private Generation() {} }
+          ''')
+
+          w('app/src/main/java/io/github/libxposed/example/ProbeTarget.java', '''package io.github.libxposed.example;
+          public final class ProbeTarget { public static final String SENTINEL = "API102_E2E_SENTINEL"; private ProbeTarget() {} }
+          ''')
+
+          w('app/src/main/java/io/github/libxposed/example/App.java', '''package io.github.libxposed.example;
+          import android.app.Application;
+          import java.util.concurrent.CopyOnWriteArraySet;
+          import io.github.libxposed.service.XposedService;
+          import io.github.libxposed.service.XposedServiceHelper;
+          public final class App extends Application implements XposedServiceHelper.OnServiceListener {
+              public interface Listener { void onService(XposedService s); }
+              private static final CopyOnWriteArraySet<Listener> listeners = new CopyOnWriteArraySet<>();
+              private static volatile XposedService service;
+              public static void addListener(Listener l, boolean notify) { listeners.add(l); if (notify) l.onService(service); }
+              public static void removeListener(Listener l) { listeners.remove(l); }
+              private static void dispatch(XposedService s) { for (Listener l: listeners) l.onService(s); }
+              @Override public void onCreate() { super.onCreate(); XposedServiceHelper.registerListener(this); }
+              @Override public void onServiceBind(XposedService s) { service=s; dispatch(s); }
+              @Override public void onServiceDied(XposedService s) { service=null; dispatch(null); }
+          }
+          ''')
+
+          w('app/src/main/java/io/github/libxposed/example/ModuleMain.java', '''package io.github.libxposed.example;
+          import android.content.SharedPreferences;
+          import android.os.Bundle;
+          import android.util.Log;
+          import java.lang.reflect.Method;
+          import java.util.List;
+          import io.github.libxposed.api.XposedInterface.HookHandle;
+          import io.github.libxposed.api.XposedModule;
+
+          public final class ModuleMain extends XposedModule {
+              private static final String TAG="API102FullE2E";
+              private static final String GROUP="api102-e2e";
+              private static final String HOOK_ID="api102-e2e-log-sentinel";
+              private int moduleLoadedCount;
+              private int systemStartingCount;
+              private boolean runtime102;
+              private boolean legacyBlocked;
+              private SharedPreferences prefs;
+              private SharedPreferences.OnSharedPreferenceChangeListener commandListener;
+
+              private void mark(String s){ log(Log.INFO,TAG,s); }
+              private boolean legacyBlocked(){
+                  try{ Class.forName("de.robv.android.xposed.XposedBridge",false,ModuleMain.class.getClassLoader()); return false; }
+                  catch(ClassNotFoundException e){ return true; }
+                  catch(Throwable t){ mark("LEGACY_BLOCK_CHECK_EXCEPTION="+t); return false; }
+              }
+              private Method testMethod() throws Exception { return Log.class.getDeclaredMethod("isLoggable",String.class,int.class); }
+              private boolean callSentinel(){ return Log.isLoggable(ProbeTarget.SENTINEL,Log.INFO); }
+              private void commandListener(){
+                  if(prefs==null || commandListener!=null) return;
+                  commandListener=(sp,key)->{
+                      if(!"command".equals(key)) return;
+                      String cmd=sp.getString("command","");
+                      if(!cmd.startsWith("DETACH:")) return;
+                      try{
+                          detach();
+                          mark("DETACH_RESULT=PASS;FRAMEWORK="+getFrameworkName()+";GEN="+Generation.VALUE+";TOKEN="+cmd);
+                      }catch(Throwable t){
+                          mark("DETACH_RESULT=FAIL;GEN="+Generation.VALUE+";ERROR="+t);
+                      }
+                  };
+                  prefs.registerOnSharedPreferenceChangeListener(commandListener);
+              }
+
+              @Override public void onModuleLoaded(ModuleLoadedParam p){
+                  moduleLoadedCount++;
+                  prefs=getRemotePreferences(GROUP);
+                  commandListener();
+                  runtime102=getApiVersion()==102;
+                  legacyBlocked=legacyBlocked();
+                  mark("ON_MODULE_LOADED gen="+Generation.VALUE+" process="+p.getProcessName()
+                          +" api="+getApiVersion()+" runtime102="+runtime102+" legacyBlocked="+legacyBlocked
+                          +" count="+moduleLoadedCount);
+              }
+
+              @Override public void onSystemServerStarting(SystemServerStartingParam p){
+                  systemStartingCount++;
+                  try{
+                      Method m=testMethod();
+                      HookHandle h1=hook(m).setId(HOOK_ID).intercept(c->{ if(ProbeTarget.SENTINEL.equals(String.valueOf(c.getArg(0)))) return true; return c.proceed(); });
+                      boolean idPass=HOOK_ID.equals(h1.getId()) && callSentinel();
+                      HookHandle h2=hook(m).setId(HOOK_ID).intercept(c->{ if(ProbeTarget.SENTINEL.equals(String.valueOf(c.getArg(0)))) return false; return c.proceed(); });
+                      boolean sameIdPass=HOOK_ID.equals(h2.getId()) && !callSentinel();
+                      boolean oldInvalid;
+                      try{ h1.replaceHook(c->c.proceed()); oldInvalid=false; } catch(IllegalStateException e){ oldInvalid=true; }
+                      HookHandle h3=h2.replaceHook(c->{ if(ProbeTarget.SENTINEL.equals(String.valueOf(c.getArg(0)))) return true; return c.proceed(); });
+                      boolean replacePass=HOOK_ID.equals(h3.getId()) && callSentinel();
+                      boolean baseline=runtime102 && legacyBlocked && idPass && sameIdPass && oldInvalid && replacePass;
+                      mark("BASELINE_RESULT gen="+Generation.VALUE+" systemCount="+systemStartingCount
+                              +" runtime102="+runtime102+" legacyBlocked="+legacyBlocked+" hookId="+idPass
+                              +" sameIdReplace="+sameIdPass+" oldHandleInvalid="+oldInvalid
+                              +" handleReplace="+replacePass+" baselinePass="+baseline);
+                  }catch(Throwable t){
+                      mark("BASELINE_EXCEPTION gen="+Generation.VALUE+" error="+t);
+                      log(Log.ERROR,TAG,"baseline failed",t);
+                  }
+              }
+
+              @Override public boolean onHotReloading(HotReloadingParam p){
+                  try{
+                      Bundle b=p.getExtras(); String req=b==null?null:b.getString("request");
+                      String state="GEN="+Generation.VALUE+";MODULE="+moduleLoadedCount+";SYSTEM="+systemStartingCount+";REQ="+req;
+                      p.setSavedInstanceState(state);
+                      mark("ON_HOT_RELOADING "+state);
+                      return true;
+                  }catch(Throwable t){
+                      mark("HOT_RELOADING_EXCEPTION="+t);
+                      return false;
+                  }
+              }
+
+              @Override public void onHotReloaded(HotReloadedParam p){
+                  prefs=getRemotePreferences(GROUP);
+                  commandListener();
+                  runtime102=getApiVersion()==102; legacyBlocked=legacyBlocked();
+                  boolean noReplay=moduleLoadedCount==0 && systemStartingCount==0;
+                  try{
+                      Bundle b=p.getExtras(); String req=b==null?null:b.getString("request"); Object saved=p.getSavedInstanceState();
+                      List<HookHandle> old=p.getOldHookHandles(); boolean found=false,replaced=false;
+                      for(HookHandle h:old){
+                          if(HOOK_ID.equals(h.getId())){
+                              found=true;
+                              HookHandle nh=h.replaceHook(c->{ if(ProbeTarget.SENTINEL.equals(String.valueOf(c.getArg(0)))) return false; return c.proceed(); });
+                              replaced=HOOK_ID.equals(nh.getId());
+                          }else h.unhook();
+                      }
+                      boolean hookEffect=!callSentinel();
+                      boolean extrasPass="ONE_APK_MANUAL_RELOAD".equals(req);
+                      boolean savedPass=saved!=null && saved.toString().contains("GEN=1") && saved.toString().contains("REQ=ONE_APK_MANUAL_RELOAD");
+                      boolean all=runtime102 && legacyBlocked && noReplay && found && replaced && hookEffect && extrasPass && savedPass;
+                      mark("HOT_RELOAD_E2E_RESULT gen="+Generation.VALUE+" runtime102="+runtime102
+                              +" legacyBlocked="+legacyBlocked+" noLifecycleReplay="+noReplay
+                              +" oldHandleCount="+old.size()+" oldHookFound="+found+" oldHookReplaced="+replaced
+                              +" reloadedHookEffect="+hookEffect+" extrasPass="+extrasPass
+                              +" savedStatePass="+savedPass+" savedState="+saved+" pass="+all);
+                  }catch(Throwable t){
+                      mark("HOT_RELOADED_EXCEPTION gen="+Generation.VALUE+" error="+t);
+                      log(Log.ERROR,TAG,"hot reload failed",t);
+                  }
+              }
+          }
+          ''')
+
+          w('app/src/main/java/io/github/libxposed/example/ApkProvider.java', '''package io.github.libxposed.example;
+          import android.content.ContentProvider;
+          import android.content.ContentValues;
+          import android.database.Cursor;
+          import android.net.Uri;
+          import android.os.ParcelFileDescriptor;
+          import java.io.File;
+          import java.io.FileNotFoundException;
+          import java.io.FileOutputStream;
+          import java.io.InputStream;
+
+          public final class ApkProvider extends ContentProvider {
+              @Override public boolean onCreate(){ return true; }
+              @Override public String getType(Uri uri){ return "application/vnd.android.package-archive"; }
+              @Override public ParcelFileDescriptor openFile(Uri uri,String mode) throws FileNotFoundException {
+                  try{
+                      File dst=new File(getContext().getCacheDir(),"api102-g2.apk");
+                      try(InputStream in=getContext().getAssets().open("api102-g2.apk"); FileOutputStream out=new FileOutputStream(dst)){
+                          byte[] b=new byte[65536]; int n; while((n=in.read(b))>0) out.write(b,0,n);
+                      }
+                      return ParcelFileDescriptor.open(dst,ParcelFileDescriptor.MODE_READ_ONLY);
+                  }catch(Exception e){
+                      FileNotFoundException x=new FileNotFoundException(String.valueOf(e)); x.initCause(e); throw x;
+                  }
+              }
+              @Override public Cursor query(Uri u,String[] p,String s,String[] a,String so){ return null; }
+              @Override public Uri insert(Uri u,ContentValues v){ return null; }
+              @Override public int delete(Uri u,String s,String[] a){ return 0; }
+              @Override public int update(Uri u,ContentValues v,String s,String[] a){ return 0; }
+          }
+          ''')
+
+          w('app/src/main/java/io/github/libxposed/example/MainActivity.java', '''package io.github.libxposed.example;
+          import android.app.Activity;
+          import android.content.Intent;
+          import android.content.SharedPreferences;
+          import android.net.Uri;
+          import android.os.Build;
+          import android.os.Bundle;
+          import android.provider.Settings;
+          import android.view.View;
+          import android.widget.Button;
+          import android.widget.LinearLayout;
+          import android.widget.ScrollView;
+          import android.widget.TextView;
+          import java.util.List;
+          import io.github.libxposed.service.HookedTarget;
+          import io.github.libxposed.service.XposedService;
+
+          public final class MainActivity extends Activity implements App.Listener {
+              private static final String GROUP="api102-e2e";
+              private TextView out; private XposedService service;
+              private void line(String s){ runOnUiThread(()->out.append(s+"\\n")); }
+              private Button b(String t,View.OnClickListener l){ Button x=new Button(this);x.setText(t);x.setOnClickListener(l);return x; }
+              @Override protected void onCreate(Bundle s){
+                  super.onCreate(s); LinearLayout r=new LinearLayout(this);r.setOrientation(LinearLayout.VERTICAL);int p=(int)(14*getResources().getDisplayMetrics().density);r.setPadding(p,p,p,p);
+                  out=new TextView(this);out.setTextIsSelectable(true);out.setText("API102 ONE-APK FULL E2E V6\\nAPP_GENERATION="+Generation.VALUE+"\\n\\n");
+                  r.addView(b("1 — CHECK BASELINE",v->baseline()));
+                  if(Generation.VALUE==1) r.addView(b("2 — INSTALL EMBEDDED G2",v->installG2()));
+                  if(Generation.VALUE==2) r.addView(b("2 — CHECK STALE TARGET",v->targets()));
+                  if(Generation.VALUE==2) r.addView(b("3 — RUN API102 HOT RELOAD",v->reload()));
+                  if(Generation.VALUE==2) r.addView(b("4 — DETACH TEST (LAST)",v->detachTest()));
+                  r.addView(b("REFRESH TARGETS",v->targets())); r.addView(out); ScrollView sv=new ScrollView(this);sv.addView(r);setContentView(sv);
+              }
+              @Override protected void onStart(){ super.onStart();App.addListener(this,true); }
+              @Override protected void onStop(){ App.removeListener(this);super.onStop(); }
+              @Override public void onService(XposedService s){ service=s; if(s==null) line("SERVICE=NOT_BOUND"); else line("SERVICE=BOUND API="+s.getApiVersion()+" FRAMEWORK="+s.getFrameworkName()); }
+              private SharedPreferences rp(){ return service==null?null:service.getRemotePreferences(GROUP); }
+              private HookedTarget sys(){ if(service==null)return null;for(HookedTarget t:service.getRunningTargets())if("system".equals(t.getProcessName()))return t;return null; }
+              private void targets(){
+                  line("--- TARGETS ---");
+                  if(service==null){line("SERVICE_NOT_BOUND");return;}
+                  List<HookedTarget> ts=service.getRunningTargets();
+                  line("RUNNING_TARGETS="+ts.size());
+                  for(HookedTarget t:ts) line("TARGET process="+t.getProcessName()+" state="+t.getState()+" version="+t.getLoadedVersionCode());
+              }
+              private void baseline(){
+                  line("--- BASELINE ---");
+                  if(service==null){line("SERVICE_API102=FAIL:not-bound");return;}
+                  line("SERVICE_API="+service.getApiVersion());
+                  line("SCOPE="+service.getScope());
+                  targets();
+                  line("NOTE=Module-side API102 details are written to LSPosed module log; no read-only prefs writes are used.");
+              }
+              private void installG2(){
+                  line("--- INSTALL G2 ---");
+                  try{
+                      if(Build.VERSION.SDK_INT>=26 && !getPackageManager().canRequestPackageInstalls()){
+                          line("ACTION=Allow installs from this source, then return and press INSTALL EMBEDDED G2 again.");
+                          startActivity(new Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:"+getPackageName())));
+                          return;
+                      }
+                      Uri u=Uri.parse("content://"+getPackageName()+".apk/g2.apk");
+                      Intent x=new Intent(Intent.ACTION_VIEW);
+                      x.setDataAndType(u,"application/vnd.android.package-archive");
+                      x.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION|Intent.FLAG_ACTIVITY_NEW_TASK);
+                      startActivity(x);
+                      line("INSTALLER=OPENED; approve G2 update, then reopen this app.");
+                  }catch(Throwable t){ line("G2_INSTALL_EXCEPTION="+t); }
+              }
+              private void reload(){
+                  line("--- HOT RELOAD ---");
+                  if(service==null){line("HOT_RELOAD=FAIL:service-not-bound");return;}
+                  HookedTarget t=sys();
+                  if(t==null){line("HOT_RELOAD=FAIL:system-target-not-found");return;}
+                  line("TARGET_BEFORE state="+t.getState()+" version="+t.getLoadedVersionCode());
+                  Bundle x=new Bundle();x.putString("request","ONE_APK_MANUAL_RELOAD");
+                  try{
+                      service.hotReloadModule(t,x,(target,res)->runOnUiThread(()->{
+                          line("HOT_RELOAD_RESULT="+res.status()+" message="+res.message());
+                          out.postDelayed(this::targets,500);
+                      }));
+                      line("HOT_RELOAD_REQUEST=SUBMITTED");
+                  }catch(Throwable e){line("HOT_RELOAD_EXCEPTION="+e);}
+              }
+              private void detachTest(){
+                  line("--- DETACH ---");
+                  SharedPreferences p=rp();
+                  if(p==null){line("DETACH=FAIL:prefs-unavailable");return;}
+                  String token="DETACH:"+System.currentTimeMillis();
+                  try{
+                      boolean ok=p.edit().putString("command",token).commit();
+                      line("DETACH_COMMAND_SENT="+ok+" token="+token);
+                      line("NOTE=Detach result is recorded in LSPosed module log.");
+                      out.postDelayed(this::targets,1200);
+                  }catch(Throwable t){ line("DETACH_COMMAND_EXCEPTION="+t); }
+              }
+          }
+          ''')
+
+          module_src=Path('app/src/main/java/io/github/libxposed/example/ModuleMain.java').read_text()
+          main_src=Path('app/src/main/java/io/github/libxposed/example/MainActivity.java').read_text()
+          manifest=Path('app/src/main/AndroidManifest.xml').read_text()
+          assert '.edit()' not in module_src and '.edit(' not in module_src
+          assert 'ProcessBuilder("su"' not in main_src and '"su","-c"' not in main_src
+          assert 'ACTION_MANAGE_UNKNOWN_APP_SOURCES' in main_src
+          assert 'ApkProvider' in manifest and 'REQUEST_INSTALL_PACKAGES' in manifest
+          assert Path('app/src/main/resources/META-INF/xposed/java_init.list').read_text().splitlines()==['io.github.libxposed.example.ModuleMain']
+          assert Path('app/src/main/resources/META-INF/xposed/scope.list').read_text().splitlines()==['system']
+          PY
+
+      - name: Set up Gradle cache
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Build embedded G2
+        working-directory: api102-e2e
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x gradlew
+          ./gradlew --no-daemon :app:assembleRelease --stacktrace
+          test -s app/build/outputs/apk/release/app-release.apk
+          cp app/build/outputs/apk/release/app-release.apk /tmp/API102-G2.apk
+
+      - name: Embed G2 and build only user-facing G1 APK
+        working-directory: api102-e2e
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p app/src/main/assets
+          cp /tmp/API102-G2.apk app/src/main/assets/api102-g2.apk
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('app/build.gradle.kts');s=p.read_text().replace('versionCode = 10202','versionCode = 10201').replace('versionName = "102-one-apk-e2e-g2"','versionName = "102-one-apk-e2e-g1"');p.write_text(s)
+          p=Path('app/src/main/java/io/github/libxposed/example/Generation.java');p.write_text(p.read_text().replace('VALUE = 2','VALUE = 1'))
+          PY
+          rm -rf app/build
+          ./gradlew --no-daemon :app:assembleRelease --stacktrace
+          test -s app/build/outputs/apk/release/app-release.apk
+          mkdir -p ../out
+          cp app/build/outputs/apk/release/app-release.apk ../out/API102-One-APK-Full-E2E-V6.apk
+
+      - name: Audit outer APK and embedded G2
+        shell: bash
+        run: |
+          set -euo pipefail
+          apk='out/API102-One-APK-Full-E2E-V6.apk'
+          test -s "$apk"
+          unzip -t "$apk" >/dev/null
+          unzip -l "$apk" | grep -Fq 'assets/api102-g2.apk'
+          unzip -p "$apk" assets/api102-g2.apk > /tmp/g2-from-outer.apk
+          cmp -s /tmp/API102-G2.apk /tmp/g2-from-outer.apk
+          for f in "$apk" /tmp/g2-from-outer.apk; do
+            unzip -l "$f" | grep -Fq 'META-INF/xposed/java_init.list'
+            unzip -l "$f" | grep -Fq 'META-INF/xposed/module.prop'
+            unzip -l "$f" | grep -Fq 'META-INF/xposed/scope.list'
+            test "$(unzip -p "$f" META-INF/xposed/scope.list | tr -d '\r\n')" = 'system'
+          done
+          APKSIGNER="$ANDROID_HOME/build-tools/36.0.0/apksigner"
+          "$APKSIGNER" verify --verbose --print-certs "$apk" > /tmp/g1-cert.txt
+          "$APKSIGNER" verify --verbose --print-certs /tmp/g2-from-outer.apk > /tmp/g2-cert.txt
+          g1=$(grep -E 'certificate SHA-256 digest:' /tmp/g1-cert.txt | head -n1 | sed 's/.*: //')
+          g2=$(grep -E 'certificate SHA-256 digest:' /tmp/g2-cert.txt | head -n1 | sed 's/.*: //')
+          test -n "$g1" && test "$g1" = "$g2"
+          test "$(find out -maxdepth 1 -type f -name '*.apk' | wc -l)" -eq 1
+          sha256sum "$apk"
+          echo 'ONE_USER_APK=PASS'
+          echo 'EMBEDDED_G2_BYTE_IDENTICAL=PASS'
+          echo 'G1_G2_SIGNING_CERT_MATCH=PASS'
+          echo 'STATIC_SCOPE_SYSTEM=PASS'
+          echo 'MODULE_REMOTE_PREFS_WRITE=ABSENT'
+          echo 'G2_INSTALLER=ANDROID_PACKAGE_INSTALLER'
+
+      - name: Upload exactly one APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: irena-x-api102-one-apk-full-e2e-v6
+          path: out/API102-One-APK-Full-E2E-V6.apk
+          if-no-files-found: error
+          retention-days: 7
