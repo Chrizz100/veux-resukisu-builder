@@ -1,0 +1,1033 @@
+name: Irena X API102 E2E Test Module V1
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  EXAMPLE_REPO: https://github.com/libxposed/example.git
+  EXAMPLE_COMMIT: b94ee7e5f53d7039d38446b61605d6fa2a393c8f
+  TARGET_PACKAGE: io.github.libxposed.api102e2e.target
+  MODULE_PACKAGE: io.github.libxposed.api102e2e
+
+jobs:
+  build-api102-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android 37 SDK components
+        shell: bash
+        run: |
+          set -euo pipefail
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager 'platforms;android-37' 'build-tools;37.0.0' 'platform-tools'
+
+      - name: Clone pinned official libxposed API102 example
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --no-tags "$EXAMPLE_REPO" api102-e2e
+          cd api102-e2e
+          git checkout --detach "$EXAMPLE_COMMIT"
+          test "$(git rev-parse HEAD)" = "$EXAMPLE_COMMIT"
+          grep -Fq 'xposed-api = "102.0.0"' gradle/libs.versions.toml
+          grep -Fq 'xposed-service = "102.0.0"' gradle/libs.versions.toml
+          echo "PINNED_EXAMPLE=$(git rev-parse HEAD)" | tee ../PINNED_SOURCES.txt
+          echo 'LIBXPOSED_API=102.0.0' | tee -a ../PINNED_SOURCES.txt
+          echo 'LIBXPOSED_SERVICE=102.0.0' | tee -a ../PINNED_SOURCES.txt
+
+      - name: Generate isolated API102 E2E module and target
+        id: source
+        working-directory: api102-e2e
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import shutil
+
+          def write(path, text):
+              p = Path(path)
+              p.parent.mkdir(parents=True, exist_ok=True)
+              p.write_text(text, encoding='utf-8')
+
+          # Keep the official pinned wrapper/version catalog, but replace the example app source.
+          for p in [Path('app/src/main/java'), Path('app/src/main/res'), Path('app/src/main/resources')]:
+              if p.exists():
+                  shutil.rmtree(p)
+
+          write('settings.gradle.kts', r'''pluginManagement {
+              repositories {
+                  gradlePluginPortal()
+                  google()
+                  mavenCentral()
+              }
+          }
+
+          dependencyResolutionManagement {
+              repositoriesMode = RepositoriesMode.FAIL_ON_PROJECT_REPOS
+              repositories {
+                  google()
+                  mavenCentral()
+                  mavenLocal {
+                      content { includeGroup("io.github.libxposed") }
+                  }
+              }
+              versionCatalogs { create("libs") }
+          }
+
+          rootProject.name = "IrenaX API102 E2E"
+          include(":app")
+          include(":target")
+          ''')
+
+          write('app/build.gradle.kts', r'''plugins {
+              alias(libs.plugins.agp.app)
+          }
+
+          android {
+              namespace = "io.github.libxposed.api102e2e"
+              compileSdk = 37
+              buildToolsVersion = "37.0.0"
+
+              defaultConfig {
+                  applicationId = "io.github.libxposed.api102e2e"
+                  minSdk = 26
+                  targetSdk = 37
+                  versionCode = 1001
+                  versionName = "1.0-g1"
+              }
+
+              flavorDimensions += "generation"
+              productFlavors {
+                  create("g1") {
+                      dimension = "generation"
+                      versionCode = 1001
+                      versionName = "1.0-g1"
+                      buildConfigField("String", "E2E_GENERATION", "\"G1\"")
+                      buildConfigField("boolean", "E2E_AUTO_HOT_RELOAD", "false")
+                  }
+                  create("g2") {
+                      dimension = "generation"
+                      versionCode = 1002
+                      versionName = "1.0-g2"
+                      buildConfigField("String", "E2E_GENERATION", "\"G2\"")
+                      buildConfigField("boolean", "E2E_AUTO_HOT_RELOAD", "false")
+                  }
+                  create("g3") {
+                      dimension = "generation"
+                      versionCode = 1003
+                      versionName = "1.0-g3"
+                      buildConfigField("String", "E2E_GENERATION", "\"G3\"")
+                      buildConfigField("boolean", "E2E_AUTO_HOT_RELOAD", "false")
+                  }
+                  create("g4") {
+                      dimension = "generation"
+                      versionCode = 1004
+                      versionName = "1.0-g4-auto"
+                      buildConfigField("String", "E2E_GENERATION", "\"G4\"")
+                      buildConfigField("boolean", "E2E_AUTO_HOT_RELOAD", "true")
+                  }
+              }
+
+              buildTypes {
+                  release {
+                      isMinifyEnabled = false
+                      isShrinkResources = false
+                      signingConfig = signingConfigs["debug"]
+                  }
+              }
+
+              buildFeatures {
+                  buildConfig = true
+              }
+
+              compileOptions {
+                  sourceCompatibility = JavaVersion.VERSION_21
+                  targetCompatibility = JavaVersion.VERSION_21
+              }
+
+              packaging {
+                  resources {
+                      merges += "META-INF/xposed/*"
+                      excludes += "META-INF/*.version"
+                  }
+              }
+
+              lint {
+                  abortOnError = true
+                  checkReleaseBuilds = false
+              }
+          }
+
+          dependencies {
+              compileOnly(libs.libxposed.api)
+              implementation(libs.libxposed.service)
+          }
+          ''')
+
+          write('target/build.gradle.kts', r'''plugins {
+              alias(libs.plugins.agp.app)
+          }
+
+          android {
+              namespace = "io.github.libxposed.api102e2e.target"
+              compileSdk = 37
+              buildToolsVersion = "37.0.0"
+
+              defaultConfig {
+                  applicationId = "io.github.libxposed.api102e2e.target"
+                  minSdk = 26
+                  targetSdk = 37
+                  versionCode = 1
+                  versionName = "1.0"
+              }
+
+              buildTypes {
+                  release {
+                      isMinifyEnabled = false
+                      isShrinkResources = false
+                      signingConfig = signingConfigs["debug"]
+                  }
+              }
+
+              compileOptions {
+                  sourceCompatibility = JavaVersion.VERSION_21
+                  targetCompatibility = JavaVersion.VERSION_21
+              }
+
+              lint {
+                  abortOnError = true
+                  checkReleaseBuilds = false
+              }
+          }
+          ''')
+
+          write('app/src/main/AndroidManifest.xml', r'''<?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <application
+                  android:name=".E2EApp"
+                  android:label="API102 E2E Module"
+                  android:theme="@android:style/Theme.Material.Light.NoActionBar">
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+              </application>
+          </manifest>
+          ''')
+
+          write('target/src/main/AndroidManifest.xml', r'''<?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <application
+                  android:label="API102 E2E Target"
+                  android:theme="@android:style/Theme.Material.Light.NoActionBar">
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+                  <receiver
+                      android:name=".KillReceiver"
+                      android:exported="true" />
+              </application>
+          </manifest>
+          ''')
+
+          write('app/src/main/resources/META-INF/xposed/java_init.list',
+                'io.github.libxposed.api102e2e.ModuleMain\n')
+          write('app/src/main/resources/META-INF/xposed/scope.list',
+                'io.github.libxposed.api102e2e.target\n')
+
+          for gen, auto in [('g1', 'false'), ('g2', 'false'), ('g3', 'false'), ('g4', 'true')]:
+              write(f'app/src/{gen}/resources/META-INF/xposed/module.prop',
+                    'minApiVersion=102\n'
+                    'targetApiVersion=102\n'
+                    'staticScope=true\n'
+                    f'autoHotReload={auto}\n')
+
+          write('app/src/main/java/io/github/libxposed/api102e2e/E2EApp.java', r'''package io.github.libxposed.api102e2e;
+
+          import android.app.Application;
+          import java.util.concurrent.CopyOnWriteArraySet;
+          import io.github.libxposed.service.XposedService;
+          import io.github.libxposed.service.XposedServiceHelper;
+
+          public final class E2EApp extends Application implements XposedServiceHelper.OnServiceListener {
+              public interface Listener { void onServiceChanged(XposedService service); }
+              private static final CopyOnWriteArraySet<Listener> LISTENERS = new CopyOnWriteArraySet<>();
+              private static volatile XposedService service;
+
+              public static void addListener(Listener l, boolean immediate) {
+                  LISTENERS.add(l);
+                  if (immediate) l.onServiceChanged(service);
+              }
+              public static void removeListener(Listener l) { LISTENERS.remove(l); }
+              public static XposedService getService() { return service; }
+
+              @Override public void onCreate() {
+                  super.onCreate();
+                  XposedServiceHelper.registerListener(this);
+              }
+
+              @Override public void onServiceBind(XposedService s) {
+                  service = s;
+                  for (Listener l : LISTENERS) l.onServiceChanged(s);
+              }
+
+              @Override public void onServiceDied(XposedService s) {
+                  service = null;
+                  for (Listener l : LISTENERS) l.onServiceChanged(null);
+              }
+          }
+          ''')
+
+          write('app/src/main/java/io/github/libxposed/api102e2e/ModuleMain.java', r'''package io.github.libxposed.api102e2e;
+
+          import android.os.Bundle;
+          import android.util.Log;
+          import java.lang.reflect.Method;
+          import java.util.List;
+          import io.github.libxposed.api.XposedModule;
+
+          public final class ModuleMain extends XposedModule {
+              private static final String TAG = "API102-E2E";
+              private static final String HOOK_ID = "api102.e2e.probe";
+              private static final String POST_DETACH_ID = "api102.e2e.postdetach";
+              private static final String TARGET_CLASS = "io.github.libxposed.api102e2e.target.ProbeTarget";
+
+              private static boolean sawModuleLoaded;
+              private static boolean sawPackageLoaded;
+              private static boolean sawPackageReady;
+
+              private void info(String marker) {
+                  log(Log.INFO, TAG, marker);
+              }
+
+              private void fail(String marker, Throwable t) {
+                  log(Log.ERROR, TAG, marker, t);
+              }
+
+              private Hooker generationHooker(String generation) {
+                  return chain -> {
+                      Object result = chain.proceed();
+                      return String.valueOf(result) + "|HOOK_" + generation;
+                  };
+              }
+
+              private static HookHandle findHandle(List<HookHandle> handles, String id) {
+                  for (HookHandle h : handles) {
+                      if (id.equals(h.getId())) return h;
+                  }
+                  return null;
+              }
+
+              @Override
+              public void onModuleLoaded(ModuleLoadedParam param) {
+                  sawModuleLoaded = true;
+                  int api = getApiVersion();
+                  info("E2E_ON_MODULE_LOADED generation=" + BuildConfig.E2E_GENERATION +
+                          " process=" + param.getProcessName() + " api=" + api);
+                  if (api == 102) {
+                      info("E2E_RUNTIME_API_PASS generation=" + BuildConfig.E2E_GENERATION + " api=102");
+                  } else {
+                      info("E2E_RUNTIME_API_FAIL generation=" + BuildConfig.E2E_GENERATION + " api=" + api);
+                  }
+
+                  try {
+                      Class.forName("de.robv.android.xposed.XposedBridge", false, getClass().getClassLoader());
+                      info("E2E_LEGACY_BLOCK_FAIL generation=" + BuildConfig.E2E_GENERATION + " legacyClassLoaded=true");
+                  } catch (Throwable expected) {
+                      info("E2E_LEGACY_BLOCK_PASS generation=" + BuildConfig.E2E_GENERATION +
+                              " exception=" + expected.getClass().getSimpleName());
+                  }
+              }
+
+              @Override
+              public void onPackageLoaded(PackageLoadedParam param) {
+                  sawPackageLoaded = true;
+                  info("E2E_ON_PACKAGE_LOADED generation=" + BuildConfig.E2E_GENERATION +
+                          " package=" + param.getPackageName());
+              }
+
+              @Override
+              public void onPackageReady(PackageReadyParam param) {
+                  sawPackageReady = true;
+                  info("E2E_ON_PACKAGE_READY generation=" + BuildConfig.E2E_GENERATION +
+                          " package=" + param.getPackageName());
+                  if (!"io.github.libxposed.api102e2e.target".equals(param.getPackageName())) return;
+                  try {
+                      Class<?> cls = Class.forName(TARGET_CLASS, true, param.getClassLoader());
+                      Method method = cls.getDeclaredMethod("probe", String.class);
+
+                      HookHandle first = hook(method)
+                              .setId(HOOK_ID)
+                              .intercept(chain -> chain.proceed());
+                      if (!HOOK_ID.equals(first.getId())) {
+                          throw new IllegalStateException("first hook id mismatch: " + first.getId());
+                      }
+
+                      HookHandle second = hook(method)
+                              .setId(HOOK_ID)
+                              .intercept(generationHooker(BuildConfig.E2E_GENERATION));
+                      if (!HOOK_ID.equals(second.getId())) {
+                          throw new IllegalStateException("replacement hook id mismatch: " + second.getId());
+                      }
+                      info("E2E_HOOK_ID_REPLACE_PASS generation=" + BuildConfig.E2E_GENERATION +
+                              " id=" + second.getId());
+
+                      String result = String.valueOf(method.invoke(null, "initial"));
+                      if (!result.endsWith("|HOOK_" + BuildConfig.E2E_GENERATION)) {
+                          throw new IllegalStateException("hook execution mismatch: " + result);
+                      }
+                      info("E2E_HOOK_EXEC_PASS generation=" + BuildConfig.E2E_GENERATION +
+                              " result=" + result);
+                  } catch (Throwable t) {
+                      fail("E2E_INITIAL_HOOK_FAIL generation=" + BuildConfig.E2E_GENERATION, t);
+                  }
+              }
+
+              @Override
+              public boolean onHotReloading(HotReloadingParam param) {
+                  Bundle extras = param.getExtras();
+                  String mode = extras == null ? "auto" : extras.getString("mode", "accept");
+                  String token = extras == null ? "NO_EXTRAS" : extras.getString("token", "NO_TOKEN");
+                  int delayMs = extras == null ? 0 : extras.getInt("delayMs", 0);
+                  info("E2E_HOT_RELOADING generation=" + BuildConfig.E2E_GENERATION +
+                          " mode=" + mode + " token=" + token + " delayMs=" + delayMs);
+
+                  if ("reject".equals(mode)) {
+                      info("E2E_REJECT_PATH_PASS generation=" + BuildConfig.E2E_GENERATION);
+                      return false;
+                  }
+
+                  if (delayMs > 0) {
+                      try {
+                          Thread.sleep(delayMs);
+                      } catch (InterruptedException e) {
+                          Thread.currentThread().interrupt();
+                          throw new RuntimeException(e);
+                      }
+                  }
+
+                  String saved = "saved:" + BuildConfig.E2E_GENERATION + ":" + token;
+                  param.setSavedInstanceState(saved);
+                  info("E2E_SAVED_STATE_SET generation=" + BuildConfig.E2E_GENERATION + " value=" + saved);
+                  return true;
+              }
+
+              @Override
+              public void onHotReloaded(HotReloadedParam param) {
+                  try {
+                      Bundle extras = param.getExtras();
+                      Object saved = param.getSavedInstanceState();
+                      List<HookHandle> old = param.getOldHookHandles();
+                      String mode = extras == null ? "auto" : extras.getString("mode", "accept");
+                      String token = extras == null ? "NO_EXTRAS" : extras.getString("token", "NO_TOKEN");
+
+                      info("E2E_HOT_RELOADED generation=" + BuildConfig.E2E_GENERATION +
+                              " mode=" + mode + " token=" + token +
+                              " saved=" + saved + " oldHandles=" + old.size());
+
+                      if (!sawModuleLoaded && !sawPackageLoaded && !sawPackageReady) {
+                          info("E2E_LIFECYCLE_NOT_REPLAYED_PASS generation=" + BuildConfig.E2E_GENERATION);
+                      } else {
+                          info("E2E_LIFECYCLE_NOT_REPLAYED_FAIL generation=" + BuildConfig.E2E_GENERATION +
+                                  " module=" + sawModuleLoaded + " package=" + sawPackageLoaded +
+                                  " ready=" + sawPackageReady);
+                      }
+
+                      if (!(saved instanceof String) || !((String) saved).startsWith("saved:")) {
+                          throw new IllegalStateException("saved state missing or not neutral String: " + saved);
+                      }
+                      info("E2E_SAVED_STATE_PASS generation=" + BuildConfig.E2E_GENERATION);
+
+                      HookHandle oldProbe = findHandle(old, HOOK_ID);
+                      if (oldProbe == null) throw new IllegalStateException("old hook id not found");
+                      HookHandle replacement = oldProbe.replaceHook(generationHooker(BuildConfig.E2E_GENERATION));
+                      if (!HOOK_ID.equals(replacement.getId())) {
+                          throw new IllegalStateException("replacement lost id: " + replacement.getId());
+                      }
+                      info("E2E_REPLACE_HOOK_PASS generation=" + BuildConfig.E2E_GENERATION +
+                              " id=" + replacement.getId());
+
+                      Method method = (Method) replacement.getExecutable();
+                      String result = String.valueOf(method.invoke(null, "reload"));
+                      if (!result.endsWith("|HOOK_" + BuildConfig.E2E_GENERATION)) {
+                          throw new IllegalStateException("reloaded hook execution mismatch: " + result);
+                      }
+                      info("E2E_RELOADED_HOOK_EXEC_PASS generation=" + BuildConfig.E2E_GENERATION +
+                              " result=" + result);
+
+                      if (BuildConfig.E2E_AUTO_HOT_RELOAD && extras == null) {
+                          info("E2E_AUTO_HOT_RELOAD_PASS generation=" + BuildConfig.E2E_GENERATION);
+                      }
+
+                      if ("G4".equals(BuildConfig.E2E_GENERATION)) {
+                          detach();
+                          int apiAfterDetach = getApiVersion();
+                          String fwAfterDetach = getFrameworkName();
+                          HookHandle post = hook(method)
+                                  .setId(POST_DETACH_ID)
+                                  .intercept(chain -> String.valueOf(chain.proceed()) + "|POSTDETACH");
+                          String postResult = String.valueOf(method.invoke(null, "detach"));
+                          if (apiAfterDetach != 102 || !POST_DETACH_ID.equals(post.getId()) ||
+                                  !postResult.contains("|POSTDETACH")) {
+                              throw new IllegalStateException("post-detach API check failed: api=" +
+                                      apiAfterDetach + " result=" + postResult);
+                          }
+                          post.unhook();
+                          info("E2E_DETACH_API_PASS generation=G4 api=" + apiAfterDetach +
+                                  " framework=" + fwAfterDetach + " result=" + postResult);
+                      }
+                  } catch (Throwable t) {
+                      fail("E2E_HOT_RELOADED_FAIL generation=" + BuildConfig.E2E_GENERATION, t);
+                      throw new RuntimeException(t);
+                  }
+              }
+          }
+          ''')
+
+          write('app/src/main/java/io/github/libxposed/api102e2e/MainActivity.java', r'''package io.github.libxposed.api102e2e;
+
+          import android.app.Activity;
+          import android.content.ComponentName;
+          import android.content.Intent;
+          import android.content.SharedPreferences;
+          import android.os.Bundle;
+          import android.os.Handler;
+          import android.os.Looper;
+          import android.view.View;
+          import android.widget.Button;
+          import android.widget.LinearLayout;
+          import android.widget.ScrollView;
+          import android.widget.TextView;
+          import java.text.SimpleDateFormat;
+          import java.util.Date;
+          import java.util.List;
+          import java.util.Locale;
+          import io.github.libxposed.service.HookedTarget;
+          import io.github.libxposed.service.XposedService;
+
+          public final class MainActivity extends Activity implements E2EApp.Listener {
+              private static final String TARGET = "io.github.libxposed.api102e2e.target";
+              private static final String KILL_RECEIVER = TARGET + ".KillReceiver";
+              private final Handler handler = new Handler(Looper.getMainLooper());
+              private TextView status;
+              private TextView history;
+              private XposedService service;
+              private SharedPreferences prefs;
+
+              @Override protected void onCreate(Bundle state) {
+                  super.onCreate(state);
+                  prefs = getSharedPreferences("e2e_history", MODE_PRIVATE);
+
+                  LinearLayout root = new LinearLayout(this);
+                  root.setOrientation(LinearLayout.VERTICAL);
+                  int pad = (int) (16 * getResources().getDisplayMetrics().density);
+                  root.setPadding(pad, pad, pad, pad);
+
+                  TextView title = new TextView(this);
+                  title.setText("API102 E2E Module " + BuildConfig.E2E_GENERATION +
+                          (BuildConfig.E2E_AUTO_HOT_RELOAD ? " (AUTO)" : ""));
+                  title.setTextSize(20f);
+                  root.addView(title);
+
+                  status = new TextView(this);
+                  root.addView(status);
+
+                  addButton(root, "Refresh targets", v -> refresh());
+                  addButton(root, "Reject reload (expect FAILED)", v -> request("reject", 0, false));
+                  addButton(root, "Race reload (expect IN_PROGRESS + SUCCEEDED)", v -> raceReload());
+                  addButton(root, "Reload accept", v -> request("accept", 0, false));
+                  addButton(root, "Reload while up-to-date (expect UNSUPPORTED)", v -> request("accept", 0, false));
+                  addButton(root, "Process-died test (G3 stale target)", v -> processDiedTest());
+                  addButton(root, "Clear app history", v -> {
+                      prefs.edit().clear().apply();
+                      history.setText("");
+                  });
+
+                  TextView h = new TextView(this);
+                  h.setText("Service callback history:");
+                  root.addView(h);
+                  history = new TextView(this);
+                  history.setText(prefs.getString("history", ""));
+                  root.addView(history);
+
+                  ScrollView scroll = new ScrollView(this);
+                  scroll.addView(root);
+                  setContentView(scroll);
+              }
+
+              private void addButton(LinearLayout root, String text, View.OnClickListener listener) {
+                  Button b = new Button(this);
+                  b.setText(text);
+                  b.setOnClickListener(listener);
+                  root.addView(b);
+              }
+
+              @Override protected void onStart() {
+                  super.onStart();
+                  E2EApp.addListener(this, true);
+              }
+
+              @Override protected void onStop() {
+                  E2EApp.removeListener(this);
+                  super.onStop();
+              }
+
+              @Override public void onServiceChanged(XposedService s) {
+                  service = s;
+                  runOnUiThread(this::refresh);
+              }
+
+              private HookedTarget target() {
+                  if (service == null) return null;
+                  List<HookedTarget> targets = service.getRunningTargets();
+                  for (HookedTarget t : targets) {
+                      if (TARGET.equals(t.getProcessName())) return t;
+                  }
+                  return null;
+              }
+
+              private void refresh() {
+                  try {
+                      if (service == null) {
+                          status.setText("Binder: unavailable");
+                          return;
+                      }
+                      StringBuilder sb = new StringBuilder();
+                      sb.append("Service API: ").append(service.getApiVersion()).append('\n');
+                      sb.append("Framework: ").append(service.getFrameworkName()).append(' ')
+                              .append(service.getFrameworkVersion()).append('\n');
+                      sb.append("Module APK generation: ").append(BuildConfig.E2E_GENERATION).append('\n');
+                      List<HookedTarget> all = service.getRunningTargets();
+                      sb.append("Running targets: ").append(all.size()).append('\n');
+                      for (HookedTarget t : all) {
+                          sb.append("- ").append(t.getProcessName())
+                                  .append(" pid=").append(t.getPid())
+                                  .append(" state=").append(t.getState())
+                                  .append(" loadedVersion=").append(t.getLoadedVersionCode()).append('\n');
+                      }
+                      status.setText(sb.toString());
+                  } catch (Throwable t) {
+                      status.setText("Refresh error: " + t);
+                      append("REFRESH_ERROR " + t);
+                  }
+              }
+
+              private Bundle extras(String mode, int delayMs) {
+                  Bundle b = new Bundle();
+                  b.putString("mode", mode);
+                  b.putString("token", BuildConfig.E2E_GENERATION + "-" + System.currentTimeMillis());
+                  b.putInt("delayMs", delayMs);
+                  return b;
+              }
+
+              private void request(String mode, int delayMs, boolean silentMissing) {
+                  try {
+                      HookedTarget t = target();
+                      if (t == null) {
+                          if (!silentMissing) append("NO_TARGET");
+                          return;
+                      }
+                      append("REQUEST mode=" + mode + " delay=" + delayMs + " state=" + t.getState() +
+                              " loaded=" + t.getLoadedVersionCode());
+                      service.hotReloadModule(t, extras(mode, delayMs), (p, result) ->
+                              runOnUiThread(() -> {
+                                  append("RESULT process=" + p.getProcessName() + " status=" + result.status() +
+                                          " message=" + result.message());
+                                  refresh();
+                              }));
+                  } catch (Throwable e) {
+                      append("REQUEST_EXCEPTION " + e);
+                  }
+              }
+
+              private void raceReload() {
+                  try {
+                      HookedTarget t = target();
+                      if (t == null) { append("NO_TARGET"); return; }
+                      append("RACE_START state=" + t.getState() + " loaded=" + t.getLoadedVersionCode());
+                      service.hotReloadModule(t, extras("delay", 2200), (p, result) ->
+                              runOnUiThread(() -> append("RACE_FIRST status=" + result.status() +
+                                      " message=" + result.message())));
+                      service.hotReloadModule(t, extras("accept", 0), (p, result) ->
+                              runOnUiThread(() -> append("RACE_SECOND status=" + result.status() +
+                                      " message=" + result.message())));
+                  } catch (Throwable e) {
+                      append("RACE_EXCEPTION " + e);
+                  }
+              }
+
+              private void processDiedTest() {
+                  try {
+                      HookedTarget t = target();
+                      if (t == null) { append("NO_TARGET"); return; }
+                      append("PROCESS_DIED_START state=" + t.getState() + " loaded=" + t.getLoadedVersionCode());
+                      service.hotReloadModule(t, extras("delay", 4000), (p, result) ->
+                              runOnUiThread(() -> append("PROCESS_DIED_RESULT status=" + result.status() +
+                                      " message=" + result.message())));
+                      handler.postDelayed(() -> {
+                          Intent i = new Intent();
+                          i.setComponent(new ComponentName(TARGET, KILL_RECEIVER));
+                          i.putExtra("token", "API102_E2E_KILL");
+                          sendBroadcast(i);
+                          append("PROCESS_DIED_KILL_SENT");
+                      }, 700);
+                  } catch (Throwable e) {
+                      append("PROCESS_DIED_EXCEPTION " + e);
+                  }
+              }
+
+              private void append(String line) {
+                  String ts = new SimpleDateFormat("HH:mm:ss.SSS", Locale.US).format(new Date());
+                  String old = prefs.getString("history", "");
+                  String now = old + ts + " " + line + "\n";
+                  prefs.edit().putString("history", now).apply();
+                  if (history != null) history.setText(now);
+              }
+          }
+          ''')
+
+          write('target/src/main/java/io/github/libxposed/api102e2e/target/ProbeTarget.java', r'''package io.github.libxposed.api102e2e.target;
+
+          public final class ProbeTarget {
+              private ProbeTarget() {}
+              public static String probe(String input) {
+                  return "TARGET:" + input;
+              }
+          }
+          ''')
+
+          write('target/src/main/java/io/github/libxposed/api102e2e/target/KillReceiver.java', r'''package io.github.libxposed.api102e2e.target;
+
+          import android.content.BroadcastReceiver;
+          import android.content.Context;
+          import android.content.Intent;
+          import android.os.Process;
+
+          public final class KillReceiver extends BroadcastReceiver {
+              @Override public void onReceive(Context context, Intent intent) {
+                  if (!"API102_E2E_KILL".equals(intent.getStringExtra("token"))) return;
+                  Process.killProcess(Process.myPid());
+              }
+          }
+          ''')
+
+          write('target/src/main/java/io/github/libxposed/api102e2e/target/MainActivity.java', r'''package io.github.libxposed.api102e2e.target;
+
+          import android.app.Activity;
+          import android.os.Bundle;
+          import android.os.Process;
+          import android.widget.Button;
+          import android.widget.LinearLayout;
+          import android.widget.TextView;
+
+          public final class MainActivity extends Activity {
+              private TextView output;
+              private int counter;
+
+              @Override protected void onCreate(Bundle state) {
+                  super.onCreate(state);
+                  LinearLayout root = new LinearLayout(this);
+                  root.setOrientation(LinearLayout.VERTICAL);
+                  int pad = (int) (20 * getResources().getDisplayMetrics().density);
+                  root.setPadding(pad, pad, pad, pad);
+
+                  TextView title = new TextView(this);
+                  title.setText("API102 E2E Target — pid=" + Process.myPid());
+                  title.setTextSize(20f);
+                  root.addView(title);
+
+                  output = new TextView(this);
+                  output.setTextSize(18f);
+                  root.addView(output);
+
+                  Button probe = new Button(this);
+                  probe.setText("Run probe");
+                  probe.setOnClickListener(v -> runProbe());
+                  root.addView(probe);
+
+                  setContentView(root);
+                  runProbe();
+              }
+
+              private void runProbe() {
+                  counter++;
+                  output.setText(ProbeTarget.probe("tap-" + counter));
+              }
+          }
+          ''')
+
+          # Remove old example-only files that could confuse package/source scans.
+          for old in [Path('app/src/main/java/io/github/libxposed/example')]:
+              if old.exists(): shutil.rmtree(old)
+
+          print('SOURCE_GENERATION=PASS')
+          PY
+
+          test "$(cat app/src/g1/resources/META-INF/xposed/module.prop)" = $'minApiVersion=102\ntargetApiVersion=102\nstaticScope=true\nautoHotReload=false'
+          test "$(cat app/src/g4/resources/META-INF/xposed/module.prop)" = $'minApiVersion=102\ntargetApiVersion=102\nstaticScope=true\nautoHotReload=true'
+          test "$(cat app/src/main/resources/META-INF/xposed/java_init.list)" = 'io.github.libxposed.api102e2e.ModuleMain'
+          test "$(cat app/src/main/resources/META-INF/xposed/scope.list)" = "$TARGET_PACKAGE"
+          grep -Fq 'setId(HOOK_ID)' app/src/main/java/io/github/libxposed/api102e2e/ModuleMain.java
+          grep -Fq 'replaceHook(generationHooker' app/src/main/java/io/github/libxposed/api102e2e/ModuleMain.java
+          grep -Fq 'setSavedInstanceState(saved)' app/src/main/java/io/github/libxposed/api102e2e/ModuleMain.java
+          grep -Fq 'detach();' app/src/main/java/io/github/libxposed/api102e2e/ModuleMain.java
+          grep -Fq 'de.robv.android.xposed.XposedBridge' app/src/main/java/io/github/libxposed/api102e2e/ModuleMain.java
+          echo 'API102_E2E_SOURCE=PASS' | tee ../API102_E2E_SOURCE.txt
+
+      - name: Set up Gradle cache
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Build target and all four API102 generations
+        id: build
+        working-directory: api102-e2e
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x gradlew
+          ./gradlew --no-daemon --stacktrace \
+            :target:assembleRelease \
+            :app:assembleG1Release \
+            :app:assembleG2Release \
+            :app:assembleG3Release \
+            :app:assembleG4Release 2>&1 | tee ../API102_E2E_BUILD.log
+          grep -Fq 'BUILD SUCCESSFUL' ../API102_E2E_BUILD.log
+          echo 'API102_E2E_BUILD=PASS' | tee ../API102_E2E_BUILD_STATUS.txt
+
+      - name: Collect and audit APKs
+        id: audit
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p out/apks out/evidence tmp-audit
+
+          find api102-e2e/app/build/outputs/apk -type f -name '*.apk' -print | sort
+          find api102-e2e/target/build/outputs/apk -type f -name '*.apk' -print | sort
+
+          copy_one() {
+            local pattern="$1" dst="$2"
+            mapfile -t hits < <(find api102-e2e -type f -path "$pattern" -print | sort)
+            test "${#hits[@]}" -eq 1
+            cp "${hits[0]}" "out/apks/$dst"
+          }
+
+          copy_one '*/target/build/outputs/apk/release/*.apk' 'API102-E2E-Target.apk'
+          copy_one '*/app/build/outputs/apk/g1/release/*.apk' 'API102-E2E-Module-G1.apk'
+          copy_one '*/app/build/outputs/apk/g2/release/*.apk' 'API102-E2E-Module-G2.apk'
+          copy_one '*/app/build/outputs/apk/g3/release/*.apk' 'API102-E2E-Module-G3.apk'
+          copy_one '*/app/build/outputs/apk/g4/release/*.apk' 'API102-E2E-Module-G4-AUTO.apk'
+
+          apksigner="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner -perm -u+x | sort -V | tail -n1)"
+          aapt="$(find "$ANDROID_HOME/build-tools" -type f -name aapt -perm -u+x | sort -V | tail -n1)"
+          test -x "$apksigner"
+          test -x "$aapt"
+
+          : > out/evidence/APK_CERTS.txt
+          module_cert=''
+          for apk in out/apks/*.apk; do
+            "$apksigner" verify --print-certs "$apk" > "out/evidence/$(basename "$apk").cert.txt"
+            "$aapt" dump badging "$apk" > "out/evidence/$(basename "$apk").badging.txt"
+            digest="$(sed -nE 's/^.*certificate SHA-256 digest: *([0-9A-Fa-f:]+).*$/\1/p' "out/evidence/$(basename "$apk").cert.txt" | head -n1 | tr -d ':' | tr '[:upper:]' '[:lower:]')"
+            test "${#digest}" -eq 64
+            echo "$(basename "$apk") $digest" >> out/evidence/APK_CERTS.txt
+            case "$(basename "$apk")" in
+              API102-E2E-Module-*.apk)
+                if [ -z "$module_cert" ]; then module_cert="$digest"; else test "$digest" = "$module_cert"; fi
+                ;;
+            esac
+          done
+          echo "MODULE_GENERATIONS_CERT_SHA256=$module_cert" >> out/evidence/APK_CERTS.txt
+
+          for pair in \
+            'API102-E2E-Module-G1.apk false 1001' \
+            'API102-E2E-Module-G2.apk false 1002' \
+            'API102-E2E-Module-G3.apk false 1003' \
+            'API102-E2E-Module-G4-AUTO.apk true 1004'; do
+            set -- $pair
+            apk="$1" auto="$2" version="$3"
+            dir="tmp-audit/${apk%.apk}"
+            rm -rf "$dir" && mkdir -p "$dir"
+            unzip -q "out/apks/$apk" -d "$dir"
+            prop="$dir/META-INF/xposed/module.prop"
+            init="$dir/META-INF/xposed/java_init.list"
+            scope="$dir/META-INF/xposed/scope.list"
+            test -f "$prop" -a -f "$init" -a -f "$scope"
+            grep -Fxq 'minApiVersion=102' "$prop"
+            grep -Fxq 'targetApiVersion=102' "$prop"
+            grep -Fxq 'staticScope=true' "$prop"
+            grep -Fxq "autoHotReload=$auto" "$prop"
+            test "$(cat "$init")" = 'io.github.libxposed.api102e2e.ModuleMain'
+            test "$(cat "$scope")" = "$TARGET_PACKAGE"
+            grep -Eq "versionCode='$version'" "out/evidence/$apk.badging.txt"
+            grep -Eq "package: name='$MODULE_PACKAGE'" "out/evidence/$apk.badging.txt"
+          done
+
+          grep -Eq "package: name='$TARGET_PACKAGE'" out/evidence/API102-E2E-Target.apk.badging.txt
+
+          sha256sum out/apks/*.apk | sed 's#out/apks/##' | tee out/SHA256SUMS.txt
+          unzip -t out/apks/API102-E2E-Module-G1.apk >/dev/null
+          unzip -t out/apks/API102-E2E-Module-G2.apk >/dev/null
+          unzip -t out/apks/API102-E2E-Module-G3.apk >/dev/null
+          unzip -t out/apks/API102-E2E-Module-G4-AUTO.apk >/dev/null
+          unzip -t out/apks/API102-E2E-Target.apk >/dev/null
+
+          cp PINNED_SOURCES.txt API102_E2E_SOURCE.txt API102_E2E_BUILD_STATUS.txt API102_E2E_BUILD.log out/evidence/
+          echo 'API102_E2E_AUDIT=PASS' | tee out/evidence/API102_E2E_AUDIT.txt
+
+      - name: Write exact device test plan
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > out/README_TESTABLAUF.txt <<'EOF'
+          IRENA-X / LIBXPOSED API102 — E2E DEVICE TEST V1
+          =================================================
+
+          Ziel:
+          Ein isolierter Test gegen die bereits installierte V8-Runtime. Kein Ingress-Scope,
+          keine Änderungen am Framework und keine weiteren LSPosed-Builds.
+
+          Pakete:
+          - API102-E2E-Target.apk              -> isolierte Ziel-App
+          - API102-E2E-Module-G1.apk          -> API102 Generation 1, autoHotReload=false
+          - API102-E2E-Module-G2.apk          -> API102 Generation 2, autoHotReload=false
+          - API102-E2E-Module-G3.apk          -> API102 Generation 3, autoHotReload=false
+          - API102-E2E-Module-G4-AUTO.apk     -> API102 Generation 4, autoHotReload=true
+
+          WICHTIG:
+          G1 bis G4 stammen aus demselben Build und sind mit demselben Zertifikat signiert.
+          Den TARGET-Prozess bei G1->G2 und G3->G4 NICHT manuell neu starten, außer der Ablauf sagt es.
+
+          1) INITIAL / API102 + HOOK-ID + LEGACY-BLOCK
+          -------------------------------------------------
+          a) Target APK installieren.
+          b) Module G1 installieren.
+          c) Im LSPosed Manager das Testmodul aktivieren. Scope ist statisch nur:
+             io.github.libxposed.api102e2e.target
+          d) Target-App einmal vollständig neu starten.
+          e) "Run probe" drücken.
+
+          Erwartung:
+          TARGET:tap-N|HOOK_G1
+          Modul-App zeigt Service API 102 und Target UP_TO_DATE, loadedVersion=1001.
+
+          LSPosed-Log muss u.a. enthalten:
+          E2E_RUNTIME_API_PASS generation=G1 api=102
+          E2E_LEGACY_BLOCK_PASS generation=G1
+          E2E_HOOK_ID_REPLACE_PASS generation=G1
+          E2E_HOOK_EXEC_PASS generation=G1
+
+          2) FAILED + IN_PROGRESS + SUCCEEDED / MANUELLER HOT RELOAD
+          -------------------------------------------------
+          a) Target weiterlaufen lassen.
+          b) Module G2 als Update über G1 installieren.
+          c) Modul-App öffnen -> Refresh targets.
+             Erwartung: Target STALE, loadedVersion=1001.
+          d) "Reject reload" drücken.
+             Erwartung Callback: FAILED (message=null). Target bleibt HOOK_G1.
+          e) "Race reload" drücken.
+             Erwartung: ein Callback IN_PROGRESS und ein Callback SUCCEEDED.
+          f) Ohne Target-Neustart "Run probe" in Target drücken.
+             Erwartung: TARGET:tap-N|HOOK_G2
+          g) Refresh: UP_TO_DATE, loadedVersion=1002.
+
+          LSPosed-Log muss zusätzlich enthalten:
+          E2E_REJECT_PATH_PASS generation=G1
+          E2E_HOT_RELOADED generation=G2
+          E2E_LIFECYCLE_NOT_REPLAYED_PASS generation=G2
+          E2E_SAVED_STATE_PASS generation=G2
+          E2E_REPLACE_HOOK_PASS generation=G2
+          E2E_RELOADED_HOOK_EXEC_PASS generation=G2
+
+          3) UNSUPPORTED
+          -------------------------------------------------
+          Bei weiterhin UP_TO_DATE G2 in der Modul-App "Reload while up-to-date" drücken.
+          Erwartung: UNSUPPORTED.
+
+          4) PROCESS_DIED
+          -------------------------------------------------
+          a) Target weiterlaufen lassen.
+          b) Module G3 als Update installieren.
+          c) Refresh: STALE, loadedVersion=1002.
+          d) "Process-died test" drücken.
+             Der Test sendet einen verzögerten Hot-Reload und beendet anschließend NUR die
+             isolierte Target-Test-App absichtlich selbst.
+          e) Erwartung Callback: PROCESS_DIED.
+          f) Target-App wieder öffnen. Da sie frisch startet, muss "Run probe" nun HOOK_G3 zeigen.
+             Refresh: UP_TO_DATE, loadedVersion=1003.
+
+          5) AUTO HOT RELOAD + DETACH
+          -------------------------------------------------
+          a) Target G3 jetzt laufen lassen.
+          b) Module G4-AUTO als Update installieren.
+          c) NICHT den Target-Prozess neu starten. Einige Sekunden warten.
+          d) "Run probe" drücken.
+             Erwartung ohne Target-Neustart: TARGET:tap-N|HOOK_G4
+
+          LSPosed-Log muss enthalten:
+          E2E_HOT_RELOADED generation=G4 ... mode=auto
+          E2E_LIFECYCLE_NOT_REPLAYED_PASS generation=G4
+          E2E_REPLACE_HOOK_PASS generation=G4
+          E2E_AUTO_HOT_RELOAD_PASS generation=G4
+          E2E_DETACH_API_PASS generation=G4 api=102
+
+          Nach detach darf der Target-Eintrag aus getRunningTargets verschwinden. Das ist bei
+          dieser V8-Implementierung erwartbar; der bereits installierte G4-Hook bleibt für den
+          sichtbaren Probe-Test aktiv.
+
+          6) ABSCHLUSS
+          -------------------------------------------------
+          Danach genau EIN aktuelles LSPosed-Log-ZIP erzeugen und zusammen mit einem Screenshot
+          der Modul-App-History hier hochladen. Nicht veröffentlichen.
+
+          Wenn alle erwarteten Punkte passen, kann der Stand als
+          P4R3 FINAL API102 V8 = DEVICE PASS + API102 E2E PASS
+          bewertet werden.
+          EOF
+
+      - name: Final gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -Fxq 'API102_E2E_SOURCE=PASS' API102_E2E_SOURCE.txt
+          grep -Fxq 'API102_E2E_BUILD=PASS' API102_E2E_BUILD_STATUS.txt
+          grep -Fxq 'API102_E2E_AUDIT=PASS' out/evidence/API102_E2E_AUDIT.txt
+          test -s out/apks/API102-E2E-Target.apk
+          test -s out/apks/API102-E2E-Module-G1.apk
+          test -s out/apks/API102-E2E-Module-G2.apk
+          test -s out/apks/API102-E2E-Module-G3.apk
+          test -s out/apks/API102-E2E-Module-G4-AUTO.apk
+          echo 'API102_E2E_FINAL_GATE=PASS' | tee out/evidence/API102_E2E_FINAL_GATE.txt
+
+      - name: Upload API102 E2E test kit
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: irena-x-api102-e2e-test-kit-v1
+          path: |
+            out/**
+            API102_E2E_*.txt
+            PINNED_SOURCES.txt
+          if-no-files-found: error
+          include-hidden-files: true
