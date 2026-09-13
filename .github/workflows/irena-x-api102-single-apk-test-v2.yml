@@ -1,0 +1,636 @@
+name: Irena X API102 Single APK Test V2
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  EXAMPLE_REPO: https://github.com/libxposed/example.git
+  EXAMPLE_COMMIT: b94ee7e5f53d7039d38446b61605d6fa2a393c8f
+  TEST_PACKAGE: io.github.libxposed.api102test
+
+jobs:
+  build-single-api102-apk:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    steps:
+      - name: Set up JDK 21
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install stable Android 35 SDK components
+        shell: bash
+        run: |
+          set -euo pipefail
+          sdkmanager 'platforms;android-35' 'build-tools;35.0.0' 'platform-tools'
+
+      - name: Clone pinned official libxposed API102 example
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --no-tags "$EXAMPLE_REPO" api102-single
+          git -C api102-single checkout --detach "$EXAMPLE_COMMIT"
+          test "$(git -C api102-single rev-parse HEAD)" = "$EXAMPLE_COMMIT"
+          grep -Fq 'xposed-api = "102.0.0"' api102-single/gradle/libs.versions.toml
+          grep -Fq 'xposed-service = "102.0.0"' api102-single/gradle/libs.versions.toml
+
+      - name: Generate one self-contained API102 test module APK
+        working-directory: api102-single
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import shutil
+
+          def write(path: str, text: str):
+              p = Path(path)
+              p.parent.mkdir(parents=True, exist_ok=True)
+              p.write_text(text, encoding='utf-8')
+
+          java = Path('app/src/main/java')
+          res = Path('app/src/main/res')
+          resources = Path('app/src/main/resources')
+          for p in (java, res, resources):
+              if p.exists():
+                  shutil.rmtree(p)
+
+          write('app/build.gradle.kts', r'''plugins {
+              alias(libs.plugins.agp.app)
+          }
+
+          android {
+              namespace = "io.github.libxposed.example"
+              compileSdk = 35
+              buildToolsVersion = "35.0.0"
+
+              defaultConfig {
+                  applicationId = "io.github.libxposed.api102test"
+                  minSdk = 26
+                  targetSdk = 33
+                  versionCode = 10201
+                  versionName = "102-single-test-v2"
+              }
+
+              buildTypes {
+                  release {
+                      isMinifyEnabled = false
+                      isShrinkResources = false
+                      signingConfig = signingConfigs["debug"]
+                  }
+              }
+
+              compileOptions {
+                  sourceCompatibility = JavaVersion.VERSION_21
+                  targetCompatibility = JavaVersion.VERSION_21
+              }
+
+              packaging {
+                  resources {
+                      merges += "META-INF/xposed/*"
+                      excludes += "META-INF/*.version"
+                  }
+              }
+
+              lint {
+                  abortOnError = true
+                  checkReleaseBuilds = false
+              }
+          }
+
+          dependencies {
+              compileOnly(libs.libxposed.api)
+              implementation(libs.libxposed.service)
+          }
+          ''')
+
+          write('app/src/main/AndroidManifest.xml', r'''<?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <application
+                  android:name=".App"
+                  android:label="API102 Single Test"
+                  android:theme="@android:style/Theme.Material.Light.NoActionBar">
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+              </application>
+          </manifest>
+          ''')
+
+          write('app/src/main/resources/META-INF/xposed/java_init.list',
+                'io.github.libxposed.example.ModuleMain\n')
+          write('app/src/main/resources/META-INF/xposed/module.prop',
+                'minApiVersion=102\n'
+                'targetApiVersion=102\n'
+                'staticScope=true\n'
+                'autoHotReload=false\n')
+          write('app/src/main/resources/META-INF/xposed/scope.list',
+                'io.github.libxposed.api102test\n')
+
+          write('app/src/main/java/io/github/libxposed/example/ProbeTarget.java', r'''package io.github.libxposed.example;
+
+          public final class ProbeTarget {
+              private ProbeTarget() {}
+
+              public static String ping(String value) {
+                  return "ORIGINAL:" + value;
+              }
+
+              public static String moduleStatus() {
+                  return "MODULE_NOT_LOADED";
+              }
+
+              public static String command(String value) {
+                  return "ORIGINAL_COMMAND:" + value;
+              }
+          }
+          ''')
+
+          write('app/src/main/java/io/github/libxposed/example/App.java', r'''package io.github.libxposed.example;
+
+          import android.app.Application;
+
+          import java.util.concurrent.CopyOnWriteArraySet;
+
+          import io.github.libxposed.service.XposedService;
+          import io.github.libxposed.service.XposedServiceHelper;
+
+          public final class App extends Application implements XposedServiceHelper.OnServiceListener {
+              public interface ServiceStateListener {
+                  void onServiceStateChanged(XposedService service);
+              }
+
+              private static final CopyOnWriteArraySet<ServiceStateListener> LISTENERS =
+                      new CopyOnWriteArraySet<>();
+              private static volatile XposedService service;
+
+              public static void addServiceStateListener(ServiceStateListener listener, boolean notify) {
+                  LISTENERS.add(listener);
+                  if (notify) listener.onServiceStateChanged(service);
+              }
+
+              public static void removeServiceStateListener(ServiceStateListener listener) {
+                  LISTENERS.remove(listener);
+              }
+
+              private static void dispatch(XposedService value) {
+                  for (ServiceStateListener listener : LISTENERS) {
+                      listener.onServiceStateChanged(value);
+                  }
+              }
+
+              @Override
+              public void onCreate() {
+                  super.onCreate();
+                  XposedServiceHelper.registerListener(this);
+              }
+
+              @Override
+              public void onServiceBind(XposedService value) {
+                  service = value;
+                  dispatch(value);
+              }
+
+              @Override
+              public void onServiceDied(XposedService value) {
+                  service = null;
+                  dispatch(null);
+              }
+          }
+          ''')
+
+          write('app/src/main/java/io/github/libxposed/example/ModuleMain.java', r'''package io.github.libxposed.example;
+
+          import android.os.Bundle;
+          import android.util.Log;
+
+          import androidx.annotation.NonNull;
+
+          import java.lang.reflect.Method;
+          import java.util.List;
+
+          import io.github.libxposed.api.XposedInterface.HookHandle;
+          import io.github.libxposed.api.XposedModule;
+
+          public final class ModuleMain extends XposedModule {
+              private static final String TAG = "API102SingleTest";
+              private static final String ID_PING = "api102-single-ping";
+              private static final String ID_STATUS = "api102-single-status";
+              private static final String ID_COMMAND = "api102-single-command";
+
+              private int moduleLoadedCount;
+              private int packageLoadedCount;
+              private int packageReadyCount;
+              private boolean runtime102;
+              private boolean legacyBlocked;
+              private boolean idPass;
+              private boolean sameIdReplacePass;
+              private boolean handleReplacePass;
+              private boolean oldHandleInvalidPass;
+              private String reloadStatus = "NOT_RUN";
+
+              private void msg(String text) {
+                  log(Log.INFO, TAG, text);
+              }
+
+              private boolean checkLegacyBlocked() {
+                  try {
+                      Class.forName("de.robv.android.xposed.XposedBridge", false,
+                              ModuleMain.class.getClassLoader());
+                      return false;
+                  } catch (ClassNotFoundException expected) {
+                      return true;
+                  } catch (Throwable t) {
+                      msg("LEGACY_BLOCK_CHECK_EXCEPTION=" + t);
+                      return false;
+                  }
+              }
+
+              private String baseStatus() {
+                  return "RUNTIME_102=" + runtime102
+                          + ";LEGACY_BLOCK=" + legacyBlocked
+                          + ";HOOK_ID=" + idPass
+                          + ";SAME_ID_REPLACE=" + sameIdReplacePass
+                          + ";HANDLE_REPLACE=" + handleReplacePass
+                          + ";OLD_HANDLE_INVALID=" + oldHandleInvalidPass
+                          + ";MODULE_LOADED_COUNT=" + moduleLoadedCount
+                          + ";PACKAGE_LOADED_COUNT=" + packageLoadedCount
+                          + ";PACKAGE_READY_COUNT=" + packageReadyCount
+                          + ";HOT_RELOAD=" + reloadStatus;
+              }
+
+              @Override
+              public void onModuleLoaded(@NonNull ModuleLoadedParam param) {
+                  moduleLoadedCount++;
+                  runtime102 = getApiVersion() == 102;
+                  legacyBlocked = checkLegacyBlocked();
+                  msg("ON_MODULE_LOADED process=" + param.getProcessName()
+                          + " API=" + getApiVersion()
+                          + " LEGACY_BLOCK=" + legacyBlocked);
+              }
+
+              @Override
+              public void onPackageLoaded(@NonNull PackageLoadedParam param) {
+                  if ("io.github.libxposed.api102test".equals(param.getPackageName())) {
+                      packageLoadedCount++;
+                  }
+              }
+
+              @Override
+              public void onPackageReady(@NonNull PackageReadyParam param) {
+                  if (!"io.github.libxposed.api102test".equals(param.getPackageName())) return;
+                  packageReadyCount++;
+
+                  try {
+                      Class<?> probe = Class.forName(
+                              "io.github.libxposed.example.ProbeTarget", true, param.getClassLoader());
+                      Method ping = probe.getDeclaredMethod("ping", String.class);
+                      Method status = probe.getDeclaredMethod("moduleStatus");
+                      Method command = probe.getDeclaredMethod("command", String.class);
+
+                      HookHandle first = hook(ping).setId(ID_PING).intercept(chain ->
+                              "HOOK1[" + chain.proceed() + "]");
+                      idPass = ID_PING.equals(first.getId());
+
+                      HookHandle second = hook(ping).setId(ID_PING).intercept(chain ->
+                              "HOOK2[" + chain.proceed() + "]");
+                      sameIdReplacePass = ID_PING.equals(second.getId());
+
+                      try {
+                          first.replaceHook(chain -> chain.proceed());
+                          oldHandleInvalidPass = false;
+                      } catch (IllegalStateException expected) {
+                          oldHandleInvalidPass = true;
+                      }
+
+                      HookHandle third = second.replaceHook(chain ->
+                              "HOOK3[" + chain.proceed() + "]");
+                      handleReplacePass = ID_PING.equals(third.getId());
+
+                      hook(status).setId(ID_STATUS).intercept(chain -> baseStatus());
+                      hook(command).setId(ID_COMMAND).intercept(chain -> {
+                          String cmd = String.valueOf(chain.getArg(0));
+                          if ("DETACH".equals(cmd)) {
+                              detach();
+                              String framework = getFrameworkName();
+                              return "DETACH=PASS;API_AFTER_DETACH=PASS;FRAMEWORK=" + framework;
+                          }
+                          return chain.proceed();
+                      });
+
+                      msg("INITIAL_API102_SELFTEST=" + baseStatus());
+                  } catch (Throwable t) {
+                      reloadStatus = "SETUP_FAILED:" + t.getClass().getSimpleName();
+                      log(Log.ERROR, TAG, "API102 initial self-test failed", t);
+                  }
+              }
+
+              @Override
+              public boolean onHotReloading(@NonNull HotReloadingParam param) {
+                  Bundle extras = param.getExtras();
+                  String request = extras == null ? null : extras.getString("request");
+                  String state = "OLD_COUNTS=" + moduleLoadedCount + ","
+                          + packageLoadedCount + "," + packageReadyCount
+                          + ";REQUEST=" + request;
+                  param.setSavedInstanceState(state);
+                  msg("ON_HOT_RELOADING " + state);
+                  return true;
+              }
+
+              @Override
+              public void onHotReloaded(@NonNull HotReloadedParam param) {
+                  boolean noReplay = moduleLoadedCount == 0
+                          && packageLoadedCount == 0
+                          && packageReadyCount == 0;
+                  legacyBlocked = checkLegacyBlocked();
+                  runtime102 = getApiVersion() == 102;
+
+                  Bundle extras = param.getExtras();
+                  String request = extras == null ? null : extras.getString("request");
+                  Object saved = param.getSavedInstanceState();
+                  List<HookHandle> old = param.getOldHookHandles();
+
+                  boolean pingRebound = false;
+                  boolean statusRebound = false;
+                  boolean commandRebound = false;
+
+                  for (HookHandle handle : old) {
+                      String id = handle.getId();
+                      if (ID_PING.equals(id)) {
+                          handle.replaceHook(chain -> "RELOADED[" + chain.proceed() + "]");
+                          pingRebound = true;
+                      } else if (ID_STATUS.equals(id)) {
+                          handle.replaceHook(chain -> baseStatus()
+                                  + ";NO_LIFECYCLE_REPLAY=" + noReplay
+                                  + ";EXTRAS=" + request
+                                  + ";SAVED=" + saved);
+                          statusRebound = true;
+                      } else if (ID_COMMAND.equals(id)) {
+                          handle.replaceHook(chain -> {
+                              String cmd = String.valueOf(chain.getArg(0));
+                              if ("DETACH".equals(cmd)) {
+                                  detach();
+                                  String framework = getFrameworkName();
+                                  return "DETACH=PASS;API_AFTER_DETACH=PASS;FRAMEWORK=" + framework;
+                              }
+                              return chain.proceed();
+                          });
+                          commandRebound = true;
+                      } else {
+                          handle.unhook();
+                      }
+                  }
+
+                  reloadStatus = (noReplay && pingRebound && statusRebound && commandRebound)
+                          ? "PASS" : "FAIL";
+                  msg("ON_HOT_RELOADED status=" + reloadStatus
+                          + " oldHandles=" + old.size()
+                          + " noReplay=" + noReplay
+                          + " extras=" + request
+                          + " saved=" + saved);
+              }
+          }
+          ''')
+
+          write('app/src/main/java/io/github/libxposed/example/MainActivity.java', r'''package io.github.libxposed.example;
+
+          import android.app.Activity;
+          import android.os.Bundle;
+          import android.view.View;
+          import android.widget.Button;
+          import android.widget.LinearLayout;
+          import android.widget.ScrollView;
+          import android.widget.TextView;
+
+          import java.util.List;
+
+          import io.github.libxposed.service.HookedTarget;
+          import io.github.libxposed.service.HotReloadResult;
+          import io.github.libxposed.service.XposedService;
+
+          public final class MainActivity extends Activity implements App.ServiceStateListener {
+              private TextView output;
+              private XposedService service;
+
+              private void line(String text) {
+                  output.append(text + "\n");
+              }
+
+              private Button button(String text, View.OnClickListener listener) {
+                  Button b = new Button(this);
+                  b.setText(text);
+                  b.setOnClickListener(listener);
+                  return b;
+              }
+
+              @Override
+              protected void onCreate(Bundle savedInstanceState) {
+                  super.onCreate(savedInstanceState);
+
+                  LinearLayout root = new LinearLayout(this);
+                  root.setOrientation(LinearLayout.VERTICAL);
+                  int p = (int) (16 * getResources().getDisplayMetrics().density);
+                  root.setPadding(p, p, p, p);
+
+                  output = new TextView(this);
+                  output.setTextIsSelectable(true);
+                  output.setText("API102 Single APK Test\n\n"
+                          + "1. Enable this module in LSPosed.\n"
+                          + "2. Its fixed scope is this app itself.\n"
+                          + "3. Force-stop and reopen this app.\n"
+                          + "4. Run Local Test, then Hot Reload, then Detach last.\n\n");
+
+                  root.addView(button("1 — Run local API102 test", v -> runLocal()));
+                  root.addView(button("2 — Try API102 hot reload", v -> runHotReload()));
+                  root.addView(button("3 — Detach test (run last)", v -> runDetach()));
+                  root.addView(output);
+
+                  ScrollView scroll = new ScrollView(this);
+                  scroll.addView(root);
+                  setContentView(scroll);
+              }
+
+              @Override
+              protected void onStart() {
+                  super.onStart();
+                  App.addServiceStateListener(this, true);
+              }
+
+              @Override
+              protected void onStop() {
+                  App.removeServiceStateListener(this);
+                  super.onStop();
+              }
+
+              @Override
+              public void onServiceStateChanged(XposedService value) {
+                  service = value;
+                  runOnUiThread(() -> {
+                      if (value == null) {
+                          line("SERVICE=NOT_BOUND");
+                      } else {
+                          line("SERVICE=BOUND API=" + value.getApiVersion()
+                                  + " FRAMEWORK=" + value.getFrameworkName());
+                      }
+                  });
+              }
+
+              private void runLocal() {
+                  line("--- LOCAL TEST ---");
+                  try {
+                      line("MODULE_STATUS=" + ProbeTarget.moduleStatus());
+                      line("PING=" + ProbeTarget.ping("DEVICE"));
+                  } catch (Throwable t) {
+                      line("LOCAL_EXCEPTION=" + t);
+                  }
+
+                  try {
+                      if (service == null) {
+                          line("SERVICE_API102=FAIL:not-bound");
+                          return;
+                      }
+                      line("SERVICE_API=" + service.getApiVersion());
+                      List<HookedTarget> targets = service.getRunningTargets();
+                      line("RUNNING_TARGETS=" + targets.size());
+                      for (HookedTarget target : targets) {
+                          line("TARGET process=" + target.getProcessName()
+                                  + " state=" + target.getState()
+                                  + " version=" + target.getLoadedVersionCode());
+                      }
+                  } catch (Throwable t) {
+                      line("SERVICE_EXCEPTION=" + t);
+                  }
+              }
+
+              private HookedTarget findSelfTarget() {
+                  if (service == null) return null;
+                  for (HookedTarget target : service.getRunningTargets()) {
+                      if (getPackageName().equals(target.getProcessName())) return target;
+                  }
+                  return null;
+              }
+
+              private void runHotReload() {
+                  line("--- HOT RELOAD ---");
+                  try {
+                      if (service == null) {
+                          line("HOT_RELOAD=FAIL:service-not-bound");
+                          return;
+                      }
+                      HookedTarget target = findSelfTarget();
+                      if (target == null) {
+                          line("HOT_RELOAD=FAIL:self-target-not-found");
+                          return;
+                      }
+
+                      Bundle extras = new Bundle();
+                      extras.putString("request", "SINGLE_APK_MANUAL_TEST");
+                      service.hotReloadModule(target, extras, (p, result) ->
+                              runOnUiThread(() -> {
+                                  line("HOT_RELOAD_RESULT=" + result.status()
+                                          + " message=" + result.message());
+                                  line("POST_RELOAD_STATUS=" + ProbeTarget.moduleStatus());
+                                  line("POST_RELOAD_PING=" + ProbeTarget.ping("DEVICE"));
+                              }));
+                      line("HOT_RELOAD_REQUEST=SUBMITTED");
+                  } catch (Throwable t) {
+                      line("HOT_RELOAD_EXCEPTION=" + t);
+                  }
+              }
+
+              private void runDetach() {
+                  line("--- DETACH ---");
+                  try {
+                      line("DETACH_RESULT=" + ProbeTarget.command("DETACH"));
+                      line("PING_AFTER_DETACH=" + ProbeTarget.ping("DEVICE"));
+                      line("STATUS_AFTER_DETACH=" + ProbeTarget.moduleStatus());
+                  } catch (Throwable t) {
+                      line("DETACH_EXCEPTION=" + t);
+                  }
+              }
+          }
+          ''')
+
+          # Static source contract: exactly one Java entry and one self-scope target.
+          assert Path('app/src/main/resources/META-INF/xposed/java_init.list').read_text().splitlines() == [
+              'io.github.libxposed.example.ModuleMain'
+          ]
+          assert Path('app/src/main/resources/META-INF/xposed/scope.list').read_text().splitlines() == [
+              'io.github.libxposed.api102test'
+          ]
+          prop = Path('app/src/main/resources/META-INF/xposed/module.prop').read_text()
+          assert 'minApiVersion=102' in prop
+          assert 'targetApiVersion=102' in prop
+          assert 'staticScope=true' in prop
+          PY
+
+          grep -Fq 'compileSdk = 35' app/build.gradle.kts
+          grep -Fq 'targetSdk = 33' app/build.gradle.kts
+          grep -Fq 'setId(ID_PING)' app/src/main/java/io/github/libxposed/example/ModuleMain.java
+          grep -Fq 'replaceHook' app/src/main/java/io/github/libxposed/example/ModuleMain.java
+          grep -Fq 'onHotReloading' app/src/main/java/io/github/libxposed/example/ModuleMain.java
+          grep -Fq 'onHotReloaded' app/src/main/java/io/github/libxposed/example/ModuleMain.java
+          grep -Fq 'detach();' app/src/main/java/io/github/libxposed/example/ModuleMain.java
+          grep -Fq 'getRunningTargets' app/src/main/java/io/github/libxposed/example/MainActivity.java
+          grep -Fq 'hotReloadModule' app/src/main/java/io/github/libxposed/example/MainActivity.java
+
+      - name: Set up Gradle cache
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Build exactly one API102 test APK
+        working-directory: api102-single
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x gradlew
+          ./gradlew --no-daemon :app:assembleRelease --stacktrace
+
+          apk='app/build/outputs/apk/release/app-release.apk'
+          test -s "$apk"
+          mkdir -p ../out
+          cp "$apk" ../out/API102-Single-Test.apk
+
+      - name: Audit single APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          apk='out/API102-Single-Test.apk'
+          test -s "$apk"
+          unzip -t "$apk" >/dev/null
+
+          test "$(unzip -p "$apk" META-INF/xposed/java_init.list)" = 'io.github.libxposed.example.ModuleMain'
+          test "$(unzip -p "$apk" META-INF/xposed/scope.list)" = 'io.github.libxposed.api102test'
+          unzip -p "$apk" META-INF/xposed/module.prop | grep -Fxq 'minApiVersion=102'
+          unzip -p "$apk" META-INF/xposed/module.prop | grep -Fxq 'targetApiVersion=102'
+          unzip -p "$apk" META-INF/xposed/module.prop | grep -Fxq 'staticScope=true'
+
+          apksigner="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner -perm -u+x | sort -V | tail -n 1)"
+          test -n "$apksigner"
+          "$apksigner" verify --verbose --print-certs "$apk"
+
+          count="$(find out -maxdepth 1 -type f -name '*.apk' | wc -l)"
+          test "$count" -eq 1
+          sha256sum "$apk"
+          echo 'SINGLE_APK_AUDIT=PASS'
+
+      - name: Upload exactly one APK
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: API102-Single-Test-V2
+          path: out/API102-Single-Test.apk
+          if-no-files-found: error
+          compression-level: 0
