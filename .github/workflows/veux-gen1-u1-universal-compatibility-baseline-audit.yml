@@ -1,0 +1,531 @@
+name: VEUX GEN1 U1 Universal Compatibility Baseline Audit
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: veux-gen1-u1-universal-compat-baseline
+  cancel-in-progress: false
+
+jobs:
+  u1-baseline-audit:
+    name: P13 universal-compatibility baseline
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+
+    env:
+      P13_RUN_ID: "34811720288"
+      P13_SOURCE_AUDIT_RUN_ID: "34810633404"
+      P13_AK3_NAME: "VEUX-GEN1-P13-5.4.274-ReSukiSU-7741f878-UAPI4-SUSFS-2.3-AK3.zip"
+      P13_AK3_SHA256: "eb024ca243efe14f65f47dc1428604cdcb81d266da168016be1fc8429f8ffc6a"
+      P13_IMAGE_SHA256: "12f2eae90243878aa8c5fbd7cb14e9cbfb422869dae6bb14491feb987269a1b2"
+      P13_IMAGE_SIZE: "29843968"
+      P13_DTB_SHA256: "42728a6f3d48ae35ac6be4b14ea51bc8a323e77baec2ee544827487378f99d37"
+      P13_KERNEL_RELEASE: "5.4.274-qgki-g82179e362f33"
+      P13_VISIBLE_ID: "v4.2.0-rc1-7741f878-p13@ReSukiSU"
+      P13_RESUKISU_COMMIT: "7741f87849f7ad7cebf82bbb4c5b89880e61e37e"
+      P13_KSU_VERSION: "35141"
+      P13_UAPI: "4"
+      P13_SUSFS: "2.3.0"
+
+    steps:
+      - name: Checkout audit repository read-only
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Initialize U1 evidence area
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p work/p13-run work/source-audit work/ak3 work/u1
+          cat > work/u1/U1-REPORT.md <<EOF
+          # VEUX GEN1 U1 Universal Compatibility Baseline Audit
+
+          This workflow performs a static compatibility audit only. It does **not** build,
+          patch, flash, commit, push, or start another workflow.
+
+          ## Immutable P13 baseline
+
+          - P13 run: \`${P13_RUN_ID}\`
+          - Source-audit run: \`${P13_SOURCE_AUDIT_RUN_ID}\`
+          - Kernel release: \`${P13_KERNEL_RELEASE}\`
+          - ReSukiSU commit: \`${P13_RESUKISU_COMMIT}\`
+          - ReSukiSU/KSU: \`${P13_KSU_VERSION}\`
+          - UAPI: \`${P13_UAPI}\`
+          - SUSFS: \`${P13_SUSFS}\`
+          - Expected AK3 SHA-256: \`${P13_AK3_SHA256}\`
+          - Expected Image SHA-256: \`${P13_IMAGE_SHA256}\`
+          - Expected Image size: \`${P13_IMAGE_SIZE}\` bytes
+          - Known VEUX DTB SHA-256: \`${P13_DTB_SHA256}\`
+
+          EOF
+
+      - name: Verify immutable P13 run identity
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${P13_RUN_ID}" > work/u1/P13_RUN.json
+          jq '{id, name, event, status, conclusion, head_branch, head_sha, created_at, updated_at, html_url}' \
+            work/u1/P13_RUN.json > work/u1/P13_RUN_SUMMARY.json
+          conclusion="$(jq -r '.conclusion // empty' work/u1/P13_RUN.json)"
+          if [[ "$conclusion" != "success" ]]; then
+            echo "ERROR: immutable P13 run ${P13_RUN_ID} is not successful: ${conclusion}" | tee -a work/u1/U1-REPORT.md
+            exit 1
+          fi
+          printf '\n## P13 workflow run\n\n- Run conclusion: **PASS** (`success`)\n' >> work/u1/U1-REPORT.md
+
+      - name: Inventory and download exact P13 run artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh api --paginate "repos/${GITHUB_REPOSITORY}/actions/runs/${P13_RUN_ID}/artifacts?per_page=100" \
+            --jq '.artifacts[] | [.id,.name,.size_in_bytes,.expired,.created_at] | @tsv' \
+            > work/u1/P13_ARTIFACTS.tsv
+          if [[ ! -s work/u1/P13_ARTIFACTS.tsv ]]; then
+            echo "ERROR: P13 run has no downloadable artifacts." | tee -a work/u1/U1-REPORT.md
+            exit 1
+          fi
+          gh run download "$P13_RUN_ID" --repo "$GITHUB_REPOSITORY" --dir work/p13-run
+          find work/p13-run -type f -printf '%P\t%s\n' | sort > work/u1/P13_DOWNLOADED_FILES.tsv
+
+      - name: Locate and authenticate exact P13 AK3
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t hits < <(find work/p13-run -type f -name "$P13_AK3_NAME" -print)
+          if [[ "${#hits[@]}" -ne 1 ]]; then
+            echo "ERROR: expected exactly one ${P13_AK3_NAME}; found ${#hits[@]}." | tee -a work/u1/U1-REPORT.md
+            printf '%s\n' "${hits[@]:-}" >> work/u1/U1-REPORT.md
+            exit 1
+          fi
+          ak3="${hits[0]}"
+          actual="$(sha256sum "$ak3" | awk '{print $1}')"
+          if [[ "$actual" != "$P13_AK3_SHA256" ]]; then
+            echo "ERROR: P13 AK3 SHA-256 mismatch: ${actual}" | tee -a work/u1/U1-REPORT.md
+            exit 1
+          fi
+          cp "$ak3" work/u1/P13-AK3.zip
+          unzip -q "$ak3" -d work/ak3
+          unzip -Z1 "$ak3" | sort > work/u1/AK3_ARCHIVE_CONTENTS.txt
+          printf '\n## AK3 identity\n\n- Exact P13 AK3 located: **PASS**\n- SHA-256: `%s`\n' "$actual" >> work/u1/U1-REPORT.md
+
+      - name: Audit AK3 payload and fixed platform objects
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib, re, struct
+
+          root = pathlib.Path('work/ak3')
+          out = pathlib.Path('work/u1')
+          expected_image_hash = os.environ['P13_IMAGE_SHA256']
+          expected_image_size = int(os.environ['P13_IMAGE_SIZE'])
+          expected_dtb_hash = os.environ['P13_DTB_SHA256']
+
+          files = sorted(p for p in root.rglob('*') if p.is_file())
+          rows = []
+          for p in files:
+              rel = p.relative_to(root).as_posix()
+              size = p.stat().st_size
+              sha = hashlib.sha256(p.read_bytes()).hexdigest()
+              rows.append((rel, size, sha))
+          with (out/'AK3_FILE_HASHES.tsv').open('w') as f:
+              for rel, size, sha in rows:
+                  f.write(f'{rel}\t{size}\t{sha}\n')
+
+          image_candidates = [x for x in rows if pathlib.PurePosixPath(x[0]).name == 'Image']
+          if len(image_candidates) != 1:
+              raise SystemExit(f'Expected exactly one Image in AK3, found {len(image_candidates)}')
+          image_rel, image_size, image_sha = image_candidates[0]
+          if image_sha != expected_image_hash:
+              raise SystemExit(f'Image SHA mismatch: {image_sha}')
+          if image_size != expected_image_size:
+              raise SystemExit(f'Image size mismatch: {image_size}')
+
+          def matches(rel, kind):
+              name = pathlib.PurePosixPath(rel).name.lower()
+              r = rel.lower()
+              if kind == 'dtb':
+                  return name == 'dtb' or name.endswith('.dtb') or ('/dtb/' in '/'+r+'/')
+              if kind == 'dtbo':
+                  return name == 'dtbo' or name.endswith('.dtbo') or 'dtbo' in name
+              if kind == 'vendor_boot':
+                  return 'vendor_boot' in name or 'vendor_kernel_boot' in name
+              if kind == 'ramdisk':
+                  return name in ('ramdisk','ramdisk.img') or '.cpio' in name or name.startswith('ramdisk.')
+              if kind == 'module':
+                  return name.endswith('.ko')
+              return False
+
+          categories = {k: [x for x in rows if matches(x[0], k)] for k in
+                        ('dtb','dtbo','vendor_boot','ramdisk','module')}
+          known_dtb_matches = [x for x in categories['dtb'] if x[2] == expected_dtb_hash]
+
+          # Look for appended/embedded flattened-device-tree blobs in the raw arm64 Image.
+          image_path = root / image_rel
+          data = image_path.read_bytes()
+          magic = b'\xd0\x0d\xfe\xed'
+          fdts = []
+          start = 0
+          while True:
+              off = data.find(magic, start)
+              if off < 0:
+                  break
+              if off + 8 <= len(data):
+                  total = struct.unpack('>I', data[off+4:off+8])[0]
+                  if 40 <= total <= 16*1024*1024 and off + total <= len(data):
+                      blob = data[off:off+total]
+                      fdts.append({
+                          'offset': off,
+                          'size': total,
+                          'sha256': hashlib.sha256(blob).hexdigest(),
+                          'matches_known_veux_dtb': hashlib.sha256(blob).hexdigest() == expected_dtb_hash,
+                      })
+              start = off + 4
+          with (out/'IMAGE_FDT_SCAN.tsv').open('w') as f:
+              f.write('offset\tsize\tsha256\tmatches_known_veux_dtb\n')
+              for x in fdts:
+                  f.write(f"{x['offset']}\t{x['size']}\t{x['sha256']}\t{x['matches_known_veux_dtb']}\n")
+
+          # Record AK3 script/config references without assuming a specific AnyKernel3 fork syntax.
+          key_rx = re.compile(r'(?i)(block|slot|ramdisk|vbmeta|dtb|dtbo|vendor_boot|vendor_kernel_boot|device|veux)')
+          matches_out = []
+          for p in files:
+              if p.stat().st_size > 2_000_000:
+                  continue
+              try:
+                  text = p.read_text(errors='strict')
+              except (UnicodeDecodeError, OSError):
+                  continue
+              for no, line in enumerate(text.splitlines(), 1):
+                  if key_rx.search(line):
+                      matches_out.append(f'{p.relative_to(root).as_posix()}:{no}:{line}')
+          (out/'AK3_PLATFORM_REFERENCES.txt').write_text('\n'.join(matches_out) + ('\n' if matches_out else ''))
+
+          result = {
+              'image': {'path': image_rel, 'size': image_size, 'sha256': image_sha},
+              'ak3_file_count': len(rows),
+              'separate_dtb_count': len(categories['dtb']),
+              'separate_dtbo_count': len(categories['dtbo']),
+              'vendor_boot_payload_count': len(categories['vendor_boot']),
+              'ramdisk_payload_count': len(categories['ramdisk']),
+              'module_payload_count': len(categories['module']),
+              'known_veux_dtb_payload_matches': [x[0] for x in known_dtb_matches],
+              'embedded_fdt_count': len(fdts),
+              'embedded_known_veux_dtb_matches': [x for x in fdts if x['matches_known_veux_dtb']],
+          }
+          (out/'AK3_STATIC_AUDIT.json').write_text(json.dumps(result, indent=2) + '\n')
+
+          with (out/'AK3_FIXED_PAYLOADS.tsv').open('w') as f:
+              f.write('class\tpath\tsize\tsha256\n')
+              for kind, items in categories.items():
+                  for rel, size, sha in items:
+                      f.write(f'{kind}\t{rel}\t{size}\t{sha}\n')
+          PY
+
+      - name: Verify P13 kernel identity from Image
+        shell: bash
+        run: |
+          set -euo pipefail
+          image="$(find work/ak3 -type f -name Image -print -quit)"
+          strings -a "$image" > work/u1/IMAGE_STRINGS.txt
+          grep -a -m 20 -E 'Linux version|5\.4\.274|ReSukiSU|KernelSU|SUSFS' work/u1/IMAGE_STRINGS.txt \
+            > work/u1/IMAGE_IDENTITY_STRINGS.txt || true
+          if ! grep -aFq "$P13_KERNEL_RELEASE" work/u1/IMAGE_STRINGS.txt; then
+            echo "ERROR: expected kernel release ${P13_KERNEL_RELEASE} was not found in Image strings." | tee -a work/u1/U1-REPORT.md
+            exit 1
+          fi
+          visible_id_state="NOT_FOUND"
+          if grep -aFq "$P13_VISIBLE_ID" work/u1/IMAGE_STRINGS.txt; then
+            visible_id_state="FOUND"
+          fi
+          printf '\n## Image identity\n\n- Size + SHA-256: **PASS**\n- Kernel release `%s`: **FOUND**\n- Visible identity `%s`: **%s**\n' \
+            "$P13_KERNEL_RELEASE" "$P13_VISIBLE_ID" "$visible_id_state" >> work/u1/U1-REPORT.md
+
+      - name: Try extracting embedded kernel config and ABI gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          image="$(find work/ak3 -type f -name Image -print -quit)"
+          python3 - "$image" <<'PY'
+          import pathlib, sys, zlib
+          image = pathlib.Path(sys.argv[1]).read_bytes()
+          out = pathlib.Path('work/u1/P13_EMBEDDED_CONFIG.txt')
+          state = pathlib.Path('work/u1/IKCONFIG_STATE.txt')
+          marker = b'IKCFG_ST'
+          off = image.find(marker)
+          if off < 0:
+              state.write_text('NOT_FOUND\n')
+              sys.exit(0)
+          payload = image[off + len(marker):]
+          gz = payload.find(b'\x1f\x8b')
+          if gz < 0:
+              state.write_text('MARKER_FOUND_GZIP_NOT_FOUND\n')
+              sys.exit(0)
+          try:
+              dec = zlib.decompressobj(16 + zlib.MAX_WBITS)
+              data = dec.decompress(payload[gz:]) + dec.flush()
+              text = data.decode('utf-8', errors='replace')
+              if 'CONFIG_' not in text:
+                  raise ValueError('decompressed payload does not look like kernel config')
+              out.write_text(text)
+              state.write_text('EXTRACTED\n')
+          except Exception as e:
+              state.write_text('EXTRACTION_FAILED: ' + repr(e) + '\n')
+          PY
+
+          state="$(cat work/u1/IKCONFIG_STATE.txt)"
+          {
+            echo "IKCONFIG_STATE=${state}"
+            if [[ "$state" == "EXTRACTED" ]]; then
+              for key in \
+                CONFIG_MODULES CONFIG_MODULE_UNLOAD CONFIG_MODVERSIONS CONFIG_MODULE_SIG \
+                CONFIG_MODULE_SIG_FORCE CONFIG_MODULE_COMPRESS CONFIG_IKCONFIG CONFIG_IKCONFIG_PROC \
+                CONFIG_OF CONFIG_OF_FLATTREE CONFIG_OF_OVERLAY CONFIG_BUILD_ARM64_DT_OVERLAY; do
+                grep -E "^${key}=|^# ${key} is not set$" work/u1/P13_EMBEDDED_CONFIG.txt || echo "${key}=<absent>"
+              done
+            fi
+          } > work/u1/KERNEL_ABI_CONFIG_GATES.txt
+
+      - name: Download source-audit evidence when retained
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -uo pipefail
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${P13_SOURCE_AUDIT_RUN_ID}" \
+            > work/u1/P13_SOURCE_AUDIT_RUN.json 2>work/u1/P13_SOURCE_AUDIT_API.err
+          api_rc=$?
+          if [[ "$api_rc" -eq 0 ]]; then
+            conclusion="$(jq -r '.conclusion // empty' work/u1/P13_SOURCE_AUDIT_RUN.json)"
+            echo "SOURCE_AUDIT_RUN_CONCLUSION=${conclusion}" > work/u1/SOURCE_AUDIT_STATE.txt
+            if [[ "$conclusion" == "success" ]]; then
+              if gh run download "$P13_SOURCE_AUDIT_RUN_ID" --repo "$GITHUB_REPOSITORY" --dir work/source-audit \
+                   >work/u1/SOURCE_AUDIT_DOWNLOAD.log 2>&1; then
+                echo "SOURCE_AUDIT_ARTIFACTS=DOWNLOADED" >> work/u1/SOURCE_AUDIT_STATE.txt
+              else
+                echo "SOURCE_AUDIT_ARTIFACTS=UNAVAILABLE_OR_EXPIRED" >> work/u1/SOURCE_AUDIT_STATE.txt
+              fi
+            fi
+          else
+            echo "SOURCE_AUDIT_RUN=UNAVAILABLE" > work/u1/SOURCE_AUDIT_STATE.txt
+          fi
+          find work/source-audit -type f -printf '%P\t%s\n' 2>/dev/null | sort > work/u1/SOURCE_AUDIT_FILES.tsv || true
+
+          # Search retained evidence only; do not build or regenerate anything.
+          find work/source-audit -type f \( \
+              -name 'Module.symvers' -o -name 'System.map' -o -name '.config' -o \
+              -name 'modules.dep' -o -name 'modules.load' -o -name '*.ko' \
+            \) -print 2>/dev/null | sort > work/u1/SOURCE_ABI_EVIDENCE_FILES.txt || true
+
+      - name: Inspect retained module ABI evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          : > work/u1/MODULE_ABI.tsv
+          printf 'path\tsha256\tvermagic\n' > work/u1/MODULE_ABI.tsv
+          while IFS= read -r ko; do
+            [[ -n "$ko" ]] || continue
+            sha="$(sha256sum "$ko" | awk '{print $1}')"
+            vermagic=""
+            if command -v modinfo >/dev/null 2>&1; then
+              vermagic="$(modinfo -F vermagic "$ko" 2>/dev/null || true)"
+            fi
+            if [[ -z "$vermagic" ]]; then
+              vermagic="$(strings -a "$ko" | sed -n 's/^vermagic=//p' | head -n1)"
+            fi
+            printf '%s\t%s\t%s\n' "$ko" "$sha" "${vermagic:-<unknown>}" >> work/u1/MODULE_ABI.tsv
+          done < <(find work/source-audit work/ak3 -type f -name '*.ko' -print 2>/dev/null | sort)
+
+      - name: Generate read-only VEUX device snapshot collector
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > work/u1/u1-collect-veux-device.sh <<'SH'
+          #!/system/bin/sh
+          # VEUX U1 device compatibility snapshot collector.
+          # READ-ONLY: this script does not flash, mount, remount, write partitions, or change properties.
+          set -u
+
+          stamp="$(date -u +%Y%m%dT%H%M%SZ 2>/dev/null || echo unknown-time)"
+          out="veux-u1-snapshot-${stamp}"
+          mkdir -p "$out"
+
+          prop() { getprop "$1" 2>/dev/null || true; }
+          {
+            echo "ro.product.device=$(prop ro.product.device)"
+            echo "ro.product.vendor.device=$(prop ro.product.vendor.device)"
+            echo "ro.product.board=$(prop ro.product.board)"
+            echo "ro.board.platform=$(prop ro.board.platform)"
+            echo "ro.hardware=$(prop ro.hardware)"
+            echo "ro.boot.hardware=$(prop ro.boot.hardware)"
+            echo "ro.boot.product.hardware.sku=$(prop ro.boot.product.hardware.sku)"
+            echo "ro.build.version.release=$(prop ro.build.version.release)"
+            echo "ro.build.version.sdk=$(prop ro.build.version.sdk)"
+            echo "ro.build.version.security_patch=$(prop ro.build.version.security_patch)"
+            echo "ro.vendor.build.version.release=$(prop ro.vendor.build.version.release)"
+            echo "ro.vendor.build.version.sdk=$(prop ro.vendor.build.version.sdk)"
+            echo "ro.vendor.build.fingerprint=$(prop ro.vendor.build.fingerprint)"
+            echo "ro.boot.slot_suffix=$(prop ro.boot.slot_suffix)"
+          } > "$out/properties.txt"
+
+          uname -a > "$out/uname.txt" 2>&1 || true
+          cat /proc/version > "$out/proc-version.txt" 2>&1 || true
+          cat /proc/cmdline > "$out/proc-cmdline.txt" 2>&1 || true
+          cat /proc/modules > "$out/proc-modules.txt" 2>&1 || true
+
+          if [ -r /proc/config.gz ]; then
+            cp /proc/config.gz "$out/proc-config.gz" 2>/dev/null || true
+            sha256sum /proc/config.gz > "$out/proc-config.sha256" 2>/dev/null || true
+          fi
+
+          if [ -r /sys/firmware/fdt ]; then
+            sha256sum /sys/firmware/fdt > "$out/live-fdt.sha256" 2>/dev/null || true
+            wc -c /sys/firmware/fdt > "$out/live-fdt.size" 2>/dev/null || true
+          fi
+
+          : > "$out/module-files.tsv"
+          for base in /vendor/lib/modules /vendor_dlkm/lib/modules /odm/lib/modules; do
+            [ -d "$base" ] || continue
+            find "$base" -type f -name '*.ko' 2>/dev/null | sort | while IFS= read -r ko; do
+              sha="$(sha256sum "$ko" 2>/dev/null | awk '{print $1}')"
+              vm="$(strings "$ko" 2>/dev/null | sed -n 's/^vermagic=//p' | head -n1)"
+              printf '%s\t%s\t%s\n' "$ko" "${sha:-<unreadable>}" "${vm:-<unknown>}"
+            done
+          done >> "$out/module-files.tsv"
+
+          find /vendor/lib/modules /vendor_dlkm/lib/modules /odm/lib/modules \
+            -type f \( -name 'modules.dep' -o -name 'modules.load*' -o -name 'modules.alias' -o -name 'modules.softdep' \) \
+            -print 2>/dev/null | sort > "$out/module-metadata-files.txt"
+          while IFS= read -r f; do
+            [ -r "$f" ] || continue
+            safe="$(echo "$f" | sed 's#^/##; s#/#_#g')"
+            cp "$f" "$out/$safe" 2>/dev/null || true
+          done < "$out/module-metadata-files.txt"
+
+          # Hash only boot-relevant device-tree/vendor-boot partitions when readable.
+          # Never read userdata and never write any block device.
+          : > "$out/boot-interface-partitions.tsv"
+          slot="$(prop ro.boot.slot_suffix)"
+          for dir in /dev/block/by-name /dev/block/bootdevice/by-name; do
+            [ -d "$dir" ] || continue
+            for base in dtbo vendor_boot vendor_kernel_boot; do
+              for name in "${base}${slot}" "$base"; do
+                path="$dir/$name"
+                [ -e "$path" ] || continue
+                real="$(readlink -f "$path" 2>/dev/null || echo "$path")"
+                size="$(blockdev --getsize64 "$real" 2>/dev/null || echo unknown)"
+                sha="$(sha256sum "$real" 2>/dev/null | awk '{print $1}')"
+                printf '%s\t%s\t%s\t%s\n' "$name" "$real" "$size" "${sha:-<unreadable>}" >> "$out/boot-interface-partitions.tsv"
+              done
+            done
+            break
+          done
+
+          if command -v tar >/dev/null 2>&1; then
+            tar -czf "${out}.tar.gz" "$out" 2>/dev/null || true
+            echo "Created: ${out}.tar.gz"
+          else
+            echo "Created directory: $out"
+          fi
+          SH
+          chmod +x work/u1/u1-collect-veux-device.sh
+
+      - name: Build U1 compatibility report
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, pathlib
+
+          p = pathlib.Path('work/u1')
+          a = json.loads((p/'AK3_STATIC_AUDIT.json').read_text())
+          cfg = (p/'KERNEL_ABI_CONFIG_GATES.txt').read_text().strip()
+          src = (p/'SOURCE_AUDIT_STATE.txt').read_text().strip() if (p/'SOURCE_AUDIT_STATE.txt').exists() else 'SOURCE_AUDIT_STATE=UNKNOWN'
+          mod_lines = (p/'MODULE_ABI.tsv').read_text().splitlines() if (p/'MODULE_ABI.tsv').exists() else []
+          module_evidence_count = max(0, len(mod_lines)-1)
+
+          dtb_coupled = a['separate_dtb_count'] > 0 or a['embedded_fdt_count'] > 0
+          fixed_boot_payload = a['separate_dtbo_count'] > 0 or a['vendor_boot_payload_count'] > 0 or a['ramdisk_payload_count'] > 0
+
+          if dtb_coupled:
+              dtb_statement = '**DTB coupling is present and must be treated as a real compatibility boundary until proven otherwise.**'
+              next_gate = 'Compare the packaged/appended DTB identity with live FDT/DTBO across real VEUX bases before any U2 kernel change.'
+          else:
+              dtb_statement = '**No fixed DTB coupling was detected in the AK3 payload or Image scan.**'
+              next_gate = 'Proceed directly to real vendor-module ABI and live FDT/DTBO snapshots across representative VEUX bases.'
+
+          package_statement = (
+              '**AK3 also carries boot-adjacent payloads beyond Image; package-level universality is not yet established.**'
+              if fixed_boot_payload else
+              '**No DTBO/vendor_boot/ramdisk replacement payload was detected in AK3.**'
+          )
+
+          with (p/'U1-REPORT.md').open('a') as f:
+              f.write('\n## Static AK3 / boot coupling\n\n')
+              f.write(f"- Files in AK3: **{a['ak3_file_count']}**\n")
+              f.write(f"- Separate DTB candidates: **{a['separate_dtb_count']}**\n")
+              f.write(f"- Separate DTBO candidates: **{a['separate_dtbo_count']}**\n")
+              f.write(f"- vendor_boot/vendor_kernel_boot payloads: **{a['vendor_boot_payload_count']}**\n")
+              f.write(f"- Ramdisk payload candidates: **{a['ramdisk_payload_count']}**\n")
+              f.write(f"- Kernel module (`.ko`) payloads: **{a['module_payload_count']}**\n")
+              f.write(f"- FDT candidates embedded/appended in Image: **{a['embedded_fdt_count']}**\n")
+              f.write(f"- Known VEUX DTB hash found as a separate payload: **{bool(a['known_veux_dtb_payload_matches'])}**\n")
+              f.write(f"- Known VEUX DTB hash found in Image FDT scan: **{bool(a['embedded_known_veux_dtb_matches'])}**\n\n")
+              f.write(dtb_statement + '\n\n')
+              f.write(package_statement + '\n')
+
+              f.write('\n## Kernel ABI gates\n\n```text\n')
+              f.write(cfg + '\n```\n')
+              f.write(f"\n- Retained `.ko` ABI evidence entries found in downloaded evidence: **{module_evidence_count}**\n")
+              f.write(f"- Source-audit evidence state:\n\n```text\n{src}\n```\n")
+
+              f.write('\n## U1 result\n\n')
+              f.write('P13 remains the immutable DEVICE-PASS parent. This audit intentionally makes **no kernel change**.\n\n')
+              f.write('A static repository/artifact audit cannot prove universality across ROM/vendor bases by itself. ')
+              f.write('The next evidence must come from the real interface boundary: live FDT/DTBO plus vendor module ABI.\n\n')
+              f.write(f'**Next gate:** {next_gate}\n\n')
+              f.write('Use `u1-collect-veux-device.sh` on each representative VEUX base. It is read-only and intentionally avoids serial/IMEI/MAC/IP collection. ')
+              f.write('Compare snapshots by technical interface characteristics rather than by sales region.\n\n')
+              f.write('### Decision discipline\n\n')
+              f.write('- **A — packaging-only:** only after DTB/DTBO + vendor-module ABI compatibility is demonstrated.\n')
+              f.write('- **B — small compatibility patch:** only if one concrete kernel-side incompatibility is reproduced.\n')
+              f.write('- **C — compatibility groups:** only if real DT/ABI/vendor boundaries require them.\n')
+              f.write('- **No U2 build from this workflow.**\n')
+          PY
+
+          cat work/u1/U1-REPORT.md
+
+      - name: Create U1 evidence checksums
+        if: always()
+        shell: bash
+        run: |
+          set -uo pipefail
+          if [[ -d work/u1 ]]; then
+            (
+              cd work/u1
+              find . -type f ! -name 'U1_EVIDENCE_SHA256SUMS.txt' -print0 \
+                | sort -z \
+                | xargs -0 sha256sum \
+                > U1_EVIDENCE_SHA256SUMS.txt
+            )
+          fi
+
+      - name: Upload U1 evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: VEUX-GEN1-U1-universal-compat-baseline
+          path: work/u1/
+          if-no-files-found: error
+          retention-days: 30
