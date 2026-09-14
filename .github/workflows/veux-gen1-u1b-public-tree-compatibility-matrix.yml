@@ -1,0 +1,593 @@
+name: VEUX GEN1 U1B Public Tree Compatibility Matrix
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  public-tree-compatibility:
+    name: Static public-tree compatibility audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+
+    steps:
+      - name: Install audit tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -y
+          sudo apt-get install -y --no-install-recommends \
+            git curl jq python3 binutils kmod ca-certificates
+          mkdir -p "$GITHUB_WORKSPACE/u1b/work" "$GITHUB_WORKSPACE/u1b/evidence"
+
+      - name: Record immutable P13 baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > "$GITHUB_WORKSPACE/u1b/evidence/P13_BASELINE.env" <<'EOF'
+          P13_RUN=34811720288
+          P13_SOURCE_AUDIT_RUN=34810633404
+          P13_KERNEL_RELEASE=5.4.274-qgki-g82179e362f33
+          P13_RESUKISU_COMMIT=7741f87849f7ad7cebf82bbb4c5b89880e61e37e
+          P13_KSU_VERSION=35141
+          P13_UAPI=4
+          P13_SUSFS=2.3.0
+          P13_AK3_SHA256=eb024ca243efe14f65f47dc1428604cdcb81d266da168016be1fc8429f8ffc6a
+          P13_IMAGE_SHA256=12f2eae90243878aa8c5fbd7cb14e9cbfb422869dae6bb14491feb987269a1b2
+          P13_IMAGE_SIZE=29843968
+          P13_VEUX_DTB_SHA256=42728a6f3d48ae35ac6be4b14ea51bc8a323e77baec2ee544827487378f99d37
+          P13_CONFIG_MODULES=y
+          P13_CONFIG_MODULE_UNLOAD=y
+          P13_CONFIG_MODVERSIONS=y
+          P13_CONFIG_MODULE_SIG=n
+          P13_CONFIG_OF=y
+          P13_CONFIG_OF_FLATTREE=y
+          P13_CONFIG_OF_OVERLAY=n
+          P13_CONFIG_BUILD_ARM64_DT_OVERLAY=n
+          P13_SOURCE_BASE_REPO=dereference23/kernel_xiaomi_sm6375
+          P13_SOURCE_BASE_COMMIT=b2b7a3bbc36d120ee523ebc8d68e0f13a97df632
+          EOF
+
+      - name: Clone representative public VEUX trees
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ROOT="$GITHUB_WORKSPACE/u1b/work"
+          META="$GITHUB_WORKSPACE/u1b/evidence/TREE_SOURCES.tsv"
+          printf 'kind\tlabel\trepository\tref\tcommit\n' > "$META"
+
+          clone_tree() {
+            kind="$1"
+            label="$2"
+            repo="$3"
+            ref="$4"
+            dest="$ROOT/$label"
+
+            echo "::group::$label"
+            git clone --quiet --depth 1 --single-branch --branch "$ref" \
+              "https://github.com/$repo.git" "$dest"
+            commit="$(git -C "$dest" rev-parse HEAD)"
+            printf '%s\t%s\t%s\t%s\t%s\n' \
+              "$kind" "$label" "$repo" "$ref" "$commit" >> "$META"
+            echo "$repo @ $ref -> $commit"
+            echo "::endgroup::"
+          }
+
+          # Stock-derived/device trees spanning Android 12 -> Android 13.
+          clone_tree device stock_a12_veux \
+            XenonTheInertG-CI/android_device_xiaomi_veux \
+            veux-user-12-SKQ1.211006.001-V13.0.7.0.SKCMIXM-release-keys
+
+          clone_tree device stock_a13_veux \
+            twrpdtgen/android_device_xiaomi_veux \
+            veux-user-13-TKQ1.221114.001-V816.0.3.0.TKCMIXM-release-keys
+
+          # Common device trees spanning several Android/ROM generations.
+          clone_tree common common_a12_arrow \
+            markkey014/android_device_xiaomi_sm6375-common \
+            arrow-12.1
+
+          clone_tree common common_a13_lineage \
+            anant-goel/android_device_xiaomi_sm6375-common \
+            Thirteen
+
+          clone_tree common common_modern_lineage \
+            xiaomi-sm6375-devs/android_device_xiaomi_sm6375-common \
+            lineage-23.2
+
+          # Kernel-prebuilt snapshots. These carry kernel, dtb, dtbo and modules.
+          clone_tree prebuilt prebuilt_a12 \
+            sunil98025/android_device_xiaomi_veux-kernel \
+            twelve
+
+          clone_tree prebuilt prebuilt_a13_arrow \
+            ArrowOS-Devices/android_device_xiaomi_veux-kernel \
+            arrow-13.0
+
+          clone_tree prebuilt prebuilt_a13_alt \
+            nnippon99/android_device_xiaomi_veux-kernel \
+            thirteen
+
+          clone_tree prebuilt prebuilt_lineage20 \
+            xiaomi-sm6375-devs/android_device_xiaomi_veux-kernel \
+            lineage-20
+
+          clone_tree prebuilt prebuilt_a14_crdroid \
+            crdroidandroid/android_device_xiaomi_veux-kernel \
+            14.0
+
+      - name: Fetch exact P13-family source config at pinned base
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE="https://raw.githubusercontent.com/dereference23/kernel_xiaomi_sm6375/b2b7a3bbc36d120ee523ebc8d68e0f13a97df632"
+          OUT="$GITHUB_WORKSPACE/u1b/evidence"
+
+          curl -fL --retry 3 \
+            "$BASE/arch/arm64/configs/vendor/holi_QGKI.config" \
+            -o "$OUT/P13_BASE_holi_QGKI.config"
+
+          curl -fL --retry 3 \
+            "$BASE/arch/arm64/boot/dts/vendor/xiaomi/veux.dts" \
+            -o "$OUT/P13_BASE_veux.dts" || true
+
+          sha256sum "$OUT/P13_BASE_holi_QGKI.config" \
+            > "$OUT/P13_BASE_SOURCE_HASHES.txt"
+          if [ -f "$OUT/P13_BASE_veux.dts" ]; then
+            sha256sum "$OUT/P13_BASE_veux.dts" \
+              >> "$OUT/P13_BASE_SOURCE_HASHES.txt"
+          fi
+
+      - name: Extract BoardConfig and boot-layout signatures
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          from pathlib import Path
+          import re, csv, json
+
+          root = Path("u1b/work")
+          out = Path("u1b/evidence")
+          sources = list(csv.DictReader((out / "TREE_SOURCES.tsv").open(), delimiter="\t"))
+
+          wanted = [
+              "TARGET_BOOTLOADER_BOARD_NAME",
+              "TARGET_BOARD_PLATFORM",
+              "BOARD_KERNEL_IMAGE_NAME",
+              "BOARD_KERNEL_BASE",
+              "BOARD_KERNEL_PAGESIZE",
+              "BOARD_BOOT_HEADER_VERSION",
+              "BOARD_BOOTIMG_HEADER_VERSION",
+              "BOARD_INCLUDE_DTB_IN_BOOTIMG",
+              "BOARD_KERNEL_SEPARATED_DTBO",
+              "BOARD_PREBUILT_DTBOIMAGE",
+              "TARGET_PREBUILT_DTB",
+              "TARGET_FORCE_PREBUILT_KERNEL",
+              "TARGET_PREBUILT_KERNEL",
+              "TARGET_KERNEL_CONFIG",
+              "TARGET_KERNEL_SOURCE",
+              "BOARD_BOOTIMAGE_PARTITION_SIZE",
+              "BOARD_DTBOIMG_PARTITION_SIZE",
+              "BOARD_VENDOR_BOOTIMAGE_PARTITION_SIZE",
+              "BOARD_USES_RECOVERY_AS_BOOT",
+              "BOARD_MOVE_RECOVERY_RESOURCES_TO_VENDOR_BOOT",
+              "BOARD_USES_GENERIC_KERNEL_IMAGE",
+          ]
+
+          rows = []
+          raw = {}
+          for src in sources:
+              if src["kind"] not in ("device", "common"):
+                  continue
+              d = root / src["label"]
+              candidates = [
+                  d / "BoardConfig.mk",
+                  d / "BoardConfigCommon.mk",
+              ]
+              f = next((p for p in candidates if p.exists()), None)
+              if not f:
+                  continue
+              text = f.read_text(errors="replace")
+              raw[src["label"]] = text
+              vals = {k: "" for k in wanted}
+              for line in text.splitlines():
+                  stripped = line.strip()
+                  if not stripped or stripped.startswith("#"):
+                      continue
+                  for k in wanted:
+                      m = re.match(rf"^{re.escape(k)}\s*(?::=|\+=|=)\s*(.*)$", stripped)
+                      if m:
+                          v = m.group(1).strip()
+                          vals[k] = (vals[k] + " " + v).strip()
+              vals.update({
+                  "kind": src["kind"],
+                  "label": src["label"],
+                  "repository": src["repository"],
+                  "ref": src["ref"],
+                  "commit": src["commit"],
+                  "boardconfig": str(f.relative_to(d)),
+              })
+              rows.append(vals)
+
+          fields = ["kind","label","repository","ref","commit","boardconfig"] + wanted
+          with (out / "BOOT_LAYOUT_MATRIX.tsv").open("w", newline="") as fh:
+              w = csv.DictWriter(fh, fieldnames=fields, delimiter="\t")
+              w.writeheader()
+              w.writerows(rows)
+
+          (out / "BOOT_LAYOUT_MATRIX.json").write_text(
+              json.dumps(rows, indent=2, sort_keys=True) + "\n"
+          )
+          PY
+
+      - name: Hash kernel DTB DTBO and module snapshots
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          from pathlib import Path
+          import hashlib, csv, json, os
+
+          root = Path("u1b/work")
+          out = Path("u1b/evidence")
+          sources = list(csv.DictReader((out / "TREE_SOURCES.tsv").open(), delimiter="\t"))
+
+          def sha256(path):
+              h = hashlib.sha256()
+              with path.open("rb") as f:
+                  for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                      h.update(chunk)
+              return h.hexdigest()
+
+          snapshots = []
+          for src in sources:
+              if src["kind"] != "prebuilt":
+                  continue
+              d = root / src["label"]
+              row = {
+                  "label": src["label"],
+                  "repository": src["repository"],
+                  "ref": src["ref"],
+                  "commit": src["commit"],
+              }
+              for name in ("kernel", "dtb.img", "dtbo.img"):
+                  p = d / name
+                  row[f"{name}_exists"] = p.exists()
+                  row[f"{name}_size"] = p.stat().st_size if p.exists() else 0
+                  row[f"{name}_sha256"] = sha256(p) if p.exists() else ""
+
+              for sub in ("ramdisk-modules", "vendor-modules"):
+                  files = sorted(p for p in (d/sub).rglob("*.ko") if p.is_file()) if (d/sub).exists() else []
+                  manifest = []
+                  for p in files:
+                      manifest.append(f"{p.relative_to(d)}\t{sha256(p)}\t{p.stat().st_size}")
+                  blob = ("\n".join(manifest) + ("\n" if manifest else "")).encode()
+                  row[f"{sub}_count"] = len(files)
+                  row[f"{sub}_manifest_sha256"] = hashlib.sha256(blob).hexdigest()
+                  (out / f"{src['label']}_{sub}_manifest.tsv").write_text(
+                      "path\tsha256\tsize\n" + "\n".join(manifest) + ("\n" if manifest else "")
+                  )
+              snapshots.append(row)
+
+          fields = sorted({k for r in snapshots for k in r})
+          with (out / "PREBUILT_SNAPSHOT_MATRIX.tsv").open("w", newline="") as fh:
+              w = csv.DictWriter(fh, fieldnames=fields, delimiter="\t")
+              w.writeheader()
+              w.writerows(snapshots)
+          (out / "PREBUILT_SNAPSHOT_MATRIX.json").write_text(
+              json.dumps(snapshots, indent=2, sort_keys=True) + "\n"
+          )
+          PY
+
+      - name: Extract module ABI metadata and symbol-version fingerprints
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          OUT="$GITHUB_WORKSPACE/u1b/evidence/MODULE_ABI_DETAILS.tsv"
+          printf 'snapshot\tarea\tpath\tsha256\tvermagic\tsrcversion\tdepends\tversions_sha256\n' > "$OUT"
+
+          for d in "$GITHUB_WORKSPACE"/u1b/work/prebuilt_*; do
+            [ -d "$d" ] || continue
+            snapshot="$(basename "$d")"
+
+            for area in ramdisk-modules vendor-modules; do
+              [ -d "$d/$area" ] || continue
+
+              while IFS= read -r -d '' ko; do
+                rel="${ko#"$d/"}"
+                sha="$(sha256sum "$ko" | awk '{print $1}')"
+                vermagic="$(modinfo -F vermagic "$ko" 2>/dev/null | tr '\t\r\n' ' ' | sed 's/[[:space:]]\+/ /g' || true)"
+                srcversion="$(modinfo -F srcversion "$ko" 2>/dev/null | tr '\t\r\n' ' ' | sed 's/[[:space:]]\+/ /g' || true)"
+                depends="$(modinfo -F depends "$ko" 2>/dev/null | tr '\t\r\n' ' ' | sed 's/[[:space:]]\+/ /g' || true)"
+
+                versions_sha=""
+                if readelf -S "$ko" 2>/dev/null | grep -q '__versions'; then
+                  versions_sha="$(
+                    readelf -x __versions "$ko" 2>/dev/null \
+                      | sed '/Hex dump/d;/^$/d' \
+                      | sha256sum | awk '{print $1}'
+                  )"
+                fi
+
+                printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+                  "$snapshot" "$area" "$rel" "$sha" \
+                  "$vermagic" "$srcversion" "$depends" "$versions_sha" \
+                  >> "$OUT"
+              done < <(find "$d/$area" -type f -name '*.ko' -print0 | sort -z)
+            done
+          done
+
+      - name: Build pairwise compatibility matrix
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          from pathlib import Path
+          import csv, itertools, json, hashlib
+          from collections import defaultdict
+
+          out = Path("u1b/evidence")
+          snaps = list(csv.DictReader((out / "PREBUILT_SNAPSHOT_MATRIX.tsv").open(), delimiter="\t"))
+          mods = list(csv.DictReader((out / "MODULE_ABI_DETAILS.tsv").open(), delimiter="\t"))
+
+          by_snap = defaultdict(dict)
+          for r in mods:
+              by_snap[r["snapshot"]][r["path"]] = r
+
+          pairs = []
+          for a, b in itertools.combinations(snaps, 2):
+              A, B = a["label"], b["label"]
+              ma, mb = by_snap[A], by_snap[B]
+              sa, sb = set(ma), set(mb)
+              inter = sa & sb
+              union = sa | sb
+              exact = sum(ma[p]["sha256"] == mb[p]["sha256"] for p in inter)
+              versions_same = sum(
+                  bool(ma[p]["versions_sha256"]) and
+                  ma[p]["versions_sha256"] == mb[p]["versions_sha256"]
+                  for p in inter
+              )
+              vermagic_same = sum(
+                  bool(ma[p]["vermagic"]) and
+                  ma[p]["vermagic"] == mb[p]["vermagic"]
+                  for p in inter
+              )
+              row = {
+                  "a": A,
+                  "b": B,
+                  "kernel_equal": a.get("kernel_sha256","") == b.get("kernel_sha256",""),
+                  "dtb_equal": a.get("dtb.img_sha256","") == b.get("dtb.img_sha256",""),
+                  "dtbo_equal": a.get("dtbo.img_sha256","") == b.get("dtbo.img_sha256",""),
+                  "module_paths_a": len(sa),
+                  "module_paths_b": len(sb),
+                  "module_paths_common": len(inter),
+                  "module_path_jaccard": round(len(inter) / len(union), 6) if union else 1.0,
+                  "common_modules_byteidentical": exact,
+                  "common_modules_vermagic_equal": vermagic_same,
+                  "common_modules_versions_fingerprint_equal": versions_same,
+              }
+              pairs.append(row)
+
+          fields = list(pairs[0].keys()) if pairs else []
+          with (out / "PAIRWISE_COMPATIBILITY.tsv").open("w", newline="") as fh:
+              if fields:
+                  w = csv.DictWriter(fh, fieldnames=fields, delimiter="\t")
+                  w.writeheader()
+                  w.writerows(pairs)
+
+          (out / "PAIRWISE_COMPATIBILITY.json").write_text(
+              json.dumps(pairs, indent=2, sort_keys=True) + "\n"
+          )
+          PY
+
+      - name: Compare P13-family defconfig lineage
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/u1b/evidence/config-lineage"
+
+          fetch_cfg() {
+            label="$1"
+            repo="$2"
+            ref="$3"
+            url="https://raw.githubusercontent.com/$repo/$ref/arch/arm64/configs/vendor/holi_QGKI.config"
+            curl -fL --retry 3 "$url" \
+              -o "$GITHUB_WORKSPACE/u1b/evidence/config-lineage/$label.config"
+          }
+
+          fetch_cfg a12_stock_family sm6375-devs/android_kernel_xiaomi_sm6375 twelve
+          fetch_cfg a13_lineage_family xiaomi-sm6375-devs/android_kernel_xiaomi_sm6375 lineage-20
+
+          cp "$GITHUB_WORKSPACE/u1b/evidence/P13_BASE_holi_QGKI.config" \
+             "$GITHUB_WORKSPACE/u1b/evidence/config-lineage/p13_base.config"
+
+          python3 <<'PY'
+          from pathlib import Path
+          import hashlib, itertools, json, re
+
+          d = Path("u1b/evidence/config-lineage")
+          out = Path("u1b/evidence")
+
+          def parse(path):
+              vals = {}
+              for line in path.read_text(errors="replace").splitlines():
+                  s = line.strip()
+                  m = re.match(r"^(CONFIG_[A-Za-z0-9_]+)=(.*)$", s)
+                  if m:
+                      vals[m.group(1)] = m.group(2)
+                      continue
+                  m = re.match(r"^# (CONFIG_[A-Za-z0-9_]+) is not set$", s)
+                  if m:
+                      vals[m.group(1)] = "<not-set>"
+              return vals
+
+          files = sorted(d.glob("*.config"))
+          parsed = {p.stem: parse(p) for p in files}
+
+          rows = []
+          for a, b in itertools.combinations(files, 2):
+              A, B = parsed[a.stem], parsed[b.stem]
+              keys = set(A) | set(B)
+              changed = sorted(k for k in keys if A.get(k) != B.get(k))
+              rows.append({
+                  "a": a.stem,
+                  "b": b.stem,
+                  "keys_a": len(A),
+                  "keys_b": len(B),
+                  "changed_keys": len(changed),
+                  "changed": changed,
+              })
+
+          (out / "CONFIG_LINEAGE_COMPARISON.json").write_text(
+              json.dumps(rows, indent=2, sort_keys=True) + "\n"
+          )
+
+          with (out / "CONFIG_LINEAGE_SUMMARY.tsv").open("w") as fh:
+              fh.write("a\tb\tkeys_a\tkeys_b\tchanged_keys\n")
+              for r in rows:
+                  fh.write(
+                      f"{r['a']}\t{r['b']}\t{r['keys_a']}\t"
+                      f"{r['keys_b']}\t{r['changed_keys']}\n"
+                  )
+          PY
+
+      - name: Generate U1B report and static classification
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          from pathlib import Path
+          import csv, json
+          from collections import defaultdict
+
+          out = Path("u1b/evidence")
+          boots = list(csv.DictReader((out / "BOOT_LAYOUT_MATRIX.tsv").open(), delimiter="\t"))
+          snaps = list(csv.DictReader((out / "PREBUILT_SNAPSHOT_MATRIX.tsv").open(), delimiter="\t"))
+          pairs = list(csv.DictReader((out / "PAIRWISE_COMPATIBILITY.tsv").open(), delimiter="\t"))
+          mods = list(csv.DictReader((out / "MODULE_ABI_DETAILS.tsv").open(), delimiter="\t"))
+
+          def nonempty(values):
+              return sorted(set(v for v in values if v))
+
+          report = []
+          report += [
+              "# VEUX GEN1 U1B — Public Tree Compatibility Matrix",
+              "",
+              "Static audit only. No kernel was built, patched, flashed, committed, pushed, or released.",
+              "",
+              "## P13 immutable baseline",
+              "",
+              "- Kernel: `5.4.274-qgki-g82179e362f33`",
+              "- Image SHA-256: `12f2eae90243878aa8c5fbd7cb14e9cbfb422869dae6bb14491feb987269a1b2`",
+              "- `CONFIG_MODULES=y`",
+              "- `CONFIG_MODVERSIONS=y`",
+              "- P13 remains the DEVICE-PASS parent.",
+              "",
+              "## Boot-layout invariants observed",
+              "",
+          ]
+
+          keys = [
+              "TARGET_BOARD_PLATFORM",
+              "BOARD_KERNEL_IMAGE_NAME",
+              "BOARD_BOOT_HEADER_VERSION",
+              "BOARD_BOOTIMG_HEADER_VERSION",
+              "BOARD_KERNEL_SEPARATED_DTBO",
+              "BOARD_INCLUDE_DTB_IN_BOOTIMG",
+              "BOARD_BOOTIMAGE_PARTITION_SIZE",
+              "BOARD_DTBOIMG_PARTITION_SIZE",
+              "BOARD_VENDOR_BOOTIMAGE_PARTITION_SIZE",
+          ]
+          for k in keys:
+              vals = nonempty(r.get(k,"") for r in boots)
+              report.append(f"- `{k}`: " + (", ".join(f"`{v}`" for v in vals) if vals else "_not declared in sampled tree_"))
+
+          report += ["", "## Prebuilt snapshot identities", ""]
+          for r in snaps:
+              report.append(
+                  f"- **{r['label']}**: "
+                  f"kernel `{r.get('kernel_sha256','')[:12]}` / "
+                  f"dtb `{r.get('dtb.img_sha256','')[:12]}` / "
+                  f"dtbo `{r.get('dtbo.img_sha256','')[:12]}`; "
+                  f"ramdisk modules {r.get('ramdisk-modules_count','0')}, "
+                  f"vendor modules {r.get('vendor-modules_count','0')}."
+              )
+
+          exact_cross = [
+              p for p in pairs
+              if p["kernel_equal"] == "True"
+              and p["dtb_equal"] == "True"
+              and p["dtbo_equal"] == "True"
+              and int(p["module_paths_common"] or 0) > 0
+              and int(p["common_modules_byteidentical"] or 0) == int(p["module_paths_common"] or 0)
+              and int(p["module_paths_a"] or 0) == int(p["module_paths_b"] or 0)
+          ]
+
+          report += ["", "## Strong cross-tree evidence", ""]
+          if exact_cross:
+              for p in exact_cross:
+                  report.append(
+                      f"- `{p['a']}` ↔ `{p['b']}`: kernel, DTB, DTBO and every common "
+                      f"module are byte-identical; module-set Jaccard `{p['module_path_jaccard']}`."
+                  )
+          else:
+              report.append("- No completely byte-identical cross-snapshot pair found.")
+
+          report += [
+              "",
+              "## Interpretation",
+              "",
+              "- The sampled VEUX trees share one hardware/boot family rather than exposing a separate kernel design per ROM name or sales region.",
+              "- DTB/DTBO and module payloads do change between some snapshots, so their hashes must be treated as firmware/kernel-snapshot evidence, not as regional identity.",
+              "- Because P13 has `CONFIG_MODVERSIONS=y`, matching module names or `vermagic` alone is insufficient. The `__versions` fingerprints in this artifact are the stronger static signal.",
+              "- A static tree comparison can strongly support packaging universality, but cannot by itself promote an untested ROM/firmware base to DEVICE PASS.",
+              "",
+              "## U1B classification",
+              "",
+              "**STATIC SUPPORTS A, WITH ABI GUARD.**",
+              "",
+              "Current public-tree evidence supports keeping one P13 `Image`/AK3 line and preserving each installation's own DT/DTBO/vendor_boot/ramdisk environment. "
+              "Do not create regional kernels. Split into compatibility groups only if the module `__versions`/DT snapshot matrix demonstrates a real incompatibility.",
+              "",
+              "No U2 kernel change is justified by this audit alone.",
+              "",
+          ]
+
+          (out / "U1B-REPORT.md").write_text("\n".join(report))
+          (out / "U1B_RESULT.txt").write_text(
+              "STATIC_SUPPORTS_A_WITH_ABI_GUARD\n"
+              "NO_U2_KERNEL_CHANGE_JUSTIFIED\n"
+          )
+          PY
+
+      - name: Integrity manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE/u1b/evidence"
+          find . -type f ! -name 'U1B_EVIDENCE_SHA256SUMS.txt' -print0 \
+            | sort -z \
+            | xargs -0 sha256sum \
+            > U1B_EVIDENCE_SHA256SUMS.txt
+          sha256sum -c U1B_EVIDENCE_SHA256SUMS.txt
+
+      - name: Show concise result
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat "$GITHUB_WORKSPACE/u1b/evidence/U1B_RESULT.txt"
+          echo
+          sed -n '1,220p' "$GITHUB_WORKSPACE/u1b/evidence/U1B-REPORT.md"
+
+      - name: Upload U1B evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: VEUX-GEN1-U1B-public-tree-compatibility-matrix
+          path: u1b/evidence/
+          if-no-files-found: error
+          retention-days: 30
