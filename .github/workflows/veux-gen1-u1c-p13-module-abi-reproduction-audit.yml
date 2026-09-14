@@ -1,0 +1,925 @@
+name: VEUX GEN1 U1C P13 Module ABI Reproduction Audit
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: veux-gen1-u1c-p13-module-abi-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  p13-abi-audit:
+    name: Reproduce P13 and compare public VEUX module ABI
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+
+    env:
+      ARCH: arm64
+      TZ: UTC
+      LANG: C.UTF-8
+      LC_ALL: C.UTF-8
+
+      EXPECTED_VENDOR_SHA: b2b7a3bbc36d120ee523ebc8d68e0f13a97df632
+      EXPECTED_VENDOR_KERNEL_VERSION: 5.4.268
+      EXPECTED_OUTER_TREE: 19b68131d7a3955085f60c4fb8cf64442427af0c
+
+      RESTORE_ARTIFACT_ID: "9989363798"
+      RESTORE_ARTIFACT_NAME: clean-gen1-p6v11-v6-full-susfs-outer-integration-p7-test-boot-34031837372
+      EXPECTED_P5I_COMMIT: f353a9475e40ca866d570c1d0ef55e24cf6556e4
+      EXPECTED_P5I_TREE: a947c1f2891c796a08373fc755e29b23139dc761
+      EXPECTED_RESUKISU_BASE_HEAD: 42034caa96466e8473fe7553eba8a1888c7f460f
+      EXPECTED_RESUKISU_BASE_TREE: d818d965b855d417edfe9eb38b152ff83e75e0fb
+
+      RESUKISU_REPO: https://github.com/ReSukiSU/ReSukiSU.git
+      RESUKISU_COMMON_BASE: faccf4c5edc7be37776216e7d43dd3dca0239331
+      RESUKISU_TARGET: 7741f87849f7ad7cebf82bbb4c5b89880e61e37e
+      RESUKISU_EXCLUDED_MODULE_FILTER: b2ac2fc8703ce9f5226e2a38a59f8b72f8a3005c
+      P13_KSU_VERSION: "35141"
+      P13_KSU_UAPI: "4"
+      P13_TARGET_TAG: v4.2.0-rc1
+      P13_TARGET_SHORT: 7741f878
+      EXPECTED_IMPORT_PATCH_SHA256: 902e427888714266d9771908cd593191a478cd32ae7a895c77b76c976939c76f
+
+      EXPECTED_P13_PATCH_SHA256: d56725a9d6a6dc7bf1e73a5763b894bdabb544119f4c75df5f437ccd4ff29a52
+      EXPECTED_P12_EXEC_SHA256: fa3b73421f35d6220fb9e03e112a9509b76c04933af2353c9a8c65d6fb6bd6a9
+      EXPECTED_P12_CONTRACT_SHA256: b6d1875f6a79231465bc78df6484f2856a427259998eb93ba9fd2597cb45ca53
+      EXPECTED_P12_SUSFS_C_SHA256: e430d573ba5875a55d1ca70ba1b304e4b6727bbc42b8c3ac16f2c175b29a59c1
+      EXPECTED_P12_SUSFS_H_SHA256: 3c5fb1bcc28a70c82ee5cfe0a7375bb8e7babd26618ce9b451e598fa31aa3b6e
+      EXPECTED_P12_SUSFS_DEF_SHA256: b16108a5fcd4cdd7203d9f084c2154da708ab3ae6bed17109e4ec63f04ff0f68
+
+      CLANG_PREBUILT_COMMIT: aa2e4a514a6c85eebcc4a27149eaf9244e951a1e
+      TOOLCHAIN_DIR: ${{ github.workspace }}/toolchains/clang-r416183b
+      OUT_DIR: ${{ github.workspace }}/kernel/out-u1c
+      BACKUP_DIR: ${{ github.workspace }}/u1c-restore
+      AUDIT_DIR: ${{ github.workspace }}/u1c-evidence
+      SNAPSHOT_DIR: ${{ github.workspace }}/u1c-snapshots
+
+      KBUILD_BUILD_USER: builder
+      KBUILD_BUILD_HOST: pangu-build-component-vendor-345942-54r9t-tw0tk-tq90c
+      KBUILD_BUILD_TIMESTAMP: Thu Dec 5 14:47:59 UTC 2024
+      KBUILD_BUILD_VERSION: "1"
+      SOURCE_DATE_EPOCH: "1733410079"
+      KBUILD_FIXED_SCM_SUFFIX: -g82179e362f33
+      EFFECTIVE_KCFLAGS: -D__ANDROID_COMMON_KERNEL__
+
+      EXPECTED_KERNEL_RELEASE: 5.4.274-qgki-g82179e362f33
+      EXPECTED_IMAGE_BYTES: "29843968"
+      EXPECTED_IMAGE_SHA256: 12f2eae90243878aa8c5fbd7cb14e9cbfb422869dae6bb14491feb987269a1b2
+      EXPECTED_VEUX_DTB_SHA256: 42728a6f3d48ae35ac6be4b14ea51bc8a323e77baec2ee544827487378f99d37
+
+    steps:
+      - name: Initialize U1C audit
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$GITHUB_WORKSPACE/kernel" \
+                 "$BACKUP_DIR" "$AUDIT_DIR" "$SNAPSHOT_DIR" \
+                 "$GITHUB_WORKSPACE/resukisu-upstream" \
+                 "$GITHUB_WORKSPACE/toolchains"
+          mkdir -p "$BACKUP_DIR" "$AUDIT_DIR" "$SNAPSHOT_DIR" "$TOOLCHAIN_DIR"
+
+          cat > "$AUDIT_DIR/00-U1C-PLAN.txt" <<'EOF'
+          VEUX GEN1 U1C - P13 Module ABI Reproduction Audit
+
+          Purpose:
+          - reproduce the immutable P13 DEVICE-PASS kernel source/build state
+          - accept Module.symvers as P13 authority only if Image and VEUX DTB reproduce exactly
+          - then build modules from the same frozen source/config/toolchain
+          - compare public VEUX ramdisk/vendor modules symbol-by-symbol against P13 CRCs
+          - distinguish hard CRC mismatch from symbols absent from the in-tree P13 export set
+
+          This workflow:
+          - does not patch or publish a new kernel
+          - does not flash anything
+          - does not commit, push, tag, release, or modify the repository
+          - does not promote any public ROM/firmware snapshot to DEVICE PASS
+
+          Immutable P13 DEVICE-PASS reference:
+          Image SHA-256: 12f2eae90243878aa8c5fbd7cb14e9cbfb422869dae6bb14491feb987269a1b2
+          VEUX DTB SHA-256: 42728a6f3d48ae35ac6be4b14ea51bc8a323e77baec2ee544827487378f99d37
+          Kernel release: 5.4.274-qgki-g82179e362f33
+          ReSukiSU: 7741f87849f7ad7cebf82bbb4c5b89880e61e37e
+          KSU: 35141 / UAPI4
+          EOF
+
+      - name: Install audit and build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            bc bison build-essential ca-certificates curl flex git git-lfs jq \
+            libelf-dev libncurses-dev libssl-dev patch python3 rsync \
+            unzip zip xz-utils zstd kmod binutils
+          git lfs install --skip-repo
+
+      - name: Checkout exact VEUX vendor source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone -q https://github.com/dereference23/kernel_xiaomi_sm6375.git \
+            "$GITHUB_WORKSPACE/kernel"
+          git -C "$GITHUB_WORKSPACE/kernel" checkout -q --detach "$EXPECTED_VENDOR_SHA"
+          test "$(git -C "$GITHUB_WORKSPACE/kernel" rev-parse HEAD)" = "$EXPECTED_VENDOR_SHA"
+          test "$(make -s -C "$GITHUB_WORKSPACE/kernel" kernelversion)" = "$EXPECTED_VENDOR_KERNEL_VERSION"
+          {
+            echo "VENDOR_SHA=$(git -C "$GITHUB_WORKSPACE/kernel" rev-parse HEAD)"
+            echo "VENDOR_KERNEL_VERSION=$(make -s -C "$GITHUB_WORKSPACE/kernel" kernelversion)"
+            echo "FRESH_VENDOR_CHECKOUT=PASS"
+          } | tee "$AUDIT_DIR/01-vendor.txt"
+
+      - name: Download exact frozen CLEAN-GEN1 restore artifact
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          meta="$RUNNER_TEMP/restore-artifact.json"
+          curl --fail --silent --show-error --location \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${RESTORE_ARTIFACT_ID}" \
+            -o "$meta"
+
+          test "$(jq -r '.id|tostring' "$meta")" = "$RESTORE_ARTIFACT_ID"
+          test "$(jq -r '.name' "$meta")" = "$RESTORE_ARTIFACT_NAME"
+          test "$(jq -r '.expired' "$meta")" = "false"
+
+          curl --fail --silent --show-error --location \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${RESTORE_ARTIFACT_ID}/zip" \
+            -o "$RUNNER_TEMP/u1c-restore.zip"
+
+          unzip -q "$RUNNER_TEMP/u1c-restore.zip" -d "$BACKUP_DIR"
+          restore_dir="$(find "$BACKUP_DIR" -type d -name source-restore-kit -print -quit)"
+          test -n "$restore_dir"
+          test -f "$restore_dir/manifest.json"
+          test -f "$restore_dir/SHA256SUMS"
+          echo "RESTORE_DIR=$restore_dir" >> "$GITHUB_ENV"
+
+          {
+            echo "RESTORE_ARTIFACT_ID=$RESTORE_ARTIFACT_ID"
+            echo "RESTORE_ARTIFACT_NAME=$RESTORE_ARTIFACT_NAME"
+            echo "RESTORE_ARTIFACT_CREATED=$(jq -r '.created_at' "$meta")"
+            echo "RESTORE_ARTIFACT_EXACT_PIN=PASS"
+          } | tee "$AUDIT_DIR/02-restore-selection.txt"
+
+      - name: Reconstruct frozen P12 outer source
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          (
+            cd "$RESTORE_DIR"
+            sha256sum -c SHA256SUMS
+          ) | tee "$AUDIT_DIR/03-restore-sha256.txt"
+
+          jq -e \
+            --arg p5commit "$EXPECTED_P5I_COMMIT" \
+            --arg p5tree "$EXPECTED_P5I_TREE" \
+            --arg rhead "$EXPECTED_RESUKISU_BASE_HEAD" \
+            --arg rtree "$EXPECTED_RESUKISU_BASE_TREE" \
+            '.stage == "CLEAN_GEN1_P6V11_SOURCE"
+             and .p5i_commit == $p5commit
+             and .p5i_tree == $p5tree
+             and .resukisu_head == $rhead
+             and .resukisu_tree == $rtree' \
+            "$RESTORE_DIR/manifest.json" >/dev/null
+
+          git reset --hard "$EXPECTED_VENDOR_SHA"
+          git clean -fdx
+          rm -rf "$OUT_DIR"
+
+          p5_patch="$RESTORE_DIR/p5i/vendor-20240619-to-p5i-outer.patch"
+          p6_patch="$RESTORE_DIR/p5i-to-p6-source-compat.patch"
+          p6v11_patch="$RESTORE_DIR/p6v10-to-p6v11-full-susfs-outer.patch"
+
+          for p in "$p5_patch" "$p6_patch" "$p6v11_patch"; do
+            test -s "$p"
+            git apply --check --whitespace=error --binary "$p"
+            git apply --index --whitespace=error --binary "$p"
+          done
+
+          final_expected_tree="$(jq -r '.p6_source_tree' "$RESTORE_DIR/manifest.json")"
+          test "$final_expected_tree" = "$EXPECTED_OUTER_TREE"
+          test "$(git write-tree)" = "$EXPECTED_OUTER_TREE"
+          test "$(make -s kernelversion)" = "5.4.274"
+
+          grep -Fxq 'CONFIG_KSU=y' arch/arm64/configs/veux_defconfig
+          grep -Fxq 'CONFIG_KSU_SUSFS=y' arch/arm64/configs/veux_defconfig
+          grep -Fxq '# CONFIG_KSU_MANUAL_HOOK is not set' arch/arm64/configs/veux_defconfig
+          grep -Fxq 'CONFIG_KSU_SUSFS_OPEN_REDIRECT=y' arch/arm64/configs/veux_defconfig
+          grep -Fxq 'CONFIG_LOCALVERSION="-qgki"' arch/arm64/configs/veux_defconfig
+
+          {
+            echo "CLEAN_SOURCE_RECONSTRUCTION=PASS"
+            echo "OUTER_SOURCE_TREE=$final_expected_tree"
+            echo "KERNEL_VERSION=$(make -s kernelversion)"
+          } | tee "$AUDIT_DIR/04-source.txt"
+
+      - name: Construct exact pinned ReSukiSU kernel UAPI import without module filter
+        shell: bash
+        run: |
+          set -euo pipefail
+          up="$GITHUB_WORKSPACE/resukisu-upstream"
+          rm -rf "$up"
+          git clone -q "$RESUKISU_REPO" "$up"
+
+          for c in "$RESUKISU_COMMON_BASE" "$RESUKISU_TARGET" "$RESUKISU_EXCLUDED_MODULE_FILTER"; do
+            git -C "$up" cat-file -e "${c}^{commit}"
+          done
+          git -C "$up" checkout -q --detach "$RESUKISU_TARGET"
+          git -C "$up" reset --hard -q "$RESUKISU_TARGET"
+          git -C "$up" clean -fdx -q
+
+          test "$(git -C "$up" rev-list --count "$RESUKISU_TARGET" | awk '{print 30700+$1}')" = "$P13_KSU_VERSION"
+          test "$(git -C "$up" describe --abbrev=0 --tags "$RESUKISU_TARGET")" = "$P13_TARGET_TAG"
+          test "$(git -C "$up" rev-parse --short=8 "$RESUKISU_TARGET")" = "$P13_TARGET_SHORT"
+          git -C "$up" show "$RESUKISU_TARGET:uapi/supercall.h" \
+            | grep -Eq "KERNEL_SU_UAPI_VERSION = ${P13_KSU_UAPI};"
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import os
+
+          root = Path(os.environ["GITHUB_WORKSPACE"]) / "resukisu-upstream"
+
+          def remove_exact(path, block, expected=1):
+              p = root / path
+              text = p.read_text(encoding="utf-8")
+              count = text.count(block)
+              if count != expected:
+                  raise SystemExit(f"{path}: expected {expected}, found {count}: {block!r}")
+              p.write_text(text.replace(block, "", expected), encoding="utf-8")
+
+          for rel in (
+              "kernel/feature/module_load_filter.c",
+              "kernel/feature/module_load_filter.h",
+          ):
+              p = root / rel
+              if not p.is_file():
+                  raise SystemExit(f"missing expected file: {rel}")
+              p.unlink()
+
+          remove_exact("kernel/Kbuild", "kernelsu-objs += feature/module_load_filter.o\n")
+          remove_exact("kernel/core/init.c", '#include "feature/module_load_filter.h"\n')
+          remove_exact(
+              "kernel/core/init.c",
+              'char ksu_block_modules[256];\n'
+              'module_param_string(block_modules, ksu_block_modules, sizeof(ksu_block_modules), 0);\n'
+              'MODULE_PARM_DESC(block_modules, "Comma-separated preset module names to acknowledge without loading");\n\n'
+          )
+          remove_exact("kernel/core/init.c", "        ksu_module_load_filter_hook_init();\n\n")
+          remove_exact("kernel/core/init.c", "    ksu_module_load_filter_hook_exit();\n")
+          PY
+
+          test ! -e "$up/kernel/feature/module_load_filter.c"
+          test ! -e "$up/kernel/feature/module_load_filter.h"
+          ! grep -RFn 'module_load_filter' "$up/kernel" "$up/uapi"
+          ! grep -RFn 'ksu_block_modules' "$up/kernel" "$up/uapi"
+          ! grep -RFn 'block_modules' "$up/kernel" "$up/uapi"
+
+          patch="$AUDIT_DIR/05-current-kernel-uapi-minus-module-filter.patch"
+          git -C "$up" diff --binary "$RESUKISU_COMMON_BASE" -- kernel uapi > "$patch"
+          test -s "$patch"
+          test "$(sha256sum "$patch" | awk '{print $1}')" = "$EXPECTED_IMPORT_PATCH_SHA256"
+
+          {
+            echo "CURRENT_KERNEL_UAPI_PATCH=PASS"
+            echo "MODULE_LOAD_FILTER_EXCLUDED=PASS"
+            echo "PATCH_SHA256=$(sha256sum "$patch" | awk '{print $1}')"
+          } | tee "$AUDIT_DIR/05-resukisu-import.txt"
+
+      - name: Replace ReSukiSU subtree and restore CLEAN-GEN1 integration contract
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+          up="$GITHUB_WORKSPACE/resukisu-upstream"
+          patch="$AUDIT_DIR/05-current-kernel-uapi-minus-module-filter.patch"
+
+          rm -rf KernelSU
+          git clone -q "$RESUKISU_REPO" KernelSU
+          git -C KernelSU checkout -q --detach "$RESUKISU_COMMON_BASE"
+          git -C KernelSU reset --hard -q "$RESUKISU_COMMON_BASE"
+          git -C KernelSU clean -fdx -q
+
+          git -C KernelSU apply --check --whitespace=nowarn "$patch"
+          git -C KernelSU apply --index --whitespace=nowarn "$patch"
+          test -z "$(git -C KernelSU ls-files -u)"
+
+          if ! diff -qr "$up/kernel" KernelSU/kernel > "$AUDIT_DIR/06-kernel-parity.txt" 2>&1; then
+            cat "$AUDIT_DIR/06-kernel-parity.txt"
+            exit 1
+          fi
+          if ! diff -qr "$up/uapi" KernelSU/uapi > "$AUDIT_DIR/06-uapi-parity.txt" 2>&1; then
+            cat "$AUDIT_DIR/06-uapi-parity.txt"
+            exit 1
+          fi
+
+          python3 - <<'PY'
+          from pathlib import Path
+          from textwrap import dedent
+          import os
+
+          def ensure_include(path, anchor):
+              p = Path(path)
+              text = p.read_text(encoding="utf-8")
+              inc = '#include <linux/ksu_hook_contract.h>'
+              if inc not in text:
+                  if anchor not in text:
+                      raise SystemExit(f"anchor missing in {path}: {anchor!r}")
+                  text = text.replace(anchor, anchor + "\n" + inc, 1)
+                  p.write_text(text, encoding="utf-8")
+
+          ensure_include("KernelSU/kernel/feature/sucompat.h", '#include "compat/kernel_compat.h"')
+          ensure_include("KernelSU/kernel/runtime/ksud_integration.c", "#include <linux/version.h>")
+          ensure_include("KernelSU/kernel/supercall/supercall.c", "#include <linux/anon_inodes.h>")
+
+          p = Path("KernelSU/kernel/Kbuild")
+          text = p.read_text(encoding="utf-8")
+          old = dedent("""\
+          KSU_LOCAL_VERSION := $(shell cd $(KSU_SRC); $(GIT_BIN) rev-list --count HEAD)
+          KSU_VERSION := $(shell expr 30000 + $(KSU_LOCAL_VERSION) + 700)
+
+          KSU_TAG_NAME    := $(shell cd $(KSU_SRC); $(GIT_BIN) describe --abbrev=0 --tags 2>/dev/null || echo "v4.1.0")
+          KSU_COMMIT_SHA  := $(shell cd $(KSU_SRC); $(GIT_BIN) rev-parse --short=8 HEAD 2>/dev/null || echo "unknown")
+          ifneq ($(shell cd $(KSU_SRC); $(GIT_BIN) diff-index --quiet HEAD; echo $$?),0)
+          KSU_COMMIT_SHA  := $(KSU_COMMIT_SHA)-dirty
+          endif
+          KSU_BRANCH_NAME := $(shell cd $(KSU_SRC); $(GIT_BIN) branch --show-current 2>/dev/null || echo "unknown")""")
+          version = os.environ["P13_KSU_VERSION"]
+          tag = os.environ["P13_TARGET_TAG"]
+          short = os.environ["P13_TARGET_SHORT"]
+          target = os.environ["RESUKISU_TARGET"]
+          new = dedent(f"""\
+          KSU_LOCAL_VERSION := $(shell cd $(KSU_SRC); $(GIT_BIN) rev-list --count HEAD)
+          CLEAN_GEN1_UPSTREAM_COMPAT_VERSION := {version}
+          CLEAN_GEN1_UPSTREAM_TARGET := {target}
+          KSU_VERSION := $(CLEAN_GEN1_UPSTREAM_COMPAT_VERSION)
+
+          KSU_TAG_NAME    := {tag}
+          KSU_COMMIT_SHA  := {short}-p13
+          KSU_BRANCH_NAME := clean-gen1-p13""")
+          if old not in text:
+              raise SystemExit("expected ReSukiSU Kbuild version block not found")
+          p.write_text(text.replace(old, new, 1), encoding="utf-8")
+          PY
+
+          git -C KernelSU add kernel uapi
+          test -z "$(git -C KernelSU ls-files -u)"
+
+          grep -Fq '#include <linux/ksu_hook_contract.h>' KernelSU/kernel/feature/sucompat.h
+          grep -Fq '#include <linux/ksu_hook_contract.h>' KernelSU/kernel/runtime/ksud_integration.c
+          grep -Fq '#include <linux/ksu_hook_contract.h>' KernelSU/kernel/supercall/supercall.c
+          grep -Fq "CLEAN_GEN1_UPSTREAM_COMPAT_VERSION := $P13_KSU_VERSION" KernelSU/kernel/Kbuild
+          grep -Fq "CLEAN_GEN1_UPSTREAM_TARGET := $RESUKISU_TARGET" KernelSU/kernel/Kbuild
+
+      - name: Verify frozen P12 boundaries and apply exact P13 delta
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          grep -Eq "KERNEL_SU_UAPI_VERSION = ${P13_KSU_UAPI};" KernelSU/uapi/supercall.h
+          grep -Fq 'always flag that, to avoid old version of susfs hang in boot' \
+            KernelSU/kernel/feature/sucompat.c
+          grep -Fq '#define TIF_PROC_IN_KSU_EXECVE 61' KernelSU/kernel/feature/sucompat.h
+          grep -Fq 'if (profile->uid != 0)' KernelSU/kernel/policy/app_profile.c
+
+          test ! -e KernelSU/kernel/feature/module_load_filter.c
+          test ! -e KernelSU/kernel/feature/module_load_filter.h
+          ! grep -RFn 'module_load_filter' KernelSU/kernel KernelSU/uapi
+          ! grep -RFn 'block_modules' KernelSU/kernel KernelSU/uapi
+
+          test "$(sha256sum fs/exec.c | awk '{print $1}')" = "$EXPECTED_P12_EXEC_SHA256"
+          test "$(sha256sum include/linux/ksu_hook_contract.h | awk '{print $1}')" = "$EXPECTED_P12_CONTRACT_SHA256"
+          test "$(sha256sum fs/susfs.c | awk '{print $1}')" = "$EXPECTED_P12_SUSFS_C_SHA256"
+          test "$(sha256sum include/linux/susfs.h | awk '{print $1}')" = "$EXPECTED_P12_SUSFS_H_SHA256"
+          test "$(sha256sum include/linux/susfs_def.h | awk '{print $1}')" = "$EXPECTED_P12_SUSFS_DEF_SHA256"
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          hdr = Path("include/linux/ksu_hook_contract.h")
+          text = hdr.read_text(encoding="utf-8")
+          anchor = """int ksu_handle_execveat(int *fd, struct filename **filename_ptr,
+                                  void *argv, void *envp, int *flags);
+          """
+          addition = anchor + """
+          #ifdef CONFIG_KSU_SUSFS
+          int ksu_handle_post_execve(int *fd, const char *filename,
+                                     void *argv, void *envp,
+                                     int *flags, int *retval);
+          #endif
+          """
+          if text.count(anchor) != 1:
+              raise SystemExit(f"header anchor count={text.count(anchor)}")
+          if "int ksu_handle_post_execve(" in text:
+              raise SystemExit("post-exec prototype unexpectedly present")
+          hdr.write_text(text.replace(anchor, addition, 1), encoding="utf-8")
+
+          execp = Path("fs/exec.c")
+          text = execp.read_text(encoding="utf-8")
+          anchor = """\tsecurity_bprm_committed_creds(bprm);
+          \tmutex_unlock(&current->signal->cred_guard_mutex);
+          """
+          replacement = """\tsecurity_bprm_committed_creds(bprm);
+          #ifdef CONFIG_KSU_SUSFS
+          \tksu_handle_post_execve(NULL, NULL, NULL, NULL, NULL, NULL);
+          #endif
+          \tmutex_unlock(&current->signal->cred_guard_mutex);
+          """
+          if text.count(anchor) != 1:
+              raise SystemExit(f"fs/exec.c anchor count={text.count(anchor)}")
+          if "ksu_handle_post_execve(" in text:
+              raise SystemExit("post-exec call unexpectedly present")
+          execp.write_text(text.replace(anchor, replacement, 1), encoding="utf-8")
+          PY
+
+          git diff --check
+          mapfile -t changed < <(git diff --name-only | LC_ALL=C sort)
+          test "${#changed[@]}" -eq 2
+          test "${changed[0]}" = "fs/exec.c"
+          test "${changed[1]}" = "include/linux/ksu_hook_contract.h"
+
+          p13_patch="$AUDIT_DIR/07-P13-post-exec.patch"
+          git diff --binary -- fs/exec.c include/linux/ksu_hook_contract.h > "$p13_patch"
+          test "$(sha256sum "$p13_patch" | awk '{print $1}')" = "$EXPECTED_P13_PATCH_SHA256"
+
+          test "$(sha256sum fs/susfs.c | awk '{print $1}')" = "$EXPECTED_P12_SUSFS_C_SHA256"
+          test "$(sha256sum include/linux/susfs.h | awk '{print $1}')" = "$EXPECTED_P12_SUSFS_H_SHA256"
+          test "$(sha256sum include/linux/susfs_def.h | awk '{print $1}')" = "$EXPECTED_P12_SUSFS_DEF_SHA256"
+
+          {
+            echo "P13_DELTA=PASS"
+            echo "P13_PATCH_SHA256=$EXPECTED_P13_PATCH_SHA256"
+            echo "P13_CHANGED_FILES=fs/exec.c include/linux/ksu_hook_contract.h"
+            echo "P13_MODULE_LOAD_FILTER_EXCLUDED=PASS"
+          } | tee "$AUDIT_DIR/07-p13-source-gate.txt"
+
+      - name: Install pinned Android clang-r416183b
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$TOOLCHAIN_DIR"
+          mkdir -p "$TOOLCHAIN_DIR"
+          url="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/${CLANG_PREBUILT_COMMIT}/clang-r416183b.tar.gz"
+          curl --fail --location --retry 3 "$url" -o "$RUNNER_TEMP/clang-r416183b.tar.gz"
+          tar -xzf "$RUNNER_TEMP/clang-r416183b.tar.gz" -C "$TOOLCHAIN_DIR"
+
+          for tool in clang ld.lld llvm-ar llvm-nm llvm-objcopy llvm-objdump llvm-strip; do
+            test -x "$TOOLCHAIN_DIR/bin/$tool"
+          done
+          "$TOOLCHAIN_DIR/bin/clang" --version | tee "$AUDIT_DIR/08-clang.txt"
+
+      - name: Reproduce exact P13 Image and vmlinux Module.symvers
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH="$TOOLCHAIN_DIR/bin:$PATH"
+          export KBUILD_BUILD_USER KBUILD_BUILD_HOST KBUILD_BUILD_TIMESTAMP
+          export KBUILD_BUILD_VERSION SOURCE_DATE_EPOCH KBUILD_FIXED_SCM_SUFFIX
+
+          rm -rf "$OUT_DIR"
+          make O="$OUT_DIR" ARCH=arm64 CC=clang LD=ld.lld LLVM=1 LLVM_IAS=1 \
+            veux_defconfig 2>&1 | tee "$AUDIT_DIR/09-config.log"
+
+          grep -Fxq 'CONFIG_KSU=y' "$OUT_DIR/.config"
+          grep -Fxq 'CONFIG_KSU_SUSFS=y' "$OUT_DIR/.config"
+          grep -Fxq '# CONFIG_KSU_MANUAL_HOOK is not set' "$OUT_DIR/.config"
+          grep -Fxq 'CONFIG_KSU_SUSFS_OPEN_REDIRECT=y' "$OUT_DIR/.config"
+          grep -Fxq 'CONFIG_MODULES=y' "$OUT_DIR/.config"
+          grep -Fxq 'CONFIG_MODVERSIONS=y' "$OUT_DIR/.config"
+
+          make -j"$(nproc)" \
+            O="$OUT_DIR" ARCH=arm64 CC=clang LD=ld.lld LLVM=1 LLVM_IAS=1 \
+            KCFLAGS="$EFFECTIVE_KCFLAGS" Image dtbs \
+            2>&1 | tee "$AUDIT_DIR/09-build-image.log"
+
+          image="$OUT_DIR/arch/arm64/boot/Image"
+          dtb="$OUT_DIR/arch/arm64/boot/dts/vendor/xiaomi/veux.dtb"
+          sym="$OUT_DIR/Module.symvers"
+
+          test -s "$image"
+          test -s "$dtb"
+          test -s "$sym"
+
+          image_bytes="$(stat -c '%s' "$image")"
+          image_sha="$(sha256sum "$image" | awk '{print $1}')"
+          dtb_sha="$(sha256sum "$dtb" | awk '{print $1}')"
+
+          test "$image_bytes" = "$EXPECTED_IMAGE_BYTES"
+          test "$image_sha" = "$EXPECTED_IMAGE_SHA256"
+          test "$dtb_sha" = "$EXPECTED_VEUX_DTB_SHA256"
+
+          kernelrelease="$(
+            make -s O="$OUT_DIR" ARCH=arm64 CC=clang LD=ld.lld LLVM=1 LLVM_IAS=1 kernelrelease
+          )"
+          test "$kernelrelease" = "$EXPECTED_KERNEL_RELEASE"
+
+          cp "$sym" "$AUDIT_DIR/P13-Module.symvers-vmlinux"
+          cp "$OUT_DIR/.config" "$AUDIT_DIR/P13-config"
+          sha256sum "$AUDIT_DIR/P13-Module.symvers-vmlinux" \
+            "$AUDIT_DIR/P13-config" > "$AUDIT_DIR/09-vmlinux-evidence.sha256"
+
+          grep -Eq '^[^[:space:]]+[[:space:]]+module_layout[[:space:]]+' "$sym"
+
+          {
+            echo "P13_IMAGE_REPRODUCTION=PASS"
+            echo "IMAGE_BYTES=$image_bytes"
+            echo "IMAGE_SHA256=$image_sha"
+            echo "VEUX_DTB_SHA256=$dtb_sha"
+            echo "KERNEL_RELEASE=$kernelrelease"
+            echo "VMLINUX_SYMVERS_LINES=$(wc -l < "$sym")"
+          } | tee "$AUDIT_DIR/09-reproduction-result.txt"
+
+      - name: Build P13 modules and freeze complete export CRC map
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH="$TOOLCHAIN_DIR/bin:$PATH"
+          export KBUILD_BUILD_USER KBUILD_BUILD_HOST KBUILD_BUILD_TIMESTAMP
+          export KBUILD_BUILD_VERSION SOURCE_DATE_EPOCH KBUILD_FIXED_SCM_SUFFIX
+
+          test "$(sha256sum "$OUT_DIR/arch/arm64/boot/Image" | awk '{print $1}')" = "$EXPECTED_IMAGE_SHA256"
+
+          make -j"$(nproc)" \
+            O="$OUT_DIR" ARCH=arm64 CC=clang LD=ld.lld LLVM=1 LLVM_IAS=1 \
+            KCFLAGS="$EFFECTIVE_KCFLAGS" modules \
+            2>&1 | tee "$AUDIT_DIR/10-build-modules.log"
+
+          test -s "$OUT_DIR/Module.symvers"
+          test "$(sha256sum "$OUT_DIR/arch/arm64/boot/Image" | awk '{print $1}')" = "$EXPECTED_IMAGE_SHA256"
+          test "$(sha256sum "$OUT_DIR/arch/arm64/boot/dts/vendor/xiaomi/veux.dtb" | awk '{print $1}')" = "$EXPECTED_VEUX_DTB_SHA256"
+
+          cp "$OUT_DIR/Module.symvers" "$AUDIT_DIR/P13-Module.symvers-full"
+          sha256sum "$AUDIT_DIR/P13-Module.symvers-full" \
+            > "$AUDIT_DIR/10-full-symvers.sha256"
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def parse(path):
+              out = {}
+              for line in Path(path).read_text(errors="replace").splitlines():
+                  parts = line.split()
+                  if len(parts) >= 3 and parts[0].startswith("0x"):
+                      out[(parts[1], parts[2])] = int(parts[0], 16) & 0xffffffff
+              return out
+
+          import os
+          evidence = Path(os.environ["AUDIT_DIR"])
+          before = parse(evidence / "P13-Module.symvers-vmlinux")
+          after = parse(evidence / "P13-Module.symvers-full")
+
+          missing = [k for k in before if k not in after]
+          changed = [k for k in before if k in after and before[k] != after[k]]
+          if missing or changed:
+              raise SystemExit(
+                  f"vmlinux symvers changed after modules: missing={len(missing)} changed={len(changed)}"
+              )
+          print(f"VMLINUX_SYMVERS_STABLE=PASS before={len(before)} full={len(after)}")
+          PY
+
+          {
+            echo "P13_FULL_MODULE_BUILD=PASS"
+            echo "P13_IMAGE_STILL_EXACT=PASS"
+            echo "FULL_SYMVERS_LINES=$(wc -l < "$AUDIT_DIR/P13-Module.symvers-full")"
+            echo "FULL_SYMVERS_SHA256=$(sha256sum "$AUDIT_DIR/P13-Module.symvers-full" | awk '{print $1}')"
+          } | tee "$AUDIT_DIR/10-module-build-result.txt"
+
+      - name: Clone representative public VEUX module snapshots
+        shell: bash
+        run: |
+          set -euo pipefail
+          meta="$AUDIT_DIR/11-public-snapshots.tsv"
+          printf 'label\trepository\tref\tcommit\n' > "$meta"
+
+          clone_sparse() {
+            label="$1"
+            repo="$2"
+            ref="$3"
+            dest="$SNAPSHOT_DIR/$label"
+
+            git clone -q --depth 1 --filter=blob:none --sparse \
+              --single-branch --branch "$ref" \
+              "https://github.com/$repo.git" "$dest"
+            git -C "$dest" sparse-checkout set ramdisk-modules vendor-modules
+            git -C "$dest" lfs pull --include='ramdisk-modules/**,vendor-modules/**' || true
+
+            commit="$(git -C "$dest" rev-parse HEAD)"
+            printf '%s\t%s\t%s\t%s\n' "$label" "$repo" "$ref" "$commit" >> "$meta"
+          }
+
+          clone_sparse a12 \
+            sunil98025/android_device_xiaomi_veux-kernel twelve
+
+          clone_sparse a13_arrow \
+            ArrowOS-Devices/android_device_xiaomi_veux-kernel arrow-13.0
+
+          clone_sparse a13_alt \
+            nnippon99/android_device_xiaomi_veux-kernel thirteen
+
+          clone_sparse lineage20 \
+            xiaomi-sm6375-devs/android_device_xiaomi_veux-kernel lineage-20
+
+          clone_sparse a14_crdroid \
+            crdroidandroid/android_device_xiaomi_veux-kernel 14.0
+
+          cat "$meta"
+
+      - name: Compare every public module versioned import against P13 CRC map
+        shell: bash
+        run: |
+          set -euo pipefail
+          export LLVM_OBJCOPY="$TOOLCHAIN_DIR/bin/llvm-objcopy"
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import csv, os, struct, subprocess, tempfile, hashlib
+          from collections import defaultdict
+
+          root = Path(os.environ["SNAPSHOT_DIR"])
+          audit = Path(os.environ["AUDIT_DIR"])
+          objcopy = os.environ["LLVM_OBJCOPY"]
+
+          def parse_symvers(path):
+              # Keep one set per symbol because several P13 modules can legally
+              # export a symbol with the same CRC.
+              out = defaultdict(set)
+              owners = defaultdict(set)
+              for line in Path(path).read_text(errors="replace").splitlines():
+                  parts = line.split()
+                  if len(parts) < 3 or not parts[0].startswith("0x"):
+                      continue
+                  crc = int(parts[0], 16) & 0xffffffff
+                  sym = parts[1]
+                  owner = parts[2]
+                  out[sym].add(crc)
+                  owners[sym].add(owner)
+              return out, owners
+
+          p13, p13_owner = parse_symvers(audit / "P13-Module.symvers-full")
+          if "module_layout" not in p13:
+              raise SystemExit("P13 Module.symvers lacks module_layout")
+
+          def sha256(path):
+              h = hashlib.sha256()
+              with open(path, "rb") as f:
+                  for block in iter(lambda: f.read(1024 * 1024), b""):
+                      h.update(block)
+              return h.hexdigest()
+
+          def elf64_le(path):
+              b = Path(path).read_bytes()[:6]
+              return len(b) >= 6 and b[:4] == b"\x7fELF" and b[4] == 2 and b[5] == 1
+
+          def versions(path):
+              if not elf64_le(path):
+                  return None, "not-elf64-le"
+              with tempfile.TemporaryDirectory() as td:
+                  dump = Path(td) / "versions.bin"
+                  cp = subprocess.run(
+                      [objcopy, f"--dump-section=__versions={dump}", str(path)],
+                      stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+                  )
+                  if cp.returncode != 0 or not dump.exists():
+                      return [], "no-__versions"
+                  data = dump.read_bytes()
+
+              # arm64 struct modversion_info:
+              #   unsigned long crc; char name[MODULE_NAME_LEN];
+              # MODULE_NAME_LEN=56 -> 64 bytes per entry.
+              if len(data) % 64:
+                  return None, f"invalid-__versions-size-{len(data)}"
+
+              rows = []
+              for off in range(0, len(data), 64):
+                  chunk = data[off:off+64]
+                  crc = int.from_bytes(chunk[:8], "little") & 0xffffffff
+                  name = chunk[8:64].split(b"\0", 1)[0].decode("ascii", "replace")
+                  if name:
+                      rows.append((name, crc))
+              return rows, "ok"
+
+          detail_fields = [
+              "snapshot","area","module","module_sha256","symbol",
+              "module_crc","p13_crcs","p13_owners","status"
+          ]
+          summary_fields = [
+              "snapshot","modules_total","modules_with_versions","modules_parse_error",
+              "versioned_import_entries","unique_import_symbols",
+              "p13_covered_entries","p13_crc_match_entries","p13_crc_mismatch_entries",
+              "p13_absent_entries","modules_with_hard_mismatch",
+              "module_layout_seen","module_layout_match","module_layout_mismatch"
+          ]
+
+          details = []
+          summaries = []
+          mismatch_rows = []
+          layout_rows = []
+
+          for snap in sorted(p for p in root.iterdir() if p.is_dir()):
+              counters = defaultdict(int)
+              unique_syms = set()
+              mismatched_modules = set()
+
+              kos = []
+              for area in ("ramdisk-modules", "vendor-modules"):
+                  base = snap / area
+                  if base.exists():
+                      kos += [(area, p) for p in base.rglob("*.ko") if p.is_file()]
+              counters["modules_total"] = len(kos)
+
+              for area, ko in sorted(kos, key=lambda x: str(x[1])):
+                  rel = str(ko.relative_to(snap))
+                  ko_sha = sha256(ko)
+                  vers, state = versions(ko)
+
+                  if state != "ok":
+                      counters["modules_parse_error"] += 1
+                      details.append({
+                          "snapshot": snap.name, "area": area, "module": rel,
+                          "module_sha256": ko_sha, "symbol": "", "module_crc": "",
+                          "p13_crcs": "", "p13_owners": "", "status": state,
+                      })
+                      continue
+
+                  counters["modules_with_versions"] += 1
+                  counters["versioned_import_entries"] += len(vers)
+
+                  for sym, crc in vers:
+                      unique_syms.add(sym)
+                      p13_crcs = p13.get(sym, set())
+                      if p13_crcs:
+                          counters["p13_covered_entries"] += 1
+                          if crc in p13_crcs:
+                              status = "P13_CRC_MATCH"
+                              counters["p13_crc_match_entries"] += 1
+                          else:
+                              status = "P13_CRC_MISMATCH"
+                              counters["p13_crc_mismatch_entries"] += 1
+                              mismatched_modules.add(rel)
+                      else:
+                          status = "P13_SYMBOL_ABSENT"
+                          counters["p13_absent_entries"] += 1
+
+                      row = {
+                          "snapshot": snap.name,
+                          "area": area,
+                          "module": rel,
+                          "module_sha256": ko_sha,
+                          "symbol": sym,
+                          "module_crc": f"0x{crc:08x}",
+                          "p13_crcs": ",".join(f"0x{x:08x}" for x in sorted(p13_crcs)),
+                          "p13_owners": ",".join(sorted(p13_owner.get(sym, set()))),
+                          "status": status,
+                      }
+                      details.append(row)
+                      if status == "P13_CRC_MISMATCH":
+                          mismatch_rows.append(row)
+
+                      if sym == "module_layout":
+                          counters["module_layout_seen"] += 1
+                          if status == "P13_CRC_MATCH":
+                              counters["module_layout_match"] += 1
+                          elif status == "P13_CRC_MISMATCH":
+                              counters["module_layout_mismatch"] += 1
+                          layout_rows.append(row)
+
+              counters["unique_import_symbols"] = len(unique_syms)
+              counters["modules_with_hard_mismatch"] = len(mismatched_modules)
+
+              summary = {"snapshot": snap.name}
+              for f in summary_fields[1:]:
+                  summary[f] = counters[f]
+              summaries.append(summary)
+
+          def write_tsv(path, rows, fields):
+              with open(path, "w", newline="") as fh:
+                  w = csv.DictWriter(fh, fieldnames=fields, delimiter="\t")
+                  w.writeheader()
+                  w.writerows(rows)
+
+          write_tsv(audit / "12-module-symbol-abi.tsv", details, detail_fields)
+          write_tsv(audit / "12-module-abi-summary.tsv", summaries, summary_fields)
+          write_tsv(audit / "12-hard-crc-mismatches.tsv", mismatch_rows, detail_fields)
+          write_tsv(audit / "12-module-layout.tsv", layout_rows, detail_fields)
+
+          print("P13 symbol names:", len(p13))
+          print("Hard mismatch rows:", len(mismatch_rows))
+          for s in summaries:
+              print(s)
+          PY
+
+      - name: Classify U1C static ABI result
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import csv, os
+
+          audit = Path(os.environ["AUDIT_DIR"])
+          summaries = list(csv.DictReader(
+              (audit / "12-module-abi-summary.tsv").open(), delimiter="\t"
+          ))
+
+          total_hard = sum(int(r["p13_crc_mismatch_entries"]) for r in summaries)
+          total_layout_mismatch = sum(int(r["module_layout_mismatch"]) for r in summaries)
+          total_parse_error = sum(int(r["modules_parse_error"]) for r in summaries)
+          total_absent = sum(int(r["p13_absent_entries"]) for r in summaries)
+
+          if total_layout_mismatch > 0:
+              classification = "STATIC_CANDIDATE_C_ABI_GROUPS_MODULE_LAYOUT_MISMATCH"
+          elif total_hard > 0:
+              classification = "STATIC_REQUIRES_B_OR_C_REVIEW_SELECTIVE_CRC_MISMATCH"
+          elif total_parse_error > 0:
+              classification = "STATIC_INCONCLUSIVE_MODULE_PARSE_ERRORS"
+          else:
+              classification = "STATIC_SUPPORTS_A_WITH_ABI_GUARD"
+
+          lines = [
+              "# VEUX GEN1 U1C — P13 Module ABI Reproduction Audit",
+              "",
+              "## Reproduction authority",
+              "",
+              "- P13 Image SHA-256 reproduced exactly: **PASS**",
+              "- P13 VEUX DTB SHA-256 reproduced exactly: **PASS**",
+              "- P13 kernel release reproduced exactly: **PASS**",
+              "- Full P13 module export CRC map was generated only after those gates passed.",
+              "",
+              "## Public snapshot ABI comparison",
+              "",
+          ]
+
+          for r in summaries:
+              lines.append(
+                  f"- **{r['snapshot']}**: modules={r['modules_total']}, "
+                  f"versioned={r['modules_with_versions']}, "
+                  f"P13-covered imports={r['p13_covered_entries']}, "
+                  f"CRC matches={r['p13_crc_match_entries']}, "
+                  f"hard CRC mismatches={r['p13_crc_mismatch_entries']}, "
+                  f"P13-absent imports={r['p13_absent_entries']}, "
+                  f"module_layout match/mismatch="
+                  f"{r['module_layout_match']}/{r['module_layout_mismatch']}."
+              )
+
+          lines += [
+              "",
+              "## Classification",
+              "",
+              f"**{classification}**",
+              "",
+              f"- Total hard P13-covered CRC mismatches: **{total_hard}**",
+              f"- Total `module_layout` mismatches: **{total_layout_mismatch}**",
+              f"- Total module parse errors: **{total_parse_error}**",
+              f"- Total imports absent from the in-tree P13 export map: **{total_absent}**",
+              "",
+              "Interpretation rules:",
+              "- A CRC mismatch for a symbol that exists in P13 Module.symvers is a hard static ABI mismatch for that module/symbol.",
+              "- A `module_layout` mismatch is a particularly strong whole-module ABI incompatibility signal.",
+              "- A symbol absent from P13 Module.symvers is kept separate: it may come from an out-of-tree/peer vendor module and is not automatically classified as incompatible.",
+              "- Static compatibility is not DEVICE PASS. Only the already-tested P13 reference remains DEVICE PASS.",
+              "",
+              "No kernel patch is made by U1C.",
+          ]
+
+          (audit / "13-U1C-REPORT.md").write_text("\n".join(lines) + "\n")
+          (audit / "13-U1C-RESULT.txt").write_text(classification + "\n")
+          PY
+
+          cat "$AUDIT_DIR/13-U1C-RESULT.txt"
+          sed -n '1,220p' "$AUDIT_DIR/13-U1C-REPORT.md"
+
+      - name: Build self-verifying U1C evidence manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$AUDIT_DIR"
+          find . -type f ! -name 'U1C-EVIDENCE-SHA256SUMS.txt' -print0 \
+            | LC_ALL=C sort -z \
+            | xargs -0 sha256sum \
+            > U1C-EVIDENCE-SHA256SUMS.txt
+          sha256sum -c U1C-EVIDENCE-SHA256SUMS.txt
+
+      - name: Upload U1C evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: VEUX-GEN1-U1C-P13-module-ABI-reproduction-audit
+          path: u1c-evidence/
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 6
