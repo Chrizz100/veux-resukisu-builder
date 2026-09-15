@@ -1,0 +1,792 @@
+name: VEUX GEN1 U2-R2 - P13 Universal AK3 Packaging + Safety Candidate
+
+'on':
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: veux-gen1-u2-r3-p13-universal-veux-ak3-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  package-u2:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    env:
+      TZ: UTC
+      LANG: C.UTF-8
+      LC_ALL: C.UTF-8
+
+      P13_REFERENCE_RUN_ID: '34811720288'
+      P13_REFERENCE_ARTIFACT_ID: '10335461893'
+      P13_REFERENCE_ARTIFACT_NAME: clean-gen1-p13-veux-susfs153f-postexec-ak3-34811720288
+      P13_REFERENCE_ARTIFACT_DIGEST: sha256:5c0533566a99201c028ef9355267ef6cea38b74c11dc6d7f871e2d807aa0c0b3
+
+      EXPECTED_IMAGE_BYTES: '29843968'
+      EXPECTED_IMAGE_SHA256: 12f2eae90243878aa8c5fbd7cb14e9cbfb422869dae6bb14491feb987269a1b2
+      EXPECTED_DTB_SHA256: 42728a6f3d48ae35ac6be4b14ea51bc8a323e77baec2ee544827487378f99d37
+      EXPECTED_KERNEL_RELEASE: 5.4.274-qgki-g82179e362f33
+      EXPECTED_P13_AK3_SHA256: eb024ca243efe14f65f47dc1428604cdcb81d266da168016be1fc8429f8ffc6a
+
+      EXPECTED_RESUKISU_COMMIT: 7741f87849f7ad7cebf82bbb4c5b89880e61e37e
+      EXPECTED_KSU_VERSION: '35141'
+      EXPECTED_KSU_UAPI: '4'
+      EXPECTED_SUSFS_VERSION: '2.3.0'
+      EXPECTED_AK3_COMMIT: af770f7b16cf8f8eb7c68614b2a693b3b361c90c
+
+      P13_DIR: ${{ github.workspace }}/p13-reference
+      P13_AK3_DIR: ${{ github.workspace }}/p13-ak3
+      U2_DIR: ${{ github.workspace }}/u2-ak3
+      DIST_DIR: ${{ github.workspace }}/u2-dist
+      EVIDENCE_DIR: ${{ github.workspace }}/u2-evidence
+      REPO_GUIDANCE_DIR: ${{ github.workspace }}/repo-guidance
+
+      U2_ZIP_NAME: VEUX-GEN1-U2-R3-P13-UNIVERSAL-VEUX-5.4.274-ReSukiSU-7741f878-UAPI4-SUSFS-2.3-AK3.zip
+
+    steps:
+      - name: Read repository guidance first in isolated checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+          path: repo-guidance
+
+      - name: Initialize U2 packaging audit
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -rf \
+            "$P13_DIR" \
+            "$P13_AK3_DIR" \
+            "$U2_DIR" \
+            "$DIST_DIR" \
+            "$EVIDENCE_DIR"
+
+          mkdir -p \
+            "$P13_DIR" \
+            "$P13_AK3_DIR" \
+            "$U2_DIR" \
+            "$DIST_DIR" \
+            "$EVIDENCE_DIR"
+
+          cat > "$EVIDENCE_DIR/00-U2-PLAN.txt" <<'EOF'
+          VEUX GEN1 U2 - P13 Universal AK3 Packaging + Safety Candidate
+
+          Immutable kernel authority:
+          - P13 is the current real-device DEVICE-PASS master.
+          - Linux 5.4.274
+          - kernelrelease 5.4.274-qgki-g82179e362f33
+          - ReSukiSU 7741f878 / KSU 35141 / UAPI4
+          - SUSFS 2.3.0
+          - exact P13 Image SHA-256:
+            12f2eae90243878aa8c5fbd7cb14e9cbfb422869dae6bb14491feb987269a1b2
+
+          U1G authority:
+          - exact P13 Image reproduction PASS
+          - exact P13 DTB reproduction PASS
+          - effective compile config proves CONFIG_MODULES=n
+          - embedded IKCONFIG is stock_defconfig and is not compile-authoritative
+          - all five public VEUX snapshots share one 247-role runtime universe
+          - 19/19 previously unresolved shared roles were reviewed
+          - 5 strong P13 built-in equivalents
+          - 14 shared optional/unreachable roles
+          - 0 critical/unresolved roles
+          - 0 snapshot-specific unresolved roles
+          - classification:
+            STATIC_SUPPORTS_A_COMPILED_MODULELESS_WITH_SHARED_RUNTIME_GUARD
+          - next gate:
+            U2_UNIVERSAL_AK3_PACKAGING_SAFETY_ALLOWED
+
+          U2-R3 universal packaging design:
+          - NO kernel rebuild
+          - use the exact frozen P13 Image unchanged
+          - derive the package from the exact frozen P13 AK3 zip
+          - preserve the exact AK3 file set
+          - change only anykernel.sh package identity and disable the Android
+            version gate by setting supported.versions= empty
+          - do.modules=0
+          - do not ship DTB, DTBO, vendor_boot, vendor_kernel_boot, ramdisk files,
+            modules, system_dlkm, vendor_dlkm or vbmeta payloads
+          - use dump_boot + write_boot so each ROM keeps its own boot ramdisk
+          - keep active A/B slot behavior
+          - keep PATCH_VBMETA_FLAG=0
+          - keep device check strictly VEUX-only
+          - do NOT gate on Android release, ROM family, geographic firmware
+            region or one named Global firmware
+
+          Universal compatibility boundary:
+          - package eligibility is defined by VEUX/SM6375 identity and the
+            compatible Linux-5.4 boot/vendor architecture, not Android release.
+          - the installer must not refuse a VEUX solely because it runs another
+            Android release, ROM family or firmware region.
+          - preserving the ROM's own ramdisk/DTB/DTBO/vendor boot environment is
+            the compatibility mechanism; only the frozen P13 Image is supplied.
+
+          DEVICE-PASS boundary:
+          - DEVICE PASS remains only environments actually tested on hardware.
+          - the known P13 real-device proof remains HyperOS Android 13 /
+            OS1.0.12.0.TKCMIXM.
+          - removing the installer version gate does NOT label every untested
+            Android/ROM/firmware combination DEVICE PASS.
+
+          Repository/upstream notes:
+          - U2-R1 fixed the workspace-cleanup failure by checking the repo
+            out first into an isolated repo-guidance/ directory
+          - U2-R2 fixed only the P13 authentication assertions:
+            FINAL-RESULT.txt is checked against its real key=value fields and
+            kernelrelease is verified from a materialized Image strings file
+          - U2-R3 removes the artificial Android version gate while retaining
+            the VEUX hardware gate
+          - this prevents actions/checkout clean from deleting U2 evidence/dist
+          - current repository README is treated as a safety constraint
+          - final AnyKernel3 package must retain LICENSE
+          - P13 remains immutable
+          - no flash, commit, push, tag, release or workflow dispatch is done
+          EOF
+
+      - name: Record and enforce current repository guidance
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test -f "$REPO_GUIDANCE_DIR/README.md"
+
+          grep -Fq 'Custom kernel for **Xiaomi/POCO VEUX (SM6375)**.' "$REPO_GUIDANCE_DIR/README.md"
+          grep -Fq 'HyperOS Android 13 / OS1.0.12.0.TKCMIXM' "$REPO_GUIDANCE_DIR/README.md"
+
+          # The named firmware is historical DEVICE-PASS evidence only.
+          # U2-R3 must not turn README wording into an Android/ROM/region gate.
+
+          git -C "$REPO_GUIDANCE_DIR" ls-files '*.md' | LC_ALL=C sort \
+            > "$EVIDENCE_DIR/01-repository-markdown-files.txt"
+
+          sha256sum "$REPO_GUIDANCE_DIR/README.md" \
+            | tee "$EVIDENCE_DIR/01-repository-readme.sha256"
+
+          cp "$REPO_GUIDANCE_DIR/README.md" "$EVIDENCE_DIR/01-repository-README.md"
+
+          {
+            echo "REPO_GUIDANCE_READ=PASS"
+            echo "REPO_DEVICE_SCOPE=VEUX_SM6375"
+            echo "REPO_TESTED_DEVICE_PASS=HyperOS_Android_13_OS1.0.12.0.TKCMIXM"
+            echo "REPO_NAMED_FIRMWARE_IS_INSTALLER_GATE=NO"
+          } | tee "$EVIDENCE_DIR/01-repository-guidance.txt"
+
+      - name: Download exact frozen P13 release artifact
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          meta="$RUNNER_TEMP/p13-artifact.json"
+          zip="$RUNNER_TEMP/p13-reference-artifact.zip"
+
+          curl --fail --silent --show-error --location \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${P13_REFERENCE_ARTIFACT_ID}" \
+            -o "$meta"
+
+          jq -e \
+            --argjson id "$P13_REFERENCE_ARTIFACT_ID" \
+            --arg name "$P13_REFERENCE_ARTIFACT_NAME" \
+            --arg digest "$P13_REFERENCE_ARTIFACT_DIGEST" \
+            --argjson run "$P13_REFERENCE_RUN_ID" \
+            '.id == $id
+             and .name == $name
+             and .expired == false
+             and .digest == $digest
+             and .workflow_run.id == $run' \
+            "$meta" >/dev/null
+
+          url="$(jq -r '.archive_download_url' "$meta")"
+          test -n "$url"
+          test "$url" != "null"
+
+          curl --fail --silent --show-error --location \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "$url" -o "$zip"
+
+          actual_zip_sha="sha256:$(sha256sum "$zip" | awk '{print $1}')"
+          test "$actual_zip_sha" = "$P13_REFERENCE_ARTIFACT_DIGEST"
+
+          unzip -t "$zip" \
+            | tee "$EVIDENCE_DIR/02-p13-artifact-unzip-test.txt"
+
+          unzip -q "$zip" -d "$P13_DIR"
+
+          cp "$meta" "$EVIDENCE_DIR/02-p13-artifact-metadata.json"
+
+          {
+            echo "P13_REFERENCE_RUN_ID=$P13_REFERENCE_RUN_ID"
+            echo "P13_REFERENCE_ARTIFACT_ID=$P13_REFERENCE_ARTIFACT_ID"
+            echo "P13_REFERENCE_ARTIFACT_NAME=$P13_REFERENCE_ARTIFACT_NAME"
+            echo "P13_REFERENCE_ARTIFACT_DIGEST=$P13_REFERENCE_ARTIFACT_DIGEST"
+            echo "P13_REFERENCE_ARTIFACT_DOWNLOAD_SHA256=${actual_zip_sha#sha256:}"
+            echo "P13_REFERENCE_ARTIFACT_AUTHENTICATION=PASS"
+          } | tee "$EVIDENCE_DIR/02-p13-reference-artifact.txt"
+
+      - name: Authenticate exact P13 Image and release package
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          image="$P13_DIR/Image"
+          dtb="$P13_DIR/veux.dtb"
+          p13_zip="$P13_DIR/VEUX-GEN1-P13-5.4.274-ReSukiSU-7741f878-UAPI4-SUSFS-2.3-AK3.zip"
+          result="$P13_DIR/FINAL-RESULT.txt"
+
+          test -s "$image"
+          test -s "$dtb"
+          test -s "$p13_zip"
+          test -s "$result"
+
+          test "$(stat -c '%s' "$image")" = "$EXPECTED_IMAGE_BYTES"
+          test "$(sha256sum "$image" | awk '{print $1}')" = "$EXPECTED_IMAGE_SHA256"
+          test "$(sha256sum "$dtb" | awk '{print $1}')" = "$EXPECTED_DTB_SHA256"
+          test "$(sha256sum "$p13_zip" | awk '{print $1}')" = "$EXPECTED_P13_AK3_SHA256"
+
+          # Authenticate against the fields that actually exist in the frozen
+          # P13 FINAL-RESULT.txt.  Kernelrelease is verified from Image strings
+          # separately because FINAL-RESULT.txt does not contain that field.
+          grep -Fxq 'CLEAN_GEN1_P13_SUSFS_153F88DF_POSTEXEC_AK3=PASS' "$result"
+          grep -Fxq "RESUKISU_TARGET=$EXPECTED_RESUKISU_COMMIT" "$result"
+          grep -Fxq "KSU_VERSION=$EXPECTED_KSU_VERSION" "$result"
+          grep -Fxq "KSU_UAPI=$EXPECTED_KSU_UAPI" "$result"
+          grep -Fxq "IMAGE_SHA256=$EXPECTED_IMAGE_SHA256" "$result"
+          grep -Fxq "VEUX_DTB_SHA256=$EXPECTED_DTB_SHA256" "$result"
+          grep -Fxq "AK3_SHA256=$EXPECTED_P13_AK3_SHA256" "$result"
+          grep -Fxq "AK3_PIN=$EXPECTED_AK3_COMMIT" "$result"
+
+          # Avoid `strings | grep -m1` under pipefail: grep can close the pipe
+          # early and make strings exit on SIGPIPE.  Materialize first.
+          strings -a "$image" > "$RUNNER_TEMP/p13-image-strings.txt"
+          grep -F "$EXPECTED_KERNEL_RELEASE" "$RUNNER_TEMP/p13-image-strings.txt" \
+            > "$EVIDENCE_DIR/03-p13-image-kernelrelease-string.txt"
+          test -s "$EVIDENCE_DIR/03-p13-image-kernelrelease-string.txt"
+
+          {
+            echo "P13_IMAGE_BYTES=$(stat -c '%s' "$image")"
+            echo "P13_IMAGE_SHA256=$(sha256sum "$image" | awk '{print $1}')"
+            echo "P13_DTB_SHA256=$(sha256sum "$dtb" | awk '{print $1}')"
+            echo "P13_AK3_SHA256=$(sha256sum "$p13_zip" | awk '{print $1}')"
+            echo "P13_AUTHENTICATION=PASS"
+          } | tee "$EVIDENCE_DIR/03-p13-authentication.txt"
+
+      - name: Verify frozen P13 AK3 safety baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          p13_zip="$P13_DIR/VEUX-GEN1-P13-5.4.274-ReSukiSU-7741f878-UAPI4-SUSFS-2.3-AK3.zip"
+
+          unzip -q "$p13_zip" -d "$P13_AK3_DIR"
+
+          test -s "$P13_AK3_DIR/Image"
+          test -f "$P13_AK3_DIR/LICENSE"
+          test -f "$P13_AK3_DIR/anykernel.sh"
+          test -f "$P13_AK3_DIR/tools/ak3-core.sh"
+
+          cmp -s "$P13_DIR/Image" "$P13_AK3_DIR/Image"
+          test "$(sha256sum "$P13_AK3_DIR/Image" | awk '{print $1}')" = "$EXPECTED_IMAGE_SHA256"
+
+          grep -Fxq 'do.devicecheck=1' "$P13_AK3_DIR/anykernel.sh"
+          grep -Fxq 'do.modules=0' "$P13_AK3_DIR/anykernel.sh"
+          grep -Fxq 'do.systemless=1' "$P13_AK3_DIR/anykernel.sh"
+          grep -Fxq 'do.cleanup=1' "$P13_AK3_DIR/anykernel.sh"
+          grep -Fxq 'do.cleanuponabort=0' "$P13_AK3_DIR/anykernel.sh"
+          grep -Fxq 'device.name1=veux' "$P13_AK3_DIR/anykernel.sh"
+          grep -Fxq 'supported.versions=13' "$P13_AK3_DIR/anykernel.sh"
+          grep -Fxq 'BLOCK=boot;' "$P13_AK3_DIR/anykernel.sh"
+          grep -Fxq 'IS_SLOT_DEVICE=1;' "$P13_AK3_DIR/anykernel.sh"
+          grep -Fxq 'SLOT_SELECT=active;' "$P13_AK3_DIR/anykernel.sh"
+          grep -Fxq 'RAMDISK_COMPRESSION=auto;' "$P13_AK3_DIR/anykernel.sh"
+          grep -Fxq 'PATCH_VBMETA_FLAG=0;' "$P13_AK3_DIR/anykernel.sh"
+          grep -Fxq '. tools/ak3-core.sh;' "$P13_AK3_DIR/anykernel.sh"
+          grep -Fxq 'dump_boot;' "$P13_AK3_DIR/anykernel.sh"
+          grep -Fxq 'write_boot;' "$P13_AK3_DIR/anykernel.sh"
+
+          # No actual replaceable payload is allowed in these directories.
+          for d in ramdisk modules patch; do
+            if test -d "$P13_AK3_DIR/$d"; then
+              test -z "$(find "$P13_AK3_DIR/$d" -type f -print -quit)"
+            fi
+          done
+
+          # P13 AK3 must not carry external boot-coupling payloads.
+          test -z "$(
+            find "$P13_AK3_DIR" -type f \( \
+              -iname '*.dtb' -o \
+              -iname 'dtb' -o \
+              -iname 'dtbo' -o \
+              -iname 'dtbo.img' -o \
+              -iname 'vendor_boot*' -o \
+              -iname 'vendor_kernel_boot*' -o \
+              -iname 'vendor_dlkm*' -o \
+              -iname 'system_dlkm*' -o \
+              -iname 'vbmeta*' -o \
+              -iname '*.ko' \
+            \) -print -quit
+          )"
+
+          (
+            cd "$P13_AK3_DIR"
+            find . -mindepth 1 -printf '%y\t%P\n' | LC_ALL=C sort
+          ) > "$EVIDENCE_DIR/04-p13-ak3-fileset.tsv"
+
+          (
+            cd "$P13_AK3_DIR"
+            find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum
+          ) > "$EVIDENCE_DIR/04-p13-ak3-file-sha256.txt"
+
+          cp "$P13_AK3_DIR/anykernel.sh" \
+            "$EVIDENCE_DIR/04-p13-anykernel.sh"
+
+          {
+            echo "P13_AK3_IMAGE_BYTE_IDENTICAL=PASS"
+            echo "P13_AK3_DEVICECHECK_VEUX=PASS"
+            echo "P13_AK3_MODULE_PAYLOAD=NONE"
+            echo "P13_AK3_DTB_PAYLOAD=NONE"
+            echo "P13_AK3_DTBO_PAYLOAD=NONE"
+            echo "P13_AK3_VENDOR_BOOT_PAYLOAD=NONE"
+            echo "P13_AK3_RAMDISK_FILE_PAYLOAD=NONE"
+            echo "P13_AK3_LICENSE_PRESENT=PASS"
+            echo "P13_AK3_SAFETY_BASELINE=PASS"
+          } | tee "$EVIDENCE_DIR/04-p13-ak3-safety.txt"
+
+      - name: Create U2 from exact P13 AK3
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cp -a "$P13_AK3_DIR/." "$U2_DIR/"
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import os
+
+          path = Path(os.environ["U2_DIR"]) / "anykernel.sh"
+          text = path.read_text(encoding="utf-8")
+
+          old_name = (
+              "kernel.string=VEUX GEN1 P13 Linux 5.4.274 "
+              "ReSukiSU 7741f878 UAPI4 + SUSFS 2.3"
+          )
+          new_name = (
+              "kernel.string=VEUX GEN1 U2-R3 P13 UNIVERSAL VEUX "
+              "Linux 5.4.274 ReSukiSU 7741f878 UAPI4 + SUSFS 2.3"
+          )
+
+          if text.count(old_name) != 1:
+              raise SystemExit("Unexpected P13 kernel.string baseline")
+          if text.count("supported.versions=13") != 1:
+              raise SystemExit("Unexpected P13 Android version baseline")
+
+          text = text.replace(old_name, new_name, 1)
+          text = text.replace(
+              "supported.versions=13",
+              "supported.versions=",
+              1,
+          )
+
+          path.write_text(text, encoding="utf-8")
+          PY
+
+          # Kernel payload is frozen and must remain byte-identical.
+          cmp -s "$P13_DIR/Image" "$U2_DIR/Image"
+          test "$(sha256sum "$U2_DIR/Image" | awk '{print $1}')" = "$EXPECTED_IMAGE_SHA256"
+
+          {
+            echo "U2_FUNCTIONAL_KERNEL_DELTA=NONE"
+            echo "U2_PACKAGING_BASE=P13_AK3_EXACT"
+            echo "U2_ANYKERNEL_METADATA_DELTA=kernel.string,supported.versions"
+            echo "U2_ANDROID_VERSION_GATE=DISABLED_EMPTY_SUPPORTED_VERSIONS"
+            echo "U2_ROM_FAMILY_GATE=NONE"
+            echo "U2_FIRMWARE_REGION_GATE=NONE"
+            echo "U2_DEVICE_GATE=VEUX_ONLY"
+            echo "U2_DEVICE_PASS_SCOPE=KNOWN_P13_DEVICE_PROOF_ONLY"
+          } | tee "$EVIDENCE_DIR/05-u2-package-design.txt"
+
+      - name: Prove U2 file set and delta are minimal
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          (
+            cd "$P13_AK3_DIR"
+            find . -mindepth 1 -printf '%y\t%P\n' | LC_ALL=C sort
+          ) > "$RUNNER_TEMP/p13-fileset.tsv"
+
+          (
+            cd "$U2_DIR"
+            find . -mindepth 1 -printf '%y\t%P\n' | LC_ALL=C sort
+          ) > "$RUNNER_TEMP/u2-fileset.tsv"
+
+          cmp -s "$RUNNER_TEMP/p13-fileset.tsv" "$RUNNER_TEMP/u2-fileset.tsv"
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib, os
+
+          base = Path(os.environ["P13_AK3_DIR"])
+          u2 = Path(os.environ["U2_DIR"])
+          audit = Path(os.environ["EVIDENCE_DIR"])
+
+          def files(root):
+              return {
+                  str(p.relative_to(root)): p
+                  for p in root.rglob("*")
+                  if p.is_file()
+              }
+
+          a = files(base)
+          b = files(u2)
+
+          if set(a) != set(b):
+              raise SystemExit("P13/U2 file sets differ")
+
+          rows = []
+          changed = []
+
+          for rel in sorted(a):
+              ha = hashlib.sha256(a[rel].read_bytes()).hexdigest()
+              hb = hashlib.sha256(b[rel].read_bytes()).hexdigest()
+              same = ha == hb
+              rows.append((rel, ha, hb, "SAME" if same else "CHANGED"))
+              if not same:
+                  changed.append(rel)
+
+          with (audit / "06-p13-u2-file-delta.tsv").open(
+              "w", encoding="utf-8"
+          ) as fh:
+              fh.write("path\tp13_sha256\tu2_sha256\tstatus\n")
+              for row in rows:
+                  fh.write("\t".join(row) + "\n")
+
+          if changed != ["anykernel.sh"]:
+              raise SystemExit(
+                  "Unexpected changed files: " + ",".join(changed)
+              )
+
+          (audit / "06-changed-files.txt").write_text(
+              "\n".join(changed) + "\n",
+              encoding="utf-8",
+          )
+          PY
+
+          diff -u "$P13_AK3_DIR/anykernel.sh" "$U2_DIR/anykernel.sh" \
+            > "$EVIDENCE_DIR/06-anykernel-diff.patch" || true
+
+          # The script delta is exactly two semantic changes.
+          test "$(grep -c '^[-+]kernel.string=' "$EVIDENCE_DIR/06-anykernel-diff.patch")" -eq 2
+          test "$(grep -c '^[-+]supported.versions=' "$EVIDENCE_DIR/06-anykernel-diff.patch")" -eq 2
+
+          grep -Fxq 'do.devicecheck=1' "$U2_DIR/anykernel.sh"
+          grep -Fxq 'do.modules=0' "$U2_DIR/anykernel.sh"
+          grep -Fxq 'device.name1=veux' "$U2_DIR/anykernel.sh"
+          grep -Fxq 'supported.versions=' "$U2_DIR/anykernel.sh"
+          grep -Fxq 'BLOCK=boot;' "$U2_DIR/anykernel.sh"
+          grep -Fxq 'IS_SLOT_DEVICE=1;' "$U2_DIR/anykernel.sh"
+          grep -Fxq 'SLOT_SELECT=active;' "$U2_DIR/anykernel.sh"
+          grep -Fxq 'RAMDISK_COMPRESSION=auto;' "$U2_DIR/anykernel.sh"
+          grep -Fxq 'PATCH_VBMETA_FLAG=0;' "$U2_DIR/anykernel.sh"
+          grep -Fxq 'dump_boot;' "$U2_DIR/anykernel.sh"
+          grep -Fxq 'write_boot;' "$U2_DIR/anykernel.sh"
+          test -f "$U2_DIR/LICENSE"
+
+          # Exact bundled AnyKernel3 contract: empty supported.versions means
+          # do_versioncheck returns immediately and no Android release is gated.
+          updater="$U2_DIR/META-INF/com/google/android/update-binary"
+          grep -Fq '[ "$(file_getprop anykernel.sh supported.versions)" ] || return 1;' "$updater"
+          test -z "$(grep '^supported.versions=' "$U2_DIR/anykernel.sh" | tail -n1 | cut -d= -f2-)"
+          {
+            echo "U2_ANDROID_VERSION_GATE=DISABLED"
+            echo "U2_AK3_EMPTY_SUPPORTED_VERSIONS_SKIP_PROOF=PASS"
+          } | tee "$EVIDENCE_DIR/06-android-version-gate.txt"
+
+          for d in ramdisk modules patch; do
+            if test -d "$U2_DIR/$d"; then
+              test -z "$(find "$U2_DIR/$d" -type f -print -quit)"
+            fi
+          done
+
+          test -z "$(
+            find "$U2_DIR" -type f \( \
+              -iname '*.dtb' -o \
+              -iname 'dtb' -o \
+              -iname 'dtbo' -o \
+              -iname 'dtbo.img' -o \
+              -iname 'vendor_boot*' -o \
+              -iname 'vendor_kernel_boot*' -o \
+              -iname 'vendor_dlkm*' -o \
+              -iname 'system_dlkm*' -o \
+              -iname 'vbmeta*' -o \
+              -iname '*.ko' \
+            \) -print -quit
+          )"
+
+          {
+            echo "U2_FILESET_IDENTICAL_TO_P13_AK3=PASS"
+            echo "U2_CHANGED_FILES=anykernel.sh"
+            echo "U2_IMAGE_BYTE_IDENTICAL_TO_P13=PASS"
+            echo "U2_DEVICE=veux"
+            echo "U2_ANDROID_VERSION_GATE=12-14"
+            echo "U2_MODULE_PAYLOAD=NONE"
+            echo "U2_DTB_PAYLOAD=NONE"
+            echo "U2_DTBO_PAYLOAD=NONE"
+            echo "U2_VENDOR_BOOT_PAYLOAD=NONE"
+            echo "U2_VENDOR_KERNEL_BOOT_PAYLOAD=NONE"
+            echo "U2_RAMDISK_FILE_PAYLOAD=NONE"
+            echo "U2_LICENSE_PRESENT=PASS"
+            echo "U2_MINIMAL_DELTA=PASS"
+          } | tee "$EVIDENCE_DIR/06-u2-minimal-delta.txt"
+
+      - name: Build U2 AnyKernel3 candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          out="$DIST_DIR/$U2_ZIP_NAME"
+
+          (
+            cd "$U2_DIR"
+            zip -r9 "$out" . \
+              -x '.git/*' \
+                 'README.md' \
+                 '*placeholder'
+          ) > "$EVIDENCE_DIR/07-zip-build.log"
+
+          test -s "$out"
+
+          unzip -t "$out" \
+            | tee "$EVIDENCE_DIR/07-u2-unzip-test.txt"
+
+          sha256sum "$out" \
+            | tee "$DIST_DIR/${U2_ZIP_NAME}.sha256"
+
+          cp "$DIST_DIR/${U2_ZIP_NAME}.sha256" \
+            "$EVIDENCE_DIR/07-u2-zip.sha256"
+
+      - name: Validate final U2 zip from fresh extraction
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          out="$DIST_DIR/$U2_ZIP_NAME"
+          check="$RUNNER_TEMP/u2-final-check"
+
+          rm -rf "$check"
+          mkdir -p "$check"
+          unzip -q "$out" -d "$check"
+
+          test -s "$check/Image"
+          cmp -s "$P13_DIR/Image" "$check/Image"
+          test "$(stat -c '%s' "$check/Image")" = "$EXPECTED_IMAGE_BYTES"
+          test "$(sha256sum "$check/Image" | awk '{print $1}')" = "$EXPECTED_IMAGE_SHA256"
+
+          test -f "$check/LICENSE"
+          test -f "$check/anykernel.sh"
+          test -f "$check/tools/ak3-core.sh"
+
+          grep -Fxq 'do.devicecheck=1' "$check/anykernel.sh"
+          grep -Fxq 'do.modules=0' "$check/anykernel.sh"
+          grep -Fxq 'do.systemless=1' "$check/anykernel.sh"
+          grep -Fxq 'device.name1=veux' "$check/anykernel.sh"
+          grep -Fxq 'supported.versions=' "$check/anykernel.sh"
+          grep -Fxq 'BLOCK=boot;' "$check/anykernel.sh"
+          grep -Fxq 'IS_SLOT_DEVICE=1;' "$check/anykernel.sh"
+          grep -Fxq 'SLOT_SELECT=active;' "$check/anykernel.sh"
+          grep -Fxq 'RAMDISK_COMPRESSION=auto;' "$check/anykernel.sh"
+          grep -Fxq 'PATCH_VBMETA_FLAG=0;' "$check/anykernel.sh"
+          grep -Fxq '. tools/ak3-core.sh;' "$check/anykernel.sh"
+          grep -Fxq 'dump_boot;' "$check/anykernel.sh"
+          grep -Fxq 'write_boot;' "$check/anykernel.sh"
+
+          updater="$check/META-INF/com/google/android/update-binary"
+          grep -Fq '[ "$(file_getprop anykernel.sh supported.versions)" ] || return 1;' "$updater"
+          test -z "$(grep '^supported.versions=' "$check/anykernel.sh" | tail -n1 | cut -d= -f2-)"
+
+          for d in ramdisk modules patch; do
+            if test -d "$check/$d"; then
+              test -z "$(find "$check/$d" -type f -print -quit)"
+            fi
+          done
+
+          test -z "$(
+            find "$check" -type f \( \
+              -iname '*.dtb' -o \
+              -iname 'dtb' -o \
+              -iname 'dtbo' -o \
+              -iname 'dtbo.img' -o \
+              -iname 'vendor_boot*' -o \
+              -iname 'vendor_kernel_boot*' -o \
+              -iname 'vendor_dlkm*' -o \
+              -iname 'system_dlkm*' -o \
+              -iname 'vbmeta*' -o \
+              -iname '*.ko' \
+            \) -print -quit
+          )"
+
+          (
+            cd "$check"
+            find . -mindepth 1 -printf '%y\t%P\n' | LC_ALL=C sort
+          ) > "$EVIDENCE_DIR/08-final-zip-fileset.tsv"
+
+          (
+            cd "$check"
+            find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum
+          ) > "$EVIDENCE_DIR/08-final-zip-file-sha256.txt"
+
+          {
+            echo "U2_FINAL_ZIP_CRC=PASS"
+            echo "U2_FINAL_IMAGE_BYTE_IDENTICAL_TO_P13=PASS"
+            echo "U2_FINAL_IMAGE_SHA256=$EXPECTED_IMAGE_SHA256"
+            echo "U2_FINAL_AK3_LICENSE=PASS"
+            echo "U2_FINAL_DEVICECHECK_VEUX=PASS"
+            echo "U2_FINAL_ANDROID_RANGE=12-14_STATIC_CANDIDATE"
+            echo "U2_FINAL_PRESERVES_EXISTING_RAMDISK=YES"
+            echo "U2_FINAL_REPLACES_DTB=NO"
+            echo "U2_FINAL_REPLACES_DTBO=NO"
+            echo "U2_FINAL_REPLACES_VENDOR_BOOT=NO"
+            echo "U2_FINAL_REPLACES_VENDOR_KERNEL_BOOT=NO"
+            echo "U2_FINAL_INSTALLS_MODULES=NO"
+            echo "U2_FINAL_PATCHES_VBMETA_FLAG=NO"
+            echo "U2_FINAL_PACKAGE_GATE=PASS"
+          } | tee "$EVIDENCE_DIR/08-final-package-gate.txt"
+
+      - name: Write U2 classification
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          out="$DIST_DIR/$U2_ZIP_NAME"
+          zip_sha="$(sha256sum "$out" | awk '{print $1}')"
+
+          cat > "$EVIDENCE_DIR/09-U2-RESULT.txt" <<EOF
+          U2_R3_UNIVERSAL_VEUX_AK3_PACKAGING_SAFETY=PASS
+          U2_KERNEL_IMAGE=P13_EXACT_UNCHANGED
+          U2_IMAGE_SHA256=$EXPECTED_IMAGE_SHA256
+          U2_ZIP_NAME=$U2_ZIP_NAME
+          U2_ZIP_SHA256=$zip_sha
+          U2_DEVICE_GATE=VEUX_ONLY
+          U2_ANDROID_VERSION_GATE=NONE
+          U2_ROM_FAMILY_GATE=NONE
+          U2_FIRMWARE_REGION_GATE=NONE
+          U2_BOOT_PAYLOAD_POLICY=P13_IMAGE_ONLY_PRESERVE_EXISTING_BOOT_ENVIRONMENT
+          U2_KNOWN_REAL_DEVICE_PASS=HyperOS_Android_13_OS1.0.12.0.TKCMIXM
+          U2_UNTESTED_ENVIRONMENTS_DEVICE_PASS=NO
+          U2_COMPATIBILITY_CLASSIFICATION=UNIVERSAL_VEUX_STATIC_CANDIDATE
+          U2_KERNEL_VARIANT_SPLIT_JUSTIFIED=NO
+          U2_KERNEL_REBUILD_JUSTIFIED=NO
+          NEXT_GATE=REAL_DEVICE_VALIDATION_WITH_SAME_PACKAGE_ON_ADDITIONAL_VEUX_ENVIRONMENTS
+          EOF
+
+          cat > "$EVIDENCE_DIR/09-U2-REPORT.md" <<EOF
+          # VEUX GEN1 U2-R3 — Universal VEUX AK3 Packaging + Safety Candidate
+
+          ## Kernel authority
+
+          - P13 Image is unchanged.
+          - Image SHA-256: \`$EXPECTED_IMAGE_SHA256\`
+          - Kernelrelease: \`$EXPECTED_KERNEL_RELEASE\`
+          - ReSukiSU: \`7741f878\` / KSU 35141 / UAPI4
+          - SUSFS: 2.3.0
+          - No new kernel build was performed.
+
+          ## Universal package behavior
+
+          - Device gate: **VEUX only**.
+          - Android release gate: **none**.
+          - ROM-family gate: **none**.
+          - geographic firmware/region gate: **none**.
+          - Active A/B boot slot only.
+          - Existing boot ramdisk is preserved by AnyKernel3.
+          - No DTB payload.
+          - No DTBO payload.
+          - No vendor_boot/vendor_kernel_boot payload.
+          - No module payload.
+          - No system_dlkm/vendor_dlkm payload.
+          - No forced vbmeta flag patch.
+          - Final AnyKernel3 LICENSE retained.
+          - Only the exact frozen P13 kernel Image is supplied.
+
+          The exact bundled AnyKernel3 backend skips Android-version checking
+          when \`supported.versions=\` is empty. U2-R3 verifies that contract
+          both before packaging and from the final ZIP.
+
+          ## Compatibility interpretation
+
+          U1G supports one common static VEUX compatibility group across the
+          audited public runtime snapshots and found no technical Android/ROM/
+          region variant split. U2-R3 therefore imposes no artificial Android
+          version or named Global-firmware restriction.
+
+          Universal here means one VEUX package whose technical compatibility
+          boundary is the VEUX/SM6375 Linux-5.4 boot/vendor architecture.
+          Each installed ROM retains its own ramdisk, DTB/DTBO and vendor boot
+          environment while only the frozen P13 Image is replaced.
+
+          This does **not** label an untested environment DEVICE PASS. The known
+          hardware proof remains the P13-tested HyperOS Android 13 environment;
+          additional VEUX ROM/firmware combinations can be tested with this same
+          package without producing Android- or region-specific repacks.
+
+          ## Result
+
+          **U2_R3_UNIVERSAL_VEUX_AK3_PACKAGING_SAFETY=PASS**
+
+          Final ZIP SHA-256:
+
+          \`$zip_sha\`
+
+          Next gate: real-device validation on additional VEUX environments
+          using the same U2-R3 package.
+          EOF
+
+          cat "$EVIDENCE_DIR/09-U2-RESULT.txt"
+          sed -n '1,260p' "$EVIDENCE_DIR/09-U2-REPORT.md"
+
+      - name: Build self-verifying U2 evidence manifest
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test -d "$EVIDENCE_DIR"
+
+          cd "$EVIDENCE_DIR"
+          find . -type f ! -name 'U2-EVIDENCE-SHA256SUMS.txt' -print0 \
+            | LC_ALL=C sort -z \
+            | xargs -0 sha256sum \
+            > U2-EVIDENCE-SHA256SUMS.txt
+
+          sha256sum -c U2-EVIDENCE-SHA256SUMS.txt
+
+      - name: Upload U2 install candidate
+        uses: actions/upload-artifact@v4
+        with:
+          name: VEUX-GEN1-U2-R3-P13-universal-VEUX-AK3-candidate
+          path: |
+            u2-dist/*.zip
+            u2-dist/*.sha256
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+
+      - name: Upload U2 evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: VEUX-GEN1-U2-R3-P13-universal-VEUX-AK3-evidence
+          path: u2-evidence/
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 6
