@@ -1,0 +1,1053 @@
+name: VEUX GEN1 U4-RC1 - Universal VEUX Release Candidate Freeze
+
+'on':
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: veux-gen1-u4-rc1-universal-veux-release-freeze-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  package-u4-rc1:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    env:
+      TZ: UTC
+      LANG: C.UTF-8
+      LC_ALL: C.UTF-8
+
+      P13_REFERENCE_RUN_ID: '34811720288'
+      P13_REFERENCE_ARTIFACT_ID: '10335461893'
+      P13_REFERENCE_ARTIFACT_NAME: clean-gen1-p13-veux-susfs153f-postexec-ak3-34811720288
+      P13_REFERENCE_ARTIFACT_DIGEST: sha256:5c0533566a99201c028ef9355267ef6cea38b74c11dc6d7f871e2d807aa0c0b3
+
+      EXPECTED_IMAGE_BYTES: '29843968'
+      EXPECTED_IMAGE_SHA256: 12f2eae90243878aa8c5fbd7cb14e9cbfb422869dae6bb14491feb987269a1b2
+      EXPECTED_DTB_SHA256: 42728a6f3d48ae35ac6be4b14ea51bc8a323e77baec2ee544827487378f99d37
+      EXPECTED_KERNEL_RELEASE: 5.4.274-qgki-g82179e362f33
+      EXPECTED_P13_AK3_SHA256: eb024ca243efe14f65f47dc1428604cdcb81d266da168016be1fc8429f8ffc6a
+
+      EXPECTED_RESUKISU_COMMIT: 7741f87849f7ad7cebf82bbb4c5b89880e61e37e
+      EXPECTED_KSU_VERSION: '35141'
+      EXPECTED_KSU_UAPI: '4'
+      EXPECTED_SUSFS_VERSION: '2.3.0'
+      EXPECTED_AK3_COMMIT: af770f7b16cf8f8eb7c68614b2a693b3b361c90c
+
+      P13_DIR: ${{ github.workspace }}/p13-reference
+      P13_AK3_DIR: ${{ github.workspace }}/p13-ak3
+      U2_DIR: ${{ github.workspace }}/u2-ak3
+      DIST_DIR: ${{ github.workspace }}/u2-dist
+      EVIDENCE_DIR: ${{ github.workspace }}/u2-evidence
+      REPO_GUIDANCE_DIR: ${{ github.workspace }}/repo-guidance
+      RC_DIR: ${{ github.workspace }}/u4-rc
+      RC_OUT_DIR: ${{ github.workspace }}/u4-rc-dist
+
+      U4_RC_BUNDLE_NAME: VEUX-GEN1-U4-RC1-P13-UNIVERSAL-VEUX-5.4-FAMILY-RELEASE-CANDIDATE.zip
+      U2_ZIP_NAME: VEUX-GEN1-U2-R3-P13-UNIVERSAL-VEUX-5.4.274-ReSukiSU-7741f878-UAPI4-SUSFS-2.3-AK3.zip
+
+    steps:
+      - name: Read repository guidance first in isolated checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+          path: repo-guidance
+
+      - name: Initialize U2 packaging audit
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -rf \
+            "$P13_DIR" \
+            "$P13_AK3_DIR" \
+            "$U2_DIR" \
+            "$DIST_DIR" \
+            "$EVIDENCE_DIR" \
+            "$RC_DIR" \
+            "$RC_OUT_DIR"
+
+          mkdir -p \
+            "$P13_DIR" \
+            "$P13_AK3_DIR" \
+            "$U2_DIR" \
+            "$DIST_DIR" \
+            "$EVIDENCE_DIR" \
+            "$RC_DIR" \
+            "$RC_OUT_DIR"
+
+          cat > "$EVIDENCE_DIR/00-U2-PLAN.txt" <<'EOF'
+          VEUX GEN1 U2 - P13 Universal AK3 Packaging + Safety Candidate
+
+          Immutable kernel authority:
+          - P13 is the current real-device DEVICE-PASS master.
+          - Linux 5.4.274
+          - kernelrelease 5.4.274-qgki-g82179e362f33
+          - ReSukiSU 7741f878 / KSU 35141 / UAPI4
+          - SUSFS 2.3.0
+          - exact P13 Image SHA-256:
+            12f2eae90243878aa8c5fbd7cb14e9cbfb422869dae6bb14491feb987269a1b2
+
+          U1G authority:
+          - exact P13 Image reproduction PASS
+          - exact P13 DTB reproduction PASS
+          - effective compile config proves CONFIG_MODULES=n
+          - embedded IKCONFIG is stock_defconfig and is not compile-authoritative
+          - all five public VEUX snapshots share one 247-role runtime universe
+          - 19/19 previously unresolved shared roles were reviewed
+          - 5 strong P13 built-in equivalents
+          - 14 shared optional/unreachable roles
+          - 0 critical/unresolved roles
+          - 0 snapshot-specific unresolved roles
+          - classification:
+            STATIC_SUPPORTS_A_COMPILED_MODULELESS_WITH_SHARED_RUNTIME_GUARD
+          - next gate:
+            U2_UNIVERSAL_AK3_PACKAGING_SAFETY_ALLOWED
+
+          U2-R3 universal packaging design:
+          - NO kernel rebuild
+          - use the exact frozen P13 Image unchanged
+          - derive the package from the exact frozen P13 AK3 zip
+          - preserve the exact AK3 file set
+          - change only anykernel.sh package identity and disable the Android
+            version gate by setting supported.versions= empty
+          - do.modules=0
+          - do not ship DTB, DTBO, vendor_boot, vendor_kernel_boot, ramdisk files,
+            modules, system_dlkm, vendor_dlkm or vbmeta payloads
+          - use dump_boot + write_boot so each ROM keeps its own boot ramdisk
+          - keep active A/B slot behavior
+          - keep PATCH_VBMETA_FLAG=0
+          - keep device check strictly VEUX-only
+          - do NOT gate on Android release, ROM family, geographic firmware
+            region or one named Global firmware
+
+          U4-RC1 release-freeze layer:
+          - NO kernel delta relative to U2-R3/P13
+          - NO AnyKernel3 functional delta
+          - freeze the already audited U2-R3 install ZIP as the install payload
+          - bundle the read-only Preflight v3 next to the install ZIP
+          - record U3W source/statistical compatibility scope explicitly
+          - record DEVICE-PASS limits explicitly
+          - create a self-verifying release bundle for later controlled tests
+
+          Universal compatibility boundary:
+          - package eligibility is defined by VEUX/SM6375 identity and the
+            compatible Linux-5.4 boot/vendor architecture, not Android release.
+          - the installer must not refuse a VEUX solely because it runs another
+            Android release, ROM family or firmware region.
+          - preserving the ROM's own ramdisk/DTB/DTBO/vendor boot environment is
+            the compatibility mechanism; only the frozen P13 Image is supplied.
+
+          DEVICE-PASS boundary:
+          - DEVICE PASS remains only environments actually tested on hardware.
+          - the known P13 real-device proof remains HyperOS Android 13 /
+            OS1.0.12.0.TKCMIXM.
+          - removing the installer version gate does NOT label every untested
+            Android/ROM/firmware combination DEVICE PASS.
+
+          Repository/upstream notes:
+          - U2-R1 fixed the workspace-cleanup failure by checking the repo
+            out first into an isolated repo-guidance/ directory
+          - U2-R2 fixed only the P13 authentication assertions:
+            FINAL-RESULT.txt is checked against its real key=value fields and
+            kernelrelease is verified from a materialized Image strings file
+          - U2-R3 removes the artificial Android version gate while retaining
+            the VEUX hardware gate
+          - this prevents actions/checkout clean from deleting U2 evidence/dist
+          - current repository README is treated as a safety constraint
+          - final AnyKernel3 package must retain LICENSE
+          - P13 remains immutable
+          - no flash, commit, push, tag, release or workflow dispatch is done
+          EOF
+
+      - name: Record and enforce current repository guidance
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test -f "$REPO_GUIDANCE_DIR/README.md"
+
+          grep -Fq 'Custom kernel for **Xiaomi/POCO VEUX (SM6375)**.' "$REPO_GUIDANCE_DIR/README.md"
+          grep -Fq 'HyperOS Android 13 / OS1.0.12.0.TKCMIXM' "$REPO_GUIDANCE_DIR/README.md"
+
+          # The named firmware is historical DEVICE-PASS evidence only.
+          # U2-R3 must not turn README wording into an Android/ROM/region gate.
+
+          git -C "$REPO_GUIDANCE_DIR" ls-files '*.md' | LC_ALL=C sort \
+            > "$EVIDENCE_DIR/01-repository-markdown-files.txt"
+
+          sha256sum "$REPO_GUIDANCE_DIR/README.md" \
+            | tee "$EVIDENCE_DIR/01-repository-readme.sha256"
+
+          cp "$REPO_GUIDANCE_DIR/README.md" "$EVIDENCE_DIR/01-repository-README.md"
+
+          {
+            echo "REPO_GUIDANCE_READ=PASS"
+            echo "REPO_DEVICE_SCOPE=VEUX_SM6375"
+            echo "REPO_TESTED_DEVICE_PASS=HyperOS_Android_13_OS1.0.12.0.TKCMIXM"
+            echo "REPO_NAMED_FIRMWARE_IS_INSTALLER_GATE=NO"
+          } | tee "$EVIDENCE_DIR/01-repository-guidance.txt"
+
+      - name: Download exact frozen P13 release artifact
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          meta="$RUNNER_TEMP/p13-artifact.json"
+          zip="$RUNNER_TEMP/p13-reference-artifact.zip"
+
+          curl --fail --silent --show-error --location \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${P13_REFERENCE_ARTIFACT_ID}" \
+            -o "$meta"
+
+          jq -e \
+            --argjson id "$P13_REFERENCE_ARTIFACT_ID" \
+            --arg name "$P13_REFERENCE_ARTIFACT_NAME" \
+            --arg digest "$P13_REFERENCE_ARTIFACT_DIGEST" \
+            --argjson run "$P13_REFERENCE_RUN_ID" \
+            '.id == $id
+             and .name == $name
+             and .expired == false
+             and .digest == $digest
+             and .workflow_run.id == $run' \
+            "$meta" >/dev/null
+
+          url="$(jq -r '.archive_download_url' "$meta")"
+          test -n "$url"
+          test "$url" != "null"
+
+          curl --fail --silent --show-error --location \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "$url" -o "$zip"
+
+          actual_zip_sha="sha256:$(sha256sum "$zip" | awk '{print $1}')"
+          test "$actual_zip_sha" = "$P13_REFERENCE_ARTIFACT_DIGEST"
+
+          unzip -t "$zip" \
+            | tee "$EVIDENCE_DIR/02-p13-artifact-unzip-test.txt"
+
+          unzip -q "$zip" -d "$P13_DIR"
+
+          cp "$meta" "$EVIDENCE_DIR/02-p13-artifact-metadata.json"
+
+          {
+            echo "P13_REFERENCE_RUN_ID=$P13_REFERENCE_RUN_ID"
+            echo "P13_REFERENCE_ARTIFACT_ID=$P13_REFERENCE_ARTIFACT_ID"
+            echo "P13_REFERENCE_ARTIFACT_NAME=$P13_REFERENCE_ARTIFACT_NAME"
+            echo "P13_REFERENCE_ARTIFACT_DIGEST=$P13_REFERENCE_ARTIFACT_DIGEST"
+            echo "P13_REFERENCE_ARTIFACT_DOWNLOAD_SHA256=${actual_zip_sha#sha256:}"
+            echo "P13_REFERENCE_ARTIFACT_AUTHENTICATION=PASS"
+          } | tee "$EVIDENCE_DIR/02-p13-reference-artifact.txt"
+
+      - name: Authenticate exact P13 Image and release package
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          image="$P13_DIR/Image"
+          dtb="$P13_DIR/veux.dtb"
+          p13_zip="$P13_DIR/VEUX-GEN1-P13-5.4.274-ReSukiSU-7741f878-UAPI4-SUSFS-2.3-AK3.zip"
+          result="$P13_DIR/FINAL-RESULT.txt"
+
+          test -s "$image"
+          test -s "$dtb"
+          test -s "$p13_zip"
+          test -s "$result"
+
+          test "$(stat -c '%s' "$image")" = "$EXPECTED_IMAGE_BYTES"
+          test "$(sha256sum "$image" | awk '{print $1}')" = "$EXPECTED_IMAGE_SHA256"
+          test "$(sha256sum "$dtb" | awk '{print $1}')" = "$EXPECTED_DTB_SHA256"
+          test "$(sha256sum "$p13_zip" | awk '{print $1}')" = "$EXPECTED_P13_AK3_SHA256"
+
+          # Authenticate against the fields that actually exist in the frozen
+          # P13 FINAL-RESULT.txt.  Kernelrelease is verified from Image strings
+          # separately because FINAL-RESULT.txt does not contain that field.
+          grep -Fxq 'CLEAN_GEN1_P13_SUSFS_153F88DF_POSTEXEC_AK3=PASS' "$result"
+          grep -Fxq "RESUKISU_TARGET=$EXPECTED_RESUKISU_COMMIT" "$result"
+          grep -Fxq "KSU_VERSION=$EXPECTED_KSU_VERSION" "$result"
+          grep -Fxq "KSU_UAPI=$EXPECTED_KSU_UAPI" "$result"
+          grep -Fxq "IMAGE_SHA256=$EXPECTED_IMAGE_SHA256" "$result"
+          grep -Fxq "VEUX_DTB_SHA256=$EXPECTED_DTB_SHA256" "$result"
+          grep -Fxq "AK3_SHA256=$EXPECTED_P13_AK3_SHA256" "$result"
+          grep -Fxq "AK3_PIN=$EXPECTED_AK3_COMMIT" "$result"
+
+          # Avoid `strings | grep -m1` under pipefail: grep can close the pipe
+          # early and make strings exit on SIGPIPE.  Materialize first.
+          strings -a "$image" > "$RUNNER_TEMP/p13-image-strings.txt"
+          grep -F "$EXPECTED_KERNEL_RELEASE" "$RUNNER_TEMP/p13-image-strings.txt" \
+            > "$EVIDENCE_DIR/03-p13-image-kernelrelease-string.txt"
+          test -s "$EVIDENCE_DIR/03-p13-image-kernelrelease-string.txt"
+
+          {
+            echo "P13_IMAGE_BYTES=$(stat -c '%s' "$image")"
+            echo "P13_IMAGE_SHA256=$(sha256sum "$image" | awk '{print $1}')"
+            echo "P13_DTB_SHA256=$(sha256sum "$dtb" | awk '{print $1}')"
+            echo "P13_AK3_SHA256=$(sha256sum "$p13_zip" | awk '{print $1}')"
+            echo "P13_AUTHENTICATION=PASS"
+          } | tee "$EVIDENCE_DIR/03-p13-authentication.txt"
+
+      - name: Verify frozen P13 AK3 safety baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          p13_zip="$P13_DIR/VEUX-GEN1-P13-5.4.274-ReSukiSU-7741f878-UAPI4-SUSFS-2.3-AK3.zip"
+
+          unzip -q "$p13_zip" -d "$P13_AK3_DIR"
+
+          test -s "$P13_AK3_DIR/Image"
+          test -f "$P13_AK3_DIR/LICENSE"
+          test -f "$P13_AK3_DIR/anykernel.sh"
+          test -f "$P13_AK3_DIR/tools/ak3-core.sh"
+
+          cmp -s "$P13_DIR/Image" "$P13_AK3_DIR/Image"
+          test "$(sha256sum "$P13_AK3_DIR/Image" | awk '{print $1}')" = "$EXPECTED_IMAGE_SHA256"
+
+          grep -Fxq 'do.devicecheck=1' "$P13_AK3_DIR/anykernel.sh"
+          grep -Fxq 'do.modules=0' "$P13_AK3_DIR/anykernel.sh"
+          grep -Fxq 'do.systemless=1' "$P13_AK3_DIR/anykernel.sh"
+          grep -Fxq 'do.cleanup=1' "$P13_AK3_DIR/anykernel.sh"
+          grep -Fxq 'do.cleanuponabort=0' "$P13_AK3_DIR/anykernel.sh"
+          grep -Fxq 'device.name1=veux' "$P13_AK3_DIR/anykernel.sh"
+          grep -Fxq 'supported.versions=13' "$P13_AK3_DIR/anykernel.sh"
+          grep -Fxq 'BLOCK=boot;' "$P13_AK3_DIR/anykernel.sh"
+          grep -Fxq 'IS_SLOT_DEVICE=1;' "$P13_AK3_DIR/anykernel.sh"
+          grep -Fxq 'SLOT_SELECT=active;' "$P13_AK3_DIR/anykernel.sh"
+          grep -Fxq 'RAMDISK_COMPRESSION=auto;' "$P13_AK3_DIR/anykernel.sh"
+          grep -Fxq 'PATCH_VBMETA_FLAG=0;' "$P13_AK3_DIR/anykernel.sh"
+          grep -Fxq '. tools/ak3-core.sh;' "$P13_AK3_DIR/anykernel.sh"
+          grep -Fxq 'dump_boot;' "$P13_AK3_DIR/anykernel.sh"
+          grep -Fxq 'write_boot;' "$P13_AK3_DIR/anykernel.sh"
+
+          # No actual replaceable payload is allowed in these directories.
+          for d in ramdisk modules patch; do
+            if test -d "$P13_AK3_DIR/$d"; then
+              test -z "$(find "$P13_AK3_DIR/$d" -type f -print -quit)"
+            fi
+          done
+
+          # P13 AK3 must not carry external boot-coupling payloads.
+          test -z "$(
+            find "$P13_AK3_DIR" -type f \( \
+              -iname '*.dtb' -o \
+              -iname 'dtb' -o \
+              -iname 'dtbo' -o \
+              -iname 'dtbo.img' -o \
+              -iname 'vendor_boot*' -o \
+              -iname 'vendor_kernel_boot*' -o \
+              -iname 'vendor_dlkm*' -o \
+              -iname 'system_dlkm*' -o \
+              -iname 'vbmeta*' -o \
+              -iname '*.ko' \
+            \) -print -quit
+          )"
+
+          (
+            cd "$P13_AK3_DIR"
+            find . -mindepth 1 -printf '%y\t%P\n' | LC_ALL=C sort
+          ) > "$EVIDENCE_DIR/04-p13-ak3-fileset.tsv"
+
+          (
+            cd "$P13_AK3_DIR"
+            find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum
+          ) > "$EVIDENCE_DIR/04-p13-ak3-file-sha256.txt"
+
+          cp "$P13_AK3_DIR/anykernel.sh" \
+            "$EVIDENCE_DIR/04-p13-anykernel.sh"
+
+          {
+            echo "P13_AK3_IMAGE_BYTE_IDENTICAL=PASS"
+            echo "P13_AK3_DEVICECHECK_VEUX=PASS"
+            echo "P13_AK3_MODULE_PAYLOAD=NONE"
+            echo "P13_AK3_DTB_PAYLOAD=NONE"
+            echo "P13_AK3_DTBO_PAYLOAD=NONE"
+            echo "P13_AK3_VENDOR_BOOT_PAYLOAD=NONE"
+            echo "P13_AK3_RAMDISK_FILE_PAYLOAD=NONE"
+            echo "P13_AK3_LICENSE_PRESENT=PASS"
+            echo "P13_AK3_SAFETY_BASELINE=PASS"
+          } | tee "$EVIDENCE_DIR/04-p13-ak3-safety.txt"
+
+      - name: Create U2 from exact P13 AK3
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cp -a "$P13_AK3_DIR/." "$U2_DIR/"
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import os
+
+          path = Path(os.environ["U2_DIR"]) / "anykernel.sh"
+          text = path.read_text(encoding="utf-8")
+
+          old_name = (
+              "kernel.string=VEUX GEN1 P13 Linux 5.4.274 "
+              "ReSukiSU 7741f878 UAPI4 + SUSFS 2.3"
+          )
+          new_name = (
+              "kernel.string=VEUX GEN1 U2-R3 P13 UNIVERSAL VEUX "
+              "Linux 5.4.274 ReSukiSU 7741f878 UAPI4 + SUSFS 2.3"
+          )
+
+          if text.count(old_name) != 1:
+              raise SystemExit("Unexpected P13 kernel.string baseline")
+          if text.count("supported.versions=13") != 1:
+              raise SystemExit("Unexpected P13 Android version baseline")
+
+          text = text.replace(old_name, new_name, 1)
+          text = text.replace(
+              "supported.versions=13",
+              "supported.versions=",
+              1,
+          )
+
+          path.write_text(text, encoding="utf-8")
+          PY
+
+          # Kernel payload is frozen and must remain byte-identical.
+          cmp -s "$P13_DIR/Image" "$U2_DIR/Image"
+          test "$(sha256sum "$U2_DIR/Image" | awk '{print $1}')" = "$EXPECTED_IMAGE_SHA256"
+
+          {
+            echo "U2_FUNCTIONAL_KERNEL_DELTA=NONE"
+            echo "U2_PACKAGING_BASE=P13_AK3_EXACT"
+            echo "U2_ANYKERNEL_METADATA_DELTA=kernel.string,supported.versions"
+            echo "U2_ANDROID_VERSION_GATE=DISABLED_EMPTY_SUPPORTED_VERSIONS"
+            echo "U2_ROM_FAMILY_GATE=NONE"
+            echo "U2_FIRMWARE_REGION_GATE=NONE"
+            echo "U2_DEVICE_GATE=VEUX_ONLY"
+            echo "U2_DEVICE_PASS_SCOPE=KNOWN_P13_DEVICE_PROOF_ONLY"
+          } | tee "$EVIDENCE_DIR/05-u2-package-design.txt"
+
+      - name: Prove U2 file set and delta are minimal
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          (
+            cd "$P13_AK3_DIR"
+            find . -mindepth 1 -printf '%y\t%P\n' | LC_ALL=C sort
+          ) > "$RUNNER_TEMP/p13-fileset.tsv"
+
+          (
+            cd "$U2_DIR"
+            find . -mindepth 1 -printf '%y\t%P\n' | LC_ALL=C sort
+          ) > "$RUNNER_TEMP/u2-fileset.tsv"
+
+          cmp -s "$RUNNER_TEMP/p13-fileset.tsv" "$RUNNER_TEMP/u2-fileset.tsv"
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib, os
+
+          base = Path(os.environ["P13_AK3_DIR"])
+          u2 = Path(os.environ["U2_DIR"])
+          audit = Path(os.environ["EVIDENCE_DIR"])
+
+          def files(root):
+              return {
+                  str(p.relative_to(root)): p
+                  for p in root.rglob("*")
+                  if p.is_file()
+              }
+
+          a = files(base)
+          b = files(u2)
+
+          if set(a) != set(b):
+              raise SystemExit("P13/U2 file sets differ")
+
+          rows = []
+          changed = []
+
+          for rel in sorted(a):
+              ha = hashlib.sha256(a[rel].read_bytes()).hexdigest()
+              hb = hashlib.sha256(b[rel].read_bytes()).hexdigest()
+              same = ha == hb
+              rows.append((rel, ha, hb, "SAME" if same else "CHANGED"))
+              if not same:
+                  changed.append(rel)
+
+          with (audit / "06-p13-u2-file-delta.tsv").open(
+              "w", encoding="utf-8"
+          ) as fh:
+              fh.write("path\tp13_sha256\tu2_sha256\tstatus\n")
+              for row in rows:
+                  fh.write("\t".join(row) + "\n")
+
+          if changed != ["anykernel.sh"]:
+              raise SystemExit(
+                  "Unexpected changed files: " + ",".join(changed)
+              )
+
+          (audit / "06-changed-files.txt").write_text(
+              "\n".join(changed) + "\n",
+              encoding="utf-8",
+          )
+          PY
+
+          diff -u "$P13_AK3_DIR/anykernel.sh" "$U2_DIR/anykernel.sh" \
+            > "$EVIDENCE_DIR/06-anykernel-diff.patch" || true
+
+          # The script delta is exactly two semantic changes.
+          test "$(grep -c '^[-+]kernel.string=' "$EVIDENCE_DIR/06-anykernel-diff.patch")" -eq 2
+          test "$(grep -c '^[-+]supported.versions=' "$EVIDENCE_DIR/06-anykernel-diff.patch")" -eq 2
+
+          grep -Fxq 'do.devicecheck=1' "$U2_DIR/anykernel.sh"
+          grep -Fxq 'do.modules=0' "$U2_DIR/anykernel.sh"
+          grep -Fxq 'device.name1=veux' "$U2_DIR/anykernel.sh"
+          grep -Fxq 'supported.versions=' "$U2_DIR/anykernel.sh"
+          grep -Fxq 'BLOCK=boot;' "$U2_DIR/anykernel.sh"
+          grep -Fxq 'IS_SLOT_DEVICE=1;' "$U2_DIR/anykernel.sh"
+          grep -Fxq 'SLOT_SELECT=active;' "$U2_DIR/anykernel.sh"
+          grep -Fxq 'RAMDISK_COMPRESSION=auto;' "$U2_DIR/anykernel.sh"
+          grep -Fxq 'PATCH_VBMETA_FLAG=0;' "$U2_DIR/anykernel.sh"
+          grep -Fxq 'dump_boot;' "$U2_DIR/anykernel.sh"
+          grep -Fxq 'write_boot;' "$U2_DIR/anykernel.sh"
+          test -f "$U2_DIR/LICENSE"
+
+          # Exact bundled AnyKernel3 contract: empty supported.versions means
+          # do_versioncheck returns immediately and no Android release is gated.
+          updater="$U2_DIR/META-INF/com/google/android/update-binary"
+          grep -Fq '[ "$(file_getprop anykernel.sh supported.versions)" ] || return 1;' "$updater"
+          test -z "$(grep '^supported.versions=' "$U2_DIR/anykernel.sh" | tail -n1 | cut -d= -f2-)"
+          {
+            echo "U2_ANDROID_VERSION_GATE=DISABLED"
+            echo "U2_AK3_EMPTY_SUPPORTED_VERSIONS_SKIP_PROOF=PASS"
+          } | tee "$EVIDENCE_DIR/06-android-version-gate.txt"
+
+          for d in ramdisk modules patch; do
+            if test -d "$U2_DIR/$d"; then
+              test -z "$(find "$U2_DIR/$d" -type f -print -quit)"
+            fi
+          done
+
+          test -z "$(
+            find "$U2_DIR" -type f \( \
+              -iname '*.dtb' -o \
+              -iname 'dtb' -o \
+              -iname 'dtbo' -o \
+              -iname 'dtbo.img' -o \
+              -iname 'vendor_boot*' -o \
+              -iname 'vendor_kernel_boot*' -o \
+              -iname 'vendor_dlkm*' -o \
+              -iname 'system_dlkm*' -o \
+              -iname 'vbmeta*' -o \
+              -iname '*.ko' \
+            \) -print -quit
+          )"
+
+          {
+            echo "U2_FILESET_IDENTICAL_TO_P13_AK3=PASS"
+            echo "U2_CHANGED_FILES=anykernel.sh"
+            echo "U2_IMAGE_BYTE_IDENTICAL_TO_P13=PASS"
+            echo "U2_DEVICE=veux"
+            echo "U2_ANDROID_VERSION_GATE=NONE"
+            echo "U2_MODULE_PAYLOAD=NONE"
+            echo "U2_DTB_PAYLOAD=NONE"
+            echo "U2_DTBO_PAYLOAD=NONE"
+            echo "U2_VENDOR_BOOT_PAYLOAD=NONE"
+            echo "U2_VENDOR_KERNEL_BOOT_PAYLOAD=NONE"
+            echo "U2_RAMDISK_FILE_PAYLOAD=NONE"
+            echo "U2_LICENSE_PRESENT=PASS"
+            echo "U2_MINIMAL_DELTA=PASS"
+          } | tee "$EVIDENCE_DIR/06-u2-minimal-delta.txt"
+
+      - name: Build U2 AnyKernel3 candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          out="$DIST_DIR/$U2_ZIP_NAME"
+
+          (
+            cd "$U2_DIR"
+            zip -r9 "$out" . \
+              -x '.git/*' \
+                 'README.md' \
+                 '*placeholder'
+          ) > "$EVIDENCE_DIR/07-zip-build.log"
+
+          test -s "$out"
+
+          unzip -t "$out" \
+            | tee "$EVIDENCE_DIR/07-u2-unzip-test.txt"
+
+          sha256sum "$out" \
+            | tee "$DIST_DIR/${U2_ZIP_NAME}.sha256"
+
+          cp "$DIST_DIR/${U2_ZIP_NAME}.sha256" \
+            "$EVIDENCE_DIR/07-u2-zip.sha256"
+
+      - name: Validate final U2 zip from fresh extraction
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          out="$DIST_DIR/$U2_ZIP_NAME"
+          check="$RUNNER_TEMP/u2-final-check"
+
+          rm -rf "$check"
+          mkdir -p "$check"
+          unzip -q "$out" -d "$check"
+
+          test -s "$check/Image"
+          cmp -s "$P13_DIR/Image" "$check/Image"
+          test "$(stat -c '%s' "$check/Image")" = "$EXPECTED_IMAGE_BYTES"
+          test "$(sha256sum "$check/Image" | awk '{print $1}')" = "$EXPECTED_IMAGE_SHA256"
+
+          test -f "$check/LICENSE"
+          test -f "$check/anykernel.sh"
+          test -f "$check/tools/ak3-core.sh"
+
+          grep -Fxq 'do.devicecheck=1' "$check/anykernel.sh"
+          grep -Fxq 'do.modules=0' "$check/anykernel.sh"
+          grep -Fxq 'do.systemless=1' "$check/anykernel.sh"
+          grep -Fxq 'device.name1=veux' "$check/anykernel.sh"
+          grep -Fxq 'supported.versions=' "$check/anykernel.sh"
+          grep -Fxq 'BLOCK=boot;' "$check/anykernel.sh"
+          grep -Fxq 'IS_SLOT_DEVICE=1;' "$check/anykernel.sh"
+          grep -Fxq 'SLOT_SELECT=active;' "$check/anykernel.sh"
+          grep -Fxq 'RAMDISK_COMPRESSION=auto;' "$check/anykernel.sh"
+          grep -Fxq 'PATCH_VBMETA_FLAG=0;' "$check/anykernel.sh"
+          grep -Fxq '. tools/ak3-core.sh;' "$check/anykernel.sh"
+          grep -Fxq 'dump_boot;' "$check/anykernel.sh"
+          grep -Fxq 'write_boot;' "$check/anykernel.sh"
+
+          updater="$check/META-INF/com/google/android/update-binary"
+          grep -Fq '[ "$(file_getprop anykernel.sh supported.versions)" ] || return 1;' "$updater"
+          test -z "$(grep '^supported.versions=' "$check/anykernel.sh" | tail -n1 | cut -d= -f2-)"
+
+          for d in ramdisk modules patch; do
+            if test -d "$check/$d"; then
+              test -z "$(find "$check/$d" -type f -print -quit)"
+            fi
+          done
+
+          test -z "$(
+            find "$check" -type f \( \
+              -iname '*.dtb' -o \
+              -iname 'dtb' -o \
+              -iname 'dtbo' -o \
+              -iname 'dtbo.img' -o \
+              -iname 'vendor_boot*' -o \
+              -iname 'vendor_kernel_boot*' -o \
+              -iname 'vendor_dlkm*' -o \
+              -iname 'system_dlkm*' -o \
+              -iname 'vbmeta*' -o \
+              -iname '*.ko' \
+            \) -print -quit
+          )"
+
+          (
+            cd "$check"
+            find . -mindepth 1 -printf '%y\t%P\n' | LC_ALL=C sort
+          ) > "$EVIDENCE_DIR/08-final-zip-fileset.tsv"
+
+          (
+            cd "$check"
+            find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum
+          ) > "$EVIDENCE_DIR/08-final-zip-file-sha256.txt"
+
+          {
+            echo "U2_FINAL_ZIP_CRC=PASS"
+            echo "U2_FINAL_IMAGE_BYTE_IDENTICAL_TO_P13=PASS"
+            echo "U2_FINAL_IMAGE_SHA256=$EXPECTED_IMAGE_SHA256"
+            echo "U2_FINAL_AK3_LICENSE=PASS"
+            echo "U2_FINAL_DEVICECHECK_VEUX=PASS"
+            echo "U2_FINAL_ANDROID_VERSION_GATE=NONE"
+            echo "U2_FINAL_PRESERVES_EXISTING_RAMDISK=YES"
+            echo "U2_FINAL_REPLACES_DTB=NO"
+            echo "U2_FINAL_REPLACES_DTBO=NO"
+            echo "U2_FINAL_REPLACES_VENDOR_BOOT=NO"
+            echo "U2_FINAL_REPLACES_VENDOR_KERNEL_BOOT=NO"
+            echo "U2_FINAL_INSTALLS_MODULES=NO"
+            echo "U2_FINAL_PATCHES_VBMETA_FLAG=NO"
+            echo "U2_FINAL_PACKAGE_GATE=PASS"
+          } | tee "$EVIDENCE_DIR/08-final-package-gate.txt"
+
+      - name: Write U2 classification
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          out="$DIST_DIR/$U2_ZIP_NAME"
+          zip_sha="$(sha256sum "$out" | awk '{print $1}')"
+
+          cat > "$EVIDENCE_DIR/09-U2-RESULT.txt" <<EOF
+          U2_R3_UNIVERSAL_VEUX_AK3_PACKAGING_SAFETY=PASS
+          U2_KERNEL_IMAGE=P13_EXACT_UNCHANGED
+          U2_IMAGE_SHA256=$EXPECTED_IMAGE_SHA256
+          U2_ZIP_NAME=$U2_ZIP_NAME
+          U2_ZIP_SHA256=$zip_sha
+          U2_DEVICE_GATE=VEUX_ONLY
+          U2_ANDROID_VERSION_GATE=NONE
+          U2_ROM_FAMILY_GATE=NONE
+          U2_FIRMWARE_REGION_GATE=NONE
+          U2_BOOT_PAYLOAD_POLICY=P13_IMAGE_ONLY_PRESERVE_EXISTING_BOOT_ENVIRONMENT
+          U2_KNOWN_REAL_DEVICE_PASS=HyperOS_Android_13_OS1.0.12.0.TKCMIXM
+          U2_UNTESTED_ENVIRONMENTS_DEVICE_PASS=NO
+          U2_COMPATIBILITY_CLASSIFICATION=UNIVERSAL_VEUX_STATIC_CANDIDATE
+          U2_KERNEL_VARIANT_SPLIT_JUSTIFIED=NO
+          U2_KERNEL_REBUILD_JUSTIFIED=NO
+          NEXT_GATE=REAL_DEVICE_VALIDATION_WITH_SAME_PACKAGE_ON_ADDITIONAL_VEUX_ENVIRONMENTS
+          EOF
+
+          cat > "$EVIDENCE_DIR/09-U2-REPORT.md" <<EOF
+          # VEUX GEN1 U2-R3 — Universal VEUX AK3 Packaging + Safety Candidate
+
+          ## Kernel authority
+
+          - P13 Image is unchanged.
+          - Image SHA-256: \`$EXPECTED_IMAGE_SHA256\`
+          - Kernelrelease: \`$EXPECTED_KERNEL_RELEASE\`
+          - ReSukiSU: \`7741f878\` / KSU 35141 / UAPI4
+          - SUSFS: 2.3.0
+          - No new kernel build was performed.
+
+          ## Universal package behavior
+
+          - Device gate: **VEUX only**.
+          - Android release gate: **none**.
+          - ROM-family gate: **none**.
+          - geographic firmware/region gate: **none**.
+          - Active A/B boot slot only.
+          - Existing boot ramdisk is preserved by AnyKernel3.
+          - No DTB payload.
+          - No DTBO payload.
+          - No vendor_boot/vendor_kernel_boot payload.
+          - No module payload.
+          - No system_dlkm/vendor_dlkm payload.
+          - No forced vbmeta flag patch.
+          - Final AnyKernel3 LICENSE retained.
+          - Only the exact frozen P13 kernel Image is supplied.
+
+          The exact bundled AnyKernel3 backend skips Android-version checking
+          when \`supported.versions=\` is empty. U2-R3 verifies that contract
+          both before packaging and from the final ZIP.
+
+          ## Compatibility interpretation
+
+          U1G supports one common static VEUX compatibility group across the
+          audited public runtime snapshots and found no technical Android/ROM/
+          region variant split. U2-R3 therefore imposes no artificial Android
+          version or named Global-firmware restriction.
+
+          Universal here means one VEUX package whose technical compatibility
+          boundary is the VEUX/SM6375 Linux-5.4 boot/vendor architecture.
+          Each installed ROM retains its own ramdisk, DTB/DTBO and vendor boot
+          environment while only the frozen P13 Image is replaced.
+
+          This does **not** label an untested environment DEVICE PASS. The known
+          hardware proof remains the P13-tested HyperOS Android 13 environment;
+          additional VEUX ROM/firmware combinations can be tested with this same
+          package without producing Android- or region-specific repacks.
+
+          ## Result
+
+          **U2_R3_UNIVERSAL_VEUX_AK3_PACKAGING_SAFETY=PASS**
+
+          Final ZIP SHA-256:
+
+          \`$zip_sha\`
+
+          Next gate: real-device validation on additional VEUX environments
+          using the same U2-R3 package.
+          EOF
+
+          cat "$EVIDENCE_DIR/09-U2-RESULT.txt"
+          sed -n '1,260p' "$EVIDENCE_DIR/09-U2-REPORT.md"
+
+      - name: Assert U2-R3 evidence consistency
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          grep -Fxq 'U2_ANDROID_VERSION_GATE=NONE' \
+            "$EVIDENCE_DIR/06-u2-minimal-delta.txt"
+          grep -Fxq 'U2_FINAL_ANDROID_VERSION_GATE=NONE' \
+            "$EVIDENCE_DIR/08-final-package-gate.txt"
+          grep -Fxq 'U2_ANDROID_VERSION_GATE=NONE' \
+            "$EVIDENCE_DIR/09-U2-RESULT.txt"
+
+          if grep -R -n -E 'ANDROID_(VERSION_GATE|RANGE)=12-14|12-14_STATIC_CANDIDATE' \
+            "$EVIDENCE_DIR"; then
+            echo "Stale Android 12-14 evidence survived U2-R3E1" >&2
+            exit 1
+          fi
+
+          {
+            echo "U2_R3E1_EVIDENCE_CONSISTENCY=PASS"
+            echo "U2_R3_CANDIDATE_FUNCTIONAL_DELTA=NONE"
+            echo "U2_R3_P13_IMAGE_UNCHANGED=PASS"
+          } | tee "$EVIDENCE_DIR/09-U2-R3E1-evidence-consistency.txt"
+
+      - name: Assemble U4-RC1 frozen release candidate bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -rf "$RC_DIR" "$RC_OUT_DIR"
+          mkdir -p "$RC_DIR" "$RC_OUT_DIR"
+
+          install_zip="$DIST_DIR/$U2_ZIP_NAME"
+          install_sidecar="$install_zip.sha256"
+          test -f "$install_zip"
+          test -f "$install_sidecar"
+
+          cp "$install_zip" "$RC_DIR/"
+          cp "$install_sidecar" "$RC_DIR/"
+
+          cat > "$RUNNER_TEMP/preflight-v3.b64" <<'EOF_U4_PREFLIGHT'
+          IyEvc3lzdGVtL2Jpbi9zaAojCiMgVkVVWCBVMi1SMyBSRUFELU9OTFkgUFJFRkxJR0hUIHYzCiMgLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tCiMgUHVycG9zZToKIyAgIFZhbGlkYXRlIHRoZSBleGFjdCBVMi1SMyB1bml2ZXJzYWwgVkVVWCBBbnlLZXJuZWwzIGNhbmRpZGF0ZSBhZ2FpbnN0IHRoZQojICAgdGFyZ2V0IGRldmljZSBCRUZPUkUgZmxhc2hpbmcuCiMKIyBTYWZldHkgbW9kZWw6CiMgICAtIE5FVkVSIHdyaXRlcyB0byAvZGV2L2Jsb2NrLyoKIyAgIC0gTkVWRVIgZmxhc2hlcywgZXJhc2VzLCBvciB0b2dnbGVzIGEgYmxvY2sgZGV2aWNlIHdyaXRhYmxlCiMgICAtIHJlYWRzIHRoZSBhY3RpdmUgYm9vdCBwYXJ0aXRpb24gaW50byBhIHRlbXBvcmFyeSByZWd1bGFyIGZpbGUKIyAgIC0gcGVyZm9ybXMgYW4gb2ZmbGluZSB1bnBhY2sgLT4ga2VybmVsIHJlcGxhY2VtZW50IC0+IHJlcGFjayAtPiB1bnBhY2sKIyAgICAgc2ltdWxhdGlvbiB1c2luZyB0aGUgZXhhY3QgbWFnaXNrYm9vdCBidW5kbGVkIGluIFUyLVIzCiMgICAtIHByb2R1Y2VzIFBBU1MgLyBSRVZJRVcgLyBCTE9DSyB3aXRoIGEgZGV0YWlsZWQgcmVwb3J0CiMKIyBVc2FnZToKIyAgIEFuZHJvaWQgLyByZWNvdmVyeToKIyAgICAgc3UgLWMgJ3NoIFZFVVgtVTItUjMtUFJFRkxJR0hULVJFQURPTkxZLXYzLnNoIC9wYXRoL3RvL1UyLVIzLWNhbmRpZGF0ZS56aXAnCiMKIyAgIE9wdGlvbmFsIG91dHB1dCBkaXJlY3Rvcnk6CiMgICAgIHN1IC1jICdzaCBWRVVYLVUyLVIzLVBSRUZMSUdIVC1SRUFET05MWS12My5zaCAvcGF0aC90by9jYW5kaWRhdGUuemlwIC9zZGNhcmQvRG93bmxvYWQnCiMKIyAgIFBhY2thZ2Utb25seSB2ZXJpZmljYXRpb24gKG5vIGRldmljZS9wYXJ0aXRpb24gYWNjZXNzKToKIyAgICAgc2ggVkVVWC1VMi1SMy1QUkVGTElHSFQtUkVBRE9OTFktdjMuc2ggLS1wYWNrYWdlLW9ubHkgL3BhdGgvdG8vY2FuZGlkYXRlLnppcAojCiMKIyB2MyBjb21wYXRpYmlsaXR5IG1vZGVsOgojICAgQ0xBU1MgQSA9IHN0YW5kYXJkIFZFVVgvU002Mzc1IFFHS0kvTUFOTkFSL0hPTEkvQkxBSVIgTGludXgtNS40IGZhbWlseQojICAgICAgICAgICAgIHdpdGggbm8gZGV0ZWN0ZWQgZm9yZWlnbi1rZXJuZWwtb25seSBydW50aW1lIGRlcGVuZGVuY3kuCiMgICBDTEFTUyBCID0gc2FtZSBicm9hZCBWRVVYIGZhbWlseSwgYnV0IFJPTS9rZXJuZWwtc3BlY2lmaWMgcnVudGltZSBjb3VwbGluZwojICAgICAgICAgICAgIGV4aXN0cyBvciBjYW5ub3QgYmUgZXhjbHVkZWQ7IG1hbnVhbCByZXZpZXcgYmVmb3JlIGZsYXNoaW5nLgojICAgQ0xBU1MgQyA9IG91dHNpZGUgYXVkaXRlZCBmYW1pbHkgb3Igc3ludGhldGljL2N1c3RvbSA+IG9mZmljaWFsIExpbnV4CiMgICAgICAgICAgICAgNS40LjMwMiBMVFMgZW5kcG9pbnQ7IHNvdXJjZS9ydW50aW1lIHJldmlldyByZXF1aXJlZCBhbmQgZmxhc2hpbmcKIyAgICAgICAgICAgICBpcyBibG9ja2VkIGJ5IHRoaXMgcHJlZmxpZ2h0LgojCiMgSU1QT1JUQU5UOgojICAgUFJFRkxJR0hUIFBBU1MgaXMgTk9UIERFVklDRSBQQVNTLiBJdCBwcm92ZXMgcGFja2FnZSBpZGVudGl0eSwgZGV2aWNlIGdhdGUsCiMgICBib290LWltYWdlIHBhcnNlL3JlcGFjayBjb21wYXRpYmlsaXR5IGFuZCBub24ta2VybmVsIHBheWxvYWQgcHJlc2VydmF0aW9uLgojICAgT25seSBhbiBhY3R1YWwgc3VjY2Vzc2Z1bCBib290L2Z1bmN0aW9uIHRlc3QgY2FuIGVzdGFibGlzaCBERVZJQ0UgUEFTUy4KIwoKc2V0IC11CgpFWFBFQ1RFRF9JTk5FUl9aSVBfU0hBMjU2X05FVz0iMDAzMDM1ZDcxNTZiZWZhNzgwYTE3ZTIxNGY0ZjE5YzcyM2Q3ZjNhNGM1ODhmMDg4ZDUwOGNiZjIzZjMzZWUzOSIKRVhQRUNURURfSU5ORVJfWklQX1NIQTI1Nl9PTEQ9ImQxMzkyMTE0N2M5OTg4YWQ0NmM4ODZkZDY1MjkyODFhZWMzNDc1MGYyNWEzYWU0OTVkNDM5NWJjNzU2Mzk4YWQiCkVYUEVDVEVEX0lNQUdFX1NIQTI1Nj0iMTJmMmVhZTkwMjQzODc4YWE4YzVmYmQ3Y2IxNGU5Y2JmYjQyMjg2OWRhZTZiYjE0NDkxZmViOTg3MjY5YTFiMiIKRVhQRUNURURfSU1BR0VfQllURVM9IjI5ODQzOTY4IgpFWFBFQ1RFRF9LRVJORUxfUkVMRUFTRT0iNS40LjI3NC1xZ2tpLWc4MjE3OWUzNjJmMzMiCkVYUEVDVEVEX0RFVklDRT0idmV1eCIKClBBQ0tBR0VfT05MWT0wCmlmIFsgIiR7MTotfSIgPSAiLS1wYWNrYWdlLW9ubHkiIF07IHRoZW4KICBQQUNLQUdFX09OTFk9MQogIHNoaWZ0CmZpCgpJTlBVVF9aSVA9IiR7MTotfSIKT1VURElSPSIkezI6LX0iCgppZiBbIC16ICIkSU5QVVRfWklQIiBdIHx8IFsgISAtZiAiJElOUFVUX1pJUCIgXTsgdGhlbgogIGVjaG8gIlVzYWdlOiAkMCBbLS1wYWNrYWdlLW9ubHldIDxVMi1SMyBjYW5kaWRhdGUgemlwPiBbb3V0cHV0LWRpcl0iID4mMgogIGV4aXQgMgpmaQoKIyAtLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tIHV0aWxpdGllcyAtLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tCgpoYXZlKCkgeyBjb21tYW5kIC12ICIkMSIgPi9kZXYvbnVsbCAyPiYxOyB9CgppZiBoYXZlIHNoYTI1NnN1bTsgdGhlbgogIFNIQTI1Nj0ic2hhMjU2c3VtIgplbGlmIGhhdmUgdG95Ym94ICYmIHRveWJveCBzaGEyNTZzdW0gL2Rldi9udWxsID4vZGV2L251bGwgMj4mMTsgdGhlbgogIFNIQTI1Nj0idG95Ym94IHNoYTI1NnN1bSIKZWxpZiBoYXZlIGJ1c3lib3ggJiYgYnVzeWJveCBzaGEyNTZzdW0gL2Rldi9udWxsID4vZGV2L251bGwgMj4mMTsgdGhlbgogIFNIQTI1Nj0iYnVzeWJveCBzaGEyNTZzdW0iCmVsc2UKICBlY2hvICJCTE9DSzogc2hhMjU2c3VtIGlzIHVuYXZhaWxhYmxlLiIgPiYyCiAgZXhpdCAzCmZpCgppZiBoYXZlIHVuemlwOyB0aGVuCiAgVU5aSVBfTU9ERT0idW56aXAiCmVsaWYgaGF2ZSBidXN5Ym94ICYmIGJ1c3lib3ggdW56aXAgLWwgIiRJTlBVVF9aSVAiID4vZGV2L251bGwgMj4mMTsgdGhlbgogIFVOWklQX01PREU9ImJ1c3lib3giCmVsc2UKICBlY2hvICJCTE9DSzogdW56aXAgaXMgdW5hdmFpbGFibGUuIiA+JjIKICBleGl0IDMKZmkKCnppcF9saXN0KCkgewogIGlmIFsgIiRVTlpJUF9NT0RFIiA9ICJ1bnppcCIgXTsgdGhlbgogICAgdW56aXAgLWwgIiQxIgogIGVsc2UKICAgIGJ1c3lib3ggdW56aXAgLWwgIiQxIgogIGZpCn0KCnppcF9leHRyYWN0X3N0ZG91dCgpIHsKICBhcmNoaXZlPSIkMSIKICBtZW1iZXI9IiQyIgogIGlmIFsgIiRVTlpJUF9NT0RFIiA9ICJ1bnppcCIgXTsgdGhlbgogICAgdW56aXAgLXAgIiRhcmNoaXZlIiAiJG1lbWJlciIKICBlbHNlCiAgICBidXN5Ym94IHVuemlwIC1wICIkYXJjaGl2ZSIgIiRtZW1iZXIiCiAgZmkKfQoKemlwX2V4dHJhY3RfYWxsKCkgewogIGFyY2hpdmU9IiQxIgogIGRlc3Q9IiQyIgogIGlmIFsgIiRVTlpJUF9NT0RFIiA9ICJ1bnppcCIgXTsgdGhlbgogICAgdW56aXAgLXEgIiRhcmNoaXZlIiAtZCAiJGRlc3QiCiAgZWxzZQogICAgYnVzeWJveCB1bnppcCAtcSAiJGFyY2hpdmUiIC1kICIkZGVzdCIKICBmaQp9Cgp6aXBfbmFtZXMoKSB7CiAgemlwX2xpc3QgIiQxIiAyPi9kZXYvbnVsbCBcCiAgICB8IGF3ayAnJDEgfiAvXlswLTldKyQvICYmICQyIH4gLy0vICYmICQzIH4gLzovIHtwcmludCAkNH0nCn0KCmlmIFsgLXogIiRPVVRESVIiIF07IHRoZW4KICBpZiBbIC1kIC9zZGNhcmQvRG93bmxvYWQgXSAmJiBbIC13IC9zZGNhcmQvRG93bmxvYWQgXTsgdGhlbgogICAgT1VURElSPSIvc2RjYXJkL0Rvd25sb2FkIgogIGVsaWYgWyAtZCAvZGF0YS9sb2NhbC90bXAgXSAmJiBbIC13IC9kYXRhL2xvY2FsL3RtcCBdOyB0aGVuCiAgICBPVVRESVI9Ii9kYXRhL2xvY2FsL3RtcCIKICBlbGlmIFsgLWQgL3RtcCBdICYmIFsgLXcgL3RtcCBdOyB0aGVuCiAgICBPVVRESVI9Ii90bXAiCiAgZWxzZQogICAgT1VURElSPSIuIgogIGZpCmZpCm1rZGlyIC1wICIkT1VURElSIiAyPi9kZXYvbnVsbCB8fCB7CiAgZWNobyAiQkxPQ0s6IENhbm5vdCBjcmVhdGUvd3JpdGUgb3V0cHV0IGRpcmVjdG9yeTogJE9VVERJUiIgPiYyCiAgZXhpdCAzCn0KClNUQU1QPSIkKGRhdGUgKyVZJW0lZC0lSCVNJVMgMj4vZGV2L251bGwgfHwgZWNobyB1bmtub3duKSIKUkVQT1JUPSIkT1VURElSL1ZFVVgtVTItUjMtUFJFRkxJR0hULXYzLSRTVEFNUC50eHQiCgpCQVNFX1RNUD0iJHtUTVBESVI6LS9kYXRhL2xvY2FsL3RtcH0iClsgLWQgIiRCQVNFX1RNUCIgXSAmJiBbIC13ICIkQkFTRV9UTVAiIF0gfHwgQkFTRV9UTVA9Ii90bXAiClsgLWQgIiRCQVNFX1RNUCIgXSAmJiBbIC13ICIkQkFTRV9UTVAiIF0gfHwgQkFTRV9UTVA9Ii4iCldPUks9IiRCQVNFX1RNUC92ZXV4LXUycjMtcHJlZmxpZ2h0LSQkIgpta2RpciAtcCAiJFdPUksiIHx8IHsKICBlY2hvICJCTE9DSzogQ2Fubm90IGNyZWF0ZSB0ZW1wb3Jhcnkgd29ya2luZyBkaXJlY3Rvcnk6ICRXT1JLIiA+JjIKICBleGl0IDMKfQoKY2xlYW51cCgpIHsKICBybSAtcmYgIiRXT1JLIiAyPi9kZXYvbnVsbCB8fCB0cnVlCn0KdHJhcCBjbGVhbnVwIEVYSVQgSU5UIFRFUk0KClBBU1NfTj0wCklORk9fTj0wCldBUk5fTj0wCkJMT0NLX049MAoKbGluZSgpIHsgcHJpbnRmICclc1xuJyAiJCoiIHwgdGVlIC1hICIkUkVQT1JUIjsgfQpzZWN0aW9uKCkgewogIGxpbmUgIiIKICBsaW5lICI9PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09IgogIGxpbmUgIiQqIgogIGxpbmUgIj09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT0iCn0KcGFzcygpIHsKICBQQVNTX049JCgoUEFTU19OICsgMSkpCiAgbGluZSAiUEFTUyAgfCAkKiIKfQppbmZvKCkgewogIElORk9fTj0kKChJTkZPX04gKyAxKSkKICBsaW5lICJJTkZPICB8ICQqIgp9Cndhcm4oKSB7CiAgV0FSTl9OPSQoKFdBUk5fTiArIDEpKQogIGxpbmUgIldBUk4gIHwgJCoiCn0KYmxvY2soKSB7CiAgQkxPQ0tfTj0kKChCTE9DS19OICsgMSkpCiAgbGluZSAiQkxPQ0sgfCAkKiIKfQprdigpIHsgbGluZSAiJDE9JDIiOyB9CgpoYXNoX2ZpbGUoKSB7CiAgIyBzaGVsbGNoZWNrIGRpc2FibGU9U0MyMDg2CiAgJFNIQTI1NiAiJDEiIDI+L2Rldi9udWxsIHwgYXdrICd7cHJpbnQgJDF9Jwp9CgpmaWxlX3NpemUoKSB7CiAgd2MgLWMgPCAiJDEiIDI+L2Rldi9udWxsIHwgdHIgLWQgJyAnCn0KCnByb3AoKSB7CiAgaWYgaGF2ZSBnZXRwcm9wOyB0aGVuCiAgICBnZXRwcm9wICIkMSIgMj4vZGV2L251bGwgfCB0ciAtZCAnXHInCiAgZWxzZQogICAgcHJpbnRmICcnCiAgZmkKfQoKZmluZF9ibG9jaygpIHsKICAjICQxIGJhc2UgcGFydGl0aW9uIG5hbWUsICQyIHNsb3Qgc3VmZml4IGluY2x1ZGluZyBsZWFkaW5nIF8gb3IgZW1wdHkuCiAgcD0iJDEiCiAgcz0iJDIiCiAgZm9yIHggaW4gXAogICAgIi9kZXYvYmxvY2svbWFwcGVyLyR7cH0ke3N9IiBcCiAgICAiL2Rldi9ibG9jay9ieS1uYW1lLyR7cH0ke3N9IiBcCiAgICAiL2Rldi9ibG9jay9ib290ZGV2aWNlL2J5LW5hbWUvJHtwfSR7c30iIFwKICAgIC9kZXYvYmxvY2svcGxhdGZvcm0vKi9ieS1uYW1lLyIke3B9JHtzfSIgXAogICAgL2Rldi9ibG9jay9wbGF0Zm9ybS8qLyovYnktbmFtZS8iJHtwfSR7c30iCiAgZG8KICAgIFsgLWUgIiR4IiBdICYmIHsgcHJpbnRmICclc1xuJyAiJHgiOyByZXR1cm4gMDsgfQogIGRvbmUKCiAgIyBTb21lIHBhcnRpdGlvbnMgY2FuIGJlIHVuc2xvdHRlZCBldmVuIG9uIEEvQiBkZXZpY2VzLgogIGlmIFsgLW4gIiRzIiBdOyB0aGVuCiAgICBmb3IgeCBpbiBcCiAgICAgICIvZGV2L2Jsb2NrL21hcHBlci8ke3B9IiBcCiAgICAgICIvZGV2L2Jsb2NrL2J5LW5hbWUvJHtwfSIgXAogICAgICAiL2Rldi9ibG9jay9ib290ZGV2aWNlL2J5LW5hbWUvJHtwfSIgXAogICAgICAvZGV2L2Jsb2NrL3BsYXRmb3JtLyovYnktbmFtZS8iJHtwfSIgXAogICAgICAvZGV2L2Jsb2NrL3BsYXRmb3JtLyovKi9ieS1uYW1lLyIke3B9IgogICAgZG8KICAgICAgWyAtZSAiJHgiIF0gJiYgeyBwcmludGYgJyVzXG4nICIkeCI7IHJldHVybiAwOyB9CiAgICBkb25lCiAgZmkKICByZXR1cm4gMQp9CgpibG9ja19zaXplKCkgewogIGI9IiQxIgogIGlmIGhhdmUgYmxvY2tkZXY7IHRoZW4KICAgIGJsb2NrZGV2IC0tZ2V0c2l6ZTY0ICIkYiIgMj4vZGV2L251bGwgJiYgcmV0dXJuIDAKICBmaQogIHJlYWw9IiQocmVhZGxpbmsgLWYgIiRiIiAyPi9kZXYvbnVsbCB8fCBwcmludGYgJyVzJyAiJGIiKSIKICBuYW1lPSIke3JlYWwjIyovfSIKICBpZiBbIC1yICIvc3lzL2NsYXNzL2Jsb2NrLyRuYW1lL3NpemUiIF07IHRoZW4KICAgIHNlY3RvcnM9IiQoY2F0ICIvc3lzL2NsYXNzL2Jsb2NrLyRuYW1lL3NpemUiIDI+L2Rldi9udWxsKSIKICAgIGNhc2UgIiRzZWN0b3JzIiBpbgogICAgICAnJ3wqWyEwLTldKikgOzsKICAgICAgKikgZWNobyAkKChzZWN0b3JzICogNTEyKSk7IHJldHVybiAwIDs7CiAgICBlc2FjCiAgZmkKICBwcmludGYgJycKfQoKdGFpbF9oYXNfYXZiZigpIHsKICBmPSIkMSIKICBzej0iJChmaWxlX3NpemUgIiRmIikiCiAgY2FzZSAiJHN6IiBpbiAnJ3wqWyEwLTldKikgcmV0dXJuIDEgOzsgZXNhYwogIFsgIiRzeiIgLWdlIDY0IF0gfHwgcmV0dXJuIDEKICBpZiBoYXZlIHRhaWw7IHRoZW4KICAgIHRhaWwgLWMgNjQgIiRmIiAyPi9kZXYvbnVsbCB8IGdyZXAgLWFxICdBVkJmJwogIGVsc2UKICAgIHJldHVybiAxCiAgZmkKfQoKcmVjb3JkX2NtZCgpIHsKICB0aXRsZT0iJDEiCiAgc2hpZnQKICBsaW5lICItLS0gJHRpdGxlIC0tLSIKICAiJEAiID4+IiRSRVBPUlQiIDI+JjEgfHwgbGluZSAiKGNvbW1hbmQgcmV0dXJuZWQgbm9uLXplcm8pIgp9CgojIC0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLSBpbW11dGFibGUgY2FuZGlkYXRlIC0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLQoKc2VjdGlvbiAiVkVVWCBVMi1SMyBSRUFELU9OTFkgUFJFRkxJR0hUIgprdiAiU0NSSVBUX01PREUiICIkKFsgIiRQQUNLQUdFX09OTFkiIC1lcSAxIF0gJiYgZWNobyBQQUNLQUdFX09OTFkgfHwgZWNobyBERVZJQ0VfUFJFRkxJR0hUKSIKa3YgIklOUFVUX1pJUCIgIiRJTlBVVF9aSVAiCmt2ICJPVVRQVVRfUkVQT1JUIiAiJFJFUE9SVCIKa3YgIkVYUEVDVEVEX0RFVklDRSIgIiRFWFBFQ1RFRF9ERVZJQ0UiCmt2ICJFWFBFQ1RFRF9JTUFHRV9TSEEyNTYiICIkRVhQRUNURURfSU1BR0VfU0hBMjU2IgprdiAiRVhQRUNURURfS0VSTkVMX1JFTEVBU0UiICIkRVhQRUNURURfS0VSTkVMX1JFTEVBU0UiCmxpbmUgIlNBRkVUWT1OT19QQVJUSVRJT05fV1JJVEVTX05PX0ZMQVNIX05PX0VSQVNFIgoKc2VjdGlvbiAiMS4gUmVzb2x2ZSBleGFjdCBVMi1SMyBBSzMgcGFja2FnZSIKCklOUFVUX1NIQT0iJChoYXNoX2ZpbGUgIiRJTlBVVF9aSVAiKSIKa3YgIklOUFVUX1pJUF9TSEEyNTYiICIkSU5QVVRfU0hBIgoKTkFNRVM9IiRXT1JLL2lucHV0LXppcC1uYW1lcy50eHQiCnppcF9uYW1lcyAiJElOUFVUX1pJUCIgPiIkTkFNRVMiIHx8IHRydWUKCmlmIGdyZXAgLUVxICcoXi98KF58LylcLlwuKC98JCkpJyAiJE5BTUVTIjsgdGhlbgogIGJsb2NrICJJbnB1dCBaSVAgY29udGFpbnMgdW5zYWZlIGFic29sdXRlL3BhdGgtdHJhdmVyc2FsIGVudHJpZXMuIgpmaQoKQ0FORElEQVRFX1pJUD0iIgpJTlBVVF9MQVlPVVQ9IiIKCmlmIGdyZXAgLUZ4cSAnYW55a2VybmVsLnNoJyAiJE5BTUVTIjsgdGhlbgogIGlmIGdyZXAgLUZ4cSAnSW1hZ2UnICIkTkFNRVMiICYmIFwKICAgICBncmVwIC1GeHEgJ01FVEEtSU5GL2NvbS9nb29nbGUvYW5kcm9pZC91cGRhdGUtYmluYXJ5JyAiJE5BTUVTIjsgdGhlbgogICAgQ0FORElEQVRFX1pJUD0iJElOUFVUX1pJUCIKICAgIElOUFVUX0xBWU9VVD0iRElSRUNUX0FLMyIKICAgIHBhc3MgIklucHV0IGlzIHN0cnVjdHVyYWxseSBhIGRpcmVjdCBBbnlLZXJuZWwzIHBhY2thZ2UuIgogIGVsc2UKICAgIGJsb2NrICJSb290IGFueWtlcm5lbC5zaCBleGlzdHMgYnV0IGRpcmVjdCBBSzMgc3RydWN0dXJlIGlzIGluY29tcGxldGUuIgogIGZpCmVsc2UKICBORVNURURfTElTVD0iJFdPUksvbmVzdGVkLWxpc3QudHh0IgogIGdyZXAgLUUgJyhefC8pW14vXSpBSzNcLnppcCQnICIkTkFNRVMiID4iJE5FU1RFRF9MSVNUIiB8fCB0cnVlCiAgbmVzdGVkX2NvdW50PSIkKHdjIC1sIDwgIiRORVNURURfTElTVCIgfCB0ciAtZCAnICcpIgoKICBpZiBbICIkbmVzdGVkX2NvdW50IiAhPSAiMSIgXTsgdGhlbgogICAgYmxvY2sgIkV4cGVjdGVkIGV4YWN0bHkgb25lIG5lc3RlZCBBSzMuemlwIGluIGFydGlmYWN0IGNvbnRhaW5lcjsgZm91bmQgJG5lc3RlZF9jb3VudC4iCiAgZWxzZQogICAgbmVzdGVkX25hbWU9IiQoY2F0ICIkTkVTVEVEX0xJU1QiKSIKICAgIENBTkRJREFURV9aSVA9IiRXT1JLL1UyLVIzLUFLMy56aXAiCiAgICBpZiB6aXBfZXh0cmFjdF9zdGRvdXQgIiRJTlBVVF9aSVAiICIkbmVzdGVkX25hbWUiID4iJENBTkRJREFURV9aSVAiIDI+PiIkUkVQT1JUIiAmJiBcCiAgICAgICBbIC1zICIkQ0FORElEQVRFX1pJUCIgXTsgdGhlbgogICAgICBJTlBVVF9MQVlPVVQ9IkFSVElGQUNUX0NPTlRBSU5FUiIKICAgICAgcGFzcyAiUmVzb2x2ZWQgbmVzdGVkIEFLMyBwYWNrYWdlIGZyb20gYXJ0aWZhY3QgY29udGFpbmVyOiAkbmVzdGVkX25hbWUiCgogICAgICBzaWRlY2FyX25hbWU9IiR7bmVzdGVkX25hbWV9LnNoYTI1NiIKICAgICAgaWYgZ3JlcCAtRnhxICIkc2lkZWNhcl9uYW1lIiAiJE5BTUVTIjsgdGhlbgogICAgICAgIGlmIHppcF9leHRyYWN0X3N0ZG91dCAiJElOUFVUX1pJUCIgIiRzaWRlY2FyX25hbWUiID4iJFdPUksvbmVzdGVkLnNoYTI1NiIgMj4+IiRSRVBPUlQiOyB0aGVuCiAgICAgICAgICBkZWNsYXJlZD0iJChhd2sgJ05Ge3ByaW50ICQxOyBleGl0fScgIiRXT1JLL25lc3RlZC5zaGEyNTYiKSIKICAgICAgICAgIGFjdHVhbD0iJChoYXNoX2ZpbGUgIiRDQU5ESURBVEVfWklQIikiCiAgICAgICAgICBrdiAiTkVTVEVEX1NJREVDQVJfREVDTEFSRURfU0hBMjU2IiAiJGRlY2xhcmVkIgogICAgICAgICAgaWYgWyAiJGRlY2xhcmVkIiA9ICIkYWN0dWFsIiBdOyB0aGVuCiAgICAgICAgICAgIHBhc3MgIk5lc3RlZCBBSzMgc2lkZWNhciBtYXRjaGVzIGV4dHJhY3RlZCBuZXN0ZWQgWklQLiIKICAgICAgICAgIGVsc2UKICAgICAgICAgICAgYmxvY2sgIk5lc3RlZCBBSzMgc2lkZWNhciBoYXNoIGRvZXMgbm90IG1hdGNoIGV4dHJhY3RlZCBuZXN0ZWQgWklQLiIKICAgICAgICAgIGZpCiAgICAgICAgZWxzZQogICAgICAgICAgYmxvY2sgIk5lc3RlZCBBSzMgc2lkZWNhciBleGlzdHMgYnV0IGNvdWxkIG5vdCBiZSBleHRyYWN0ZWQuIgogICAgICAgIGZpCiAgICAgIGVsc2UKICAgICAgICBpbmZvICJBcnRpZmFjdCBjb250YWluZXIgaGFzIG5vIG5lc3RlZCBBSzMgc2lkZWNhcjsgcGF5bG9hZCBtYW5pZmVzdCByZW1haW5zIGF1dGhvcml0YXRpdmUuIgogICAgICBmaQogICAgZWxzZQogICAgICBibG9jayAiRmFpbGVkIHRvIGV4dHJhY3QgbmVzdGVkIEFLMyBwYWNrYWdlLiIKICAgIGZpCiAgZmkKZmkKCmt2ICJJTlBVVF9MQVlPVVQiICIkSU5QVVRfTEFZT1VUIgoKaWYgWyAteiAiJENBTkRJREFURV9aSVAiIF0gfHwgWyAhIC1zICIkQ0FORElEQVRFX1pJUCIgXTsgdGhlbgogIGJsb2NrICJObyB1c2FibGUgQUszIHBhY2thZ2UgYXZhaWxhYmxlLiIKZWxzZQogIElOTkVSX1NIQT0iJChoYXNoX2ZpbGUgIiRDQU5ESURBVEVfWklQIikiCiAgSU5ORVJfQllURVM9IiQoZmlsZV9zaXplICIkQ0FORElEQVRFX1pJUCIpIgogIGt2ICJBSzNfWklQX1NIQTI1NiIgIiRJTk5FUl9TSEEiCiAga3YgIkFLM19aSVBfQllURVMiICIkSU5ORVJfQllURVMiCgogIGNhc2UgIiRJTk5FUl9TSEEiIGluCiAgICAiJEVYUEVDVEVEX0lOTkVSX1pJUF9TSEEyNTZfTkVXIikKICAgICAgcGFzcyAiQUszIGFyY2hpdmUgaGFzaCBtYXRjaGVzIGxhdGVzdCBVMi1SM0UxIHBhY2thZ2luZyBpbnN0YW5jZS4iCiAgICAgIDs7CiAgICAiJEVYUEVDVEVEX0lOTkVSX1pJUF9TSEEyNTZfT0xEIikKICAgICAgaW5mbyAiQUszIGFyY2hpdmUgaGFzaCBtYXRjaGVzIGVhcmxpZXIgVTItUjMgcGFja2FnaW5nIGluc3RhbmNlOyBwYXlsb2FkIGJ5dGVzIGRlY2lkZSBhY2NlcHRhbmNlLiIKICAgICAgOzsKICAgICopCiAgICAgIGluZm8gIkFLMyBhcmNoaXZlIGhhc2ggaXMgYSBkaWZmZXJlbnQgWklQLW1ldGFkYXRhIGluc3RhbmNlOyBwYXlsb2FkIGJ5dGVzIGRlY2lkZSBhY2NlcHRhbmNlLiIKICAgICAgOzsKICBlc2FjCmZpCgpDQU5ERElSPSIkV09SSy9jYW5kaWRhdGUiCm1rZGlyIC1wICIkQ0FORERJUiIKaWYgWyAtbiAiJENBTkRJREFURV9aSVAiIF0gJiYgWyAtcyAiJENBTkRJREFURV9aSVAiIF0gJiYgXAogICB6aXBfZXh0cmFjdF9hbGwgIiRDQU5ESURBVEVfWklQIiAiJENBTkRESVIiID4+IiRSRVBPUlQiIDI+JjE7IHRoZW4KICBwYXNzICJDYW5kaWRhdGUgQUszIFpJUCBleHRyYWN0cyBzdWNjZXNzZnVsbHkuIgplbHNlCiAgYmxvY2sgIkNhbmRpZGF0ZSBBSzMgWklQIGV4dHJhY3Rpb24gZmFpbGVkLiIKZmkKCmlmIGZpbmQgIiRDQU5ERElSIiAtdHlwZSBsIDI+L2Rldi9udWxsIHwgZ3JlcCAtcSAuOyB0aGVuCiAgYmxvY2sgIkNhbmRpZGF0ZSBjb250YWlucyBzeW1ib2xpYyBsaW5rcy4iCmVsc2UKICBwYXNzICJDYW5kaWRhdGUgY29udGFpbnMgbm8gc3ltYm9saWMgbGlua3MuIgpmaQoKc2VjdGlvbiAiMi4gRXhhY3QgVTItUjMgZmlsZSBtYW5pZmVzdCBhbmQga2VybmVsIGlkZW50aXR5IgoKTUFOSUZFU1RfRVhQRUNURUQ9IiRXT1JLL2V4cGVjdGVkLWZpbGVzLnNoYTI1NiIKY2F0ID4iJE1BTklGRVNUX0VYUEVDVEVEIiA8PCdFT0YnCjEyZjJlYWU5MDI0Mzg3OGFhOGM1ZmJkN2NiMTRlOWNiZmI0MjI4NjlkYWU2YmIxNDQ5MWZlYjk4NzI2OWExYjIgIC4vSW1hZ2UKZGY2ZjY1ZGE0N2Q0NTlmZGYyYTJlZjBlYWRiMzRmMzdkODM4YmVmYzkxMzUyYjY0YTg0ZjM1NTA3YmVhOTVjZCAgLi9MSUNFTlNFCmNmM2ViZTcxODNkNWUzZjI1ZTkyMTVjZGU3ZWY5ZGQ5NTZlODM2MjMyYTcwZjJhNjcxODkxYWI0ODg5YzdlN2QgIC4vTUVUQS1JTkYvY29tL2dvb2dsZS9hbmRyb2lkL3VwZGF0ZS1iaW5hcnkKNzM1Zjc5MGRlYTc0YzU4M2VkOTQ4ODVkNjVlM2IzZTM0NjE2Y2YyODJkMTQ2OWYxY2U4ODY2Mjk3ODY2N2ZlMCAgLi9NRVRBLUlORi9jb20vZ29vZ2xlL2FuZHJvaWQvdXBkYXRlci1zY3JpcHQKYzc5NWJhZDJhZTdkNGJiNmNjYjc1NTMyMjdhMzlkY2RlZDQxMmE4ZTJkODRjOWI1MTA2ZTc0MDQ5YTNmNTM2NiAgLi9QMTMtQlVJTEQtSU5GTy50eHQKN2ZiYmExOGQ1ODk5ZjkzMTA1MGE3MjZhZDY5YjFjYzYzYWE3OWZkY2E1MmE5N2RlYjAyYmI2MTZlZjhmMDZmMSAgLi9hbnlrZXJuZWwuc2gKZjdhNTFjZmUyZTA5MzAxNmEzNGE3NmUxNmRlNmM5ODg1YzJkMTk5MmMzNDgyZmNhYmM2Njg2ODBlMWYwZjZiYiAgLi90b29scy9hazMtY29yZS5zaAo2NjQzNmRjMWU5N2QyMjg4NmVkMmQzNWJkNjlhOWNiODJiYjBmZGJhNGU0MjY3YzUxODRjZWUxZDM5YTJmNWY0ICAuL3Rvb2xzL2J1c3lib3gKOTNlNTY3ZmZiZGZiNWJlMTI3YmZhYTg3YzgwM2QxZDMxODljYzBhODhhM2M1MDAzNDkyN2NhMDBmZWM2NjNhOCAgLi90b29scy9mZWMKMTQ0NTJlNzZhYzA2ZWE5ODJhOGVjNTk3ZWVjYTk2YzkxZmUyMGZjZTEyYTc4NGRlNTQ3Y2Q3NjNkNTA4YjMzZiAgLi90b29scy9odHRvb2xzX3N0YXRpYwoyOGYyODhhMDMxMmZlY2JhYjQ0MjJkM2Q0MjVkOWM5NzM1OTFmOTI0MDAwMzZhMTlkOTUzNmY3ZjIyMjk5ZDY3ICAuL3Rvb2xzL2xwdG9vbHNfc3RhdGljCjBiMTk0NzJiMjkxY2U5MDMzYzI5YTgzMTU1ZmY0YzFiMThiZTlkMWQxN2Q5MDFkNjNlNTBmNTc0MzYzNzg3NjIgIC4vdG9vbHMvbWFnaXNrYm9vdAplNWZhZmMxZmE5NDg2OTUwY2U5YmE0NzZmNTcyMzc1NGQyNjAwMTQ1MTVjZWQ3MmI0NTYwMjM4ZTZjNTYwZjNhICAuL3Rvb2xzL21hZ2lza3BvbGljeQo4MDExNGE1MWVkNzlmNGY5NmQwZmM2ZDZlMDAyNDk2YzdjMTFiN2U0MzA4MjkzYTBjNjE4MzkyY2IwZTYxNjhjICAuL3Rvb2xzL3NuYXBzaG90dXBkYXRlcl9zdGF0aWMKRU9GCgpBQ1RVQUxfRklMRVM9IiRXT1JLL2FjdHVhbC1maWxlcy50eHQiCkVYUEVDVEVEX0ZJTEVTPSIkV09SSy9leHBlY3RlZC1maWxlcy50eHQiCigKICBjZCAiJENBTkRESVIiIHx8IGV4aXQgMQogIGZpbmQgLiAtdHlwZSBmIC1wcmludCB8IExDX0FMTD1DIHNvcnQKKSA+IiRBQ1RVQUxfRklMRVMiCmF3ayAne3ByaW50ICQyfScgIiRNQU5JRkVTVF9FWFBFQ1RFRCIgfCBMQ19BTEw9QyBzb3J0ID4iJEVYUEVDVEVEX0ZJTEVTIgoKaWYgY21wIC1zICIkQUNUVUFMX0ZJTEVTIiAiJEVYUEVDVEVEX0ZJTEVTIjsgdGhlbgogIHBhc3MgIkV4YWN0IDE0LWZpbGUgVTItUjMgcGF5bG9hZCBzZXQgbWF0Y2hlcy4iCmVsc2UKICBibG9jayAiQ2FuZGlkYXRlIGZpbGUgc2V0IGRpZmZlcnMgZnJvbSBmcm96ZW4gVTItUjMuIgogIGxpbmUgIi0tLSBleHBlY3RlZCB2cyBhY3R1YWwgZmlsZSBzZXQgLS0tIgogIGlmIGhhdmUgZGlmZjsgdGhlbgogICAgZGlmZiAtdSAiJEVYUEVDVEVEX0ZJTEVTIiAiJEFDVFVBTF9GSUxFUyIgPj4iJFJFUE9SVCIgMj4mMSB8fCB0cnVlCiAgZWxzZQogICAgY2F0ICIkRVhQRUNURURfRklMRVMiID4+IiRSRVBPUlQiCiAgICBjYXQgIiRBQ1RVQUxfRklMRVMiID4+IiRSRVBPUlQiCiAgZmkKZmkKCm1hbmlmZXN0X2JhZD0wCndoaWxlIHJlYWQgZXhwZWN0ZWQgcmVsOyBkbwogIGY9IiRDQU5ERElSLyR7cmVsIy4vfSIKICBpZiBbICEgLWYgIiRmIiBdOyB0aGVuCiAgICBsaW5lICJNSVNTSU5HIHwgJHJlbCIKICAgIG1hbmlmZXN0X2JhZD0xCiAgICBjb250aW51ZQogIGZpCiAgZ290PSIkKGhhc2hfZmlsZSAiJGYiKSIKICBpZiBbICIkZ290IiAhPSAiJGV4cGVjdGVkIiBdOyB0aGVuCiAgICBsaW5lICJIQVNIRkFJTCB8ICRyZWwgfCBleHBlY3RlZD0kZXhwZWN0ZWQgZ290PSRnb3QiCiAgICBtYW5pZmVzdF9iYWQ9MQogIGZpCmRvbmUgPCIkTUFOSUZFU1RfRVhQRUNURUQiCmlmIFsgIiRtYW5pZmVzdF9iYWQiIC1lcSAwIF07IHRoZW4KICBwYXNzICJBbGwgMTQgZnJvemVuIFUyLVIzIGZpbGUgaGFzaGVzIG1hdGNoLiIKZWxzZQogIGJsb2NrICJPbmUgb3IgbW9yZSBVMi1SMyBmaWxlIGhhc2hlcyBkbyBub3QgbWF0Y2guIgpmaQoKSU1BR0U9IiRDQU5ERElSL0ltYWdlIgppZiBbIC1mICIkSU1BR0UiIF07IHRoZW4KICBJTUdfU0hBPSIkKGhhc2hfZmlsZSAiJElNQUdFIikiCiAgSU1HX0JZVEVTPSIkKGZpbGVfc2l6ZSAiJElNQUdFIikiCiAga3YgIkNBTkRJREFURV9JTUFHRV9TSEEyNTYiICIkSU1HX1NIQSIKICBrdiAiQ0FORElEQVRFX0lNQUdFX0JZVEVTIiAiJElNR19CWVRFUyIKICBbICIkSU1HX1NIQSIgPSAiJEVYUEVDVEVEX0lNQUdFX1NIQTI1NiIgXSBcCiAgICAmJiBwYXNzICJQMTMgSW1hZ2UgU0hBLTI1NiBpcyBleGFjdC4iIFwKICAgIHx8IGJsb2NrICJQMTMgSW1hZ2UgaGFzaCBtaXNtYXRjaC4iCiAgWyAiJElNR19CWVRFUyIgPSAiJEVYUEVDVEVEX0lNQUdFX0JZVEVTIiBdIFwKICAgICYmIHBhc3MgIlAxMyBJbWFnZSBzaXplIGlzIGV4YWN0LiIgXAogICAgfHwgYmxvY2sgIlAxMyBJbWFnZSBzaXplIG1pc21hdGNoLiIKCiAgaWYgc3RyaW5ncyAiJElNQUdFIiAyPi9kZXYvbnVsbCB8IGdyZXAgLUZxICIkRVhQRUNURURfS0VSTkVMX1JFTEVBU0UiOyB0aGVuCiAgICBwYXNzICJQMTMga2VybmVscmVsZWFzZSBzdHJpbmcgaXMgcHJlc2VudCBpbiBJbWFnZS4iCiAgZWxzZQogICAgYmxvY2sgIkV4cGVjdGVkIFAxMyBrZXJuZWxyZWxlYXNlIHN0cmluZyBub3QgZm91bmQgaW4gSW1hZ2UuIgogIGZpCgogICMgYXJtNjQgSW1hZ2UgbWFnaWM6IGxpdHRsZS1lbmRpYW4gMHg2NDRkNTI0MSAtPiBieXRlcyA0MSA1MiA0ZCA2NCBhdCAweDM4LgogIGlmIGhhdmUgb2Q7IHRoZW4KICAgIG1hZ2ljPSIkKGRkIGlmPSIkSU1BR0UiIGJzPTEgc2tpcD01NiBjb3VudD00IDI+L2Rldi9udWxsIHwgb2QgLUFuIC10eDEgfCB0ciAtZCAnIFxuJykiCiAgICBrdiAiQVJNNjRfSU1BR0VfTUFHSUNfT0ZGU0VUXzB4MzgiICIkbWFnaWMiCiAgICBbICIkbWFnaWMiID0gIjQxNTI0ZDY0IiBdIFwKICAgICAgJiYgcGFzcyAiQVJNNjQgTGludXggSW1hZ2UgbWFnaWMgaXMgdmFsaWQuIiBcCiAgICAgIHx8IGJsb2NrICJBUk02NCBMaW51eCBJbWFnZSBtYWdpYyBpcyBpbnZhbGlkLiIKICBlbHNlCiAgICB3YXJuICJvZCB1bmF2YWlsYWJsZTsgQVJNNjQgSW1hZ2UgbWFnaWMgd2FzIG5vdCBjaGVja2VkLiIKICBmaQplbHNlCiAgYmxvY2sgIkltYWdlIGlzIG1pc3NpbmcgZnJvbSBjYW5kaWRhdGUuIgpmaQoKIyBFeHBsaWNpdGx5IGZvcmJpZCBhY2NpZGVudGFsIGhhcmR3YXJlL2Vudmlyb25tZW50IHBheWxvYWRzLgpmb3JiaWRkZW5fcGF5bG9hZD0iJChmaW5kICIkQ0FORERJUiIgLXR5cGUgZiBcKCBcCiAgLWluYW1lICcqLmR0YicgLW8gLWluYW1lICcqLmR0Ym8nIC1vIC1pbmFtZSAnKi5pbWcnIC1vIC1pbmFtZSAnKi5rbycgXAogIC1vIC1wYXRoICcqL3ZlbmRvcl9ib290KicgLW8gLXBhdGggJyovdmVuZG9yX2tlcm5lbF9ib290KicgXAogIC1vIC1wYXRoICcqL3N5c3RlbV9kbGttKicgLW8gLXBhdGggJyovdmVuZG9yX2Rsa20qJyBcClwpIC1wcmludCAyPi9kZXYvbnVsbCkiCmlmIFsgLXogIiRmb3JiaWRkZW5fcGF5bG9hZCIgXTsgdGhlbgogIHBhc3MgIk5vIERUQi9EVEJPL2Jvb3QvdmVuZG9yX2Jvb3QvbW9kdWxlIHBheWxvYWQgaXMgc2hpcHBlZC4iCmVsc2UKICBibG9jayAiVW5leHBlY3RlZCBoYXJkd2FyZS9lbnZpcm9ubWVudCBwYXlsb2FkIGZvdW5kOiIKICBsaW5lICIkZm9yYmlkZGVuX3BheWxvYWQiCmZpCgpBSz0iJENBTkRESVIvYW55a2VybmVsLnNoIgpVUERBVEVSPSIkQ0FORERJUi9NRVRBLUlORi9jb20vZ29vZ2xlL2FuZHJvaWQvdXBkYXRlLWJpbmFyeSIKaWYgWyAtZiAiJEFLIiBdOyB0aGVuCiAgZm9yIHJlcXVpcmVkIGluIFwKICAgICdkby5kZXZpY2VjaGVjaz0xJyBcCiAgICAnZG8ubW9kdWxlcz0wJyBcCiAgICAnZGV2aWNlLm5hbWUxPXZldXgnIFwKICAgICdzdXBwb3J0ZWQudmVyc2lvbnM9JyBcCiAgICAnc3VwcG9ydGVkLnBhdGNobGV2ZWxzPScgXAogICAgJ0JMT0NLPWJvb3Q7JyBcCiAgICAnSVNfU0xPVF9ERVZJQ0U9MTsnIFwKICAgICdTTE9UX1NFTEVDVD1hY3RpdmU7JyBcCiAgICAnUEFUQ0hfVkJNRVRBX0ZMQUc9MDsnIFwKICAgICdkdW1wX2Jvb3Q7JyBcCiAgICAnd3JpdGVfYm9vdDsnCiAgZG8KICAgIGdyZXAgLUZ4cSAiJHJlcXVpcmVkIiAiJEFLIiBcCiAgICAgICYmIHBhc3MgIkFLMyBjb250cmFjdDogJHJlcXVpcmVkIiBcCiAgICAgIHx8IGJsb2NrICJBSzMgY29udHJhY3QgbWlzc2luZy9jaGFuZ2VkOiAkcmVxdWlyZWQiCiAgZG9uZQoKICB2ZXJzaW9ucz0iJChncmVwICdec3VwcG9ydGVkLnZlcnNpb25zPScgIiRBSyIgfCB0YWlsIC1uMSB8IGN1dCAtZD0gLWYyLSkiCiAgaWYgWyAteiAiJHZlcnNpb25zIiBdOyB0aGVuCiAgICBwYXNzICJBbmRyb2lkIHZlcnNpb24gZ2F0ZSBpcyBkaXNhYmxlZC4iCiAgZWxzZQogICAgYmxvY2sgIkFuZHJvaWQgdmVyc2lvbiBnYXRlIGlzIHVuZXhwZWN0ZWRseSBhY3RpdmU6ICR2ZXJzaW9ucyIKICBmaQplbHNlCiAgYmxvY2sgImFueWtlcm5lbC5zaCBtaXNzaW5nLiIKZmkKCmlmIFsgLWYgIiRVUERBVEVSIiBdICYmIFwKICAgZ3JlcCAtRnEgJ1sgIiQoZmlsZV9nZXRwcm9wIGFueWtlcm5lbC5zaCBzdXBwb3J0ZWQudmVyc2lvbnMpIiBdIHx8IHJldHVybiAxOycgIiRVUERBVEVSIjsgdGhlbgogIHBhc3MgIkJ1bmRsZWQgQW55S2VybmVsMyBjb25maXJtcyBlbXB0eSBzdXBwb3J0ZWQudmVyc2lvbnMgc2tpcHMgdmVyc2lvbiBjaGVjay4iCmVsc2UKICBibG9jayAiQ291bGQgbm90IHByb3ZlIEFueUtlcm5lbDMgZW1wdHktdmVyc2lvbiBza2lwIGNvbnRyYWN0LiIKZmkKCmlmIFsgIiRQQUNLQUdFX09OTFkiIC1lcSAxIF07IHRoZW4KICBzZWN0aW9uICJQQUNLQUdFLU9OTFkgVkVSRElDVCIKICBrdiAiUEFTU19DT1VOVCIgIiRQQVNTX04iCiAga3YgIklORk9fQ09VTlQiICIkSU5GT19OIgogIGt2ICJXQVJOX0NPVU5UIiAiJFdBUk5fTiIKICBrdiAiQkxPQ0tfQ09VTlQiICIkQkxPQ0tfTiIKICBpZiBbICIkQkxPQ0tfTiIgLWd0IDAgXTsgdGhlbgogICAgbGluZSAiRklOQUxfVkVSRElDVD1CTE9DSyIKICAgIGxpbmUgIkFDVElPTj1ET19OT1RfVVNFX1BBQ0tBR0UiCiAgICBleGl0IDEwCiAgZWxpZiBbICIkV0FSTl9OIiAtZ3QgMCBdOyB0aGVuCiAgICBsaW5lICJGSU5BTF9WRVJESUNUPVJFVklFVyIKICAgIGxpbmUgIkFDVElPTj1QQUNLQUdFX0lERU5USVRZX09LX0JVVF9XQVJOSU5HU19FWElTVCIKICAgIGV4aXQgMTEKICBlbHNlCiAgICBsaW5lICJGSU5BTF9WRVJESUNUPVBBQ0tBR0VfUEFTUyIKICAgIGxpbmUgIkFDVElPTj1QQUNLQUdFX0lERU5USVRZX1ZFUklGSUVEIgogICAgZXhpdCAwCiAgZmkKZmkKCiMgLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tIGRldmljZSBmYWN0cyAtLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0KCnNlY3Rpb24gIjMuIFRhcmdldCBkZXZpY2UgaWRlbnRpdHkgYW5kIHJ1bm5pbmcgZW52aXJvbm1lbnQiCgppZiBbICIkKGlkIC11IDI+L2Rldi9udWxsKSIgIT0gIjAiIF07IHRoZW4KICBibG9jayAiUm9vdCBpcyByZXF1aXJlZCBmb3IgYSBjb21wbGV0ZSBib290LXBhcnRpdGlvbiBwcmVmbGlnaHQuIgplbHNlCiAgcGFzcyAiUnVubmluZyBhcyByb290LiIKZmkKCmlmICEgaGF2ZSBnZXRwcm9wOyB0aGVuCiAgYmxvY2sgImdldHByb3AgdW5hdmFpbGFibGU7IEFuZHJvaWQgZGV2aWNlIGlkZW50aXR5IGNhbm5vdCBiZSB2ZXJpZmllZC4iCmZpCgpERVZJQ0U9IiQocHJvcCByby5wcm9kdWN0LmRldmljZSkiClBST0RVQ1Q9IiQocHJvcCByby5idWlsZC5wcm9kdWN0KSIKVkVORE9SX0RFVklDRT0iJChwcm9wIHJvLnByb2R1Y3QudmVuZG9yLmRldmljZSkiClZFTkRPUl9QUk9EVUNUPSIkKHByb3Agcm8udmVuZG9yLnByb2R1Y3QuZGV2aWNlKSIKCmt2ICJyby5wcm9kdWN0LmRldmljZSIgIiRERVZJQ0UiCmt2ICJyby5idWlsZC5wcm9kdWN0IiAiJFBST0RVQ1QiCmt2ICJyby5wcm9kdWN0LnZlbmRvci5kZXZpY2UiICIkVkVORE9SX0RFVklDRSIKa3YgInJvLnZlbmRvci5wcm9kdWN0LmRldmljZSIgIiRWRU5ET1JfUFJPRFVDVCIKCk1BVENIPTAKZm9yIHggaW4gIiRERVZJQ0UiICIkUFJPRFVDVCIgIiRWRU5ET1JfREVWSUNFIiAiJFZFTkRPUl9QUk9EVUNUIjsgZG8KICBbICIkeCIgPSAiJEVYUEVDVEVEX0RFVklDRSIgXSAmJiBNQVRDSD0xCmRvbmUKaWYgWyAiJE1BVENIIiAtZXEgMSBdOyB0aGVuCiAgcGFzcyAiRGV2aWNlIG1hdGNoZXMgQW55S2VybmVsMyBWRVVYIGdhdGUgZXhhY3RseS4iCmVsc2UKICBibG9jayAiRGV2aWNlIGRvZXMgbm90IG1hdGNoIFZFVVggZ2F0ZS4iCmZpCgojIEV4cGxpY2l0bHkgcmVqZWN0IFBFVVggZXZlbiBpZiBzb21lIHNwb29mZWQgcHJvcGVydHkgYWxzbyBzYXlzIHZldXguCmZvciB4IGluICIkREVWSUNFIiAiJFBST0RVQ1QiICIkVkVORE9SX0RFVklDRSIgIiRWRU5ET1JfUFJPRFVDVCI7IGRvCiAgaWYgWyAiJHgiID0gInBldXgiIF07IHRoZW4KICAgIGJsb2NrICJQRVVYIGlkZW50aXR5IGRldGVjdGVkOyB0aGlzIFUyLVIzIHBhY2thZ2UgaXMgVkVVWC1vbmx5LiIKICBmaQpkb25lCgpmb3IgcCBpbiBcCiAgcm8uYm9hcmQucGxhdGZvcm0gXAogIHJvLmJvb3QuaGFyZHdhcmUgXAogIHJvLmJvb3QuaGFyZHdhcmUucGxhdGZvcm0gXAogIHJvLmJvb3Quc2xvdF9zdWZmaXggXAogIHJvLmJvb3Quc2xvdCBcCiAgcm8uYm9vdC5ib290ZGV2aWNlIFwKICByby5ib290LmJvb3RfZGV2aWNlcyBcCiAgcm8uYm9vdC5keW5hbWljX3BhcnRpdGlvbnMgXAogIHJvLmJvb3QudmVyaWZpZWRib290c3RhdGUgXAogIHJvLmJvb3QudmJtZXRhLmRldmljZV9zdGF0ZSBcCiAgcm8uYm9vdC5mbGFzaC5sb2NrZWQgXAogIHJvLmJvb3QudmVyaXR5bW9kZSBcCiAgcm8uYm9vdC5hdmJfdmVyc2lvbiBcCiAgcm8uYnVpbGQudmVyc2lvbi5yZWxlYXNlIFwKICByby5idWlsZC52ZXJzaW9uLnNkayBcCiAgcm8udmVuZG9yLmJ1aWxkLnZlcnNpb24uc2RrIFwKICByby5wcm9kdWN0LmZpcnN0X2FwaV9sZXZlbCBcCiAgcm8udmVuZG9yLmFwaV9sZXZlbCBcCiAgcm8udm5kay52ZXJzaW9uIFwKICByby5idWlsZC52ZXJzaW9uLnNlY3VyaXR5X3BhdGNoIFwKICByby5idWlsZC5maW5nZXJwcmludCBcCiAgcm8udmVuZG9yLmJ1aWxkLmZpbmdlcnByaW50CmRvCiAga3YgIiRwIiAiJChwcm9wICIkcCIpIgpkb25lCgpVTkFNRV9SPSIkKHVuYW1lIC1yIDI+L2Rldi9udWxsIHx8IGVjaG8gdW5rbm93bikiClVOQU1FX0E9IiQodW5hbWUgLWEgMj4vZGV2L251bGwgfHwgZWNobyB1bmtub3duKSIKa3YgInVuYW1lX3IiICIkVU5BTUVfUiIKa3YgInVuYW1lX2EiICIkVU5BTUVfQSIKCmNhc2UgIiRVTkFNRV9SIiBpbgogIDUuNC4qKSBwYXNzICJSdW5uaW5nIGtlcm5lbCBpcyBpbiB0aGUgTGludXggNS40IGZhbWlseS4iIDs7CiAgKikgYmxvY2sgIlJ1bm5pbmcgZW52aXJvbm1lbnQgaXMgbm90IExpbnV4IDUuNC54OyBvdXRzaWRlIFUyLVIzIHRlY2huaWNhbCBzY29wZS4iIDs7CmVzYWMKCmlmIFsgIiRVTkFNRV9SIiA9ICIkRVhQRUNURURfS0VSTkVMX1JFTEVBU0UiIF07IHRoZW4KICBwYXNzICJSdW5uaW5nIGtlcm5lbHJlbGVhc2UgYWxyZWFkeSBlcXVhbHMgZnJvemVuIFAxMy4iCmVsc2UKICB3YXJuICJSdW5uaW5nIGtlcm5lbHJlbGVhc2UgZGlmZmVycyBmcm9tIFAxMzsgY29tcGF0aWJpbGl0eSBtdXN0IHJlbHkgb24gYm9vdC92ZW5kb3IgcHJlZmxpZ2h0LCBub3QgY3VycmVudC1rZXJuZWwgaWRlbnRpdHkuIgpmaQoKcmVjb3JkX2NtZCAiL3Byb2MvdmVyc2lvbiIgY2F0IC9wcm9jL3ZlcnNpb24KcmVjb3JkX2NtZCAiL3Byb2MvY21kbGluZSIgY2F0IC9wcm9jL2NtZGxpbmUKClBST1BfVkJTPSIkKHByb3Agcm8uYm9vdC52ZXJpZmllZGJvb3RzdGF0ZSkiCkNNRExJTkVfVkJTPSIiCmlmIFsgLXIgL3Byb2MvY21kbGluZSBdOyB0aGVuCiAgQ01ETElORV9WQlM9IiQodHIgJyAnICdcbicgPC9wcm9jL2NtZGxpbmUgMj4vZGV2L251bGwgfCBzZWQgLW4gJ3MvXmFuZHJvaWRib290XC52ZXJpZmllZGJvb3RzdGF0ZT0vL3AnIHwgdGFpbCAtbjEpIgpmaQprdiAiVkVSSUZJRURfQk9PVFNUQVRFX0dFVFBST1AiICIkUFJPUF9WQlMiCmt2ICJWRVJJRklFRF9CT09UU1RBVEVfQ01ETElORSIgIiRDTURMSU5FX1ZCUyIKaWYgWyAtbiAiJFBST1BfVkJTIiBdICYmIFsgLW4gIiRDTURMSU5FX1ZCUyIgXSAmJiBbICIkUFJPUF9WQlMiICE9ICIkQ01ETElORV9WQlMiIF07IHRoZW4KICBpbmZvICJWZXJpZmllZC1ib290IHN0YXRlIGRpZmZlcnMgYmV0d2VlbiBBbmRyb2lkIHByb3BlcnR5IGFuZCByYXcgY21kbGluZTsgZGlhZ25vc3RpYyBvbmx5LiIKZmkKaWYgWyAtciAvcHJvYy9ib290Y29uZmlnIF07IHRoZW4KICByZWNvcmRfY21kICIvcHJvYy9ib290Y29uZmlnIiBjYXQgL3Byb2MvYm9vdGNvbmZpZwplbHNlCiAgbGluZSAiLS0tIC9wcm9jL2Jvb3Rjb25maWcgLS0tIgogIGxpbmUgIihub3QgcHJlc2VudCkiCmZpCgppZiBbIC1yIC9zeXMvZmlybXdhcmUvZGV2aWNldHJlZS9iYXNlL21vZGVsIF07IHRoZW4KICBsaW5lICItLS0gZGV2aWNlLXRyZWUgbW9kZWwgLS0tIgogIHRyICdcMDAwJyAnXG4nIDwvc3lzL2Zpcm13YXJlL2RldmljZXRyZWUvYmFzZS9tb2RlbCA+PiIkUkVQT1JUIiAyPiYxCmZpCmlmIFsgLXIgL3N5cy9maXJtd2FyZS9kZXZpY2V0cmVlL2Jhc2UvY29tcGF0aWJsZSBdOyB0aGVuCiAgbGluZSAiLS0tIGRldmljZS10cmVlIGNvbXBhdGlibGUgLS0tIgogIHRyICdcMDAwJyAnXG4nIDwvc3lzL2Zpcm13YXJlL2RldmljZXRyZWUvYmFzZS9jb21wYXRpYmxlID4+IiRSRVBPUlQiIDI+JjEKZmkKCiMgL3Byb2MvY29uZmlnLmd6IGlzIGNhcHR1cmVkIG9ubHkgYXMgZGlhZ25vc3RpYyBldmlkZW5jZS4gVGhpcyBQMTMgc291cmNlIGxpbmUKIyBjYXJyaWVzIGEga25vd24gc3RhbGUvc291cmNlLWVtYmVkZGVkIElLQ09ORklHLCBzbyBpdCBpcyBub3QgYXV0aG9yaXRhdGl2ZSBmb3IKIyB0aGUgZnJvemVuIFAxMyBidWlsZCBjb25maWd1cmF0aW9uLgppZiBbIC1yIC9wcm9jL2NvbmZpZy5neiBdOyB0aGVuCiAgaWYgaGF2ZSB6Y2F0OyB0aGVuCiAgICBsaW5lICItLS0gL3Byb2MvY29uZmlnLmd6IHNlbGVjdGVkIHZhbHVlcyAoRElBR05PU1RJQ19PTkxZX05PVF9BVVRIT1JJVEFUSVZFKSAtLS0iCiAgICB6Y2F0IC9wcm9jL2NvbmZpZy5neiAyPi9kZXYvbnVsbCB8IGdyZXAgLUUgXAogICAgICAnXihDT05GSUdfKE1PRFVMRVN8UUdLSXxBVURJT19RR0tJfFdUX1FHS0l8SVBBM3xRQ0FfQ0xEX1dMQU58TFRPfFRISU5MVE98UkVMT0NBVEFCTEV8UkFORE9NSVpFX0JBU0V8S0FMTFNZTVMpPXwjIENPTkZJR19NT0RVTEVTIGlzIG5vdCBzZXQpJyBcCiAgICAgID4+IiRSRVBPUlQiIDI+JjEgfHwgdHJ1ZQogICAgaW5mbyAiL3Byb2MvY29uZmlnLmd6IHJlY29yZGVkIGFzIGRpYWdub3N0aWMtb25seSBzdGFsZS1JS0NPTkZJRyBldmlkZW5jZS4iCiAgZWxzZQogICAgaW5mbyAiL3Byb2MvY29uZmlnLmd6IGV4aXN0cyBidXQgemNhdCBpcyB1bmF2YWlsYWJsZTsgbm90IGEgYm9vdCBibG9ja2VyLiIKICBmaQplbHNlCiAgaW5mbyAiL3Byb2MvY29uZmlnLmd6IHVuYXZhaWxhYmxlOyBub3QgYSBib290IGJsb2NrZXIuIgpmaQoKaWYgWyAtciAvcHJvYy9tb2R1bGVzIF07IHRoZW4KICBNT0RVTEVfQ09VTlQ9IiQoZ3JlcCAtYyAnXlteIF0nIC9wcm9jL21vZHVsZXMgMj4vZGV2L251bGwgfHwgZWNobyAwKSIKICBrdiAiUlVOTklOR19MT0FERURfTU9EVUxFX0NPVU5UIiAiJE1PRFVMRV9DT1VOVCIKICBpZiBbICIkTU9EVUxFX0NPVU5UIiAtZ3QgMCBdIDI+L2Rldi9udWxsOyB0aGVuCiAgICBpbmZvICJDdXJyZW50IGVudmlyb25tZW50IGV4cG9zZXMgbG9hZGVkIG1vZHVsZXM7IGxpc3QgcmVjb3JkZWQgZGlhZ25vc3RpY2FsbHkuIgogICAgbGluZSAiLS0tIGxvYWRlZCBtb2R1bGVzIC0tLSIKICAgIGNhdCAvcHJvYy9tb2R1bGVzID4+IiRSRVBPUlQiIDI+JjEKICBlbHNlCiAgICBpbmZvICJObyBydW50aW1lLWxvYWRlZCBrZXJuZWwgbW9kdWxlcyBkZXRlY3RlZC4iCiAgZmkKZWxzZQogIGluZm8gIi9wcm9jL21vZHVsZXMgdW5hdmFpbGFibGU7IG5vdCBhIGJvb3QgYmxvY2tlci4iCmZpCgojIC0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tIHNsb3QgLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0KCnNlY3Rpb24gIjQuIEFjdGl2ZSBBL0Igc2xvdCBhbmQgYm9vdCBhcmNoaXRlY3R1cmUiCgpTTE9UX1NVRkZJWD0iJChwcm9wIHJvLmJvb3Quc2xvdF9zdWZmaXgpIgppZiBbIC16ICIkU0xPVF9TVUZGSVgiIF07IHRoZW4KICBTTE9UPSIkKHByb3Agcm8uYm9vdC5zbG90KSIKICBjYXNlICIkU0xPVCIgaW4KICAgIGF8YikgU0xPVF9TVUZGSVg9Il8kU0xPVCIgOzsKICAgIF9hfF9iKSBTTE9UX1NVRkZJWD0iJFNMT1QiIDs7CiAgZXNhYwpmaQppZiBbIC16ICIkU0xPVF9TVUZGSVgiIF0gJiYgaGF2ZSBib290Y3RsOyB0aGVuCiAgY3M9IiQoYm9vdGN0bCBnZXQtY3VycmVudC1zbG90IDI+L2Rldi9udWxsIHx8IHRydWUpIgogIGNhc2UgIiRjcyIgaW4KICAgIDApIFNMT1RfU1VGRklYPSJfYSIgOzsKICAgIDEpIFNMT1RfU1VGRklYPSJfYiIgOzsKICBlc2FjCmZpCgprdiAiQUNUSVZFX1NMT1RfU1VGRklYIiAiJFNMT1RfU1VGRklYIgpjYXNlICIkU0xPVF9TVUZGSVgiIGluCiAgX2F8X2IpIHBhc3MgIkFjdGl2ZSBBL0Igc2xvdCByZXNvbHZlZDogJFNMT1RfU1VGRklYIiA7OwogICopIGJsb2NrICJDb3VsZCBub3Qgc2FmZWx5IHJlc29sdmUgYWN0aXZlIEEvQiBzbG90LiIgOzsKZXNhYwoKQk9PVF9CTE9DSz0iIgppZiBbICIkU0xPVF9TVUZGSVgiID0gIl9hIiBdIHx8IFsgIiRTTE9UX1NVRkZJWCIgPSAiX2IiIF07IHRoZW4KICBCT09UX0JMT0NLPSIkKGZpbmRfYmxvY2sgYm9vdCAiJFNMT1RfU1VGRklYIiAyPi9kZXYvbnVsbCB8fCB0cnVlKSIKZmkKa3YgIkFDVElWRV9CT09UX0JMT0NLIiAiJEJPT1RfQkxPQ0siCgpjYXNlICIkQk9PVF9CTE9DSyIgaW4KICAvZGV2L2Jsb2NrLyopCiAgICBbIC1yICIkQk9PVF9CTE9DSyIgXSBcCiAgICAgICYmIHBhc3MgIkFjdGl2ZSBib290IHBhcnRpdGlvbiBpcyByZWFkYWJsZS4iIFwKICAgICAgfHwgYmxvY2sgIkFjdGl2ZSBib290IHBhcnRpdGlvbiBpcyBub3QgcmVhZGFibGUuIgogICAgOzsKICAqKQogICAgYmxvY2sgIkFjdGl2ZSBib290IHBhcnRpdGlvbiBwYXRoIGNvdWxkIG5vdCBiZSByZXNvbHZlZCBzYWZlbHkuIgogICAgOzsKZXNhYwoKIyBSZWNvcmQgcmVsYXRlZCBhY3RpdmUgYm9vdC1jaGFpbiBwYXJ0aXRpb25zLiBEVEJPICsgdmVuZG9yX2Jvb3QgYXJlIGV4cGVjdGVkCiMgZm9yIHRoZSBrbm93biBWRVVYIGFyY2hpdGVjdHVyZTsgdGhleSBhcmUgbmV2ZXIgbW9kaWZpZWQgYnkgdGhpcyBzY3JpcHQuCmZvciBwYXJ0IGluIHZlbmRvcl9ib290IGR0Ym8gdmJtZXRhIHZlbmRvcl9rZXJuZWxfYm9vdCBpbml0X2Jvb3Q7IGRvCiAgYnA9IiQoZmluZF9ibG9jayAiJHBhcnQiICIkU0xPVF9TVUZGSVgiIDI+L2Rldi9udWxsIHx8IHRydWUpIgogIGt2ICJBQ1RJVkVfJHtwYXJ0fV9CTE9DSyIgIiRicCIKICBpZiBbIC1uICIkYnAiIF0gJiYgWyAtciAiJGJwIiBdOyB0aGVuCiAgICBzej0iJChibG9ja19zaXplICIkYnAiKSIKICAgIGt2ICJBQ1RJVkVfJHtwYXJ0fV9CWVRFUyIgIiRzeiIKICAgICMgSGFzaCBjcml0aWNhbCB1bnRvdWNoZWQgZW52aXJvbm1lbnQgcGFydGl0aW9ucyByZWFkLW9ubHkuCiAgICBjYXNlICIkcGFydCIgaW4KICAgICAgdmVuZG9yX2Jvb3R8ZHRibykKICAgICAgICBoPSIkKGhhc2hfZmlsZSAiJGJwIikiCiAgICAgICAga3YgIkFDVElWRV8ke3BhcnR9X1NIQTI1NiIgIiRoIgogICAgICAgIDs7CiAgICBlc2FjCiAgZmkKZG9uZQoKVkVORE9SX0JPT1RfQkxPQ0s9IiQoZmluZF9ibG9jayB2ZW5kb3JfYm9vdCAiJFNMT1RfU1VGRklYIiAyPi9kZXYvbnVsbCB8fCB0cnVlKSIKRFRCT19CTE9DSz0iJChmaW5kX2Jsb2NrIGR0Ym8gIiRTTE9UX1NVRkZJWCIgMj4vZGV2L251bGwgfHwgdHJ1ZSkiClsgLW4gIiRWRU5ET1JfQk9PVF9CTE9DSyIgXSBcCiAgJiYgcGFzcyAidmVuZG9yX2Jvb3QgcGFydGl0aW9uIGZvdW5kOyBVMi1SMyB3aWxsIHByZXNlcnZlIGl0LiIgXAogIHx8IGJsb2NrICJObyB2ZW5kb3JfYm9vdCBwYXJ0aXRpb24gZm91bmQ7IGJvb3QgYXJjaGl0ZWN0dXJlIGRpZmZlcnMgZnJvbSBhdWRpdGVkIFZFVVggYmFzZWxpbmUuIgpbIC1uICIkRFRCT19CTE9DSyIgXSBcCiAgJiYgcGFzcyAiRFRCTyBwYXJ0aXRpb24gZm91bmQ7IFUyLVIzIHdpbGwgcHJlc2VydmUgaXQuIiBcCiAgfHwgYmxvY2sgIk5vIERUQk8gcGFydGl0aW9uIGZvdW5kOyBib290IGFyY2hpdGVjdHVyZSBkaWZmZXJzIGZyb20gYXVkaXRlZCBWRVVYIGJhc2VsaW5lLiIKClZLQj0iJChmaW5kX2Jsb2NrIHZlbmRvcl9rZXJuZWxfYm9vdCAiJFNMT1RfU1VGRklYIiAyPi9kZXYvbnVsbCB8fCB0cnVlKSIKSU5JVEI9IiQoZmluZF9ibG9jayBpbml0X2Jvb3QgIiRTTE9UX1NVRkZJWCIgMj4vZGV2L251bGwgfHwgdHJ1ZSkiCmlmIFsgLW4gIiRWS0IiIF0gfHwgWyAtbiAiJElOSVRCIiBdOyB0aGVuCiAgd2FybiAiaW5pdF9ib290L3ZlbmRvcl9rZXJuZWxfYm9vdCBhcmNoaXRlY3R1cmUgZGV0ZWN0ZWQ7IHJldmlldyBpcyByZXF1aXJlZCBldmVuIGlmIGJvb3QgcmVwYWNrIHNpbXVsYXRpb24gc3VjY2VlZHMuIgpmaQoKIyAtLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tIGJvb3QgcmVhZC9yZXBhY2sgLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLQoKc2VjdGlvbiAiNS4gUmVhZC1vbmx5IGFjdGl2ZSBib290IGV4dHJhY3Rpb24iCgpCT09UX0NPUFk9IiRXT1JLL29yaWdpbmFsLWJvb3QtcGFydGl0aW9uLmltZyIKUkVQQUNLRUQ9IiRXT1JLL3JlcGFja2VkLXdpdGgtUDEzLmltZyIKT1JJR0RJUj0iJFdPUksvb3JpZ2luYWwtdW5wYWNrIgpORVdESVI9IiRXT1JLL3JlcGFja2VkLXVucGFjayIKbWtkaXIgLXAgIiRPUklHRElSIiAiJE5FV0RJUiIKCmlmIFsgLW4gIiRCT09UX0JMT0NLIiBdICYmIFsgLXIgIiRCT09UX0JMT0NLIiBdOyB0aGVuCiAgIyBIYXJkIGd1YXJkOiBvdXRwdXQgTVVTVCBiZSBhIHJlZ3VsYXIgdGVtcCBwYXRoLCBuZXZlciAvZGV2L2Jsb2NrLgogIGNhc2UgIiRCT09UX0NPUFkiIGluCiAgICAvZGV2L2Jsb2NrLyopIGJsb2NrICJJbnRlcm5hbCBzYWZldHkgZ3VhcmQgcmVqZWN0ZWQgYm9vdC1jb3B5IG91dHB1dCBwYXRoLiIgOzsKICAgICopCiAgICAgIGlmIGRkIGlmPSIkQk9PVF9CTE9DSyIgb2Y9IiRCT09UX0NPUFkiIGJzPTEwNDg1NzYgMj4+IiRSRVBPUlQiOyB0aGVuCiAgICAgICAgcGFzcyAiQWN0aXZlIGJvb3QgcGFydGl0aW9uIGNvcGllZCBSRUFELU9OTFkgdG8gdGVtcG9yYXJ5IGZpbGUuIgogICAgICBlbHNlCiAgICAgICAgYmxvY2sgIlJlYWRpbmcgYWN0aXZlIGJvb3QgcGFydGl0aW9uIGZhaWxlZC4iCiAgICAgIGZpCiAgICAgIDs7CiAgZXNhYwpmaQoKaWYgWyAtcyAiJEJPT1RfQ09QWSIgXTsgdGhlbgogIEJPT1RfQ09QWV9CWVRFUz0iJChmaWxlX3NpemUgIiRCT09UX0NPUFkiKSIKICBCT09UX0NPUFlfU0hBPSIkKGhhc2hfZmlsZSAiJEJPT1RfQ09QWSIpIgogIEJMT0NLX0JZVEVTPSIkKGJsb2NrX3NpemUgIiRCT09UX0JMT0NLIikiCiAga3YgIkFDVElWRV9CT09UX0NPUFlfQllURVMiICIkQk9PVF9DT1BZX0JZVEVTIgogIGt2ICJBQ1RJVkVfQk9PVF9DT1BZX1NIQTI1NiIgIiRCT09UX0NPUFlfU0hBIgogIGt2ICJBQ1RJVkVfQk9PVF9CTE9DS19CWVRFUyIgIiRCTE9DS19CWVRFUyIKCiAgaWYgWyAtbiAiJEJMT0NLX0JZVEVTIiBdICYmIFsgIiRCT09UX0NPUFlfQllURVMiID0gIiRCTE9DS19CWVRFUyIgXTsgdGhlbgogICAgcGFzcyAiUmVhZC1iYWNrIHNpemUgZXF1YWxzIGFjdGl2ZSBib290IHBhcnRpdGlvbiBzaXplLiIKICBlbGlmIFsgLW4gIiRCTE9DS19CWVRFUyIgXTsgdGhlbgogICAgYmxvY2sgIkJvb3QgcmVhZC1iYWNrIHNpemUgZGlmZmVycyBmcm9tIHBhcnRpdGlvbiBzaXplLiIKICBlbHNlCiAgICB3YXJuICJDb3VsZCBub3Qgb2J0YWluIGJsb2NrLWRldmljZSBzaXplIGluZGVwZW5kZW50bHkuIgogIGZpCmVsc2UKICBibG9jayAiTm8gYWN0aXZlIGJvb3QgaW1hZ2UgY29weSBhdmFpbGFibGUgZm9yIHNpbXVsYXRpb24uIgpmaQoKTUFHSVNLQk9PVD0iJENBTkRESVIvdG9vbHMvbWFnaXNrYm9vdCIKaWYgWyAtZiAiJE1BR0lTS0JPT1QiIF07IHRoZW4KICBjaG1vZCA3MDAgIiRNQUdJU0tCT09UIiAyPi9kZXYvbnVsbCB8fCB0cnVlCiAgaWYgWyAteCAiJE1BR0lTS0JPT1QiIF07IHRoZW4KICAgIHBhc3MgIkV4YWN0IFUyLVIzIGJ1bmRsZWQgbWFnaXNrYm9vdCBpcyBleGVjdXRhYmxlLiIKICBlbHNlCiAgICBibG9jayAiQnVuZGxlZCBtYWdpc2tib290IGNhbm5vdCBiZSBleGVjdXRlZCBvbiB0aGlzIGVudmlyb25tZW50LiIKICBmaQplbHNlCiAgYmxvY2sgIkJ1bmRsZWQgbWFnaXNrYm9vdCBtaXNzaW5nLiIKZmkKCmlmIFsgLXMgIiRCT09UX0NPUFkiIF0gJiYgWyAteCAiJE1BR0lTS0JPT1QiIF07IHRoZW4KICAoCiAgICBjZCAiJE9SSUdESVIiIHx8IGV4aXQgMQogICAgIiRNQUdJU0tCT09UIiB1bnBhY2sgLWggIiRCT09UX0NPUFkiCiAgKSA+IiRXT1JLL29yaWdpbmFsLXVucGFjay5sb2ciIDI+JjEKICByYz0kPwogIGxpbmUgIi0tLSBtYWdpc2tib290IG9yaWdpbmFsIHVucGFjayBsb2cgLS0tIgogIGNhdCAiJFdPUksvb3JpZ2luYWwtdW5wYWNrLmxvZyIgPj4iJFJFUE9SVCIKICBpZiBbICIkcmMiIC1lcSAwIF0gfHwgWyAiJHJjIiAtZXEgMiBdOyB0aGVuCiAgICBwYXNzICJFeGFjdCBidW5kbGVkIG1hZ2lza2Jvb3QgY2FuIHBhcnNlIHRoZSBhY3RpdmUgYm9vdCBpbWFnZS4iCiAgZWxzZQogICAgYmxvY2sgIm1hZ2lza2Jvb3QgY2Fubm90IHBhcnNlIHRoZSBhY3RpdmUgYm9vdCBpbWFnZSAocmM9JHJjKS4iCiAgZmkKZmkKCmlmIFsgLWYgIiRPUklHRElSL2tlcm5lbCIgXTsgdGhlbgogIENVUlJFTlRfQk9PVF9LRVJORUxfU0hBPSIkKGhhc2hfZmlsZSAiJE9SSUdESVIva2VybmVsIikiCiAgQ1VSUkVOVF9CT09UX0tFUk5FTF9CWVRFUz0iJChmaWxlX3NpemUgIiRPUklHRElSL2tlcm5lbCIpIgogIGt2ICJDVVJSRU5UX0JPT1RfS0VSTkVMX1NIQTI1NiIgIiRDVVJSRU5UX0JPT1RfS0VSTkVMX1NIQSIKICBrdiAiQ1VSUkVOVF9CT09UX0tFUk5FTF9CWVRFUyIgIiRDVVJSRU5UX0JPT1RfS0VSTkVMX0JZVEVTIgogIGlmIFsgIiRDVVJSRU5UX0JPT1RfS0VSTkVMX1NIQSIgPSAiJEVYUEVDVEVEX0lNQUdFX1NIQTI1NiIgXTsgdGhlbgogICAgcGFzcyAiQ3VycmVudCBhY3RpdmUgYm9vdCBpbWFnZSBhbHJlYWR5IGNvbnRhaW5zIGV4YWN0IGZyb3plbiBQMTMgSW1hZ2UuIgogIGVsc2UKICAgIGluZm8gIkN1cnJlbnQgYWN0aXZlIGJvb3Qga2VybmVsIGRpZmZlcnMgZnJvbSBQMTM7IGRyeS1ydW4gdmFsaWRhdGVzIHRoZSB0cmFuc2l0aW9uLiIKICBmaQogIGlmIHN0cmluZ3MgIiRPUklHRElSL2tlcm5lbCIgMj4vZGV2L251bGwgfCBncmVwIC1tMSAnTGludXggdmVyc2lvbicgPj4iJFJFUE9SVCI7IHRoZW4KICAgIHBhc3MgIkN1cnJlbnQgYm9vdCBrZXJuZWwgY29udGFpbnMgYSByZWFkYWJsZSBMaW51eCB2ZXJzaW9uIGJhbm5lci4iCiAgZWxzZQogICAgd2FybiAiQ3VycmVudCBib290IGtlcm5lbCBiYW5uZXIgY291bGQgbm90IGJlIHJlYWQgd2l0aCBzdHJpbmdzLiIKICBmaQplbHNlCiAgYmxvY2sgIlVucGFja2VkIGFjdGl2ZSBib290IGltYWdlIGRpZCBub3QgZXhwb3NlIGEga2VybmVsIGNvbXBvbmVudC4iCmZpCgojIE1hZ2lzay1wYXRjaGVkIHJhbWRpc2sgY2hhbmdlcyB0aGUgYWN0dWFsIEFLMyB3cml0ZSBwYXRoLCBzbyBmb3JjZSBtYW51YWwgcmV2aWV3LgppZiBbIC1mICIkT1JJR0RJUi9yYW1kaXNrLmNwaW8iIF0gJiYgWyAteCAiJE1BR0lTS0JPT1QiIF07IHRoZW4KICAoCiAgICBjZCAiJE9SSUdESVIiIHx8IGV4aXQgMQogICAgIiRNQUdJU0tCT09UIiBjcGlvIHJhbWRpc2suY3BpbyB0ZXN0ID4vZGV2L251bGwgMj4mMQogICkKICBjcGlvX3JjPSQ/CiAga3YgIk1BR0lTS0JPT1RfUkFNRElTS19URVNUX1JDIiAiJGNwaW9fcmMiCiAgY2FzZSAiJGNwaW9fcmMiIGluCiAgICAwKSBwYXNzICJSYW1kaXNrIGlzIG5vdCByZXBvcnRlZCBhcyBNYWdpc2stcGF0Y2hlZCBieSBtYWdpc2tib290LiIgOzsKICAgIDEpIHdhcm4gIk1hZ2lzay1wYXRjaGVkIHJhbWRpc2sgZGV0ZWN0ZWQ7IGFjdHVhbCBBSzMgbWF5IHRha2UgYW4gYWRkaXRpb25hbCBwcmVzZXJ2YXRpb24gcGF0aC4iIDs7CiAgICAqKSB3YXJuICJSYW1kaXNrIHBhdGNoIHN0YXRlIGlzIHVudXN1YWwvdW5zdXBwb3J0ZWQgKG1hZ2lza2Jvb3QgY3BpbyB0ZXN0IHJjPSRjcGlvX3JjKS4iIDs7CiAgZXNhYwplbHNlCiAgd2FybiAiTm8gcmFtZGlzay5jcGlvIHdhcyBleHBvc2VkOyByZXZpZXcgYm9vdCBhcmNoaXRlY3R1cmUuIgpmaQoKIyBTYXZlIGhhc2hlcyBvZiBhbGwgb3JpZ2luYWwgdW5wYWNrZWQgYm9vdCBjb21wb25lbnRzIGJlZm9yZSBrZXJuZWwgcmVwbGFjZW1lbnQuCk9SSUdfQ09NUE9ORU5UUz0iJFdPUksvb3JpZ2luYWwtY29tcG9uZW50cy50c3YiCigKICBjZCAiJE9SSUdESVIiIHx8IGV4aXQgMQogIGZvciBmIGluICo7IGRvCiAgICBbIC1mICIkZiIgXSB8fCBjb250aW51ZQogICAgcHJpbnRmICclc1x0JXNcdCVzXG4nICIkZiIgIiQod2MgLWMgPCAiJGYiIHwgdHIgLWQgJyAnKSIgIiQoaGFzaF9maWxlICIkZiIpIgogIGRvbmUKKSB8IExDX0FMTD1DIHNvcnQgPiIkT1JJR19DT01QT05FTlRTIgpsaW5lICItLS0gb3JpZ2luYWwgYm9vdCBjb21wb25lbnRzIC0tLSIKY2F0ICIkT1JJR19DT01QT05FTlRTIiA+PiIkUkVQT1JUIgoKIyAtLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tIGRyeS1ydW4gcmVwbGFjZW1lbnQgLS0tLS0tLS0tLS0tLS0tLS0tLS0tLQoKc2VjdGlvbiAiNi4gT2ZmbGluZSBQMTMgcmVwbGFjZW1lbnQgYW5kIHJlcGFjayBzaW11bGF0aW9uIgoKaWYgWyAtZiAiJE9SSUdESVIva2VybmVsIiBdICYmIFsgLWYgIiRJTUFHRSIgXSAmJiBbIC14ICIkTUFHSVNLQk9PVCIgXTsgdGhlbgogIGNwICIkSU1BR0UiICIkT1JJR0RJUi9rZXJuZWwiIHx8IGJsb2NrICJGYWlsZWQgdG8gcGxhY2UgUDEzIEltYWdlIGludG8gdGVtcG9yYXJ5IHVucGFjayB0cmVlLiIKCiAgKAogICAgY2QgIiRPUklHRElSIiB8fCBleGl0IDEKICAgIFBBVENIVkJNRVRBRkxBRz1mYWxzZSAiJE1BR0lTS0JPT1QiIHJlcGFjayAiJEJPT1RfQ09QWSIgIiRSRVBBQ0tFRCIKICApID4iJFdPUksvcmVwYWNrLmxvZyIgMj4mMQogIHJjPSQ/CiAgbGluZSAiLS0tIG1hZ2lza2Jvb3QgcmVwYWNrIGxvZyAtLS0iCiAgY2F0ICIkV09SSy9yZXBhY2subG9nIiA+PiIkUkVQT1JUIgoKICBpZiBbICIkcmMiIC1lcSAwIF0gJiYgWyAtcyAiJFJFUEFDS0VEIiBdOyB0aGVuCiAgICBwYXNzICJPZmZsaW5lIGJvb3QgaW1hZ2UgcmVwYWNrIHdpdGggUDEzIHN1Y2NlZWRzLiIKICBlbHNlCiAgICBibG9jayAiT2ZmbGluZSBib290IGltYWdlIHJlcGFjayB3aXRoIFAxMyBmYWlsZWQgKHJjPSRyYykuIgogIGZpCmZpCgppZiBbIC1zICIkUkVQQUNLRUQiIF07IHRoZW4KICBSRVBBQ0tfQllURVM9IiQoZmlsZV9zaXplICIkUkVQQUNLRUQiKSIKICBSRVBBQ0tfU0hBPSIkKGhhc2hfZmlsZSAiJFJFUEFDS0VEIikiCiAga3YgIlJFUEFDS0VEX0JPT1RfQllURVMiICIkUkVQQUNLX0JZVEVTIgogIGt2ICJSRVBBQ0tFRF9CT09UX1NIQTI1NiIgIiRSRVBBQ0tfU0hBIgoKICBpZiBbIC1uICIke0JPT1RfQ09QWV9CWVRFUzotfSIgXSAmJiBbICIkUkVQQUNLX0JZVEVTIiAtbGUgIiRCT09UX0NPUFlfQllURVMiIF0gMj4vZGV2L251bGw7IHRoZW4KICAgIHBhc3MgIlJlcGFja2VkIGJvb3QgaW1hZ2UgZml0cyBpbnNpZGUgYWN0aXZlIGJvb3QgcGFydGl0aW9uLiIKICBlbHNlCiAgICBibG9jayAiUmVwYWNrZWQgYm9vdCBpbWFnZSBleGNlZWRzIG9yIGNhbm5vdCBiZSBjb21wYXJlZCB3aXRoIGJvb3QgcGFydGl0aW9uIHNpemUuIgogIGZpCgogIE9SSUdfQVZCPTAKICBORVdfQVZCPTAKICB0YWlsX2hhc19hdmJmICIkQk9PVF9DT1BZIiAmJiBPUklHX0FWQj0xCiAgdGFpbF9oYXNfYXZiZiAiJFJFUEFDS0VEIiAmJiBORVdfQVZCPTEKICBrdiAiT1JJR0lOQUxfQk9PVF9BVkJGX0ZPT1RFUiIgIiRPUklHX0FWQiIKICBrdiAiUkVQQUNLRURfQk9PVF9BVkJGX0ZPT1RFUiIgIiRORVdfQVZCIgogIGlmIFsgIiRPUklHX0FWQiIgLWVxIDEgXSAmJiBbICIkTkVXX0FWQiIgLWVxIDAgXTsgdGhlbgogICAgYmxvY2sgIk9yaWdpbmFsIGJvb3QgaGFzIEFWQiBmb290ZXIgYnV0IHJlcGFja2VkIGltYWdlIGRvZXMgbm90LiIKICBlbGlmIFsgIiRPUklHX0FWQiIgLWVxICIkTkVXX0FWQiIgXTsgdGhlbgogICAgcGFzcyAiQVZCIGZvb3RlciBwcmVzZW5jZSBpcyBwcmVzZXJ2ZWQgYnkgb2ZmbGluZSByZXBhY2suIgogIGVsc2UKICAgIHdhcm4gIkFWQiBmb290ZXIgc3RhdGUgY2hhbmdlZDsgbWFudWFsIEFWQiByZXZpZXcgcmVxdWlyZWQuIgogIGZpCgogICgKICAgIGNkICIkTkVXRElSIiB8fCBleGl0IDEKICAgICIkTUFHSVNLQk9PVCIgdW5wYWNrIC1oICIkUkVQQUNLRUQiCiAgKSA+IiRXT1JLL3JlcGFja2VkLXVucGFjay5sb2ciIDI+JjEKICByYz0kPwogIGxpbmUgIi0tLSBtYWdpc2tib290IHJlcGFja2VkLWltYWdlIHVucGFjayBsb2cgLS0tIgogIGNhdCAiJFdPUksvcmVwYWNrZWQtdW5wYWNrLmxvZyIgPj4iJFJFUE9SVCIKICBpZiBbICIkcmMiIC1lcSAwIF0gfHwgWyAiJHJjIiAtZXEgMiBdOyB0aGVuCiAgICBwYXNzICJSZXBhY2tlZCBib290IGltYWdlIGlzIHBhcnNlYWJsZSBhZ2FpbiBieSBleGFjdCBidW5kbGVkIG1hZ2lza2Jvb3QuIgogIGVsc2UKICAgIGJsb2NrICJSZXBhY2tlZCBib290IGltYWdlIGNhbm5vdCBiZSBwYXJzZWQgYWdhaW4gKHJjPSRyYykuIgogIGZpCmZpCgppZiBbIC1mICIkTkVXRElSL2tlcm5lbCIgXTsgdGhlbgogIE5FV19LRVJORUxfU0hBPSIkKGhhc2hfZmlsZSAiJE5FV0RJUi9rZXJuZWwiKSIKICBrdiAiUkVQQUNLRURfRVhUUkFDVEVEX0tFUk5FTF9TSEEyNTYiICIkTkVXX0tFUk5FTF9TSEEiCiAgaWYgWyAiJE5FV19LRVJORUxfU0hBIiA9ICIkRVhQRUNURURfSU1BR0VfU0hBMjU2IiBdOyB0aGVuCiAgICBwYXNzICJSZXBhY2tlZCBib290IGNvbnRhaW5zIGV4YWN0IGZyb3plbiBQMTMgSW1hZ2UuIgogIGVsc2UKICAgIGJsb2NrICJLZXJuZWwgZXh0cmFjdGVkIGZyb20gcmVwYWNrZWQgYm9vdCBpcyBub3QgZXhhY3QgUDEzLiIKICBmaQplbHNlCiAgYmxvY2sgIlJlcGFja2VkIGltYWdlIGRpZCBub3QgZXhwb3NlIGEga2VybmVsIGNvbXBvbmVudC4iCmZpCgojIENvbXBhcmUgZXZlcnkgb3JpZ2luYWwgbm9uLWtlcm5lbCBjb21wb25lbnQgdGhhdCBtYWdpc2tib290IGV4cG9zZXMuCkNPTVBPTkVOVF9NSVNNQVRDSD0wCndoaWxlIElGUz0iJChwcmludGYgJ1x0JykiIHJlYWQgbmFtZSBieXRlcyBvbGRoYXNoOyBkbwogIFsgIiRuYW1lIiA9ICJrZXJuZWwiIF0gJiYgY29udGludWUKICBbICIkbmFtZSIgPSAibmV3LWJvb3QuaW1nIiBdICYmIGNvbnRpbnVlCgogIGlmIFsgISAtZiAiJE5FV0RJUi8kbmFtZSIgXTsgdGhlbgogICAgbGluZSAiQ09NUE9ORU5UX01JU1NJTkdfQUZURVJfUkVQQUNLIHwgJG5hbWUiCiAgICBDT01QT05FTlRfTUlTTUFUQ0g9MQogICAgY29udGludWUKICBmaQogIG5ld2hhc2g9IiQoaGFzaF9maWxlICIkTkVXRElSLyRuYW1lIikiCiAgaWYgWyAiJG5ld2hhc2giICE9ICIkb2xkaGFzaCIgXTsgdGhlbgogICAgbGluZSAiQ09NUE9ORU5UX0NIQU5HRUQgfCAkbmFtZSB8IGJlZm9yZT0kb2xkaGFzaCBhZnRlcj0kbmV3aGFzaCIKICAgIENPTVBPTkVOVF9NSVNNQVRDSD0xCiAgZWxzZQogICAgbGluZSAiQ09NUE9ORU5UX0lERU5USUNBTCB8ICRuYW1lIHwgJG9sZGhhc2giCiAgZmkKZG9uZSA8IiRPUklHX0NPTVBPTkVOVFMiCgppZiBbICIkQ09NUE9ORU5UX01JU01BVENIIiAtZXEgMCBdOyB0aGVuCiAgcGFzcyAiQWxsIGV4cG9zZWQgbm9uLWtlcm5lbCBib290IGNvbXBvbmVudHMgYXJlIGJ5dGUtaWRlbnRpY2FsIGFmdGVyIGRyeS1ydW4gcmVwYWNrLiIKZWxzZQogIGJsb2NrICJPbmUgb3IgbW9yZSBub24ta2VybmVsIGJvb3QgY29tcG9uZW50cyBjaGFuZ2VkL2Rpc2FwcGVhcmVkIGR1cmluZyBkcnktcnVuIHJlcGFjay4iCmZpCgojIC0tLS0tLS0tLS0tLS0tLS0tLS0tLS0gdW50b3VjaGVkIHBhcnRpdGlvbiBldmlkZW5jZSAtLS0tLS0tLS0tLS0tLS0tCgpzZWN0aW9uICI3LiBVbnRvdWNoZWQgYm9vdC1jaGFpbiBldmlkZW5jZSIKCmZvciBwYXJ0IGluIHZlbmRvcl9ib290IGR0Ym87IGRvCiAgYnA9IiQoZmluZF9ibG9jayAiJHBhcnQiICIkU0xPVF9TVUZGSVgiIDI+L2Rldi9udWxsIHx8IHRydWUpIgogIGlmIFsgLW4gIiRicCIgXSAmJiBbIC1yICIkYnAiIF07IHRoZW4KICAgIGt2ICJSRUFET05MWV8ke3BhcnR9X1BBVEgiICIkYnAiCiAgICBrdiAiUkVBRE9OTFlfJHtwYXJ0fV9CWVRFUyIgIiQoYmxvY2tfc2l6ZSAiJGJwIikiCiAgICBrdiAiUkVBRE9OTFlfJHtwYXJ0fV9TSEEyNTYiICIkKGhhc2hfZmlsZSAiJGJwIikiCiAgZmkKZG9uZQoKIyBSZWNvdmVyeSBmYWxsYmFjayB2aXNpYmlsaXR5IGlzIGltcG9ydGFudCBiZWZvcmUgYW55IHJlYWwgdGVzdC4KT1RIRVJfU1VGRklYPSIiCmNhc2UgIiRTTE9UX1NVRkZJWCIgaW4KICBfYSkgT1RIRVJfU1VGRklYPSJfYiIgOzsKICBfYikgT1RIRVJfU1VGRklYPSJfYSIgOzsKZXNhYwppZiBbIC1uICIkT1RIRVJfU1VGRklYIiBdOyB0aGVuCiAgT1RIRVJfQk9PVD0iJChmaW5kX2Jsb2NrIGJvb3QgIiRPVEhFUl9TVUZGSVgiIDI+L2Rldi9udWxsIHx8IHRydWUpIgogIGt2ICJJTkFDVElWRV9CT09UX0JMT0NLIiAiJE9USEVSX0JPT1QiCiAgaWYgWyAtbiAiJE9USEVSX0JPT1QiIF0gJiYgWyAtciAiJE9USEVSX0JPT1QiIF07IHRoZW4KICAgIGt2ICJJTkFDVElWRV9CT09UX0JZVEVTIiAiJChibG9ja19zaXplICIkT1RIRVJfQk9PVCIpIgogICAga3YgIklOQUNUSVZFX0JPT1RfU0hBMjU2IiAiJChoYXNoX2ZpbGUgIiRPVEhFUl9CT09UIikiCiAgICBwYXNzICJJbmFjdGl2ZS1zbG90IGJvb3QgcGFydGl0aW9uIGlzIHJlYWRhYmxlIGZvciByZWNvdmVyeSByZWZlcmVuY2UuIgogIGVsc2UKICAgIHdhcm4gIkluYWN0aXZlLXNsb3QgYm9vdCBwYXJ0aXRpb24gaXMgbm90IHJlYWRhYmxlL3Jlc29sdmVkLiIKICBmaQpmaQoKIyAtLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLSB2ZXJkaWN0IC0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLQoKCnNlY3Rpb24gIjguIFZFVVggY3Jvc3MtQlNQIC8gY3VzdG9tLWtlcm5lbCBjb21wYXRpYmlsaXR5IGNsYXNzaWZpY2F0aW9uIgoKIyBQdWJsaWMvc291cmNlIGF1ZGl0IGJhc2VsaW5lIHVzZWQgYnkgdGhpcyBjbGFzc2lmaWVyOgojIC0gWGlhb21pIG9mZmljaWFsIFZFVVggQW5kcm9pZC1SIHNvdXJjZTogTGludXggNS40LjEzNCwgUUdLSSwgUXVhbGNvbW0KIyAgIExBLlVNLjkuMTYucjEgTUFOTkFSIGxpbmVhZ2UuCiMgLSBQdWJsaWMgVkVVWCBjb21tdW5pdHkvY3VzdG9tIHRyZWVzIHJlbWFpbiBMaW51eCA1LjQgYW5kIGV4dGVuZCB0aHJvdWdoCiMgICBvZmZpY2lhbCB1cHN0cmVhbSA1LjQuMzAyLgojIC0gTGludXggNS40LjMwMiBpcyB0aGUgb2ZmaWNpYWwgc3RhYmxlL0VPTCBlbmRwb2ludC4gQW55IDUuNC54ID4gMzAyIGlzCiMgICB0aGVyZWZvcmUgYSBjdXN0b20vc3ludGhldGljIHN1YmxldmVsIGFuZCBNVVNUIE5PVCBiZSBhdXRvLWFwcHJvdmVkIG1lcmVseQojICAgYmVjYXVzZSBpdCBzYXlzICI1LjQiLgprdiAiVkVVWF9CQVNFTElORV9GQU1JTFkiICJTTTYzNzVfUUdLSV9NQU5OQVJfSE9MSV9CTEFJUiIKa3YgIk9GRklDSUFMX0xJTlVYXzVfNF9FTkRQT0lOVCIgIjUuNC4zMDIiCgpDT01QQVRfQ0xBU1M9IiIKQ09NUEFUX1JFQVNPTj0iIgpDT01QQVRfSEFSRF9CTE9DSz0wCkNPTVBBVF9SRVZJRVc9MAoKQ1VSUkVOVF9TVUJMRVZFTD0iIgpjYXNlICIkVU5BTUVfUiIgaW4KICA1LjQuKikKICAgIENVUlJFTlRfU1VCTEVWRUw9IiQocHJpbnRmICclcycgIiRVTkFNRV9SIiB8IHNlZCAtbiAncy9eNVwuNFwuXChbMC05XVswLTldKlwpLiovXDEvcCcpIgogICAgOzsKZXNhYwprdiAiQ1VSUkVOVF9LRVJORUxfU1VCTEVWRUwiICIkQ1VSUkVOVF9TVUJMRVZFTCIKCiMgQ2FwdHVyZSB1c2VmdWwgY3VycmVudC1rZXJuZWwgaWRlbnRpdHkgc3RyaW5ncyB3aXRob3V0IG1ha2luZyBicmFuZCBuYW1lcyBhCiMgY29tcGF0aWJpbGl0eSBkZWNpc2lvbiBieSB0aGVtc2VsdmVzLgpLRVJORUxfSURfU1RSSU5HUz0iJFdPUksvY3VycmVudC1rZXJuZWwtaWRlbnRpdHkudHh0Igo6ID4iJEtFUk5FTF9JRF9TVFJJTkdTIgppZiBbIC1mICIkT1JJR0RJUi9rZXJuZWwiIF0gJiYgaGF2ZSBzdHJpbmdzOyB0aGVuCiAgc3RyaW5ncyAiJE9SSUdESVIva2VybmVsIiAyPi9kZXYvbnVsbCBcCiAgICB8IGdyZXAgLUUgLWkgJ0xpbnV4IHZlcnNpb258UG9zaXRyb258TmVidWxhfFN0YXJyeXxBc3RyYXxSZVN1a2lTVXxLZXJuZWxTVXxTVVNGU3xTTTYzNzV8SE9MSXxCTEFJUnxNQU5OQVJ8dmV1eCcgXAogICAgfCBoZWFkIC1uIDIwMCA+IiRLRVJORUxfSURfU1RSSU5HUyIgfHwgdHJ1ZQpmaQpsaW5lICItLS0gY3VycmVudCBib290IGtlcm5lbCBpZGVudGl0eSBzdHJpbmdzIChkaWFnbm9zdGljKSAtLS0iCmlmIFsgLXMgIiRLRVJORUxfSURfU1RSSU5HUyIgXTsgdGhlbgogIGNhdCAiJEtFUk5FTF9JRF9TVFJJTkdTIiA+PiIkUkVQT1JUIgplbHNlCiAgbGluZSAiKG5vIG1hdGNoaW5nIGlkZW50aXR5IHN0cmluZ3MgZm91bmQpIgpmaQoKIyBEZXZpY2UtdHJlZSBjb21wYXRpYmlsaXR5IGV2aWRlbmNlIGZyb20gdGhlIGN1cnJlbnRseSBib290ZWQgdGFyZ2V0LgpEVF9DT01QQVQ9IiRXT1JLL2R0LWNvbXBhdGlibGUudHh0Igo6ID4iJERUX0NPTVBBVCIKaWYgWyAtciAvc3lzL2Zpcm13YXJlL2RldmljZXRyZWUvYmFzZS9jb21wYXRpYmxlIF07IHRoZW4KICB0ciAnXDAwMCcgJ1xuJyA8L3N5cy9maXJtd2FyZS9kZXZpY2V0cmVlL2Jhc2UvY29tcGF0aWJsZSBcCiAgICB8IHNlZCAnL14kL2QnID4iJERUX0NPTVBBVCIgMj4vZGV2L251bGwgfHwgdHJ1ZQpmaQppZiBbIC1zICIkRFRfQ09NUEFUIiBdOyB0aGVuCiAgbGluZSAiLS0tIHJ1bnRpbWUgRFQgY29tcGF0aWJsZXMgLS0tIgogIGNhdCAiJERUX0NPTVBBVCIgPj4iJFJFUE9SVCIKICBpZiBncmVwIC1FcWkgJyhxY29tLGhvbGl8cWNvbSxibGFpcnx2ZXV4fHNtNjM3NSknICIkRFRfQ09NUEFUIjsgdGhlbgogICAgcGFzcyAiUnVudGltZSBkZXZpY2UtdHJlZSByZXBvcnRzIFZFVVgvU002Mzc1L0hPTEkvQkxBSVItZmFtaWx5IGNvbXBhdGliaWxpdHkgZXZpZGVuY2UuIgogIGVsc2UKICAgIGluZm8gIlJ1bnRpbWUgRFQgY29tcGF0aWJsZSBsaXN0IGRvZXMgbm90IGV4cG9zZSBhbiBvYnZpb3VzIFZFVVgvSE9MSS9CTEFJUiB0b2tlbi4iCiAgZmkKZmkKCiMgUmVhZC1vbmx5IGludmVudG9yeSBvZiBleHRlcm5hbCBrZXJuZWwgbW9kdWxlcyBhbmQgdGhlaXIgbG9hZCBtZXRhZGF0YS4KTU9EVUxFX1JPT1RTPSIKL3ZlbmRvci9saWIvbW9kdWxlcwovdmVuZG9yX2Rsa20vbGliL21vZHVsZXMKL3N5c3RlbS9saWIvbW9kdWxlcwovc3lzdGVtX2Rsa20vbGliL21vZHVsZXMKL29kbS9saWIvbW9kdWxlcwovb2RtX2Rsa20vbGliL21vZHVsZXMKL2xpYi9tb2R1bGVzCiIKCk1PRFVMRV9GSUxFX0xJU1Q9IiRXT1JLL21vZHVsZS1maWxlcy50eHQiCk1PRFVMRV9MT0FEX0ZJTEVTPSIkV09SSy9tb2R1bGUtbG9hZC1maWxlcy50eHQiCk1PRFVMRV9ERVBfRklMRVM9IiRXT1JLL21vZHVsZS1kZXAtZmlsZXMudHh0Igo6ID4iJE1PRFVMRV9GSUxFX0xJU1QiCjogPiIkTU9EVUxFX0xPQURfRklMRVMiCjogPiIkTU9EVUxFX0RFUF9GSUxFUyIKCmZvciByb290IGluICRNT0RVTEVfUk9PVFM7IGRvCiAgWyAtZCAiJHJvb3QiIF0gfHwgY29udGludWUKICBmaW5kICIkcm9vdCIgLXR5cGUgZiAtbmFtZSAnKi5rbycgLXByaW50IDI+L2Rldi9udWxsID4+IiRNT0RVTEVfRklMRV9MSVNUIiB8fCB0cnVlCiAgZmluZCAiJHJvb3QiIC10eXBlIGYgXCggLW5hbWUgJ21vZHVsZXMubG9hZCcgLW8gLW5hbWUgJ21vZHVsZXMubG9hZC4qJyBcKSAtcHJpbnQgMj4vZGV2L251bGwgPj4iJE1PRFVMRV9MT0FEX0ZJTEVTIiB8fCB0cnVlCiAgZmluZCAiJHJvb3QiIC10eXBlIGYgLW5hbWUgJ21vZHVsZXMuZGVwJyAtcHJpbnQgMj4vZGV2L251bGwgPj4iJE1PRFVMRV9ERVBfRklMRVMiIHx8IHRydWUKZG9uZQoKTENfQUxMPUMgc29ydCAtdSAiJE1PRFVMRV9GSUxFX0xJU1QiIC1vICIkTU9EVUxFX0ZJTEVfTElTVCIKTENfQUxMPUMgc29ydCAtdSAiJE1PRFVMRV9MT0FEX0ZJTEVTIiAtbyAiJE1PRFVMRV9MT0FEX0ZJTEVTIgpMQ19BTEw9QyBzb3J0IC11ICIkTU9EVUxFX0RFUF9GSUxFUyIgLW8gIiRNT0RVTEVfREVQX0ZJTEVTIgoKRVhUX0tPX0NPVU5UPSIkKHdjIC1sIDwiJE1PRFVMRV9GSUxFX0xJU1QiIHwgdHIgLWQgJyAnKSIKTU9EVUxFX0xPQURfQ09VTlQ9IiQod2MgLWwgPCIkTU9EVUxFX0xPQURfRklMRVMiIHwgdHIgLWQgJyAnKSIKTU9EVUxFX0RFUF9DT1VOVD0iJCh3YyAtbCA8IiRNT0RVTEVfREVQX0ZJTEVTIiB8IHRyIC1kICcgJykiCgprdiAiVklTSUJMRV9FWFRFUk5BTF9LT19DT1VOVCIgIiRFWFRfS09fQ09VTlQiCmt2ICJNT0RVTEVTX0xPQURfRklMRV9DT1VOVCIgIiRNT0RVTEVfTE9BRF9DT1VOVCIKa3YgIk1PRFVMRVNfREVQX0ZJTEVfQ09VTlQiICIkTU9EVUxFX0RFUF9DT1VOVCIKCmlmIFsgIiRFWFRfS09fQ09VTlQiIC1lcSAwIF0gMj4vZGV2L251bGw7IHRoZW4KICBwYXNzICJObyB2aXNpYmxlIGV4dGVybmFsIC5rbyBwYXlsb2FkIGlzIHJlcXVpcmVkIGJ5IHRoZSBtb3VudGVkIHVzZXJzcGFjZSBwYXJ0aXRpb25zLiIKZWxzZQogIGluZm8gIkV4dGVybmFsIGtlcm5lbC1tb2R1bGUgcGF5bG9hZCBpcyBwcmVzZW50IGFuZCB3aWxsIGJlIGF1ZGl0ZWQgZm9yIHZlcnNpb24gY291cGxpbmcuIgpmaQoKIyBSZWNvcmQgbG9hZC1saXN0IGFuZCBkZXBlbmRlbmN5IG1ldGFkYXRhIGV4YWN0bHkgYXMgcHJlc2VudC4KbGluZSAiLS0tIG1vZHVsZXMubG9hZCBmaWxlcyAtLS0iCmlmIFsgLXMgIiRNT0RVTEVfTE9BRF9GSUxFUyIgXTsgdGhlbgogIHdoaWxlIElGUz0gcmVhZCAtciBmOyBkbwogICAgWyAtZiAiJGYiIF0gfHwgY29udGludWUKICAgIGxpbmUgIkZJTEU9JGYgU0hBMjU2PSQoaGFzaF9maWxlICIkZiIpIgogICAgc2VkICdzL14vICAvJyAiJGYiID4+IiRSRVBPUlQiIDI+L2Rldi9udWxsIHx8IHRydWUKICBkb25lIDwiJE1PRFVMRV9MT0FEX0ZJTEVTIgplbHNlCiAgbGluZSAiKG5vbmUpIgpmaQoKbGluZSAiLS0tIG1vZHVsZXMuZGVwIGZpbGVzIC0tLSIKaWYgWyAtcyAiJE1PRFVMRV9ERVBfRklMRVMiIF07IHRoZW4KICB3aGlsZSBJRlM9IHJlYWQgLXIgZjsgZG8KICAgIFsgLWYgIiRmIiBdIHx8IGNvbnRpbnVlCiAgICBsaW5lICJGSUxFPSRmIFNIQTI1Nj0kKGhhc2hfZmlsZSAiJGYiKSIKICAgIHNlZCAncy9eLyAgLycgIiRmIiA+PiIkUkVQT1JUIiAyPi9kZXYvbnVsbCB8fCB0cnVlCiAgZG9uZSA8IiRNT0RVTEVfREVQX0ZJTEVTIgplbHNlCiAgbGluZSAiKG5vbmUpIgpmaQoKIyBFeHRyYWN0IHZlcm1hZ2ljIGZyb20gZWFjaCBtb2R1bGUgd2hlbiBwb3NzaWJsZS4gV2UgaW50ZW50aW9uYWxseSBkbyBub3QKIyBhc3N1bWUgbW9kaW5mbyBleGlzdHMgb24gQW5kcm9pZDsgInN0cmluZ3MiIGlzIHN1ZmZpY2llbnQgZm9yIHRoZSBlbWJlZGRlZAojIHZlcm1hZ2ljIG1hcmtlci4KVkVSTUFHSUNfVFNWPSIkV09SSy9tb2R1bGUtdmVybWFnaWMudHN2Igo6ID4iJFZFUk1BR0lDX1RTViIKaWYgWyAiJEVYVF9LT19DT1VOVCIgLWd0IDAgXSAyPi9kZXYvbnVsbCAmJiBoYXZlIHN0cmluZ3M7IHRoZW4KICB3aGlsZSBJRlM9IHJlYWQgLXIga287IGRvCiAgICBbIC1mICIka28iIF0gfHwgY29udGludWUKICAgIHZtPSIkKHN0cmluZ3MgIiRrbyIgMj4vZGV2L251bGwgfCBzZWQgLW4gJ3MvXnZlcm1hZ2ljPS8vcCcgfCBoZWFkIC1uMSkiCiAgICBbIC1uICIkdm0iIF0gfHwgdm09IlVOUkVBREFCTEUiCiAgICBwcmludGYgJyVzXHQlc1xuJyAiJGtvIiAiJHZtIiA+PiIkVkVSTUFHSUNfVFNWIgogIGRvbmUgPCIkTU9EVUxFX0ZJTEVfTElTVCIKZmkKClZFUk1BR0lDX1JFQURBQkxFPTAKVkVSTUFHSUNfQ1VSUkVOVF9NQVRDSD0wClZFUk1BR0lDX1AxM19NQVRDSD0wClZFUk1BR0lDX09USEVSXzU0PTAKVkVSTUFHSUNfTk9ONTQ9MApWRVJNQUdJQ19TWU5USEVUSUNfR1QzMDI9MAoKaWYgWyAtcyAiJFZFUk1BR0lDX1RTViIgXTsgdGhlbgogIGxpbmUgIi0tLSBleHRlcm5hbCBtb2R1bGUgdmVybWFnaWMgLS0tIgogIGNhdCAiJFZFUk1BR0lDX1RTViIgPj4iJFJFUE9SVCIKCiAgd2hpbGUgSUZTPSIkKHByaW50ZiAnXHQnKSIgcmVhZCAtciBrbyB2bTsgZG8KICAgIFsgIiR2bSIgPSAiVU5SRUFEQUJMRSIgXSAmJiBjb250aW51ZQogICAgVkVSTUFHSUNfUkVBREFCTEU9JCgoVkVSTUFHSUNfUkVBREFCTEUgKyAxKSkKCiAgICBjYXNlICIkdm0iIGluCiAgICAgICIkVU5BTUVfUiIqKSBWRVJNQUdJQ19DVVJSRU5UX01BVENIPSQoKFZFUk1BR0lDX0NVUlJFTlRfTUFUQ0ggKyAxKSkgOzsKICAgIGVzYWMKICAgIGNhc2UgIiR2bSIgaW4KICAgICAgIiRFWFBFQ1RFRF9LRVJORUxfUkVMRUFTRSIqKSBWRVJNQUdJQ19QMTNfTUFUQ0g9JCgoVkVSTUFHSUNfUDEzX01BVENIICsgMSkpIDs7CiAgICBlc2FjCgogICAgdm1yZWw9IiQocHJpbnRmICclcycgIiR2bSIgfCBhd2sgJ3twcmludCAkMX0nKSIKICAgIGNhc2UgIiR2bXJlbCIgaW4KICAgICAgNS40LiopCiAgICAgICAgdm1zdWI9IiQocHJpbnRmICclcycgIiR2bXJlbCIgfCBzZWQgLW4gJ3MvXjVcLjRcLlwoWzAtOV1bMC05XSpcKS4qL1wxL3AnKSIKICAgICAgICBpZiBbIC1uICIkdm1zdWIiIF0gJiYgWyAiJHZtc3ViIiAtZ3QgMzAyIF0gMj4vZGV2L251bGw7IHRoZW4KICAgICAgICAgIFZFUk1BR0lDX1NZTlRIRVRJQ19HVDMwMj0kKChWRVJNQUdJQ19TWU5USEVUSUNfR1QzMDIgKyAxKSkKICAgICAgICBlbHNlCiAgICAgICAgICBWRVJNQUdJQ19PVEhFUl81ND0kKChWRVJNQUdJQ19PVEhFUl81NCArIDEpKQogICAgICAgIGZpCiAgICAgICAgOzsKICAgICAgKikKICAgICAgICBWRVJNQUdJQ19OT041ND0kKChWRVJNQUdJQ19OT041NCArIDEpKQogICAgICAgIDs7CiAgICBlc2FjCiAgZG9uZSA8IiRWRVJNQUdJQ19UU1YiCmZpCgprdiAiVkVSTUFHSUNfUkVBREFCTEVfQ09VTlQiICIkVkVSTUFHSUNfUkVBREFCTEUiCmt2ICJWRVJNQUdJQ19NQVRDSF9DVVJSRU5UX0tFUk5FTF9DT1VOVCIgIiRWRVJNQUdJQ19DVVJSRU5UX01BVENIIgprdiAiVkVSTUFHSUNfTUFUQ0hfUDEzX0NPVU5UIiAiJFZFUk1BR0lDX1AxM19NQVRDSCIKa3YgIlZFUk1BR0lDX09USEVSXzVfNF9DT1VOVCIgIiRWRVJNQUdJQ19PVEhFUl81NCIKa3YgIlZFUk1BR0lDX0dUXzVfNF8zMDJfQ09VTlQiICIkVkVSTUFHSUNfU1lOVEhFVElDX0dUMzAyIgprdiAiVkVSTUFHSUNfTk9OXzVfNF9DT1VOVCIgIiRWRVJNQUdJQ19OT041NCIKCiMgSWRlbnRpZnkgYSBydW50aW1lIGxvYWQtbGlzdCByb2xlIHNldC4gVGhpcyBpcyBkaWFnbm9zdGljIGFuZCBpbnRlbnRpb25hbGx5CiMgY29uc2VydmF0aXZlOiBtZXJlbHkgc2VlaW5nIGEgbW9kdWxlIG5hbWUgZG9lcyBOT1QgcHJvdmUgaXQgaXMgbWFuZGF0b3J5LgpMT0FEX1JPTEVfTElTVD0iJFdPUksvbW9kdWxlcy1sb2FkLXJvbGVzLnR4dCIKOiA+IiRMT0FEX1JPTEVfTElTVCIKaWYgWyAtcyAiJE1PRFVMRV9MT0FEX0ZJTEVTIiBdOyB0aGVuCiAgd2hpbGUgSUZTPSByZWFkIC1yIGY7IGRvCiAgICBzZWQgLWUgJ3MvIy4qJC8vJyAtZSAncy9bWzpzcGFjZTpdXSokLy8nIC1lICcvXiQvZCcgIiRmIiAyPi9kZXYvbnVsbCBcCiAgICAgIHwgc2VkICdzIy4qLyMjOyBzL1wua28kLy8nID4+IiRMT0FEX1JPTEVfTElTVCIgfHwgdHJ1ZQogIGRvbmUgPCIkTU9EVUxFX0xPQURfRklMRVMiCiAgTENfQUxMPUMgc29ydCAtdSAiJExPQURfUk9MRV9MSVNUIiAtbyAiJExPQURfUk9MRV9MSVNUIgpmaQpMT0FEX1JPTEVfQ09VTlQ9IiQod2MgLWwgPCIkTE9BRF9ST0xFX0xJU1QiIHwgdHIgLWQgJyAnKSIKa3YgIlJVTlRJTUVfTE9BRF9ST0xFX0NPVU5UIiAiJExPQURfUk9MRV9DT1VOVCIKaWYgWyAtcyAiJExPQURfUk9MRV9MSVNUIiBdOyB0aGVuCiAgbGluZSAiLS0tIHVuaXF1ZSBtb2R1bGVzLmxvYWQgcnVudGltZSByb2xlcyAtLS0iCiAgY2F0ICIkTE9BRF9ST0xFX0xJU1QiID4+IiRSRVBPUlQiCmZpCgojIFAxMyBleGFjdC1jdXJyZW50LWtlcm5lbCBpcyB0aGUgc3Ryb25nZXN0IHBvc3NpYmxlIGxvY2FsIHByb29mOiB0aGUgdGFyZ2V0IGlzCiMgYWxyZWFkeSBydW5uaW5nIHRoZSBleGFjdCBJbWFnZSB3ZSB3b3VsZCBwdXQgYmFjayBpbnRvIGJvb3QuCmlmIFsgLW4gIiR7Q1VSUkVOVF9CT09UX0tFUk5FTF9TSEE6LX0iIF0gJiYgWyAiJENVUlJFTlRfQk9PVF9LRVJORUxfU0hBIiA9ICIkRVhQRUNURURfSU1BR0VfU0hBMjU2IiBdOyB0aGVuCiAgQ09NUEFUX0NMQVNTPSJBX1AxM19FWEFDVF9SVU5USU1FX1BST1ZFTiIKICBDT01QQVRfUkVBU09OPSJDdXJyZW50IGFjdGl2ZSBib290IGFscmVhZHkgcnVucyBleGFjdCBmcm96ZW4gUDEzIEltYWdlLiIKZWxzZQogICMgS2VybmVsIGZhbWlseSAvIHN1YmxldmVsIGdhdGUuCiAgaWYgWyAteiAiJENVUlJFTlRfU1VCTEVWRUwiIF07IHRoZW4KICAgIENPTVBBVF9DTEFTUz0iQ19PVVRTSURFX0FVRElURURfS0VSTkVMX0ZBTUlMWSIKICAgIENPTVBBVF9SRUFTT049IlJ1bm5pbmcga2VybmVsIGlzIG5vdCBwYXJzZWFibGUgYXMgTGludXggNS40LnguIgogICAgQ09NUEFUX0hBUkRfQkxPQ0s9MQogIGVsaWYgWyAiJENVUlJFTlRfU1VCTEVWRUwiIC1ndCAzMDIgXSAyPi9kZXYvbnVsbDsgdGhlbgogICAgQ09NUEFUX0NMQVNTPSJDX1NZTlRIRVRJQ181XzRfR1RfMzAyX1NPVVJDRV9SRVZJRVdfUkVRVUlSRUQiCiAgICBDT01QQVRfUkVBU09OPSJLZXJuZWwgc3VibGV2ZWwgZXhjZWVkcyBvZmZpY2lhbCBMaW51eCA1LjQuMzAyIGVuZHBvaW50LiIKICAgIENPTVBBVF9IQVJEX0JMT0NLPTEKICBlbGlmIFsgLW4gIiRWS0IiIF0gfHwgWyAtbiAiJElOSVRCIiBdOyB0aGVuCiAgICBDT01QQVRfQ0xBU1M9IkJfQUxURVJOQVRFX0JPT1RfQVJDSElURUNUVVJFX1JFVklFVyIKICAgIENPTVBBVF9SRUFTT049ImluaXRfYm9vdC92ZW5kb3Jfa2VybmVsX2Jvb3QgYXJjaGl0ZWN0dXJlIGRpZmZlcnMgZnJvbSBhdWRpdGVkIFZFVVggYmFzZWxpbmUuIgogICAgQ09NUEFUX1JFVklFVz0xCiAgZWxpZiBbIC16ICIkVkVORE9SX0JPT1RfQkxPQ0siIF0gfHwgWyAteiAiJERUQk9fQkxPQ0siIF07IHRoZW4KICAgIENPTVBBVF9DTEFTUz0iQ19CT09UX0FSQ0hJVEVDVFVSRV9PVVRTSURFX0FVRElURURfQkFTRUxJTkUiCiAgICBDT01QQVRfUkVBU09OPSJSZXF1aXJlZCB2ZW5kb3JfYm9vdC9EVEJPIGFyY2hpdGVjdHVyZSBldmlkZW5jZSBpcyBtaXNzaW5nLiIKICAgIENPTVBBVF9IQVJEX0JMT0NLPTEKICBlbGlmIFsgIiRWRVJNQUdJQ19TWU5USEVUSUNfR1QzMDIiIC1ndCAwIF0gMj4vZGV2L251bGwgfHwgWyAiJFZFUk1BR0lDX05PTjU0IiAtZ3QgMCBdIDI+L2Rldi9udWxsOyB0aGVuCiAgICBDT01QQVRfQ0xBU1M9IkNfRVhURVJOQUxfTU9EVUxFX0FCSV9PVVRTSURFX0FVRElURURfNV80X0ZBTUlMWSIKICAgIENPTVBBVF9SRUFTT049IkV4dGVybmFsIG1vZHVsZSB2ZXJtYWdpYyBpbmRpY2F0ZXMgPjUuNC4zMDIgb3Igbm9uLTUuNCBBQkkgZGVwZW5kZW5jeS4iCiAgICBDT01QQVRfSEFSRF9CTE9DSz0xCiAgZWxpZiBbICIkRVhUX0tPX0NPVU5UIiAtZ3QgMCBdIDI+L2Rldi9udWxsOyB0aGVuCiAgICBpZiBbICIkVkVSTUFHSUNfUkVBREFCTEUiIC1lcSAwIF0gMj4vZGV2L251bGw7IHRoZW4KICAgICAgQ09NUEFUX0NMQVNTPSJCX0VYVEVSTkFMX01PRFVMRV9BQklfVU5SRVNPTFZFRCIKICAgICAgQ09NUEFUX1JFQVNPTj0iRXh0ZXJuYWwgbW9kdWxlcyBleGlzdCBidXQgdmVybWFnaWMgY291bGQgbm90IGJlIHJlYWQuIgogICAgICBDT01QQVRfUkVWSUVXPTEKICAgIGVsaWYgWyAiJFZFUk1BR0lDX0NVUlJFTlRfTUFUQ0giIC1ndCAwIF0gMj4vZGV2L251bGwgJiYgWyAiJFZFUk1BR0lDX1AxM19NQVRDSCIgLWVxIDAgXSAyPi9kZXYvbnVsbDsgdGhlbgogICAgICBDT01QQVRfQ0xBU1M9IkJfQ1VSUkVOVF9LRVJORUxfU1BFQ0lGSUNfRVhURVJOQUxfTU9EVUxFUyIKICAgICAgQ09NUEFUX1JFQVNPTj0iRXh0ZXJuYWwgbW9kdWxlIHZlcm1hZ2ljIGlzIHRpZWQgdG8gY3VycmVudCBmb3JlaWduIGtlcm5lbCByZWxlYXNlLCBub3QgUDEzLiIKICAgICAgQ09NUEFUX1JFVklFVz0xCiAgICBlbHNlCiAgICAgIENPTVBBVF9DTEFTUz0iQl9FWFRFUk5BTF9NT0RVTEVfUlVOVElNRV9DT1VQTElOR19SRVZJRVciCiAgICAgIENPTVBBVF9SRUFTT049IkV4dGVybmFsIG1vZHVsZSBwYXlsb2FkIGV4aXN0czsgbm8gaGFyZCBBQkkgYnJlYWsgcHJvdmVuLCBidXQgcnVudGltZSBjb3VwbGluZyBtdXN0IGJlIHJldmlld2VkLiIKICAgICAgQ09NUEFUX1JFVklFVz0xCiAgICBmaQogIGVsc2UKICAgIENPTVBBVF9DTEFTUz0iQV9TVEFOREFSRF9WRVVYX1FHS0lfNV80X0NBTkRJREFURSIKICAgIENPTVBBVF9SRUFTT049IkxpbnV4IDUuNCA8PTMwMiwgc3RhbmRhcmQgVkVVWCBib290IGNoYWluLCBhbmQgbm8gdmlzaWJsZSBleHRlcm5hbCBtb2R1bGUgZGVwZW5kZW5jeS4iCiAgZmkKZmkKCmt2ICJDT01QQVRJQklMSVRZX0NMQVNTIiAiJENPTVBBVF9DTEFTUyIKa3YgIkNPTVBBVElCSUxJVFlfUkVBU09OIiAiJENPTVBBVF9SRUFTT04iCgpjYXNlICIkQ09NUEFUX0NMQVNTIiBpbgogIEFfKikKICAgIHBhc3MgIkNvbXBhdGliaWxpdHkgY2xhc3NpZmljYXRpb246ICRDT01QQVRfQ0xBU1MiCiAgICA7OwogIEJfKikKICAgIHdhcm4gIkNvbXBhdGliaWxpdHkgY2xhc3NpZmljYXRpb24gcmVxdWlyZXMgbWFudWFsIHJldmlldzogJENPTVBBVF9DTEFTUyIKICAgIDs7CiAgQ18qKQogICAgYmxvY2sgIkNvbXBhdGliaWxpdHkgY2xhc3NpZmljYXRpb24gYmxvY2tzIGZsYXNoaW5nOiAkQ09NUEFUX0NMQVNTIgogICAgOzsKZXNhYwoKIyBBZGRpdGlvbmFsIHNvdXJjZS1mYW1pbHkgY29uZmlkZW5jZSBtYXJrZXJzLiBUaGV5IGFyZSBkZWxpYmVyYXRlbHkgbm90IGhhcmQKIyByZXF1aXJlbWVudHMgYmVjYXVzZSBjdXN0b20ga2VybmVscyBjYW4gcmVtb3ZlIHByaW50YWJsZSBzdHJpbmdzLgppZiBbIC1zICIkS0VSTkVMX0lEX1NUUklOR1MiIF07IHRoZW4KICBpZiBncmVwIC1FcWkgJyhTTTYzNzV8SE9MSXxCTEFJUnxNQU5OQVJ8dmV1eCknICIkS0VSTkVMX0lEX1NUUklOR1MiOyB0aGVuCiAgICBwYXNzICJDdXJyZW50IGJvb3Qga2VybmVsIGV4cG9zZXMgVkVVWC9TTTYzNzUtZmFtaWx5IGlkZW50aXR5IGV2aWRlbmNlLiIKICBlbHNlCiAgICBpbmZvICJDdXJyZW50IGJvb3Qga2VybmVsIGV4cG9zZXMgbm8gcHJpbnRhYmxlIFZFVVgtZmFtaWx5IGlkZW50aXR5IHN0cmluZy4iCiAgZmkKZmkKCiMgRXhwbGljaXQgcG9saWN5IGZvciA1LjQuMzAyIHZzIHN5bnRoZXRpYyA1LjQuMzA4LXN0eWxlIGtlcm5lbHMuCmlmIFsgLW4gIiRDVVJSRU5UX1NVQkxFVkVMIiBdICYmIFsgIiRDVVJSRU5UX1NVQkxFVkVMIiAtZXEgMzAyIF0gMj4vZGV2L251bGw7IHRoZW4KICBpbmZvICI1LjQuMzAyIGlzIHdpdGhpbiB0aGUgYXVkaXRlZCBwdWJsaWMgVkVVWC9Qb3NpdHJvbiBlbmRwb2ludDsgdmVyc2lvbiBudW1iZXIgYWxvbmUgZG9lcyBub3QgYmxvY2sgVTItUjMuIgpmaQppZiBbIC1uICIkQ1VSUkVOVF9TVUJMRVZFTCIgXSAmJiBbICIkQ1VSUkVOVF9TVUJMRVZFTCIgLWd0IDMwMiBdIDI+L2Rldi9udWxsOyB0aGVuCiAgbGluZSAiUE9MSUNZX0dUXzVfNF8zMDI9QkxPQ0tfVU5USUxfU09VUkNFX09SX1JVTlRJTUVfQUJJX1JFVklFVyIKZmkKCgpzZWN0aW9uICI5LiBGSU5BTCBQUkVGTElHSFQgVkVSRElDVCIKa3YgIlBBU1NfQ09VTlQiICIkUEFTU19OIgprdiAiSU5GT19DT1VOVCIgIiRJTkZPX04iCmt2ICJXQVJOX0NPVU5UIiAiJFdBUk5fTiIKa3YgIkJMT0NLX0NPVU5UIiAiJEJMT0NLX04iCgppZiBbICIkQkxPQ0tfTiIgLWd0IDAgXTsgdGhlbgogIGxpbmUgIkZJTkFMX1ZFUkRJQ1Q9QkxPQ0siCiAgbGluZSAiRkxBU0hfUkVDT01NRU5EQVRJT049RE9fTk9UX0ZMQVNIIgogIGxpbmUgIkRFVklDRV9QQVNTPU5PIgogIGxpbmUgIlJFQVNPTj1BdCBsZWFzdCBvbmUgaGFyZCBwYWNrYWdlL2RldmljZS9ib290LXJlcGFjayBpbmNvbXBhdGliaWxpdHkgd2FzIGRldGVjdGVkLiIKICBFWElUX0NPREU9MjAKZWxpZiBbICIkV0FSTl9OIiAtZ3QgMCBdOyB0aGVuCiAgbGluZSAiRklOQUxfVkVSRElDVD1SRVZJRVciCiAgbGluZSAiRkxBU0hfUkVDT01NRU5EQVRJT049RE9fTk9UX0FVVE9fQVBQUk9WRSIKICBsaW5lICJERVZJQ0VfUEFTUz1OTyIKICBsaW5lICJSRUFTT049Tm8gaGFyZCBmYWlsdXJlIHdhcyBkZXRlY3RlZCwgYnV0IG9uZSBvciBtb3JlIHVuY2VydGFpbnRpZXMgcmVxdWlyZSByZXZpZXcuIgogIEVYSVRfQ09ERT0yMQplbHNlCiAgbGluZSAiRklOQUxfVkVSRElDVD1QUkVGTElHSFRfUEFTUyIKICBsaW5lICJGTEFTSF9SRUNPTU1FTkRBVElPTj1SRUFEWV9GT1JfQ09OVFJPTExFRF9ERVZJQ0VfVEVTVCIKICBsaW5lICJERVZJQ0VfUEFTUz1OTyIKICBsaW5lICJSRUFTT049RXhhY3QgcGF5bG9hZCBpZGVudGl0eSwgVkVVWCBnYXRlLCBhY3RpdmUgYm9vdCByZWFkLCBleGFjdC10b29sIHVucGFjay9yZXBhY2ssIHNpemUvbm9uLWtlcm5lbCBwcmVzZXJ2YXRpb24gYW5kIENMQVNTLUEgY29tcGF0aWJpbGl0eSBjaGVja3MgYWxsIHBhc3NlZC4iCiAgRVhJVF9DT0RFPTAKZmkKCmxpbmUgIiIKbGluZSAiSU1QT1JUQU5UPVBSRUZMSUdIVF9QQVNTX0lTX05PVF9BX0JPT1RfR1VBUkFOVEVFX0FORF9OT1RfREVWSUNFX1BBU1MiCmxpbmUgIlJFUE9SVD0kUkVQT1JUIgpsaW5lICJXT1JLRElSX1RFTVBPUkFSWV9BTkRfUkVNT1ZFRF9PTl9FWElUPSRXT1JLIgoKIyBBbHNvIHByaW50IGZpbmFsIHBhdGggdG8gdGhlIGludm9raW5nIHRlcm1pbmFsIGV2ZW4gaWYgcmVwb3J0IGlzIGxhdGVyIGNvcGllZC4KcHJpbnRmICdcblJlcG9ydDogJXNcbicgIiRSRVBPUlQiCmV4aXQgIiRFWElUX0NPREUiCg==
+          EOF_U4_PREFLIGHT
+          base64 -d "$RUNNER_TEMP/preflight-v3.b64" > "$RC_DIR/VEUX-U2-R3-PREFLIGHT-READONLY-v3.sh"
+          chmod 0755 "$RC_DIR/VEUX-U2-R3-PREFLIGHT-READONLY-v3.sh"
+
+          pf_sha="$(sha256sum "$RC_DIR/VEUX-U2-R3-PREFLIGHT-READONLY-v3.sh" | awk '{print $1}')"
+          test "$pf_sha" = "890e22a0daf183d75b52a0438be9531c670867342d40c013710f3895cf447c83"
+          printf '%s  %s\n' "$pf_sha" "VEUX-U2-R3-PREFLIGHT-READONLY-v3.sh"             > "$RC_DIR/VEUX-U2-R3-PREFLIGHT-READONLY-v3.sh.sha256"
+
+          cat > "$RC_DIR/COMPATIBILITY-SCOPE.txt" <<'EOF_U4_SCOPE'
+          VEUX GEN1 U4-RC1 - COMPATIBILITY SCOPE
+
+          Kernel/install payload:
+          - exact frozen P13 Image
+          - Linux 5.4.274-qgki-g82179e362f33
+          - ReSukiSU 7741f878 / KSU 35141 / UAPI4
+          - SUSFS 2.3.0
+          - U2-R3 AnyKernel3 image-only package
+          - VEUX-only device gate
+          - Android-version gate: NONE
+          - ROM-family gate: NONE
+          - firmware-region gate: NONE
+          - preserves target boot ramdisk, DTB/DTBO and vendor boot environment
+          - no DTB/DTBO/vendor_boot/module payload is shipped
+
+          Frozen source/statistical authority:
+          - U3S-R1: seven A11-to-current representative VEUX source lines all
+            classified in one common VEUX/QGKI Linux-5.4 source family
+          - U3W: device-contract-driven public source audit
+          - direct VEUX Linux-5.4 source family is publicly evidenced through
+            sublevel 5.4.302
+          - direct public VEUX 5.4.303+ source found: NO
+          - direct public VEUX 6.1 source found in the audited device contracts: NO
+          - Android release, ROM branding and firmware region are not source-family
+            variant gates
+
+          IMPORTANT:
+          - SOURCE/STATIC PASS is not DEVICE PASS.
+          - Known P13 real-device proof remains the already tested VEUX environment.
+          - Other VEUX environments, including Positron 5.4.302, still require
+            controlled real-device validation before being called DEVICE PASS.
+          - A claimed 5.4.308 build is outside the public-source-proven range until
+            its exact source or kernel artifact is audited.
+          EOF_U4_SCOPE
+
+          cat > "$RC_DIR/TESTING-STATUS.txt" <<'EOF_U4_STATUS'
+          VEUX GEN1 U4-RC1 - TESTING STATUS
+
+          P13:
+          BUILD PASS
+          FLASH PASS
+          DEVICE BOOT PASS
+          ReSukiSU PASS
+          UAPI4 PASS
+          SUSFS PASS
+          SU PASS
+          POST-EXEC PASS
+
+          U2-R3/U4-RC1 package:
+          STATIC PASS
+          PACKAGE PASS
+          PREFLIGHT PASS on the known P13 device environment
+          SOURCE/STATISTICAL FULL PASS for direct public VEUX Linux-5.4 family
+          through 5.4.302
+          UNIVERSAL DEVICE PASS: NO
+
+          No new kernel binary is introduced by U4-RC1.
+          EOF_U4_STATUS
+
+          cat > "$RC_DIR/RELEASE-METADATA.txt" <<EOF_U4_META
+          U4_RELEASE_CANDIDATE=RC1
+          U4_KERNEL_DELTA=NONE
+          U4_AK3_FUNCTIONAL_DELTA=NONE
+          U4_INSTALL_PAYLOAD=U2_R3_EXACT_FUNCTIONAL_DESIGN
+          U4_IMAGE_SHA256=$EXPECTED_IMAGE_SHA256
+          U4_KERNEL_RELEASE=$EXPECTED_KERNEL_RELEASE
+          U4_DEVICE_GATE=VEUX_ONLY
+          U4_ANDROID_VERSION_GATE=NONE
+          U4_ROM_FAMILY_GATE=NONE
+          U4_FIRMWARE_REGION_GATE=NONE
+          U4_SOURCE_SCOPE=DIRECT_PUBLIC_VEUX_LINUX_5_4_THROUGH_5_4_302
+          U4_DIRECT_PUBLIC_VEUX_GT302_SOURCE=NONE_FOUND
+          U4_DIRECT_PUBLIC_VEUX_6_1_SOURCE=NONE_FOUND_IN_AUDITED_CONTRACTS
+          U4_UNIVERSAL_DEVICE_PASS=NO
+          U4_NEXT_GATE=CONTROLLED_DEVICE_VALIDATION_ON_ADDITIONAL_VEUX_ENVIRONMENTS
+          EOF_U4_META
+
+          verify="$RUNNER_TEMP/u4-ak3-verify"
+          rm -rf "$verify"
+          mkdir -p "$verify"
+          unzip -q "$install_zip" -d "$verify"
+
+          test "$(sha256sum "$verify/Image" | awk '{print $1}')" = "$EXPECTED_IMAGE_SHA256"
+          test "$(stat -c %s "$verify/Image")" = "$EXPECTED_IMAGE_BYTES"
+
+          (
+            cd "$verify"
+            find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum
+          ) > "$RC_DIR/AK3-PAYLOAD-SHA256SUMS.txt"
+
+          file_count="$(find "$verify" -type f | wc -l | tr -d ' ')"
+          test "$file_count" = "14"
+
+          (
+            cd "$RC_DIR"
+            find . -type f ! -name 'SHA256SUMS.txt' -print0               | LC_ALL=C sort -z               | xargs -0 sha256sum
+          ) > "$RC_DIR/SHA256SUMS.txt"
+
+          (
+            cd "$RC_DIR"
+            sha256sum -c SHA256SUMS.txt
+          )
+
+          bundle="$RC_OUT_DIR/$U4_RC_BUNDLE_NAME"
+          (
+            cd "$RC_DIR"
+            zip -X -q -r "$bundle" .
+          )
+
+          unzip -t "$bundle"
+          bundle_sha="$(sha256sum "$bundle" | awk '{print $1}')"
+          printf '%s  %s\n' "$bundle_sha" "$U4_RC_BUNDLE_NAME"             > "$bundle.sha256"
+
+          {
+            echo "U4_RC1_RELEASE_BUNDLE=PASS"
+            echo "U4_KERNEL_DELTA=NONE"
+            echo "U4_AK3_FUNCTIONAL_DELTA=NONE"
+            echo "U4_PREFLIGHT_V3_SHA256=890e22a0daf183d75b52a0438be9531c670867342d40c013710f3895cf447c83"
+            echo "U4_INSTALL_IMAGE_SHA256=$EXPECTED_IMAGE_SHA256"
+            echo "U4_RELEASE_BUNDLE_SHA256=$bundle_sha"
+            echo "U4_SOURCE_SCOPE=DIRECT_PUBLIC_VEUX_LINUX_5_4_THROUGH_5_4_302"
+            echo "U4_UNIVERSAL_DEVICE_PASS=NO"
+          } | tee "$EVIDENCE_DIR/10-U4-RC1-RESULT.txt"
+
+      - name: Validate U4-RC1 bundle from fresh extraction
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          bundle="$RC_OUT_DIR/$U4_RC_BUNDLE_NAME"
+          test -f "$bundle"
+          test -f "$bundle.sha256"
+
+          expected_bundle_sha="$(awk '{print $1}' "$bundle.sha256")"
+          test "$(sha256sum "$bundle" | awk '{print $1}')" = "$expected_bundle_sha"
+          unzip -t "$bundle"
+
+          check="$RUNNER_TEMP/u4-bundle-check"
+          rm -rf "$check"
+          mkdir -p "$check"
+          unzip -q "$bundle" -d "$check"
+
+          (
+            cd "$check"
+            sha256sum -c SHA256SUMS.txt
+          )
+
+          test "$(sha256sum "$check/VEUX-U2-R3-PREFLIGHT-READONLY-v3.sh" | awk '{print $1}')" = "890e22a0daf183d75b52a0438be9531c670867342d40c013710f3895cf447c83"
+
+          inner="$check/$U2_ZIP_NAME"
+          test -f "$inner"
+          unzip -t "$inner"
+
+          inner_check="$RUNNER_TEMP/u4-inner-ak3"
+          rm -rf "$inner_check"
+          mkdir -p "$inner_check"
+          unzip -q "$inner" -d "$inner_check"
+
+          test "$(sha256sum "$inner_check/Image" | awk '{print $1}')" = "$EXPECTED_IMAGE_SHA256"
+          test "$(find "$inner_check" -type f | wc -l | tr -d ' ')" = "14"
+
+          grep -Fxq 'U4_KERNEL_DELTA=NONE' "$check/RELEASE-METADATA.txt"
+          grep -Fxq 'U4_AK3_FUNCTIONAL_DELTA=NONE' "$check/RELEASE-METADATA.txt"
+          grep -Fxq 'U4_ANDROID_VERSION_GATE=NONE' "$check/RELEASE-METADATA.txt"
+          grep -Fxq 'U4_ROM_FAMILY_GATE=NONE' "$check/RELEASE-METADATA.txt"
+          grep -Fxq 'U4_FIRMWARE_REGION_GATE=NONE' "$check/RELEASE-METADATA.txt"
+          grep -Fxq 'U4_UNIVERSAL_DEVICE_PASS=NO' "$check/RELEASE-METADATA.txt"
+
+          if grep -R -n -E 'UNIVERSAL DEVICE PASS: YES|U4_UNIVERSAL_DEVICE_PASS=YES' "$check"; then
+            echo "Invalid universal DEVICE PASS claim in U4 bundle" >&2
+            exit 1
+          fi
+
+          {
+            echo "U4_RC1_FRESH_EXTRACTION=PASS"
+            echo "U4_RC1_HASH_MANIFEST=PASS"
+            echo "U4_RC1_INNER_AK3_CRC=PASS"
+            echo "U4_RC1_P13_IMAGE_EXACT=PASS"
+            echo "U4_RC1_COMPATIBILITY_SCOPE_PRESENT=PASS"
+            echo "U4_RC1_TESTING_STATUS_PRESENT=PASS"
+            echo "U4_RC1_DEVICE_PASS_CLAIM_GUARD=PASS"
+          } | tee "$EVIDENCE_DIR/10-U4-RC1-BUNDLE-GATE.txt"
+
+      - name: Upload U4-RC1 frozen release candidate
+        uses: actions/upload-artifact@v4
+        with:
+          name: VEUX-GEN1-U4-RC1-P13-universal-VEUX-release-candidate
+          path: |
+            u4-rc-dist/*.zip
+            u4-rc-dist/*.sha256
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+
+      - name: Build self-verifying U2 evidence manifest
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test -d "$EVIDENCE_DIR"
+
+          cd "$EVIDENCE_DIR"
+          find . -type f ! -name 'U2-EVIDENCE-SHA256SUMS.txt' -print0 \
+            | LC_ALL=C sort -z \
+            | xargs -0 sha256sum \
+            > U2-EVIDENCE-SHA256SUMS.txt
+
+          sha256sum -c U2-EVIDENCE-SHA256SUMS.txt
+
+      - name: Upload U2 install candidate
+        uses: actions/upload-artifact@v4
+        with:
+          name: VEUX-GEN1-U2-R3-P13-universal-VEUX-AK3-candidate
+          path: |
+            u2-dist/*.zip
+            u2-dist/*.sha256
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+
+      - name: Upload U2 evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: VEUX-GEN1-U4-RC1-P13-universal-VEUX-release-freeze-evidence
+          path: u2-evidence/
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 6
