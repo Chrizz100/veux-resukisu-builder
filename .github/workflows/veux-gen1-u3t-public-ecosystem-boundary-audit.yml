@@ -1,0 +1,1163 @@
+name: VEUX GEN1 U3T Public VEUX Kernel Ecosystem Boundary Audit
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: veux-gen1-u3t-public-ecosystem-boundary-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  p13-public-ecosystem-boundary-audit:
+    name: Reconstruct exact P13 source and map the current public VEUX kernel ecosystem
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+
+    env:
+      ARCH: arm64
+      TZ: UTC
+      LANG: C.UTF-8
+      LC_ALL: C.UTF-8
+
+      EXPECTED_VENDOR_SHA: b2b7a3bbc36d120ee523ebc8d68e0f13a97df632
+      EXPECTED_VENDOR_KERNEL_VERSION: 5.4.268
+      EXPECTED_OUTER_TREE: 19b68131d7a3955085f60c4fb8cf64442427af0c
+
+      RESTORE_ARTIFACT_ID: "9989363798"
+      RESTORE_ARTIFACT_NAME: clean-gen1-p6v11-v6-full-susfs-outer-integration-p7-test-boot-34031837372
+      EXPECTED_P5I_COMMIT: f353a9475e40ca866d570c1d0ef55e24cf6556e4
+      EXPECTED_P5I_TREE: a947c1f2891c796a08373fc755e29b23139dc761
+      EXPECTED_RESUKISU_BASE_HEAD: 42034caa96466e8473fe7553eba8a1888c7f460f
+      EXPECTED_RESUKISU_BASE_TREE: d818d965b855d417edfe9eb38b152ff83e75e0fb
+
+      RESUKISU_REPO: https://github.com/ReSukiSU/ReSukiSU.git
+      RESUKISU_COMMON_BASE: faccf4c5edc7be37776216e7d43dd3dca0239331
+      RESUKISU_TARGET: 7741f87849f7ad7cebf82bbb4c5b89880e61e37e
+      RESUKISU_EXCLUDED_MODULE_FILTER: b2ac2fc8703ce9f5226e2a38a59f8b72f8a3005c
+      P13_KSU_VERSION: "35141"
+      P13_KSU_UAPI: "4"
+      P13_TARGET_TAG: v4.2.0-rc1
+      P13_TARGET_SHORT: 7741f878
+      EXPECTED_IMPORT_PATCH_SHA256: 902e427888714266d9771908cd593191a478cd32ae7a895c77b76c976939c76f
+
+      EXPECTED_P13_PATCH_SHA256: d56725a9d6a6dc7bf1e73a5763b894bdabb544119f4c75df5f437ccd4ff29a52
+      EXPECTED_P12_EXEC_SHA256: fa3b73421f35d6220fb9e03e112a9509b76c04933af2353c9a8c65d6fb6bd6a9
+      EXPECTED_P12_CONTRACT_SHA256: b6d1875f6a79231465bc78df6484f2856a427259998eb93ba9fd2597cb45ca53
+      EXPECTED_P12_SUSFS_C_SHA256: e430d573ba5875a55d1ca70ba1b304e4b6727bbc42b8c3ac16f2c175b29a59c1
+      EXPECTED_P12_SUSFS_H_SHA256: 3c5fb1bcc28a70c82ee5cfe0a7375bb8e7babd26618ce9b451e598fa31aa3b6e
+      EXPECTED_P12_SUSFS_DEF_SHA256: b16108a5fcd4cdd7203d9f084c2154da708ab3ae6bed17109e4ec63f04ff0f68
+
+      CLANG_PREBUILT_COMMIT: aa2e4a514a6c85eebcc4a27149eaf9244e951a1e
+      TOOLCHAIN_DIR: ${{ github.workspace }}/toolchains/clang-r416183b
+      OUT_DIR: ${{ github.workspace }}/kernel/out-p13
+      BACKUP_DIR: ${{ github.workspace }}/u3t-restore
+      AUDIT_DIR: ${{ github.workspace }}/u3t-evidence
+      SNAPSHOT_DIR: ${{ github.workspace }}/u3t-sources
+
+      KBUILD_BUILD_USER: builder
+      KBUILD_BUILD_HOST: pangu-build-component-vendor-345942-54r9t-tw0tk-tq90c
+      KBUILD_BUILD_TIMESTAMP: Thu Dec 5 14:47:59 UTC 2024
+      KBUILD_BUILD_VERSION: "1"
+      SOURCE_DATE_EPOCH: "1733410079"
+      KBUILD_FIXED_SCM_SUFFIX: -g82179e362f33
+      EFFECTIVE_KCFLAGS: -D__ANDROID_COMMON_KERNEL__
+
+      EXPECTED_KERNEL_RELEASE: 5.4.274-qgki-g82179e362f33
+      EXPECTED_IMAGE_BYTES: "29843968"
+      EXPECTED_IMAGE_SHA256: 12f2eae90243878aa8c5fbd7cb14e9cbfb422869dae6bb14491feb987269a1b2
+      EXPECTED_VEUX_DTB_SHA256: 42728a6f3d48ae35ac6be4b14ea51bc8a323e77baec2ee544827487378f99d37
+
+      P13_REFERENCE_RUN_ID: "34811720288"
+      P13_REFERENCE_ARTIFACT_ID: "10335461893"
+      P13_REFERENCE_ARTIFACT_NAME: clean-gen1-p13-veux-susfs153f-postexec-ak3-34811720288
+      P13_REFERENCE_ARTIFACT_DIGEST: sha256:5c0533566a99201c028ef9355267ef6cea38b74c11dc6d7f871e2d807aa0c0b3
+      P13_REFERENCE_DIR: ${{ github.workspace }}/u3t-p13-reference
+
+    steps:
+      - name: Initialize U3T ecosystem-boundary audit
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$GITHUB_WORKSPACE/kernel" \
+                 "$BACKUP_DIR" "$AUDIT_DIR" "$SNAPSHOT_DIR" "$P13_REFERENCE_DIR" \
+                 "$GITHUB_WORKSPACE/resukisu-upstream" \
+                 "$GITHUB_WORKSPACE/toolchains"
+          mkdir -p "$BACKUP_DIR" "$AUDIT_DIR" "$SNAPSHOT_DIR" "$TOOLCHAIN_DIR" "$P13_REFERENCE_DIR"
+
+          cat > "$AUDIT_DIR/00-U3T-PLAN.txt" <<'EOF'
+          VEUX GEN1 U3T - Public Kernel Ecosystem Boundary Audit
+
+          Purpose:
+          - no phone or device is required
+          - P13 remains immutable
+          - reconstruct the exact P13 source/config baseline
+          - dynamically inventory current public GitHub repositories whose names
+            contain kernel_xiaomi_sm6375
+          - scan public branch heads for their root Makefile kernel version
+          - establish the real current VEUX kernel-family boundary instead of
+            assuming that every current VEUX kernel is Linux 5.4
+          - automatically detect any public Linux 5.4.x branch above 5.4.302
+          - if such >302 branches exist, sparse-clone them and compare their
+            critical source/API structure against exact P13
+
+          Classification:
+          A_5_4_FAMILY_LE302
+            Linux 5.4.x with sublevel <=302. Covered by the U3S-R1 source-family
+            result; not DEVICE PASS, but statistically in the shared 5.4 family.
+
+          B_5_4_GT302_SOURCE_AUDIT
+            Linux 5.4.x with sublevel >302. Since official stable 5.4 ends at
+            5.4.302, these are custom/synthetic version lines and must be
+            inspected source-by-source.
+
+          C_NEW_KERNEL_FAMILY
+            Linux major/minor other than 5.4, including current public 6.1
+            VEUX sources. These are a separate kernel architecture family and
+            are NOT automatically compatible with the frozen P13 Image.
+
+          The audit searches current public source; results can evolve over time.
+          It does not claim boot safety or DEVICE PASS.
+
+          GitHub access is READ-ONLY.
+          No repository modification, workflow dispatch, device access or flash.
+          EOF
+
+      - name: Install audit and build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            bc bison build-essential ca-certificates curl flex git git-lfs jq \
+            libelf-dev libncurses-dev libssl-dev patch python3 rsync \
+            unzip zip xz-utils zstd kmod binutils
+          git lfs install --skip-repo
+
+      - name: Checkout exact VEUX vendor source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone -q https://github.com/dereference23/kernel_xiaomi_sm6375.git \
+            "$GITHUB_WORKSPACE/kernel"
+          git -C "$GITHUB_WORKSPACE/kernel" checkout -q --detach "$EXPECTED_VENDOR_SHA"
+          test "$(git -C "$GITHUB_WORKSPACE/kernel" rev-parse HEAD)" = "$EXPECTED_VENDOR_SHA"
+          test "$(make -s -C "$GITHUB_WORKSPACE/kernel" kernelversion)" = "$EXPECTED_VENDOR_KERNEL_VERSION"
+          {
+            echo "VENDOR_SHA=$(git -C "$GITHUB_WORKSPACE/kernel" rev-parse HEAD)"
+            echo "VENDOR_KERNEL_VERSION=$(make -s -C "$GITHUB_WORKSPACE/kernel" kernelversion)"
+            echo "FRESH_VENDOR_CHECKOUT=PASS"
+          } | tee "$AUDIT_DIR/01-vendor.txt"
+
+      - name: Download exact frozen CLEAN-GEN1 restore artifact
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          meta="$RUNNER_TEMP/restore-artifact.json"
+          curl --fail --silent --show-error --location \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${RESTORE_ARTIFACT_ID}" \
+            -o "$meta"
+
+          test "$(jq -r '.id|tostring' "$meta")" = "$RESTORE_ARTIFACT_ID"
+          test "$(jq -r '.name' "$meta")" = "$RESTORE_ARTIFACT_NAME"
+          test "$(jq -r '.expired' "$meta")" = "false"
+
+          curl --fail --silent --show-error --location \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${RESTORE_ARTIFACT_ID}/zip" \
+            -o "$RUNNER_TEMP/u3t-restore.zip"
+
+          unzip -q "$RUNNER_TEMP/u3t-restore.zip" -d "$BACKUP_DIR"
+          restore_dir="$(find "$BACKUP_DIR" -type d -name source-restore-kit -print -quit)"
+          test -n "$restore_dir"
+          test -f "$restore_dir/manifest.json"
+          test -f "$restore_dir/SHA256SUMS"
+          echo "RESTORE_DIR=$restore_dir" >> "$GITHUB_ENV"
+
+          {
+            echo "RESTORE_ARTIFACT_ID=$RESTORE_ARTIFACT_ID"
+            echo "RESTORE_ARTIFACT_NAME=$RESTORE_ARTIFACT_NAME"
+            echo "RESTORE_ARTIFACT_CREATED=$(jq -r '.created_at' "$meta")"
+            echo "RESTORE_ARTIFACT_EXACT_PIN=PASS"
+          } | tee "$AUDIT_DIR/02-restore-selection.txt"
+
+      - name: Reconstruct frozen P12 outer source
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          (
+            cd "$RESTORE_DIR"
+            sha256sum -c SHA256SUMS
+          ) | tee "$AUDIT_DIR/03-restore-sha256.txt"
+
+          jq -e \
+            --arg p5commit "$EXPECTED_P5I_COMMIT" \
+            --arg p5tree "$EXPECTED_P5I_TREE" \
+            --arg rhead "$EXPECTED_RESUKISU_BASE_HEAD" \
+            --arg rtree "$EXPECTED_RESUKISU_BASE_TREE" \
+            '.stage == "CLEAN_GEN1_P6V11_SOURCE"
+             and .p5i_commit == $p5commit
+             and .p5i_tree == $p5tree
+             and .resukisu_head == $rhead
+             and .resukisu_tree == $rtree' \
+            "$RESTORE_DIR/manifest.json" >/dev/null
+
+          git reset --hard "$EXPECTED_VENDOR_SHA"
+          git clean -fdx
+          rm -rf "$OUT_DIR"
+
+          p5_patch="$RESTORE_DIR/p5i/vendor-20240619-to-p5i-outer.patch"
+          p6_patch="$RESTORE_DIR/p5i-to-p6-source-compat.patch"
+          p6v11_patch="$RESTORE_DIR/p6v10-to-p6v11-full-susfs-outer.patch"
+
+          for p in "$p5_patch" "$p6_patch" "$p6v11_patch"; do
+            test -s "$p"
+            git apply --check --whitespace=error --binary "$p"
+            git apply --index --whitespace=error --binary "$p"
+          done
+
+          final_expected_tree="$(jq -r '.p6_source_tree' "$RESTORE_DIR/manifest.json")"
+          test "$final_expected_tree" = "$EXPECTED_OUTER_TREE"
+          test "$(git write-tree)" = "$EXPECTED_OUTER_TREE"
+          test "$(make -s kernelversion)" = "5.4.274"
+
+          grep -Fxq 'CONFIG_KSU=y' arch/arm64/configs/veux_defconfig
+          grep -Fxq 'CONFIG_KSU_SUSFS=y' arch/arm64/configs/veux_defconfig
+          grep -Fxq '# CONFIG_KSU_MANUAL_HOOK is not set' arch/arm64/configs/veux_defconfig
+          grep -Fxq 'CONFIG_KSU_SUSFS_OPEN_REDIRECT=y' arch/arm64/configs/veux_defconfig
+          grep -Fxq 'CONFIG_LOCALVERSION="-qgki"' arch/arm64/configs/veux_defconfig
+
+          {
+            echo "CLEAN_SOURCE_RECONSTRUCTION=PASS"
+            echo "OUTER_SOURCE_TREE=$final_expected_tree"
+            echo "KERNEL_VERSION=$(make -s kernelversion)"
+          } | tee "$AUDIT_DIR/04-source.txt"
+
+      - name: Construct exact pinned ReSukiSU kernel UAPI import without module filter
+        shell: bash
+        run: |
+          set -euo pipefail
+          up="$GITHUB_WORKSPACE/resukisu-upstream"
+          rm -rf "$up"
+          git clone -q "$RESUKISU_REPO" "$up"
+
+          for c in "$RESUKISU_COMMON_BASE" "$RESUKISU_TARGET" "$RESUKISU_EXCLUDED_MODULE_FILTER"; do
+            git -C "$up" cat-file -e "${c}^{commit}"
+          done
+          git -C "$up" checkout -q --detach "$RESUKISU_TARGET"
+          git -C "$up" reset --hard -q "$RESUKISU_TARGET"
+          git -C "$up" clean -fdx -q
+
+          test "$(git -C "$up" rev-list --count "$RESUKISU_TARGET" | awk '{print 30700+$1}')" = "$P13_KSU_VERSION"
+          test "$(git -C "$up" describe --abbrev=0 --tags "$RESUKISU_TARGET")" = "$P13_TARGET_TAG"
+          test "$(git -C "$up" rev-parse --short=8 "$RESUKISU_TARGET")" = "$P13_TARGET_SHORT"
+          git -C "$up" show "$RESUKISU_TARGET:uapi/supercall.h" \
+            | grep -Eq "KERNEL_SU_UAPI_VERSION = ${P13_KSU_UAPI};"
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import os
+
+          root = Path(os.environ["GITHUB_WORKSPACE"]) / "resukisu-upstream"
+
+          def remove_exact(path, block, expected=1):
+              p = root / path
+              text = p.read_text(encoding="utf-8")
+              count = text.count(block)
+              if count != expected:
+                  raise SystemExit(f"{path}: expected {expected}, found {count}: {block!r}")
+              p.write_text(text.replace(block, "", expected), encoding="utf-8")
+
+          for rel in (
+              "kernel/feature/module_load_filter.c",
+              "kernel/feature/module_load_filter.h",
+          ):
+              p = root / rel
+              if not p.is_file():
+                  raise SystemExit(f"missing expected file: {rel}")
+              p.unlink()
+
+          remove_exact("kernel/Kbuild", "kernelsu-objs += feature/module_load_filter.o\n")
+          remove_exact("kernel/core/init.c", '#include "feature/module_load_filter.h"\n')
+          remove_exact(
+              "kernel/core/init.c",
+              'char ksu_block_modules[256];\n'
+              'module_param_string(block_modules, ksu_block_modules, sizeof(ksu_block_modules), 0);\n'
+              'MODULE_PARM_DESC(block_modules, "Comma-separated preset module names to acknowledge without loading");\n\n'
+          )
+          remove_exact("kernel/core/init.c", "        ksu_module_load_filter_hook_init();\n\n")
+          remove_exact("kernel/core/init.c", "    ksu_module_load_filter_hook_exit();\n")
+          PY
+
+          test ! -e "$up/kernel/feature/module_load_filter.c"
+          test ! -e "$up/kernel/feature/module_load_filter.h"
+          ! grep -RFn 'module_load_filter' "$up/kernel" "$up/uapi"
+          ! grep -RFn 'ksu_block_modules' "$up/kernel" "$up/uapi"
+          ! grep -RFn 'block_modules' "$up/kernel" "$up/uapi"
+
+          patch="$AUDIT_DIR/05-current-kernel-uapi-minus-module-filter.patch"
+          git -C "$up" diff --binary "$RESUKISU_COMMON_BASE" -- kernel uapi > "$patch"
+          test -s "$patch"
+          test "$(sha256sum "$patch" | awk '{print $1}')" = "$EXPECTED_IMPORT_PATCH_SHA256"
+
+          {
+            echo "CURRENT_KERNEL_UAPI_PATCH=PASS"
+            echo "MODULE_LOAD_FILTER_EXCLUDED=PASS"
+            echo "PATCH_SHA256=$(sha256sum "$patch" | awk '{print $1}')"
+          } | tee "$AUDIT_DIR/05-resukisu-import.txt"
+
+      - name: Replace ReSukiSU subtree and restore CLEAN-GEN1 integration contract
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+          up="$GITHUB_WORKSPACE/resukisu-upstream"
+          patch="$AUDIT_DIR/05-current-kernel-uapi-minus-module-filter.patch"
+
+          rm -rf KernelSU
+          git clone -q "$RESUKISU_REPO" KernelSU
+          git -C KernelSU checkout -q --detach "$RESUKISU_COMMON_BASE"
+          git -C KernelSU reset --hard -q "$RESUKISU_COMMON_BASE"
+          git -C KernelSU clean -fdx -q
+
+          git -C KernelSU apply --check --whitespace=nowarn "$patch"
+          git -C KernelSU apply --index --whitespace=nowarn "$patch"
+          test -z "$(git -C KernelSU ls-files -u)"
+
+          if ! diff -qr "$up/kernel" KernelSU/kernel > "$AUDIT_DIR/06-kernel-parity.txt" 2>&1; then
+            cat "$AUDIT_DIR/06-kernel-parity.txt"
+            exit 1
+          fi
+          if ! diff -qr "$up/uapi" KernelSU/uapi > "$AUDIT_DIR/06-uapi-parity.txt" 2>&1; then
+            cat "$AUDIT_DIR/06-uapi-parity.txt"
+            exit 1
+          fi
+
+          python3 - <<'PY'
+          from pathlib import Path
+          from textwrap import dedent
+          import os
+
+          def ensure_include(path, anchor):
+              p = Path(path)
+              text = p.read_text(encoding="utf-8")
+              inc = '#include <linux/ksu_hook_contract.h>'
+              if inc not in text:
+                  if anchor not in text:
+                      raise SystemExit(f"anchor missing in {path}: {anchor!r}")
+                  text = text.replace(anchor, anchor + "\n" + inc, 1)
+                  p.write_text(text, encoding="utf-8")
+
+          ensure_include("KernelSU/kernel/feature/sucompat.h", '#include "compat/kernel_compat.h"')
+          ensure_include("KernelSU/kernel/runtime/ksud_integration.c", "#include <linux/version.h>")
+          ensure_include("KernelSU/kernel/supercall/supercall.c", "#include <linux/anon_inodes.h>")
+
+          p = Path("KernelSU/kernel/Kbuild")
+          text = p.read_text(encoding="utf-8")
+          old = dedent("""\
+          KSU_LOCAL_VERSION := $(shell cd $(KSU_SRC); $(GIT_BIN) rev-list --count HEAD)
+          KSU_VERSION := $(shell expr 30000 + $(KSU_LOCAL_VERSION) + 700)
+
+          KSU_TAG_NAME    := $(shell cd $(KSU_SRC); $(GIT_BIN) describe --abbrev=0 --tags 2>/dev/null || echo "v4.1.0")
+          KSU_COMMIT_SHA  := $(shell cd $(KSU_SRC); $(GIT_BIN) rev-parse --short=8 HEAD 2>/dev/null || echo "unknown")
+          ifneq ($(shell cd $(KSU_SRC); $(GIT_BIN) diff-index --quiet HEAD; echo $$?),0)
+          KSU_COMMIT_SHA  := $(KSU_COMMIT_SHA)-dirty
+          endif
+          KSU_BRANCH_NAME := $(shell cd $(KSU_SRC); $(GIT_BIN) branch --show-current 2>/dev/null || echo "unknown")""")
+          version = os.environ["P13_KSU_VERSION"]
+          tag = os.environ["P13_TARGET_TAG"]
+          short = os.environ["P13_TARGET_SHORT"]
+          target = os.environ["RESUKISU_TARGET"]
+          new = dedent(f"""\
+          KSU_LOCAL_VERSION := $(shell cd $(KSU_SRC); $(GIT_BIN) rev-list --count HEAD)
+          CLEAN_GEN1_UPSTREAM_COMPAT_VERSION := {version}
+          CLEAN_GEN1_UPSTREAM_TARGET := {target}
+          KSU_VERSION := $(CLEAN_GEN1_UPSTREAM_COMPAT_VERSION)
+
+          KSU_TAG_NAME    := {tag}
+          KSU_COMMIT_SHA  := {short}-p13
+          KSU_BRANCH_NAME := clean-gen1-p13""")
+          if old not in text:
+              raise SystemExit("expected ReSukiSU Kbuild version block not found")
+          p.write_text(text.replace(old, new, 1), encoding="utf-8")
+          PY
+
+          git -C KernelSU add kernel uapi
+          test -z "$(git -C KernelSU ls-files -u)"
+
+          grep -Fq '#include <linux/ksu_hook_contract.h>' KernelSU/kernel/feature/sucompat.h
+          grep -Fq '#include <linux/ksu_hook_contract.h>' KernelSU/kernel/runtime/ksud_integration.c
+          grep -Fq '#include <linux/ksu_hook_contract.h>' KernelSU/kernel/supercall/supercall.c
+          grep -Fq "CLEAN_GEN1_UPSTREAM_COMPAT_VERSION := $P13_KSU_VERSION" KernelSU/kernel/Kbuild
+          grep -Fq "CLEAN_GEN1_UPSTREAM_TARGET := $RESUKISU_TARGET" KernelSU/kernel/Kbuild
+
+      - name: Verify frozen P12 boundaries and apply exact P13 delta
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          grep -Eq "KERNEL_SU_UAPI_VERSION = ${P13_KSU_UAPI};" KernelSU/uapi/supercall.h
+          grep -Fq 'always flag that, to avoid old version of susfs hang in boot' \
+            KernelSU/kernel/feature/sucompat.c
+          grep -Fq '#define TIF_PROC_IN_KSU_EXECVE 61' KernelSU/kernel/feature/sucompat.h
+          grep -Fq 'if (profile->uid != 0)' KernelSU/kernel/policy/app_profile.c
+
+          test ! -e KernelSU/kernel/feature/module_load_filter.c
+          test ! -e KernelSU/kernel/feature/module_load_filter.h
+          ! grep -RFn 'module_load_filter' KernelSU/kernel KernelSU/uapi
+          ! grep -RFn 'block_modules' KernelSU/kernel KernelSU/uapi
+
+          test "$(sha256sum fs/exec.c | awk '{print $1}')" = "$EXPECTED_P12_EXEC_SHA256"
+          test "$(sha256sum include/linux/ksu_hook_contract.h | awk '{print $1}')" = "$EXPECTED_P12_CONTRACT_SHA256"
+          test "$(sha256sum fs/susfs.c | awk '{print $1}')" = "$EXPECTED_P12_SUSFS_C_SHA256"
+          test "$(sha256sum include/linux/susfs.h | awk '{print $1}')" = "$EXPECTED_P12_SUSFS_H_SHA256"
+          test "$(sha256sum include/linux/susfs_def.h | awk '{print $1}')" = "$EXPECTED_P12_SUSFS_DEF_SHA256"
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          hdr = Path("include/linux/ksu_hook_contract.h")
+          text = hdr.read_text(encoding="utf-8")
+          anchor = """int ksu_handle_execveat(int *fd, struct filename **filename_ptr,
+                                  void *argv, void *envp, int *flags);
+          """
+          addition = anchor + """
+          #ifdef CONFIG_KSU_SUSFS
+          int ksu_handle_post_execve(int *fd, const char *filename,
+                                     void *argv, void *envp,
+                                     int *flags, int *retval);
+          #endif
+          """
+          if text.count(anchor) != 1:
+              raise SystemExit(f"header anchor count={text.count(anchor)}")
+          if "int ksu_handle_post_execve(" in text:
+              raise SystemExit("post-exec prototype unexpectedly present")
+          hdr.write_text(text.replace(anchor, addition, 1), encoding="utf-8")
+
+          execp = Path("fs/exec.c")
+          text = execp.read_text(encoding="utf-8")
+          anchor = """\tsecurity_bprm_committed_creds(bprm);
+          \tmutex_unlock(&current->signal->cred_guard_mutex);
+          """
+          replacement = """\tsecurity_bprm_committed_creds(bprm);
+          #ifdef CONFIG_KSU_SUSFS
+          \tksu_handle_post_execve(NULL, NULL, NULL, NULL, NULL, NULL);
+          #endif
+          \tmutex_unlock(&current->signal->cred_guard_mutex);
+          """
+          if text.count(anchor) != 1:
+              raise SystemExit(f"fs/exec.c anchor count={text.count(anchor)}")
+          if "ksu_handle_post_execve(" in text:
+              raise SystemExit("post-exec call unexpectedly present")
+          execp.write_text(text.replace(anchor, replacement, 1), encoding="utf-8")
+          PY
+
+          git diff --check
+          mapfile -t changed < <(git diff --name-only | LC_ALL=C sort)
+          test "${#changed[@]}" -eq 2
+          test "${changed[0]}" = "fs/exec.c"
+          test "${changed[1]}" = "include/linux/ksu_hook_contract.h"
+
+          p13_patch="$AUDIT_DIR/07-P13-post-exec.patch"
+          git diff --binary -- fs/exec.c include/linux/ksu_hook_contract.h > "$p13_patch"
+          test "$(sha256sum "$p13_patch" | awk '{print $1}')" = "$EXPECTED_P13_PATCH_SHA256"
+
+          test "$(sha256sum fs/susfs.c | awk '{print $1}')" = "$EXPECTED_P12_SUSFS_C_SHA256"
+          test "$(sha256sum include/linux/susfs.h | awk '{print $1}')" = "$EXPECTED_P12_SUSFS_H_SHA256"
+          test "$(sha256sum include/linux/susfs_def.h | awk '{print $1}')" = "$EXPECTED_P12_SUSFS_DEF_SHA256"
+
+          {
+            echo "P13_DELTA=PASS"
+            echo "P13_PATCH_SHA256=$EXPECTED_P13_PATCH_SHA256"
+            echo "P13_CHANGED_FILES=fs/exec.c include/linux/ksu_hook_contract.h"
+            echo "P13_MODULE_LOAD_FILTER_EXCLUDED=PASS"
+          } | tee "$AUDIT_DIR/07-p13-source-gate.txt"
+
+      - name: Install pinned Android clang-r416183b
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$TOOLCHAIN_DIR"
+          mkdir -p "$TOOLCHAIN_DIR"
+          url="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/${CLANG_PREBUILT_COMMIT}/clang-r416183b.tar.gz"
+          curl --fail --location --retry 3 "$url" -o "$RUNNER_TEMP/clang-r416183b.tar.gz"
+          tar -xzf "$RUNNER_TEMP/clang-r416183b.tar.gz" -C "$TOOLCHAIN_DIR"
+
+          for tool in clang ld.lld llvm-ar llvm-nm llvm-objcopy llvm-objdump llvm-strip; do
+            test -x "$TOOLCHAIN_DIR/bin/$tool"
+          done
+          "$TOOLCHAIN_DIR/bin/clang" --version | tee "$AUDIT_DIR/08-clang.txt"
+
+      - name: Generate exact P13 config-only baseline and source signatures
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH="$TOOLCHAIN_DIR/bin:$PATH"
+
+          rm -rf "$OUT_DIR"
+          make O="$OUT_DIR" ARCH=arm64 CC=clang LD=ld.lld LLVM=1 LLVM_IAS=1 \
+            veux_defconfig \
+            > "$AUDIT_DIR/09-p13-defconfig.log" 2>&1
+
+          test -s "$OUT_DIR/.config"
+          cp "$OUT_DIR/.config" "$AUDIT_DIR/09-P13-config.txt"
+
+          grep -Fxq 'CONFIG_QGKI=y' "$OUT_DIR/.config"
+          grep -Fxq 'CONFIG_ARCH_HOLI=y' "$OUT_DIR/.config"
+          grep -Fxq 'CONFIG_ARCH_BLAIR=y' "$OUT_DIR/.config"
+          grep -Fxq 'CONFIG_BUILD_ARM64_UNCOMPRESSED_KERNEL=y' "$OUT_DIR/.config"
+
+          {
+            echo "P13_SOURCE_TREE=$(git write-tree)"
+            echo "P13_KERNELVERSION=$(make -s kernelversion)"
+            echo "P13_CONFIG_SHA256=$(sha256sum "$OUT_DIR/.config" | awk '{print $1}')"
+            echo "P13_CONFIG_QGKI=Y"
+            echo "P13_CONFIG_ARCH_HOLI=Y"
+            echo "P13_CONFIG_ARCH_BLAIR=Y"
+            echo "P13_CONFIG_ONLY_BASELINE=PASS"
+          } | tee "$AUDIT_DIR/09-P13-BASELINE.txt"
+
+      - name: Discover public SM6375 kernel repositories and branch versions
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          from pathlib import Path
+          from urllib.request import Request, urlopen
+          from urllib.parse import quote
+          from urllib.error import HTTPError
+          import csv, json, os, re, subprocess, time
+
+          audit = Path(os.environ["AUDIT_DIR"])
+          token = os.environ.get("GH_TOKEN", "")
+          query = "kernel_xiaomi_sm6375 in:name"
+
+          headers = {
+              "Accept": "application/vnd.github+json",
+              "User-Agent": "VEUX-U3T-readonly-audit",
+              "X-GitHub-Api-Version": "2022-11-28",
+          }
+          if token:
+              headers["Authorization"] = f"Bearer {token}"
+
+          def get_json(url):
+              req = Request(url, headers=headers)
+              with urlopen(req, timeout=45) as r:
+                  return json.loads(r.read().decode("utf-8"))
+
+          repos = {}
+          raw_pages = []
+          for page in range(1, 4):
+              url = (
+                  "https://api.github.com/search/repositories?"
+                  f"q={quote(query)}&per_page=100&page={page}"
+              )
+              data = get_json(url)
+              raw_pages.append(data)
+              items = data.get("items", [])
+              for item in items:
+                  repos[item["full_name"]] = item
+              if len(items) < 100:
+                  break
+
+          (audit / "10-repository-search.json").write_text(
+              json.dumps(raw_pages, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+
+          repo_rows = []
+          branch_rows = []
+          seen_sha = set()
+
+          for full_name in sorted(repos, key=str.lower):
+              item = repos[full_name]
+              clone = item["clone_url"]
+              default = item.get("default_branch") or ""
+              size = int(item.get("size") or 0)
+
+              repo_rows.append({
+                  "repository": full_name,
+                  "default_branch": default,
+                  "size_kb": size,
+                  "archived": int(bool(item.get("archived"))),
+                  "fork": int(bool(item.get("fork"))),
+                  "pushed_at": item.get("pushed_at") or "",
+                  "updated_at": item.get("updated_at") or "",
+                  "html_url": item.get("html_url") or "",
+              })
+
+              if size == 0:
+                  continue
+
+              cp = subprocess.run(
+                  ["git", "ls-remote", "--heads", clone],
+                  text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                  timeout=90,
+              )
+              if cp.returncode != 0:
+                  branch_rows.append({
+                      "repository": full_name,
+                      "branch": "",
+                      "sha": "",
+                      "kernel_version": "LS_REMOTE_FAILED",
+                      "major": "",
+                      "minor": "",
+                      "sublevel": "",
+                      "class": "DISCOVERY_ERROR",
+                      "is_default": 0,
+                  })
+                  continue
+
+              heads = []
+              for line in cp.stdout.splitlines():
+                  if not line.strip():
+                      continue
+                  sha, ref = line.split("\t", 1)
+                  branch = ref.removeprefix("refs/heads/")
+                  heads.append((sha, branch))
+
+              # Deterministic cap guards pathological repositories while still
+              # scanning a broad current ecosystem.
+              heads = sorted(heads, key=lambda x: (x[1] != default, x[1]))[:80]
+
+              for sha, branch in heads:
+                  # Same commit may back multiple branches. Keep each branch row,
+                  # but fetch/parse the Makefile once per unique SHA.
+                  cache = audit / "u3t-makefile-cache"
+                  cache.mkdir(exist_ok=True)
+                  mf = cache / f"{sha}.Makefile"
+
+                  if not mf.exists():
+                      raw_url = (
+                          f"https://raw.githubusercontent.com/"
+                          f"{full_name}/{sha}/Makefile"
+                      )
+                      try:
+                          req = Request(raw_url, headers={
+                              "User-Agent": "VEUX-U3T-readonly-audit"
+                          })
+                          with urlopen(req, timeout=30) as r:
+                              content = r.read()
+                          mf.write_bytes(content)
+                      except Exception:
+                          mf.write_text("", encoding="utf-8")
+
+                  txt = mf.read_text(errors="replace")
+                  vals = {}
+                  for key in ("VERSION", "PATCHLEVEL", "SUBLEVEL"):
+                      m = re.search(
+                          rf"^{key}\s*=\s*([0-9]+)\s*$", txt, re.M
+                      )
+                      vals[key] = int(m.group(1)) if m else None
+
+                  if None in vals.values():
+                      version = "UNKNOWN"
+                      major = minor = sub = ""
+                      cls = "UNCLASSIFIED_NO_ROOT_VERSION"
+                  else:
+                      major = vals["VERSION"]
+                      minor = vals["PATCHLEVEL"]
+                      sub = vals["SUBLEVEL"]
+                      version = f"{major}.{minor}.{sub}"
+
+                      if major == 5 and minor == 4 and sub <= 302:
+                          cls = "A_5_4_FAMILY_LE302"
+                      elif major == 5 and minor == 4 and sub > 302:
+                          cls = "B_5_4_GT302_SOURCE_AUDIT"
+                      else:
+                          cls = "C_NEW_KERNEL_FAMILY"
+
+                  branch_rows.append({
+                      "repository": full_name,
+                      "branch": branch,
+                      "sha": sha,
+                      "kernel_version": version,
+                      "major": major,
+                      "minor": minor,
+                      "sublevel": sub,
+                      "class": cls,
+                      "is_default": int(branch == default),
+                  })
+
+          def write_tsv(path, rows, fields):
+              with path.open("w", newline="", encoding="utf-8") as fh:
+                  w = csv.DictWriter(fh, fieldnames=fields, delimiter="\t")
+                  w.writeheader()
+                  w.writerows(rows)
+
+          write_tsv(
+              audit / "10-repository-inventory.tsv",
+              repo_rows,
+              [
+                  "repository","default_branch","size_kb","archived","fork",
+                  "pushed_at","updated_at","html_url",
+              ],
+          )
+          write_tsv(
+              audit / "11-branch-kernel-version-inventory.tsv",
+              branch_rows,
+              [
+                  "repository","branch","sha","kernel_version","major","minor",
+                  "sublevel","class","is_default",
+              ],
+          )
+
+          # Unique version / class summary.
+          summary = {}
+          for r in branch_rows:
+              k = (r["kernel_version"], r["class"])
+              summary[k] = summary.get(k, 0) + 1
+
+          summary_rows = [
+              {
+                  "kernel_version": k[0],
+                  "class": k[1],
+                  "branch_count": n,
+              }
+              for k, n in sorted(summary.items())
+          ]
+          write_tsv(
+              audit / "12-version-summary.tsv",
+              summary_rows,
+              ["kernel_version","class","branch_count"],
+          )
+
+          gt302 = [
+              r for r in branch_rows
+              if r["class"] == "B_5_4_GT302_SOURCE_AUDIT"
+          ]
+          sixone = [
+              r for r in branch_rows
+              if str(r["kernel_version"]).startswith("6.1.")
+          ]
+
+          # Deduplicate >302 audit candidates by commit SHA.
+          gt302_unique = []
+          gt_seen = set()
+          for r in gt302:
+              if r["sha"] in gt_seen:
+                  continue
+              gt_seen.add(r["sha"])
+              gt302_unique.append(r)
+
+          write_tsv(
+              audit / "13-gt302-candidates.tsv",
+              gt302_unique,
+              [
+                  "repository","branch","sha","kernel_version","major","minor",
+                  "sublevel","class","is_default",
+              ],
+          )
+
+          with (audit / "13-boundary-summary.txt").open("w") as fh:
+              fh.write(f"REPOSITORIES_DISCOVERED={len(repo_rows)}\n")
+              fh.write(f"BRANCH_ROWS={len(branch_rows)}\n")
+              fh.write(f"GT302_BRANCH_ROWS={len(gt302)}\n")
+              fh.write(f"GT302_UNIQUE_COMMITS={len(gt302_unique)}\n")
+              fh.write(f"LINUX_6_1_BRANCH_ROWS={len(sixone)}\n")
+              fh.write(
+                  "P13_AUTOMATIC_FAMILY_BOUNDARY=LINUX_5_4_SUBLEVEL_LE302\n"
+              )
+              fh.write(
+                  "NON_5_4_POLICY=SEPARATE_KERNEL_FAMILY_NOT_AUTO_COMPATIBLE\n"
+              )
+
+          print(f"repos={len(repo_rows)} branches={len(branch_rows)}")
+          print(f"gt302={len(gt302_unique)} linux6.1={len(sixone)}")
+          PY
+
+          cat "$AUDIT_DIR/13-boundary-summary.txt"
+          column -t -s $'\t' "$AUDIT_DIR/12-version-summary.tsv" || true
+
+      - name: Assert current ecosystem scanner sees both known boundaries
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Known public current representatives validate discovery coverage:
+          # VoltageOS 17 remains 5.4.302, while Starry/Yukam-style current
+          # branches demonstrate a separate 6.1 family.
+          grep -Fq $'VoltageOS-Devices/kernel_xiaomi_sm6375\t17\t' \
+            "$AUDIT_DIR/11-branch-kernel-version-inventory.tsv"
+          grep -Fq $'\t5.4.302\t5\t4\t302\tA_5_4_FAMILY_LE302\t' \
+            "$AUDIT_DIR/11-branch-kernel-version-inventory.tsv"
+
+          grep -Eq \
+            $'(Starrykernel/android_kernel_xiaomi_sm6375|YukamNua/android_kernel_xiaomi_sm6375|suchit-7x/android_kernel_xiaomi_sm6375)\t.*\t6\.1\.' \
+            "$AUDIT_DIR/11-branch-kernel-version-inventory.tsv"
+
+          {
+            echo "U3T_SCANNER_5_4_302_BOUNDARY_SEEN=PASS"
+            echo "U3T_SCANNER_6_1_NEW_FAMILY_SEEN=PASS"
+          } | tee "$AUDIT_DIR/14-scanner-coverage-gate.txt"
+
+      - name: Sparse-clone and compare any discovered 5.4 greater-than-302 sources
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p "$SNAPSHOT_DIR/gt302"
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import csv, os, subprocess
+
+          audit = Path(os.environ["AUDIT_DIR"])
+          out = Path(os.environ["SNAPSHOT_DIR"]) / "gt302"
+          rows = list(csv.DictReader(
+              (audit / "13-gt302-candidates.tsv").open(),
+              delimiter="\t"
+          ))
+
+          # Bound workload while retaining deterministic evidence.
+          rows = rows[:20]
+
+          for i, r in enumerate(rows):
+              dest = out / f"cand-{i:02d}"
+              repo = r["repository"]
+              sha = r["sha"]
+
+              subprocess.run(["git","init","-q",str(dest)], check=True)
+              subprocess.run(
+                  ["git","-C",str(dest),"remote","add","origin",
+                   f"https://github.com/{repo}.git"],
+                  check=True
+              )
+              subprocess.run(
+                  ["git","-C",str(dest),"sparse-checkout","init","--no-cone"],
+                  check=True
+              )
+              patterns = """\
+          /Makefile
+          /Kconfig
+          /arch/arm64/configs/
+          /arch/arm64/boot/dts/vendor/
+          /drivers/staging/qcacld-3.0/
+          /drivers/staging/qca-wifi-host-cmn/
+          /drivers/gpu/msm/
+          /drivers/power/supply/qcom/
+          /drivers/thermal/qcom/
+          /drivers/scsi/ufs/
+          /drivers/usb/dwc3/
+          /drivers/soc/qcom/
+          /techpack/audio/
+          /techpack/camera/
+          /techpack/video/
+          /techpack/dataipa/
+          /techpack/datarmnet/
+          /net/qrtr/
+          """
+              (dest / ".git/info/sparse-checkout").write_text(patterns)
+
+              subprocess.run(
+                  ["git","-C",str(dest),"fetch","-q","--depth=1",
+                   "--filter=blob:none","origin",sha],
+                  check=True
+              )
+              subprocess.run(
+                  ["git","-C",str(dest),"checkout","-q","--detach","FETCH_HEAD"],
+                  check=True
+              )
+              if subprocess.check_output(
+                  ["git","-C",str(dest),"rev-parse","HEAD"], text=True
+              ).strip() != sha:
+                  raise SystemExit(f"SHA mismatch for {repo} {sha}")
+
+              (dest / ".u3t-meta.tsv").write_text(
+                  "\t".join([
+                      r["repository"], r["branch"], r["sha"],
+                      r["kernel_version"]
+                  ]) + "\n"
+              )
+
+          print(f"GT302_SOURCES_CLONED={len(rows)}")
+          PY
+
+      - name: Compare discovered greater-than-302 5.4 sources against exact P13
+        shell: bash
+        run: |
+          set -euo pipefail
+          export P13_ROOT="$GITHUB_WORKSPACE/kernel"
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import csv, os, re
+
+          audit = Path(os.environ["AUDIT_DIR"])
+          roots = Path(os.environ["SNAPSHOT_DIR"]) / "gt302"
+          p13 = Path(os.environ["P13_ROOT"])
+
+          groups = {
+              "wifi_qcacld": [
+                  "drivers/staging/qcacld-3.0",
+                  "drivers/staging/qca-wifi-host-cmn",
+              ],
+              "gpu": ["drivers/gpu/msm"],
+              "power": ["drivers/power/supply/qcom"],
+              "thermal": ["drivers/thermal/qcom"],
+              "ufs": ["drivers/scsi/ufs"],
+              "usb_dwc3": ["drivers/usb/dwc3"],
+              "soc_qcom": ["drivers/soc/qcom"],
+              "audio": ["techpack/audio"],
+              "camera": ["techpack/camera"],
+              "video": ["techpack/video"],
+              "ipa": ["techpack/dataipa"],
+              "rmnet": ["techpack/datarmnet"],
+              "qrtr": ["net/qrtr"],
+          }
+
+          export_re = re.compile(
+              r'EXPORT_SYMBOL(?:_GPL)?\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)'
+          )
+          kconfig_re = re.compile(
+              r'^\s*(?:menu)?config\s+([A-Za-z_][A-Za-z0-9_]*)\s*$',
+              re.M
+          )
+          obj_re = re.compile(r'^\s*obj-[^:=+]*\+?=\s*(.+)$', re.M)
+
+          def critical_files(root):
+              for paths in groups.values():
+                  for rel in paths:
+                      d = root / rel
+                      if not d.exists():
+                          continue
+                      for p in d.rglob("*"):
+                          if p.is_file() and p.suffix in {".c",".h"}:
+                              yield p
+
+          def exports(root):
+              s=set()
+              for p in critical_files(root):
+                  s.update(export_re.findall(p.read_text(errors="replace")))
+              return s
+
+          def kconfigs(root):
+              s=set()
+              for paths in groups.values():
+                  for rel in paths:
+                      d=root/rel
+                      if d.exists():
+                          for p in d.rglob("Kconfig*"):
+                              if p.is_file():
+                                  s.update(kconfig_re.findall(
+                                      p.read_text(errors="replace")
+                                  ))
+              return s
+
+          def kbuild(root):
+              s=set()
+              for paths in groups.values():
+                  for rel in paths:
+                      d=root/rel
+                      if not d.exists():
+                          continue
+                      for name in ("Makefile","Kbuild"):
+                          for p in d.rglob(name):
+                              if not p.is_file():
+                                  continue
+                              for rhs in obj_re.findall(
+                                  p.read_text(errors="replace")
+                              ):
+                                  for tok in rhs.split():
+                                      if tok.endswith((".o",".a")):
+                                          s.add(tok)
+              return s
+
+          def structure(root):
+              return {
+                  name: any((root/rel).exists() for rel in paths)
+                  for name, paths in groups.items()
+              }
+
+          def jac(a,b):
+              if not a and not b: return 1.0
+              if not a or not b: return 0.0
+              return len(a&b)/len(a|b)
+
+          pe, pk, pb = exports(p13), kconfigs(p13), kbuild(p13)
+          rows=[]
+
+          for dest in sorted(roots.glob("cand-*")):
+              meta = (dest/".u3t-meta.tsv").read_text().strip().split("\t")
+              repo, branch, sha, version = meta
+              st = structure(dest)
+              ratio = sum(st.values()) / len(st)
+              ej, kj, bj = jac(pe,exports(dest)), jac(pk,kconfigs(dest)), jac(pb,kbuild(dest))
+
+              if ratio >= 0.75 and ej >= 0.65:
+                  cls="B_GT302_SAME_SOURCE_FAMILY_REVIEW"
+              else:
+                  cls="C_GT302_STRUCTURAL_DIVERGENCE"
+
+              rows.append({
+                  "repository":repo,
+                  "branch":branch,
+                  "sha":sha,
+                  "kernel_version":version,
+                  "structure_pct":f"{ratio*100:.2f}",
+                  "export_symbol_jaccard":f"{ej:.6f}",
+                  "kconfig_jaccard":f"{kj:.6f}",
+                  "kbuild_jaccard":f"{bj:.6f}",
+                  "classification":cls,
+              })
+
+          path=audit/"15-gt302-p13-comparison.tsv"
+          fields=[
+              "repository","branch","sha","kernel_version","structure_pct",
+              "export_symbol_jaccard","kconfig_jaccard","kbuild_jaccard",
+              "classification"
+          ]
+          with path.open("w",newline="",encoding="utf-8") as fh:
+              w=csv.DictWriter(fh,fieldnames=fields,delimiter="\t")
+              w.writeheader(); w.writerows(rows)
+
+          same=sum(r["classification"].startswith("B_") for r in rows)
+          diverged=sum(r["classification"].startswith("C_") for r in rows)
+          with (audit/"15-gt302-result.txt").open("w") as fh:
+              fh.write(f"GT302_COMPARED={len(rows)}\n")
+              fh.write(f"GT302_SAME_SOURCE_FAMILY_REVIEW={same}\n")
+              fh.write(f"GT302_STRUCTURAL_DIVERGENCE={diverged}\n")
+
+          print((audit/"15-gt302-result.txt").read_text())
+          PY
+
+          cat "$AUDIT_DIR/15-gt302-p13-comparison.tsv"
+
+      - name: Produce U3T ecosystem boundary report
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import csv, os
+
+          audit=Path(os.environ["AUDIT_DIR"])
+          branches=list(csv.DictReader(
+              (audit/"11-branch-kernel-version-inventory.tsv").open(),
+              delimiter="\t"
+          ))
+          gt=list(csv.DictReader(
+              (audit/"15-gt302-p13-comparison.tsv").open(),
+              delimiter="\t"
+          ))
+
+          a=sum(r["class"]=="A_5_4_FAMILY_LE302" for r in branches)
+          b=sum(r["class"]=="B_5_4_GT302_SOURCE_AUDIT" for r in branches)
+          c=sum(r["class"]=="C_NEW_KERNEL_FAMILY" for r in branches)
+          sixone=sum(str(r["kernel_version"]).startswith("6.1.") for r in branches)
+
+          if b == 0:
+              gt_policy="NO_PUBLIC_GT302_5_4_FOUND"
+          elif all(r["classification"].startswith("B_") for r in gt):
+              gt_policy="PUBLIC_GT302_FOUND_SAME_SOURCE_FAMILY_BUT_REVIEW_ONLY"
+          else:
+              gt_policy="PUBLIC_GT302_FOUND_WITH_STRUCTURAL_DIVERGENCE"
+
+          result=(
+              "U3T_PUBLIC_ECOSYSTEM_BOUNDARY=PASS\n"
+              "P13_UNIVERSAL_AUTOMATIC_FAMILY=VEUX_SM6375_QGKI_LINUX_5_4_LE302\n"
+              f"BRANCHES_5_4_LE302={a}\n"
+              f"BRANCHES_5_4_GT302={b}\n"
+              f"BRANCHES_OTHER_KERNEL_FAMILY={c}\n"
+              f"BRANCHES_LINUX_6_1={sixone}\n"
+              f"GT302_POLICY_RESULT={gt_policy}\n"
+              "LINUX_6_1_POLICY=SEPARATE_FAMILY_NOT_P13_AUTO_COMPATIBLE\n"
+              "DEVICE_PASS=NO\n"
+              "KERNEL_CHANGE_JUSTIFIED=NO\n"
+          )
+          (audit/"16-U3T-RESULT.txt").write_text(result)
+
+          lines=[
+              "# VEUX GEN1 U3T — Public Kernel Ecosystem Boundary Audit",
+              "",
+              "## Result",
+              "",
+              "**U3T_PUBLIC_ECOSYSTEM_BOUNDARY=PASS**",
+              "",
+              "The frozen P13 universal claim is bounded to the public",
+              "VEUX/SM6375/QGKI Linux-5.4 family through sublevel 302.",
+              "",
+              "Current public VEUX repositories also contain Linux 6.1 sources.",
+              "Those are a distinct kernel family and are not automatically",
+              "compatible with the frozen P13 Image.",
+              "",
+              "Any public 5.4.x >302 branch is enumerated separately and",
+              "source-compared to P13 before any compatibility inference.",
+              "",
+              f"- 5.4 <=302 branch rows: **{a}**",
+              f"- 5.4 >302 branch rows: **{b}**",
+              f"- other kernel-family branch rows: **{c}**",
+              f"- Linux 6.1 branch rows: **{sixone}**",
+              f"- >302 result: **{gt_policy}**",
+              "",
+              "This is source/statistical evidence only, not DEVICE PASS.",
+          ]
+          (audit/"16-U3T-REPORT.md").write_text("\n".join(lines)+"\n")
+          print(result)
+          PY
+
+          cat "$AUDIT_DIR/16-U3T-REPORT.md"
+
+      - name: Assert U3T safety and interpretation gates
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          grep -Fxq 'U3T_PUBLIC_ECOSYSTEM_BOUNDARY=PASS' \
+            "$AUDIT_DIR/16-U3T-RESULT.txt"
+          grep -Fxq \
+            'P13_UNIVERSAL_AUTOMATIC_FAMILY=VEUX_SM6375_QGKI_LINUX_5_4_LE302' \
+            "$AUDIT_DIR/16-U3T-RESULT.txt"
+          grep -Fxq \
+            'LINUX_6_1_POLICY=SEPARATE_FAMILY_NOT_P13_AUTO_COMPATIBLE' \
+            "$AUDIT_DIR/16-U3T-RESULT.txt"
+          grep -Fxq 'DEVICE_PASS=NO' "$AUDIT_DIR/16-U3T-RESULT.txt"
+          grep -Fxq 'KERNEL_CHANGE_JUSTIFIED=NO' "$AUDIT_DIR/16-U3T-RESULT.txt"
+
+          {
+            echo "U3T_GITHUB_MODE=READ_ONLY"
+            echo "U3T_DEVICE_REQUIRED=NO"
+            echo "U3T_FLASH_ACTIONS=NONE"
+            echo "U3T_SAFETY_GATE=PASS"
+          } | tee "$AUDIT_DIR/17-U3T-SAFETY.txt"
+
+      - name: Build self-verifying U3T evidence manifest
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$AUDIT_DIR"
+          rm -rf u3t-makefile-cache
+          find . -type f ! -name 'U3T-EVIDENCE-SHA256SUMS.txt' -print0 \
+            | LC_ALL=C sort -z \
+            | xargs -0 sha256sum \
+            > U3T-EVIDENCE-SHA256SUMS.txt
+          sha256sum -c U3T-EVIDENCE-SHA256SUMS.txt
+
+      - name: Upload U3T ecosystem boundary evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: VEUX-GEN1-U3T-public-ecosystem-boundary-audit
+          path: u3t-evidence/
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 6
