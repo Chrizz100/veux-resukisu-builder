@@ -1,0 +1,409 @@
+name: VEUX GEN1 U5-A1 Identity-Preserving Multi-Base Port Feasibility
+'on':
+  workflow_dispatch: {}
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: veux-gen1-u5-a1-identity-preserving-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  prepare-port-kit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      ARCH: arm64
+      TZ: UTC
+      LANG: C.UTF-8
+      LC_ALL: C.UTF-8
+      EXPECTED_VENDOR_SHA: b2b7a3bbc36d120ee523ebc8d68e0f13a97df632
+      EXPECTED_VENDOR_KERNEL_VERSION: 5.4.268
+      EXPECTED_OUTER_TREE: 19b68131d7a3955085f60c4fb8cf64442427af0c
+      RESTORE_ARTIFACT_ID: '9989363798'
+      RESTORE_ARTIFACT_NAME: clean-gen1-p6v11-v6-full-susfs-outer-integration-p7-test-boot-34031837372
+      EXPECTED_P5I_COMMIT: f353a9475e40ca866d570c1d0ef55e24cf6556e4
+      EXPECTED_P5I_TREE: a947c1f2891c796a08373fc755e29b23139dc761
+      EXPECTED_RESUKISU_BASE_HEAD: 42034caa96466e8473fe7553eba8a1888c7f460f
+      EXPECTED_RESUKISU_BASE_TREE: d818d965b855d417edfe9eb38b152ff83e75e0fb
+      RESUKISU_REPO: https://github.com/ReSukiSU/ReSukiSU.git
+      RESUKISU_COMMON_BASE: faccf4c5edc7be37776216e7d43dd3dca0239331
+      RESUKISU_TARGET: 7741f87849f7ad7cebf82bbb4c5b89880e61e37e
+      RESUKISU_EXCLUDED_MODULE_FILTER: b2ac2fc8703ce9f5226e2a38a59f8b72f8a3005c
+      P13_KSU_VERSION: '35141'
+      P13_KSU_UAPI: '4'
+      P13_TARGET_TAG: v4.2.0-rc1
+      P13_TARGET_SHORT: 7741f878
+      EXPECTED_IMPORT_PATCH_SHA256: 902e427888714266d9771908cd593191a478cd32ae7a895c77b76c976939c76f
+      EXPECTED_P13_PATCH_SHA256: d56725a9d6a6dc7bf1e73a5763b894bdabb544119f4c75df5f437ccd4ff29a52
+      EXPECTED_P12_EXEC_SHA256: fa3b73421f35d6220fb9e03e112a9509b76c04933af2353c9a8c65d6fb6bd6a9
+      EXPECTED_P12_CONTRACT_SHA256: b6d1875f6a79231465bc78df6484f2856a427259998eb93ba9fd2597cb45ca53
+      EXPECTED_P12_SUSFS_C_SHA256: e430d573ba5875a55d1ca70ba1b304e4b6727bbc42b8c3ac16f2c175b29a59c1
+      EXPECTED_P12_SUSFS_H_SHA256: 3c5fb1bcc28a70c82ee5cfe0a7375bb8e7babd26618ce9b451e598fa31aa3b6e
+      EXPECTED_P12_SUSFS_DEF_SHA256: b16108a5fcd4cdd7203d9f084c2154da708ab3ae6bed17109e4ec63f04ff0f68
+      OUT_DIR: ${{ github.workspace }}/kernel/out-p13
+      BACKUP_DIR: ${{ github.workspace }}/u5-restore
+      AUDIT_DIR: ${{ github.workspace }}/u5-kit-evidence
+      KIT_DIR: ${{ github.workspace }}/u5-port-kit
+      GH_TOKEN: ${{ github.token }}
+    steps:
+    - name: Install dependencies
+      shell: bash
+      run: 'set -euo pipefail
+
+        sudo apt-get update
+
+        sudo apt-get install -y --no-install-recommends   bc bison build-essential ca-certificates curl flex git git-lfs jq   libelf-dev
+        libncurses-dev libssl-dev patch python3 rsync unzip zip xz-utils zstd
+
+        git lfs install --skip-repo
+
+        '
+    - name: Checkout exact VEUX vendor source
+      shell: bash
+      run: "set -euo pipefail\ngit clone -q https://github.com/dereference23/kernel_xiaomi_sm6375.git \\\n  \"$GITHUB_WORKSPACE/kernel\"\
+        \ngit -C \"$GITHUB_WORKSPACE/kernel\" checkout -q --detach \"$EXPECTED_VENDOR_SHA\"\ntest \"$(git -C \"$GITHUB_WORKSPACE/kernel\"\
+        \ rev-parse HEAD)\" = \"$EXPECTED_VENDOR_SHA\"\ntest \"$(make -s -C \"$GITHUB_WORKSPACE/kernel\" kernelversion)\"\
+        \ = \"$EXPECTED_VENDOR_KERNEL_VERSION\"\n{\n  echo \"VENDOR_SHA=$(git -C \"$GITHUB_WORKSPACE/kernel\" rev-parse HEAD)\"\
+        \n  echo \"VENDOR_KERNEL_VERSION=$(make -s -C \"$GITHUB_WORKSPACE/kernel\" kernelversion)\"\n  echo \"FRESH_VENDOR_CHECKOUT=PASS\"\
+        \n} | tee \"$AUDIT_DIR/01-vendor.txt\"\n"
+    - name: Download exact frozen CLEAN-GEN1 restore artifact
+      shell: bash
+      run: "set -euo pipefail\n\nmeta=\"$RUNNER_TEMP/restore-artifact.json\"\ncurl --fail --silent --show-error --location\
+        \ \\\n  -H \"Authorization: Bearer $GH_TOKEN\" \\\n  -H \"Accept: application/vnd.github+json\" \\\n  -H \"X-GitHub-Api-Version:\
+        \ 2022-11-28\" \\\n  \"https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${RESTORE_ARTIFACT_ID}\"\
+        \ \\\n  -o \"$meta\"\n\ntest \"$(jq -r '.id|tostring' \"$meta\")\" = \"$RESTORE_ARTIFACT_ID\"\ntest \"$(jq -r '.name'\
+        \ \"$meta\")\" = \"$RESTORE_ARTIFACT_NAME\"\ntest \"$(jq -r '.expired' \"$meta\")\" = \"false\"\n\ncurl --fail --silent\
+        \ --show-error --location \\\n  -H \"Authorization: Bearer $GH_TOKEN\" \\\n  -H \"Accept: application/vnd.github+json\"\
+        \ \\\n  \"https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${RESTORE_ARTIFACT_ID}/zip\" \\\n  -o\
+        \ \"$RUNNER_TEMP/u5-restore.zip\"\n\nunzip -q \"$RUNNER_TEMP/u5-restore.zip\" -d \"$BACKUP_DIR\"\nrestore_dir=\"$(find\
+        \ \"$BACKUP_DIR\" -type d -name source-restore-kit -print -quit)\"\ntest -n \"$restore_dir\"\ntest -f \"$restore_dir/manifest.json\"\
+        \ntest -f \"$restore_dir/SHA256SUMS\"\necho \"RESTORE_DIR=$restore_dir\" >> \"$GITHUB_ENV\"\n\n{\n  echo \"RESTORE_ARTIFACT_ID=$RESTORE_ARTIFACT_ID\"\
+        \n  echo \"RESTORE_ARTIFACT_NAME=$RESTORE_ARTIFACT_NAME\"\n  echo \"RESTORE_ARTIFACT_CREATED=$(jq -r '.created_at'\
+        \ \"$meta\")\"\n  echo \"RESTORE_ARTIFACT_EXACT_PIN=PASS\"\n} | tee \"$AUDIT_DIR/02-restore-selection.txt\"\n"
+    - name: Reconstruct frozen P12 outer source
+      shell: bash
+      run: "set -euo pipefail\n\n(\n  cd \"$RESTORE_DIR\"\n  sha256sum -c SHA256SUMS\n) | tee \"$AUDIT_DIR/03-restore-sha256.txt\"\
+        \n\njq -e \\\n  --arg p5commit \"$EXPECTED_P5I_COMMIT\" \\\n  --arg p5tree \"$EXPECTED_P5I_TREE\" \\\n  --arg rhead\
+        \ \"$EXPECTED_RESUKISU_BASE_HEAD\" \\\n  --arg rtree \"$EXPECTED_RESUKISU_BASE_TREE\" \\\n  '.stage == \"CLEAN_GEN1_P6V11_SOURCE\"\
+        \n   and .p5i_commit == $p5commit\n   and .p5i_tree == $p5tree\n   and .resukisu_head == $rhead\n   and .resukisu_tree\
+        \ == $rtree' \\\n  \"$RESTORE_DIR/manifest.json\" >/dev/null\n\ngit reset --hard \"$EXPECTED_VENDOR_SHA\"\ngit clean\
+        \ -fdx\nrm -rf \"$OUT_DIR\"\n\np5_patch=\"$RESTORE_DIR/p5i/vendor-20240619-to-p5i-outer.patch\"\np6_patch=\"$RESTORE_DIR/p5i-to-p6-source-compat.patch\"\
+        \np6v11_patch=\"$RESTORE_DIR/p6v10-to-p6v11-full-susfs-outer.patch\"\n\nfor p in \"$p5_patch\" \"$p6_patch\" \"$p6v11_patch\"\
+        ; do\n  test -s \"$p\"\n  git apply --check --whitespace=error --binary \"$p\"\n  git apply --index --whitespace=error\
+        \ --binary \"$p\"\ndone\n\nfinal_expected_tree=\"$(jq -r '.p6_source_tree' \"$RESTORE_DIR/manifest.json\")\"\ntest\
+        \ \"$final_expected_tree\" = \"$EXPECTED_OUTER_TREE\"\ntest \"$(git write-tree)\" = \"$EXPECTED_OUTER_TREE\"\ntest\
+        \ \"$(make -s kernelversion)\" = \"5.4.274\"\n\ngrep -Fxq 'CONFIG_KSU=y' arch/arm64/configs/veux_defconfig\ngrep -Fxq\
+        \ 'CONFIG_KSU_SUSFS=y' arch/arm64/configs/veux_defconfig\ngrep -Fxq '# CONFIG_KSU_MANUAL_HOOK is not set' arch/arm64/configs/veux_defconfig\n\
+        grep -Fxq 'CONFIG_KSU_SUSFS_OPEN_REDIRECT=y' arch/arm64/configs/veux_defconfig\ngrep -Fxq 'CONFIG_LOCALVERSION=\"\
+        -qgki\"' arch/arm64/configs/veux_defconfig\n\n{\n  echo \"CLEAN_SOURCE_RECONSTRUCTION=PASS\"\n  echo \"OUTER_SOURCE_TREE=$final_expected_tree\"\
+        \n  echo \"KERNEL_VERSION=$(make -s kernelversion)\"\n} | tee \"$AUDIT_DIR/04-source.txt\"\n"
+    - name: Construct exact pinned ReSukiSU import without module filter
+      shell: bash
+      run: "set -euo pipefail\nup=\"$GITHUB_WORKSPACE/resukisu-upstream\"\nrm -rf \"$up\"\ngit clone -q \"$RESUKISU_REPO\"\
+        \ \"$up\"\n\nfor c in \"$RESUKISU_COMMON_BASE\" \"$RESUKISU_TARGET\" \"$RESUKISU_EXCLUDED_MODULE_FILTER\"; do\n  git\
+        \ -C \"$up\" cat-file -e \"${c}^{commit}\"\ndone\ngit -C \"$up\" checkout -q --detach \"$RESUKISU_TARGET\"\ngit -C\
+        \ \"$up\" reset --hard -q \"$RESUKISU_TARGET\"\ngit -C \"$up\" clean -fdx -q\n\ntest \"$(git -C \"$up\" rev-list --count\
+        \ \"$RESUKISU_TARGET\" | awk '{print 30700+$1}')\" = \"$P13_KSU_VERSION\"\ntest \"$(git -C \"$up\" describe --abbrev=0\
+        \ --tags \"$RESUKISU_TARGET\")\" = \"$P13_TARGET_TAG\"\ntest \"$(git -C \"$up\" rev-parse --short=8 \"$RESUKISU_TARGET\"\
+        )\" = \"$P13_TARGET_SHORT\"\ngit -C \"$up\" show \"$RESUKISU_TARGET:uapi/supercall.h\" \\\n  | grep -Eq \"KERNEL_SU_UAPI_VERSION\
+        \ = ${P13_KSU_UAPI};\"\n\npython3 - <<'PY'\nfrom pathlib import Path\nimport os\n\nroot = Path(os.environ[\"GITHUB_WORKSPACE\"\
+        ]) / \"resukisu-upstream\"\n\ndef remove_exact(path, block, expected=1):\n    p = root / path\n    text = p.read_text(encoding=\"\
+        utf-8\")\n    count = text.count(block)\n    if count != expected:\n        raise SystemExit(f\"{path}: expected {expected},\
+        \ found {count}: {block!r}\")\n    p.write_text(text.replace(block, \"\", expected), encoding=\"utf-8\")\n\nfor rel\
+        \ in (\n    \"kernel/feature/module_load_filter.c\",\n    \"kernel/feature/module_load_filter.h\",\n):\n    p = root\
+        \ / rel\n    if not p.is_file():\n        raise SystemExit(f\"missing expected file: {rel}\")\n    p.unlink()\n\n\
+        remove_exact(\"kernel/Kbuild\", \"kernelsu-objs += feature/module_load_filter.o\\n\")\nremove_exact(\"kernel/core/init.c\"\
+        , '#include \"feature/module_load_filter.h\"\\n')\nremove_exact(\n    \"kernel/core/init.c\",\n    'char ksu_block_modules[256];\\\
+        n'\n    'module_param_string(block_modules, ksu_block_modules, sizeof(ksu_block_modules), 0);\\n'\n    'MODULE_PARM_DESC(block_modules,\
+        \ \"Comma-separated preset module names to acknowledge without loading\");\\n\\n'\n)\nremove_exact(\"kernel/core/init.c\"\
+        , \"        ksu_module_load_filter_hook_init();\\n\\n\")\nremove_exact(\"kernel/core/init.c\", \"    ksu_module_load_filter_hook_exit();\\\
+        n\")\nPY\n\ntest ! -e \"$up/kernel/feature/module_load_filter.c\"\ntest ! -e \"$up/kernel/feature/module_load_filter.h\"\
+        \n! grep -RFn 'module_load_filter' \"$up/kernel\" \"$up/uapi\"\n! grep -RFn 'ksu_block_modules' \"$up/kernel\" \"\
+        $up/uapi\"\n! grep -RFn 'block_modules' \"$up/kernel\" \"$up/uapi\"\n\npatch=\"$AUDIT_DIR/05-current-kernel-uapi-minus-module-filter.patch\"\
+        \ngit -C \"$up\" diff --binary \"$RESUKISU_COMMON_BASE\" -- kernel uapi > \"$patch\"\ntest -s \"$patch\"\ntest \"\
+        $(sha256sum \"$patch\" | awk '{print $1}')\" = \"$EXPECTED_IMPORT_PATCH_SHA256\"\n\n{\n  echo \"CURRENT_KERNEL_UAPI_PATCH=PASS\"\
+        \n  echo \"MODULE_LOAD_FILTER_EXCLUDED=PASS\"\n  echo \"PATCH_SHA256=$(sha256sum \"$patch\" | awk '{print $1}')\"\n\
+        } | tee \"$AUDIT_DIR/05-resukisu-import.txt\"\n"
+    - name: Replace ReSukiSU subtree and restore integration contract
+      shell: bash
+      run: "set -euo pipefail\nup=\"$GITHUB_WORKSPACE/resukisu-upstream\"\npatch=\"$AUDIT_DIR/05-current-kernel-uapi-minus-module-filter.patch\"\
+        \n\nrm -rf KernelSU\ngit clone -q \"$RESUKISU_REPO\" KernelSU\ngit -C KernelSU checkout -q --detach \"$RESUKISU_COMMON_BASE\"\
+        \ngit -C KernelSU reset --hard -q \"$RESUKISU_COMMON_BASE\"\ngit -C KernelSU clean -fdx -q\n\ngit -C KernelSU apply\
+        \ --check --whitespace=nowarn \"$patch\"\ngit -C KernelSU apply --index --whitespace=nowarn \"$patch\"\ntest -z \"\
+        $(git -C KernelSU ls-files -u)\"\n\nif ! diff -qr \"$up/kernel\" KernelSU/kernel > \"$AUDIT_DIR/06-kernel-parity.txt\"\
+        \ 2>&1; then\n  cat \"$AUDIT_DIR/06-kernel-parity.txt\"\n  exit 1\nfi\nif ! diff -qr \"$up/uapi\" KernelSU/uapi >\
+        \ \"$AUDIT_DIR/06-uapi-parity.txt\" 2>&1; then\n  cat \"$AUDIT_DIR/06-uapi-parity.txt\"\n  exit 1\nfi\n\npython3 -\
+        \ <<'PY'\nfrom pathlib import Path\nfrom textwrap import dedent\nimport os\n\ndef ensure_include(path, anchor):\n\
+        \    p = Path(path)\n    text = p.read_text(encoding=\"utf-8\")\n    inc = '#include <linux/ksu_hook_contract.h>'\n\
+        \    if inc not in text:\n        if anchor not in text:\n            raise SystemExit(f\"anchor missing in {path}:\
+        \ {anchor!r}\")\n        text = text.replace(anchor, anchor + \"\\n\" + inc, 1)\n        p.write_text(text, encoding=\"\
+        utf-8\")\n\nensure_include(\"KernelSU/kernel/feature/sucompat.h\", '#include \"compat/kernel_compat.h\"')\nensure_include(\"\
+        KernelSU/kernel/runtime/ksud_integration.c\", \"#include <linux/version.h>\")\nensure_include(\"KernelSU/kernel/supercall/supercall.c\"\
+        , \"#include <linux/anon_inodes.h>\")\n\np = Path(\"KernelSU/kernel/Kbuild\")\ntext = p.read_text(encoding=\"utf-8\"\
+        )\nold = dedent(\"\"\"\\\nKSU_LOCAL_VERSION := $(shell cd $(KSU_SRC); $(GIT_BIN) rev-list --count HEAD)\nKSU_VERSION\
+        \ := $(shell expr 30000 + $(KSU_LOCAL_VERSION) + 700)\n\nKSU_TAG_NAME    := $(shell cd $(KSU_SRC); $(GIT_BIN) describe\
+        \ --abbrev=0 --tags 2>/dev/null || echo \"v4.1.0\")\nKSU_COMMIT_SHA  := $(shell cd $(KSU_SRC); $(GIT_BIN) rev-parse\
+        \ --short=8 HEAD 2>/dev/null || echo \"unknown\")\nifneq ($(shell cd $(KSU_SRC); $(GIT_BIN) diff-index --quiet HEAD;\
+        \ echo $$?),0)\nKSU_COMMIT_SHA  := $(KSU_COMMIT_SHA)-dirty\nendif\nKSU_BRANCH_NAME := $(shell cd $(KSU_SRC); $(GIT_BIN)\
+        \ branch --show-current 2>/dev/null || echo \"unknown\")\"\"\")\nversion = os.environ[\"P13_KSU_VERSION\"]\ntag =\
+        \ os.environ[\"P13_TARGET_TAG\"]\nshort = os.environ[\"P13_TARGET_SHORT\"]\ntarget = os.environ[\"RESUKISU_TARGET\"\
+        ]\nnew = dedent(f\"\"\"\\\nKSU_LOCAL_VERSION := $(shell cd $(KSU_SRC); $(GIT_BIN) rev-list --count HEAD)\nCLEAN_GEN1_UPSTREAM_COMPAT_VERSION\
+        \ := {version}\nCLEAN_GEN1_UPSTREAM_TARGET := {target}\nKSU_VERSION := $(CLEAN_GEN1_UPSTREAM_COMPAT_VERSION)\n\nKSU_TAG_NAME\
+        \    := {tag}\nKSU_COMMIT_SHA  := {short}-p13\nKSU_BRANCH_NAME := clean-gen1-p13\"\"\")\nif old not in text:\n   \
+        \ raise SystemExit(\"expected ReSukiSU Kbuild version block not found\")\np.write_text(text.replace(old, new, 1),\
+        \ encoding=\"utf-8\")\nPY\n\ngit -C KernelSU add kernel uapi\ntest -z \"$(git -C KernelSU ls-files -u)\"\n\ngrep -Fq\
+        \ '#include <linux/ksu_hook_contract.h>' KernelSU/kernel/feature/sucompat.h\ngrep -Fq '#include <linux/ksu_hook_contract.h>'\
+        \ KernelSU/kernel/runtime/ksud_integration.c\ngrep -Fq '#include <linux/ksu_hook_contract.h>' KernelSU/kernel/supercall/supercall.c\n\
+        grep -Fq \"CLEAN_GEN1_UPSTREAM_COMPAT_VERSION := $P13_KSU_VERSION\" KernelSU/kernel/Kbuild\ngrep -Fq \"CLEAN_GEN1_UPSTREAM_TARGET\
+        \ := $RESUKISU_TARGET\" KernelSU/kernel/Kbuild\n"
+    - name: Apply exact P13 post-exec delta
+      shell: bash
+      run: "set -euo pipefail\n\ngrep -Eq \"KERNEL_SU_UAPI_VERSION = ${P13_KSU_UAPI};\" KernelSU/uapi/supercall.h\ngrep -Fq\
+        \ 'always flag that, to avoid old version of susfs hang in boot' \\\n  KernelSU/kernel/feature/sucompat.c\ngrep -Fq\
+        \ '#define TIF_PROC_IN_KSU_EXECVE 61' KernelSU/kernel/feature/sucompat.h\ngrep -Fq 'if (profile->uid != 0)' KernelSU/kernel/policy/app_profile.c\n\
+        \ntest ! -e KernelSU/kernel/feature/module_load_filter.c\ntest ! -e KernelSU/kernel/feature/module_load_filter.h\n\
+        ! grep -RFn 'module_load_filter' KernelSU/kernel KernelSU/uapi\n! grep -RFn 'block_modules' KernelSU/kernel KernelSU/uapi\n\
+        \ntest \"$(sha256sum fs/exec.c | awk '{print $1}')\" = \"$EXPECTED_P12_EXEC_SHA256\"\ntest \"$(sha256sum include/linux/ksu_hook_contract.h\
+        \ | awk '{print $1}')\" = \"$EXPECTED_P12_CONTRACT_SHA256\"\ntest \"$(sha256sum fs/susfs.c | awk '{print $1}')\" =\
+        \ \"$EXPECTED_P12_SUSFS_C_SHA256\"\ntest \"$(sha256sum include/linux/susfs.h | awk '{print $1}')\" = \"$EXPECTED_P12_SUSFS_H_SHA256\"\
+        \ntest \"$(sha256sum include/linux/susfs_def.h | awk '{print $1}')\" = \"$EXPECTED_P12_SUSFS_DEF_SHA256\"\n\npython3\
+        \ - <<'PY'\nfrom pathlib import Path\n\nhdr = Path(\"include/linux/ksu_hook_contract.h\")\ntext = hdr.read_text(encoding=\"\
+        utf-8\")\nanchor = \"\"\"int ksu_handle_execveat(int *fd, struct filename **filename_ptr,\n                      \
+        \  void *argv, void *envp, int *flags);\n\"\"\"\naddition = anchor + \"\"\"\n#ifdef CONFIG_KSU_SUSFS\nint ksu_handle_post_execve(int\
+        \ *fd, const char *filename,\n                           void *argv, void *envp,\n                           int *flags,\
+        \ int *retval);\n#endif\n\"\"\"\nif text.count(anchor) != 1:\n    raise SystemExit(f\"header anchor count={text.count(anchor)}\"\
+        )\nif \"int ksu_handle_post_execve(\" in text:\n    raise SystemExit(\"post-exec prototype unexpectedly present\"\
+        )\nhdr.write_text(text.replace(anchor, addition, 1), encoding=\"utf-8\")\n\nexecp = Path(\"fs/exec.c\")\ntext = execp.read_text(encoding=\"\
+        utf-8\")\nanchor = \"\"\"\\tsecurity_bprm_committed_creds(bprm);\n\\tmutex_unlock(&current->signal->cred_guard_mutex);\n\
+        \"\"\"\nreplacement = \"\"\"\\tsecurity_bprm_committed_creds(bprm);\n#ifdef CONFIG_KSU_SUSFS\n\\tksu_handle_post_execve(NULL,\
+        \ NULL, NULL, NULL, NULL, NULL);\n#endif\n\\tmutex_unlock(&current->signal->cred_guard_mutex);\n\"\"\"\nif text.count(anchor)\
+        \ != 1:\n    raise SystemExit(f\"fs/exec.c anchor count={text.count(anchor)}\")\nif \"ksu_handle_post_execve(\" in\
+        \ text:\n    raise SystemExit(\"post-exec call unexpectedly present\")\nexecp.write_text(text.replace(anchor, replacement,\
+        \ 1), encoding=\"utf-8\")\nPY\n\ngit diff --check\nmapfile -t changed < <(git diff --name-only | LC_ALL=C sort)\n\
+        test \"${#changed[@]}\" -eq 2\ntest \"${changed[0]}\" = \"fs/exec.c\"\ntest \"${changed[1]}\" = \"include/linux/ksu_hook_contract.h\"\
+        \n\np13_patch=\"$AUDIT_DIR/07-P13-post-exec.patch\"\ngit diff --binary -- fs/exec.c include/linux/ksu_hook_contract.h\
+        \ > \"$p13_patch\"\ntest \"$(sha256sum \"$p13_patch\" | awk '{print $1}')\" = \"$EXPECTED_P13_PATCH_SHA256\"\n\ntest\
+        \ \"$(sha256sum fs/susfs.c | awk '{print $1}')\" = \"$EXPECTED_P12_SUSFS_C_SHA256\"\ntest \"$(sha256sum include/linux/susfs.h\
+        \ | awk '{print $1}')\" = \"$EXPECTED_P12_SUSFS_H_SHA256\"\ntest \"$(sha256sum include/linux/susfs_def.h | awk '{print\
+        \ $1}')\" = \"$EXPECTED_P12_SUSFS_DEF_SHA256\"\n\n{\n  echo \"P13_DELTA=PASS\"\n  echo \"P13_PATCH_SHA256=$EXPECTED_P13_PATCH_SHA256\"\
+        \n  echo \"P13_CHANGED_FILES=fs/exec.c include/linux/ksu_hook_contract.h\"\n  echo \"P13_MODULE_LOAD_FILTER_EXCLUDED=PASS\"\
+        \n} | tee \"$AUDIT_DIR/07-p13-source-gate.txt\"\n"
+    - name: Build frozen identity-safe P13 port kit
+      shell: bash
+      run: "set -euo pipefail\nrm -rf \"$KIT_DIR\"\nmkdir -p \"$KIT_DIR/p13-files\" \"$KIT_DIR/patches\"\n\ncp fs/susfs.c\
+        \ \"$KIT_DIR/p13-files/\"\ncp include/linux/susfs.h \"$KIT_DIR/p13-files/\"\ncp include/linux/susfs_def.h \"$KIT_DIR/p13-files/\"\
+        \ncp include/linux/ksu_hook_contract.h \"$KIT_DIR/p13-files/\"\n\ncp \"$RESTORE_DIR/p5i-to-p6-source-compat.patch\"\
+        \ \\\n   \"$KIT_DIR/patches/p5i-to-p6-source-compat-full.patch\"\ncp \"$RESTORE_DIR/p6v10-to-p6v11-full-susfs-outer.patch\"\
+        \ \\\n   \"$KIT_DIR/patches/p6v10-to-p6v11-full-susfs-outer.patch\"\n\npython3 - <<'PY'\nfrom pathlib import Path\n\
+        import os, re\nsrc=Path(os.environ[\"KIT_DIR\"])/\"patches/p5i-to-p6-source-compat-full.patch\"\ndst=Path(os.environ[\"\
+        KIT_DIR\"])/\"patches/p6-compat-identity-safe.patch\"\ntext=src.read_text(errors=\"replace\")\nexclude={\n    \"arch/arm64/configs/veux_defconfig\"\
+        ,\n    \"include/linux/ksu_hook_contract.h\",\n    \"include/linux/susfs_def.h\",\n    \"localversion\",\n    \"scripts/setlocalversion\"\
+        ,\n}\nout=[]\nfor chunk in re.split(r'(?=^diff --git )', text, flags=re.M):\n    if not chunk.startswith(\"diff --git\
+        \ \"):\n        continue\n    m=re.match(r'diff --git a/(\\S+) b/(\\S+)', chunk)\n    if m and m.group(1) not in exclude:\n\
+        \        out.append(chunk)\nif not out:\n    raise SystemExit(\"filtered P6 patch empty\")\ndst.write_text(\"\".join(out))\n\
+        PY\n\ngit diff --binary -- fs/exec.c > \"$KIT_DIR/patches/p13-postexec-fs-exec.patch\"\ntest -s \"$KIT_DIR/patches/p13-postexec-fs-exec.patch\"\
+        \n\nsus=\"$RUNNER_TEMP/susfs4ksu\"\nrm -rf \"$sus\"\ngit clone -q --single-branch --branch kernel-5.4 \\\n  https://gitlab.com/simonpunk/susfs4ksu.git\
+        \ \"$sus\"\ngit -C \"$sus\" checkout -q 76affd70\ngit -C \"$sus\" rev-parse HEAD > \"$KIT_DIR/SUSFS-5.4-PIN.txt\"\n\
+        cp \"$sus/kernel_patches/50_add_susfs_in_kernel-5.4.patch\" \\\n   \"$KIT_DIR/patches/susfs-base-5.4.patch\"\n\ncat\
+        \ > \"$KIT_DIR/PORT-RULES.txt\" <<EOF\nRESUKISU_TARGET=$RESUKISU_TARGET\nP13_KSU_VERSION=$P13_KSU_VERSION\nP13_KSU_UAPI=$P13_KSU_UAPI\n\
+        MODULE_LOAD_FILTER=EXCLUDED\nIDENTITY_POLICY=KEEP_NATIVE_KERNELRELEASE\nVERSION_SPOOFING=FORBIDDEN\nFLASH_PACKAGE=NONE\n\
+        EOF\n\n(\n  cd \"$KIT_DIR\"\n  find . -type f ! -name SHA256SUMS.txt -print0 | LC_ALL=C sort -z | xargs -0 sha256sum\
+        \ > SHA256SUMS.txt\n  sha256sum -c SHA256SUMS.txt\n)\n"
+    - name: Upload U5-A1 port kit
+      uses: actions/upload-artifact@v4
+      with:
+        name: U5-A1-port-kit
+        path: u5-port-kit/
+        if-no-files-found: error
+        retention-days: '30'
+        compression-level: '6'
+  port-feasibility:
+    needs: prepare-port-kit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - id: v191
+          kernel_version: 5.4.191
+          repo: sm6375-devs/android_kernel_xiaomi_sm6375
+          branch: twelve
+          sha: ba5c5568e1562789d2bac04ae3370932004671bf
+          defconfig: veux_defconfig
+        - id: v259
+          kernel_version: 5.4.259
+          repo: TTTT55/kernel_xiaomi_sm6375
+          branch: old
+          sha: 9d3f1c9fe21bf67186fe5813d5796ac2c9f6bb59
+          defconfig: veux_defconfig
+        - id: v268
+          kernel_version: 5.4.268
+          repo: PixelExperience-Devices/kernel_xiaomi_sm6375
+          branch: fourteen
+          sha: 889296971b88453d7ca9a1dd668a2381a7f4e9b7
+          defconfig: veux_defconfig
+        - id: v275
+          kernel_version: 5.4.275
+          repo: jiganomegsdfdf/kernel_xiaomi_sm6375
+          branch: main
+          sha: 0efbc9fd53c4e46c96b3d6b3269c250eb5fe0921
+          defconfig: veux_defconfig
+        - id: v290
+          kernel_version: 5.4.290
+          repo: AOSPA-SM6375/kernel_xiaomi_veux
+          branch: '14'
+          sha: a9fa7c8d1db5c8161922714cf69e53ef2d359745
+          defconfig: veux_defconfig
+        - id: v292
+          kernel_version: 5.4.292
+          repo: UEDestroyer/kernel_xiaomi_veux
+          branch: main
+          sha: fb3bbb10bc0480282c01b88ccaf39c0145cd9f51
+          defconfig: veux_defconfig
+        - id: v300
+          kernel_version: 5.4.300
+          repo: VoltageOS-Devices/kernel_xiaomi_sm6375
+          branch: '16'
+          sha: 4fe951fffd4b8fd43893616935b3ed437b0de38f
+          defconfig: veux_defconfig
+        - id: v302
+          kernel_version: 5.4.302
+          repo: dereference23/kernel_xiaomi_sm6375
+          branch: main
+          sha: f4b8a13a43a130a9aab83cc985ce4d4421291ae6
+          defconfig: veux_defconfig
+    env:
+      RESUKISU_REPO: https://github.com/ReSukiSU/ReSukiSU.git
+      RESUKISU_TARGET: 7741f87849f7ad7cebf82bbb4c5b89880e61e37e
+      CLANG_PREBUILT_COMMIT: aa2e4a514a6c85eebcc4a27149eaf9244e951a1e
+    steps:
+    - name: Install build dependencies
+      shell: bash
+      run: 'set -euo pipefail
+
+        sudo apt-get update
+
+        sudo apt-get install -y --no-install-recommends   bc bison build-essential ca-certificates curl flex git jq   libelf-dev
+        libncurses-dev libssl-dev patch python3 rsync unzip xz-utils zstd
+
+        '
+    - name: Download frozen port kit
+      uses: actions/download-artifact@v4
+      with:
+        name: U5-A1-port-kit
+        path: u5-port-kit
+    - name: Capture native identity and dry-run exact P13 port
+      shell: bash
+      env:
+        TARGET_ID: ${{ matrix.id }}
+        EXPECTED_VERSION: ${{ matrix.kernel_version }}
+        TARGET_REPO: ${{ matrix.repo }}
+        TARGET_SHA: ${{ matrix.sha }}
+        DEFCONFIG: ${{ matrix.defconfig }}
+      run: "set -euo pipefail\nRESULT=\"$GITHUB_WORKSPACE/result\"\nKIT=\"$GITHUB_WORKSPACE/u5-port-kit\"\nSRC=\"$GITHUB_WORKSPACE/target\"\
+        \nrm -rf \"$RESULT\" \"$SRC\" \"$GITHUB_WORKSPACE/toolchain\"\nmkdir -p \"$RESULT\" \"$GITHUB_WORKSPACE/toolchain\"\
+        \n\ngit clone -q \"https://github.com/$TARGET_REPO.git\" \"$SRC\"\ngit -C \"$SRC\" checkout -q --detach \"$TARGET_SHA\"\
+        \ntest \"$(git -C \"$SRC\" rev-parse HEAD)\" = \"$TARGET_SHA\"\n\nurl=\"https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/${CLANG_PREBUILT_COMMIT}/clang-r416183b.tar.gz\"\
+        \ncurl --fail --location --retry 3 \"$url\" -o \"$RUNNER_TEMP/clang.tar.gz\"\ntar -xzf \"$RUNNER_TEMP/clang.tar.gz\"\
+        \ -C \"$GITHUB_WORKSPACE/toolchain\"\nexport PATH=\"$GITHUB_WORKSPACE/toolchain/bin:$PATH\"\n\ncd \"$SRC\"\nactual_version=\"\
+        $(make -s kernelversion)\"\ntest \"$actual_version\" = \"$EXPECTED_VERSION\"\n\nrm -rf out-native\nmake O=out-native\
+        \ ARCH=arm64 CC=clang LD=ld.lld LLVM=1 LLVM_IAS=1 \\\n  \"$DEFCONFIG\" > \"$RESULT/01-native-defconfig.log\" 2>&1\n\
+        native_release=\"$(make -s O=out-native ARCH=arm64 CC=clang LD=ld.lld LLVM=1 LLVM_IAS=1 kernelrelease)\"\ntest -n\
+        \ \"$native_release\"\ncase \"$native_release\" in\n  \"$EXPECTED_VERSION\"*) ;;\n  *) echo \"unexpected native release:\
+        \ $native_release\" >&2; exit 1 ;;\nesac\n\n{\n  echo \"TARGET_ID=$TARGET_ID\"\n  echo \"TARGET_REPO=$TARGET_REPO\"\
+        \n  echo \"TARGET_SHA=$TARGET_SHA\"\n  echo \"TARGET_KERNELVERSION=$actual_version\"\n  echo \"TARGET_DEFCONFIG=$DEFCONFIG\"\
+        \n  echo \"NATIVE_KERNELRELEASE=$native_release\"\n  grep '^CONFIG_LOCALVERSION=' out-native/.config || true\n  if\
+        \ [ -f localversion ]; then\n    printf 'LOCALVERSION_FILE='\n    tr -d '\\n' < localversion\n    printf '\\n'\n \
+        \ else\n    echo \"LOCALVERSION_FILE=ABSENT\"\n  fi\n} > \"$RESULT/01-native-identity.txt\"\n\nprintf '%s\\n' \"$native_release\"\
+        \ > \"$RESULT/NATIVE-KERNELRELEASE.txt\"\n\n# Work on a clean disposable copy for port checks.\ncd \"$GITHUB_WORKSPACE\"\
+        \ncp -a target portcheck\ncd portcheck\n\n# Exact ReSukiSU source is cloned, but no source identity file is touched.\n\
+        rm -rf KernelSU\ngit clone -q \"$RESUKISU_REPO\" KernelSU\ngit -C KernelSU checkout -q --detach \"$RESUKISU_TARGET\"\
+        \n\n# Remove the intentionally excluded module-load-filter from the pinned ReSukiSU tree.\npython3 - <<'PY'\nfrom\
+        \ pathlib import Path\nroot=Path(\"KernelSU\")\ndef remove_exact(path, block):\n    p=root/path\n    t=p.read_text()\n\
+        \    if t.count(block)!=1:\n        raise SystemExit(f\"unexpected block count in {path}\")\n    p.write_text(t.replace(block,\"\
+        \",1))\nfor rel in (\"kernel/feature/module_load_filter.c\",\"kernel/feature/module_load_filter.h\"):\n    p=root/rel\n\
+        \    if not p.exists():\n        raise SystemExit(f\"missing {rel}\")\n    p.unlink()\nremove_exact(\"kernel/Kbuild\"\
+        ,\"kernelsu-objs += feature/module_load_filter.o\\n\")\nremove_exact(\"kernel/core/init.c\",'#include \"feature/module_load_filter.h\"\
+        \\n')\nremove_exact(\"kernel/core/init.c\",\n 'char ksu_block_modules[256];\\n'\n 'module_param_string(block_modules,\
+        \ ksu_block_modules, sizeof(ksu_block_modules), 0);\\n'\n 'MODULE_PARM_DESC(block_modules, \"Comma-separated preset\
+        \ module names to acknowledge without loading\");\\n\\n')\nremove_exact(\"kernel/core/init.c\",\"        ksu_module_load_filter_hook_init();\\\
+        n\\n\")\nremove_exact(\"kernel/core/init.c\",\"    ksu_module_load_filter_hook_exit();\\n\")\nPY\n\n# Dry-run only.\
+        \ Any failure means this base needs a dedicated manual semantic port.\nstatus=PASS\nstage=NONE\n\ncheck_patch() {\n\
+        \  name=\"$1\"\n  file=\"$2\"\n  if ! git apply --check --whitespace=nowarn \"$file\" > \"$RESULT/${name}.log\" 2>&1;\
+        \ then\n    status=PORT_REQUIRED\n    stage=\"$name\"\n    return 1\n  fi\n  return 0\n}\n\ncheck_patch \"02-susfs-base\"\
+        \ \"$KIT/patches/susfs-base-5.4.patch\" || true\n\nif [ \"$status\" = PASS ]; then\n  git apply --whitespace=nowarn\
+        \ \"$KIT/patches/susfs-base-5.4.patch\"\n  check_patch \"03-p6-compat\" \"$KIT/patches/p6-compat-identity-safe.patch\"\
+        \ || true\nfi\n\nif [ \"$status\" = PASS ]; then\n  git apply --whitespace=nowarn \"$KIT/patches/p6-compat-identity-safe.patch\"\
+        \n  check_patch \"04-p6v11-refinement\" \"$KIT/patches/p6v10-to-p6v11-full-susfs-outer.patch\" || true\nfi\n\nif [\
+        \ \"$status\" = PASS ]; then\n  git apply --whitespace=nowarn \"$KIT/patches/p6v10-to-p6v11-full-susfs-outer.patch\"\
+        \n  cp \"$KIT/p13-files/susfs.c\" fs/susfs.c\n  cp \"$KIT/p13-files/susfs.h\" include/linux/susfs.h\n  cp \"$KIT/p13-files/susfs_def.h\"\
+        \ include/linux/susfs_def.h\n  cp \"$KIT/p13-files/ksu_hook_contract.h\" include/linux/ksu_hook_contract.h\n  check_patch\
+        \ \"05-p13-postexec\" \"$KIT/patches/p13-postexec-fs-exec.patch\" || true\nfi\n\nidentity_files_changed=NO\nfor f\
+        \ in \"localversion\" \"scripts/setlocalversion\" \"arch/arm64/configs/$DEFCONFIG\"; do\n  if git diff --name-only\
+        \ | grep -Fxq \"$f\"; then\n    identity_files_changed=YES\n  fi\ndone\n\n{\n  echo \"TARGET_ID=$TARGET_ID\"\n  echo\
+        \ \"TARGET_REPO=$TARGET_REPO\"\n  echo \"TARGET_SHA=$TARGET_SHA\"\n  echo \"TARGET_KERNELVERSION=$EXPECTED_VERSION\"\
+        \n  echo \"NATIVE_KERNELRELEASE=$native_release\"\n  echo \"PORT_FEASIBILITY=$status\"\n  echo \"FIRST_REQUIRED_MANUAL_PORT_STAGE=$stage\"\
+        \n  echo \"IDENTITY_SOURCE_FILES_CHANGED=$identity_files_changed\"\n  echo \"VERSION_SPOOFING=NO\"\n  echo \"FLASH_PACKAGE_CREATED=NO\"\
+        \n  echo \"DEVICE_PASS=NO\"\n} > \"$RESULT/RESULT.txt\"\n\ncat \"$RESULT/RESULT.txt\"\n"
+    - name: Build target evidence manifest
+      if: always()
+      shell: bash
+      run: 'set -euo pipefail
+
+        cd "$GITHUB_WORKSPACE/result"
+
+        find . -type f ! -name SHA256SUMS.txt -print0 | LC_ALL=C sort -z | xargs -0 sha256sum > SHA256SUMS.txt
+
+        sha256sum -c SHA256SUMS.txt
+
+        '
+    - name: Upload target feasibility result
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: U5-A1-${{ matrix.id }}-${{ matrix.kernel_version }}
+        path: result/
+        if-no-files-found: error
+        retention-days: '30'
+        compression-level: '6'
+  aggregate:
+    if: always()
+    needs:
+    - prepare-port-kit
+    - port-feasibility
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+    - name: Download target results
+      uses: actions/download-artifact@v4
+      with:
+        pattern: U5-A1-v*
+        path: collected
+    - name: Aggregate identity-preserving port results
+      shell: bash
+      run: "set -euo pipefail\nrm -rf final\nmkdir -p final/evidence\n\n{\n  echo -e \"target\\tkernelversion\\tnative_kernelrelease\\\
+        tport_feasibility\\tmanual_stage\\tidentity_files_changed\"\n  for f in collected/*/RESULT.txt; do\n    [ -f \"$f\"\
+        \ ] || continue\n    get(){ grep -E \"^$1=\" \"$f\" | head -n1 | cut -d= -f2-; }\n    echo -e \"$(get TARGET_ID)\\\
+        t$(get TARGET_KERNELVERSION)\\t$(get NATIVE_KERNELRELEASE)\\t$(get PORT_FEASIBILITY)\\t$(get FIRST_REQUIRED_MANUAL_PORT_STAGE)\\\
+        t$(get IDENTITY_SOURCE_FILES_CHANGED)\"\n  done\n} > final/U5-A1-MATRIX.tsv\n\npass_count=\"$(awk -F'\\t' 'NR>1 &&\
+        \ $4==\"PASS\"{n++} END{print n+0}' final/U5-A1-MATRIX.tsv)\"\nport_count=\"$(awk -F'\\t' 'NR>1 && $4==\"PORT_REQUIRED\"\
+        {n++} END{print n+0}' final/U5-A1-MATRIX.tsv)\"\n\n{\n  echo \"U5_A1_ARCHITECTURE=IDENTITY_PRESERVING_MULTI_BASE\"\
+        \n  echo \"REPRESENTATIVE_BASE_COUNT=8\"\n  echo \"DRY_PORT_PASS_COUNT=$pass_count\"\n  echo \"MANUAL_PORT_REQUIRED_COUNT=$port_count\"\
+        \n  echo \"P13_5_4_274=EXISTING_DEVICE_PASS_CONTROL\"\n  echo \"VERSION_SPOOFING=NO\"\n  echo \"SINGLE_5_4_274_FOR_ALL=NO\"\
+        \n  echo \"FLASH_PACKAGE_CREATED=NO\"\n  echo \"NEXT_STEP=BUILD_EACH_PASSING_BASE_AND_MANUALLY_PORT_FAILED_BASES\"\
+        \n  echo \"DEVICE_PASS=NO_FOR_NEW_BASES\"\n} > final/U5-A1-RESULT.txt\n\nfind collected -type f -exec cp --parents\
+        \ {} final/evidence/ \\;\n\n(\n  cd final\n  find . -type f ! -name SHA256SUMS.txt -print0 | LC_ALL=C sort -z | xargs\
+        \ -0 sha256sum > SHA256SUMS.txt\n  sha256sum -c SHA256SUMS.txt\n)\n\n(cd final && zip -X -q -r ../VEUX-GEN1-U5-A1-identity-preserving-port-feasibility.zip\
+        \ .)\nunzip -t VEUX-GEN1-U5-A1-identity-preserving-port-feasibility.zip\nsha256sum VEUX-GEN1-U5-A1-identity-preserving-port-feasibility.zip\
+        \ \\\n  > VEUX-GEN1-U5-A1-identity-preserving-port-feasibility.zip.sha256\n\ncat final/U5-A1-MATRIX.tsv\ncat final/U5-A1-RESULT.txt\n"
+    - name: Upload U5-A1 aggregate
+      uses: actions/upload-artifact@v4
+      with:
+        name: VEUX-GEN1-U5-A1-identity-preserving-port-feasibility
+        path: 'VEUX-GEN1-U5-A1-identity-preserving-port-feasibility.zip
+
+          VEUX-GEN1-U5-A1-identity-preserving-port-feasibility.zip.sha256'
+        if-no-files-found: error
+        retention-days: '30'
+        compression-level: '0'
