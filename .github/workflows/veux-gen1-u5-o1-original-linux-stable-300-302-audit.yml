@@ -1,0 +1,317 @@
+name: VEUX GEN1 U5-O1 Original Linux-Stable 5.4.300/5.4.302 Audit
+'on':
+  workflow_dispatch: {}
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: veux-gen1-u5-o1-original-stable-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      ARCH: arm64
+      TZ: UTC
+      LANG: C.UTF-8
+      LC_ALL: C.UTF-8
+      EXPECTED_VENDOR_SHA: b2b7a3bbc36d120ee523ebc8d68e0f13a97df632
+      EXPECTED_VENDOR_KERNEL_VERSION: 5.4.268
+      EXPECTED_OUTER_TREE: 19b68131d7a3955085f60c4fb8cf64442427af0c
+      RESTORE_ARTIFACT_ID: '9989363798'
+      RESTORE_ARTIFACT_NAME: clean-gen1-p6v11-v6-full-susfs-outer-integration-p7-test-boot-34031837372
+      EXPECTED_P5I_COMMIT: f353a9475e40ca866d570c1d0ef55e24cf6556e4
+      EXPECTED_P5I_TREE: a947c1f2891c796a08373fc755e29b23139dc761
+      EXPECTED_RESUKISU_BASE_HEAD: 42034caa96466e8473fe7553eba8a1888c7f460f
+      EXPECTED_RESUKISU_BASE_TREE: d818d965b855d417edfe9eb38b152ff83e75e0fb
+      RESUKISU_REPO: https://github.com/ReSukiSU/ReSukiSU.git
+      RESUKISU_COMMON_BASE: faccf4c5edc7be37776216e7d43dd3dca0239331
+      RESUKISU_TARGET: 7741f87849f7ad7cebf82bbb4c5b89880e61e37e
+      RESUKISU_EXCLUDED_MODULE_FILTER: b2ac2fc8703ce9f5226e2a38a59f8b72f8a3005c
+      P13_KSU_VERSION: '35141'
+      P13_KSU_UAPI: '4'
+      P13_TARGET_TAG: v4.2.0-rc1
+      P13_TARGET_SHORT: 7741f878
+      EXPECTED_IMPORT_PATCH_SHA256: 902e427888714266d9771908cd593191a478cd32ae7a895c77b76c976939c76f
+      EXPECTED_P13_PATCH_SHA256: d56725a9d6a6dc7bf1e73a5763b894bdabb544119f4c75df5f437ccd4ff29a52
+      EXPECTED_P12_EXEC_SHA256: fa3b73421f35d6220fb9e03e112a9509b76c04933af2353c9a8c65d6fb6bd6a9
+      EXPECTED_P12_CONTRACT_SHA256: b6d1875f6a79231465bc78df6484f2856a427259998eb93ba9fd2597cb45ca53
+      EXPECTED_P12_SUSFS_C_SHA256: e430d573ba5875a55d1ca70ba1b304e4b6727bbc42b8c3ac16f2c175b29a59c1
+      EXPECTED_P12_SUSFS_H_SHA256: 3c5fb1bcc28a70c82ee5cfe0a7375bb8e7babd26618ce9b451e598fa31aa3b6e
+      EXPECTED_P12_SUSFS_DEF_SHA256: b16108a5fcd4cdd7203d9f084c2154da708ab3ae6bed17109e4ec63f04ff0f68
+      OUT_DIR: ${{ github.workspace }}/kernel/out-p13
+      BACKUP_DIR: ${{ github.workspace }}/u5o1-restore
+      AUDIT_DIR: ${{ github.workspace }}/u5o1-evidence
+      STABLE_DIR: ${{ github.workspace }}/linux-stable-official
+      GH_TOKEN: ${{ github.token }}
+      LINUX_STABLE_REPO: https://github.com/gregkh/linux.git
+      STABLE_TAGOBJ_274: 427e4044cacd901e4b6a2cfc088c6db812559b57
+      STABLE_COMMIT_274: 0dbd436fb9908fbb442cb4c6e28044a891360229
+      STABLE_TAGOBJ_300: a169431f26a8b4ae3e22cfb9aa396c71bdd3b37c
+      STABLE_COMMIT_300: 86b57fd7c54e976bdcee78ead678932821a68e2d
+      STABLE_TAGOBJ_302: 8ffcca9e0f269ee86a682eaae7e49c5efae79fe9
+      STABLE_COMMIT_302: 9e3157c56ec7917e6a80ea53a8bd752e0037f2cb
+    steps:
+    - name: Initialize U5-O1 single-artifact audit
+      shell: bash
+      run: "set -euo pipefail\nrm -rf \"$AUDIT_DIR\" \"$BACKUP_DIR\" \"$STABLE_DIR\"\nmkdir -p \"$AUDIT_DIR\" \"$BACKUP_DIR\"\n\ncat > \"$AUDIT_DIR/00-PLAN.txt\"\
+        \ <<'EOF'\nU5-O1 ORIGINAL-STABLE AUDIT\n\nPurpose:\n- remove Positron/Nebula/custom 5.4.300/5.4.302 target branches from the universal line\n- use\
+        \ only official Linux-stable v5.4.300 and v5.4.302 as version authorities\n- keep the confirmed VEUX/P13 5.4.274 source only as the device-specific\
+        \ starting tree\n- audit the exact official stable deltas 5.4.274->5.4.300 and 5.4.274->5.4.302\n- do not build or flash a kernel in this workflow\n\
+        - produce exactly one GitHub artifact containing all evidence\n\nInterpretation:\nOFFICIAL_STABLE_PASS does not mean DEVICE_PASS.\nDIRECT_APPLY_FAIL\
+        \ means a semantic VEUX port is required; it is not a workflow failure.\nEOF\n\n{\n  echo \"WORKSPACE_INIT=PASS\"\n  echo \"RUN_ID=$GITHUB_RUN_ID\"\
+        \n  echo \"RUN_ATTEMPT=$GITHUB_RUN_ATTEMPT\"\n  echo \"ARTIFACT_POLICY=ONE_SINGLE_FINAL_ARTIFACT\"\n} > \"$AUDIT_DIR/00-workspace.txt\"\n"
+    - name: Install audit dependencies
+      shell: bash
+      run: "set -euo pipefail\nsudo apt-get update\nsudo apt-get install -y --no-install-recommends \\\n  bc bison build-essential ca-certificates curl\
+        \ flex git git-lfs jq \\\n  libelf-dev libncurses-dev libssl-dev patch python3 rsync \\\n  unzip zip xz-utils zstd\ngit lfs install --skip-repo\n"
+    - name: Checkout exact VEUX vendor source
+      shell: bash
+      run: "set -euo pipefail\ngit clone -q https://github.com/dereference23/kernel_xiaomi_sm6375.git \\\n  \"$GITHUB_WORKSPACE/kernel\"\ngit -C \"$GITHUB_WORKSPACE/kernel\"\
+        \ checkout -q --detach \"$EXPECTED_VENDOR_SHA\"\ntest \"$(git -C \"$GITHUB_WORKSPACE/kernel\" rev-parse HEAD)\" = \"$EXPECTED_VENDOR_SHA\"\ntest\
+        \ \"$(make -s -C \"$GITHUB_WORKSPACE/kernel\" kernelversion)\" = \"$EXPECTED_VENDOR_KERNEL_VERSION\"\n{\n  echo \"VENDOR_SHA=$(git -C \"$GITHUB_WORKSPACE/kernel\"\
+        \ rev-parse HEAD)\"\n  echo \"VENDOR_KERNEL_VERSION=$(make -s -C \"$GITHUB_WORKSPACE/kernel\" kernelversion)\"\n  echo \"FRESH_VENDOR_CHECKOUT=PASS\"\
+        \n} | tee \"$AUDIT_DIR/01-vendor.txt\"\n"
+    - name: Download exact frozen CLEAN-GEN1 restore artifact
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: "set -euo pipefail\n\nmeta=\"$RUNNER_TEMP/restore-artifact.json\"\ncurl --fail --silent --show-error --location \\\n  -H \"Authorization: Bearer\
+        \ $GH_TOKEN\" \\\n  -H \"Accept: application/vnd.github+json\" \\\n  -H \"X-GitHub-Api-Version: 2022-11-28\" \\\n  \"https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${RESTORE_ARTIFACT_ID}\"\
+        \ \\\n  -o \"$meta\"\n\ntest \"$(jq -r '.id|tostring' \"$meta\")\" = \"$RESTORE_ARTIFACT_ID\"\ntest \"$(jq -r '.name' \"$meta\")\" = \"$RESTORE_ARTIFACT_NAME\"\
+        \ntest \"$(jq -r '.expired' \"$meta\")\" = \"false\"\n\ncurl --fail --silent --show-error --location \\\n  -H \"Authorization: Bearer $GH_TOKEN\"\
+        \ \\\n  -H \"Accept: application/vnd.github+json\" \\\n  \"https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${RESTORE_ARTIFACT_ID}/zip\"\
+        \ \\\n  -o \"$RUNNER_TEMP/u5o1-restore.zip\"\n\nunzip -q \"$RUNNER_TEMP/u5o1-restore.zip\" -d \"$BACKUP_DIR\"\nrestore_dir=\"$(find \"$BACKUP_DIR\"\
+        \ -type d -name source-restore-kit -print -quit)\"\ntest -n \"$restore_dir\"\ntest -f \"$restore_dir/manifest.json\"\ntest -f \"$restore_dir/SHA256SUMS\"\
+        \necho \"RESTORE_DIR=$restore_dir\" >> \"$GITHUB_ENV\"\n\n{\n  echo \"RESTORE_ARTIFACT_ID=$RESTORE_ARTIFACT_ID\"\n  echo \"RESTORE_ARTIFACT_NAME=$RESTORE_ARTIFACT_NAME\"\
+        \n  echo \"RESTORE_ARTIFACT_CREATED=$(jq -r '.created_at' \"$meta\")\"\n  echo \"RESTORE_ARTIFACT_EXACT_PIN=PASS\"\n} | tee \"$AUDIT_DIR/02-restore-selection.txt\"\
+        \n"
+    - name: Reconstruct exact frozen VEUX 5.4.274 P12 source
+      working-directory: kernel
+      shell: bash
+      run: "set -euo pipefail\n\n(\n  cd \"$RESTORE_DIR\"\n  sha256sum -c SHA256SUMS\n) | tee \"$AUDIT_DIR/03-restore-sha256.txt\"\n\njq -e \\\n  --arg\
+        \ p5commit \"$EXPECTED_P5I_COMMIT\" \\\n  --arg p5tree \"$EXPECTED_P5I_TREE\" \\\n  --arg rhead \"$EXPECTED_RESUKISU_BASE_HEAD\" \\\n  --arg rtree\
+        \ \"$EXPECTED_RESUKISU_BASE_TREE\" \\\n  '.stage == \"CLEAN_GEN1_P6V11_SOURCE\"\n   and .p5i_commit == $p5commit\n   and .p5i_tree == $p5tree\n\
+        \   and .resukisu_head == $rhead\n   and .resukisu_tree == $rtree' \\\n  \"$RESTORE_DIR/manifest.json\" >/dev/null\n\ngit reset --hard \"$EXPECTED_VENDOR_SHA\"\
+        \ngit clean -fdx\nrm -rf \"$OUT_DIR\"\n\np5_patch=\"$RESTORE_DIR/p5i/vendor-20240619-to-p5i-outer.patch\"\np6_patch=\"$RESTORE_DIR/p5i-to-p6-source-compat.patch\"\
+        \np6v11_patch=\"$RESTORE_DIR/p6v10-to-p6v11-full-susfs-outer.patch\"\n\nfor p in \"$p5_patch\" \"$p6_patch\" \"$p6v11_patch\"; do\n  test -s \"\
+        $p\"\n  git apply --check --whitespace=error --binary \"$p\"\n  git apply --index --whitespace=error --binary \"$p\"\ndone\n\nfinal_expected_tree=\"\
+        $(jq -r '.p6_source_tree' \"$RESTORE_DIR/manifest.json\")\"\ntest \"$final_expected_tree\" = \"$EXPECTED_OUTER_TREE\"\ntest \"$(git write-tree)\"\
+        \ = \"$EXPECTED_OUTER_TREE\"\ntest \"$(make -s kernelversion)\" = \"5.4.274\"\n\ngrep -Fxq 'CONFIG_KSU=y' arch/arm64/configs/veux_defconfig\ngrep\
+        \ -Fxq 'CONFIG_KSU_SUSFS=y' arch/arm64/configs/veux_defconfig\ngrep -Fxq '# CONFIG_KSU_MANUAL_HOOK is not set' arch/arm64/configs/veux_defconfig\n\
+        grep -Fxq 'CONFIG_KSU_SUSFS_OPEN_REDIRECT=y' arch/arm64/configs/veux_defconfig\ngrep -Fxq 'CONFIG_LOCALVERSION=\"-qgki\"' arch/arm64/configs/veux_defconfig\n\
+        \n{\n  echo \"CLEAN_SOURCE_RECONSTRUCTION=PASS\"\n  echo \"OUTER_SOURCE_TREE=$final_expected_tree\"\n  echo \"KERNEL_VERSION=$(make -s kernelversion)\"\
+        \n} | tee \"$AUDIT_DIR/04-source.txt\"\n"
+    - name: Construct exact pinned ReSukiSU import without module filter
+      shell: bash
+      run: "set -euo pipefail\nup=\"$GITHUB_WORKSPACE/resukisu-upstream\"\nrm -rf \"$up\"\ngit clone -q \"$RESUKISU_REPO\" \"$up\"\n\nfor c in \"$RESUKISU_COMMON_BASE\"\
+        \ \"$RESUKISU_TARGET\" \"$RESUKISU_EXCLUDED_MODULE_FILTER\"; do\n  git -C \"$up\" cat-file -e \"${c}^{commit}\"\ndone\ngit -C \"$up\" checkout -q\
+        \ --detach \"$RESUKISU_TARGET\"\ngit -C \"$up\" reset --hard -q \"$RESUKISU_TARGET\"\ngit -C \"$up\" clean -fdx -q\n\ntest \"$(git -C \"$up\" rev-list\
+        \ --count \"$RESUKISU_TARGET\" | awk '{print 30700+$1}')\" = \"$P13_KSU_VERSION\"\ntest \"$(git -C \"$up\" describe --abbrev=0 --tags \"$RESUKISU_TARGET\"\
+        )\" = \"$P13_TARGET_TAG\"\ntest \"$(git -C \"$up\" rev-parse --short=8 \"$RESUKISU_TARGET\")\" = \"$P13_TARGET_SHORT\"\ngit -C \"$up\" show \"$RESUKISU_TARGET:uapi/supercall.h\"\
+        \ \\\n  | grep -Eq \"KERNEL_SU_UAPI_VERSION = ${P13_KSU_UAPI};\"\n\npython3 - <<'PY'\nfrom pathlib import Path\nimport os\n\nroot = Path(os.environ[\"\
+        GITHUB_WORKSPACE\"]) / \"resukisu-upstream\"\n\ndef remove_exact(path, block, expected=1):\n    p = root / path\n    text = p.read_text(encoding=\"\
+        utf-8\")\n    count = text.count(block)\n    if count != expected:\n        raise SystemExit(f\"{path}: expected {expected}, found {count}: {block!r}\"\
+        )\n    p.write_text(text.replace(block, \"\", expected), encoding=\"utf-8\")\n\nfor rel in (\n    \"kernel/feature/module_load_filter.c\",\n   \
+        \ \"kernel/feature/module_load_filter.h\",\n):\n    p = root / rel\n    if not p.is_file():\n        raise SystemExit(f\"missing expected file:\
+        \ {rel}\")\n    p.unlink()\n\nremove_exact(\"kernel/Kbuild\", \"kernelsu-objs += feature/module_load_filter.o\\n\")\nremove_exact(\"kernel/core/init.c\"\
+        , '#include \"feature/module_load_filter.h\"\\n')\nremove_exact(\n    \"kernel/core/init.c\",\n    'char ksu_block_modules[256];\\n'\n    'module_param_string(block_modules,\
+        \ ksu_block_modules, sizeof(ksu_block_modules), 0);\\n'\n    'MODULE_PARM_DESC(block_modules, \"Comma-separated preset module names to acknowledge\
+        \ without loading\");\\n\\n'\n)\nremove_exact(\"kernel/core/init.c\", \"        ksu_module_load_filter_hook_init();\\n\\n\")\nremove_exact(\"kernel/core/init.c\"\
+        , \"    ksu_module_load_filter_hook_exit();\\n\")\nPY\n\ntest ! -e \"$up/kernel/feature/module_load_filter.c\"\ntest ! -e \"$up/kernel/feature/module_load_filter.h\"\
+        \n! grep -RFn 'module_load_filter' \"$up/kernel\" \"$up/uapi\"\n! grep -RFn 'ksu_block_modules' \"$up/kernel\" \"$up/uapi\"\n! grep -RFn 'block_modules'\
+        \ \"$up/kernel\" \"$up/uapi\"\n\npatch=\"$AUDIT_DIR/05-current-kernel-uapi-minus-module-filter.patch\"\ngit -C \"$up\" diff --binary \"$RESUKISU_COMMON_BASE\"\
+        \ -- kernel uapi > \"$patch\"\ntest -s \"$patch\"\ntest \"$(sha256sum \"$patch\" | awk '{print $1}')\" = \"$EXPECTED_IMPORT_PATCH_SHA256\"\n\n{\n\
+        \  echo \"CURRENT_KERNEL_UAPI_PATCH=PASS\"\n  echo \"MODULE_LOAD_FILTER_EXCLUDED=PASS\"\n  echo \"PATCH_SHA256=$(sha256sum \"$patch\" | awk '{print\
+        \ $1}')\"\n} | tee \"$AUDIT_DIR/05-resukisu-import.txt\"\n"
+    - name: Restore exact ReSukiSU/SUSFS integration contract
+      working-directory: kernel
+      shell: bash
+      run: "set -euo pipefail\nup=\"$GITHUB_WORKSPACE/resukisu-upstream\"\npatch=\"$AUDIT_DIR/05-current-kernel-uapi-minus-module-filter.patch\"\n\nrm -rf\
+        \ KernelSU\ngit clone -q \"$RESUKISU_REPO\" KernelSU\ngit -C KernelSU checkout -q --detach \"$RESUKISU_COMMON_BASE\"\ngit -C KernelSU reset --hard\
+        \ -q \"$RESUKISU_COMMON_BASE\"\ngit -C KernelSU clean -fdx -q\n\ngit -C KernelSU apply --check --whitespace=nowarn \"$patch\"\ngit -C KernelSU apply\
+        \ --index --whitespace=nowarn \"$patch\"\ntest -z \"$(git -C KernelSU ls-files -u)\"\n\nif ! diff -qr \"$up/kernel\" KernelSU/kernel > \"$AUDIT_DIR/06-kernel-parity.txt\"\
+        \ 2>&1; then\n  cat \"$AUDIT_DIR/06-kernel-parity.txt\"\n  exit 1\nfi\nif ! diff -qr \"$up/uapi\" KernelSU/uapi > \"$AUDIT_DIR/06-uapi-parity.txt\"\
+        \ 2>&1; then\n  cat \"$AUDIT_DIR/06-uapi-parity.txt\"\n  exit 1\nfi\n\npython3 - <<'PY'\nfrom pathlib import Path\nfrom textwrap import dedent\n\
+        import os\n\ndef ensure_include(path, anchor):\n    p = Path(path)\n    text = p.read_text(encoding=\"utf-8\")\n    inc = '#include <linux/ksu_hook_contract.h>'\n\
+        \    if inc not in text:\n        if anchor not in text:\n            raise SystemExit(f\"anchor missing in {path}: {anchor!r}\")\n        text\
+        \ = text.replace(anchor, anchor + \"\\n\" + inc, 1)\n        p.write_text(text, encoding=\"utf-8\")\n\nensure_include(\"KernelSU/kernel/feature/sucompat.h\"\
+        , '#include \"compat/kernel_compat.h\"')\nensure_include(\"KernelSU/kernel/runtime/ksud_integration.c\", \"#include <linux/version.h>\")\nensure_include(\"\
+        KernelSU/kernel/supercall/supercall.c\", \"#include <linux/anon_inodes.h>\")\n\np = Path(\"KernelSU/kernel/Kbuild\")\ntext = p.read_text(encoding=\"\
+        utf-8\")\nold = dedent(\"\"\"\\\nKSU_LOCAL_VERSION := $(shell cd $(KSU_SRC); $(GIT_BIN) rev-list --count HEAD)\nKSU_VERSION := $(shell expr 30000\
+        \ + $(KSU_LOCAL_VERSION) + 700)\n\nKSU_TAG_NAME    := $(shell cd $(KSU_SRC); $(GIT_BIN) describe --abbrev=0 --tags 2>/dev/null || echo \"v4.1.0\"\
+        )\nKSU_COMMIT_SHA  := $(shell cd $(KSU_SRC); $(GIT_BIN) rev-parse --short=8 HEAD 2>/dev/null || echo \"unknown\")\nifneq ($(shell cd $(KSU_SRC);\
+        \ $(GIT_BIN) diff-index --quiet HEAD; echo $$?),0)\nKSU_COMMIT_SHA  := $(KSU_COMMIT_SHA)-dirty\nendif\nKSU_BRANCH_NAME := $(shell cd $(KSU_SRC);\
+        \ $(GIT_BIN) branch --show-current 2>/dev/null || echo \"unknown\")\"\"\")\nversion = os.environ[\"P13_KSU_VERSION\"]\ntag = os.environ[\"P13_TARGET_TAG\"\
+        ]\nshort = os.environ[\"P13_TARGET_SHORT\"]\ntarget = os.environ[\"RESUKISU_TARGET\"]\nnew = dedent(f\"\"\"\\\nKSU_LOCAL_VERSION := $(shell cd $(KSU_SRC);\
+        \ $(GIT_BIN) rev-list --count HEAD)\nCLEAN_GEN1_UPSTREAM_COMPAT_VERSION := {version}\nCLEAN_GEN1_UPSTREAM_TARGET := {target}\nKSU_VERSION := $(CLEAN_GEN1_UPSTREAM_COMPAT_VERSION)\n\
+        \nKSU_TAG_NAME    := {tag}\nKSU_COMMIT_SHA  := {short}-p13\nKSU_BRANCH_NAME := clean-gen1-p13\"\"\")\nif old not in text:\n    raise SystemExit(\"\
+        expected ReSukiSU Kbuild version block not found\")\np.write_text(text.replace(old, new, 1), encoding=\"utf-8\")\nPY\n\ngit -C KernelSU add kernel\
+        \ uapi\ntest -z \"$(git -C KernelSU ls-files -u)\"\n\ngrep -Fq '#include <linux/ksu_hook_contract.h>' KernelSU/kernel/feature/sucompat.h\ngrep -Fq\
+        \ '#include <linux/ksu_hook_contract.h>' KernelSU/kernel/runtime/ksud_integration.c\ngrep -Fq '#include <linux/ksu_hook_contract.h>' KernelSU/kernel/supercall/supercall.c\n\
+        grep -Fq \"CLEAN_GEN1_UPSTREAM_COMPAT_VERSION := $P13_KSU_VERSION\" KernelSU/kernel/Kbuild\ngrep -Fq \"CLEAN_GEN1_UPSTREAM_TARGET := $RESUKISU_TARGET\"\
+        \ KernelSU/kernel/Kbuild\n"
+    - name: Apply and verify exact P13 post-exec delta
+      working-directory: kernel
+      shell: bash
+      run: "set -euo pipefail\n\ngrep -Eq \"KERNEL_SU_UAPI_VERSION = ${P13_KSU_UAPI};\" KernelSU/uapi/supercall.h\ngrep -Fq 'always flag that, to avoid\
+        \ old version of susfs hang in boot' \\\n  KernelSU/kernel/feature/sucompat.c\ngrep -Fq '#define TIF_PROC_IN_KSU_EXECVE 61' KernelSU/kernel/feature/sucompat.h\n\
+        grep -Fq 'if (profile->uid != 0)' KernelSU/kernel/policy/app_profile.c\n\ntest ! -e KernelSU/kernel/feature/module_load_filter.c\ntest ! -e KernelSU/kernel/feature/module_load_filter.h\n\
+        ! grep -RFn 'module_load_filter' KernelSU/kernel KernelSU/uapi\n! grep -RFn 'block_modules' KernelSU/kernel KernelSU/uapi\n\ntest \"$(sha256sum\
+        \ fs/exec.c | awk '{print $1}')\" = \"$EXPECTED_P12_EXEC_SHA256\"\ntest \"$(sha256sum include/linux/ksu_hook_contract.h | awk '{print $1}')\" =\
+        \ \"$EXPECTED_P12_CONTRACT_SHA256\"\ntest \"$(sha256sum fs/susfs.c | awk '{print $1}')\" = \"$EXPECTED_P12_SUSFS_C_SHA256\"\ntest \"$(sha256sum\
+        \ include/linux/susfs.h | awk '{print $1}')\" = \"$EXPECTED_P12_SUSFS_H_SHA256\"\ntest \"$(sha256sum include/linux/susfs_def.h | awk '{print $1}')\"\
+        \ = \"$EXPECTED_P12_SUSFS_DEF_SHA256\"\n\npython3 - <<'PY'\nfrom pathlib import Path\n\nhdr = Path(\"include/linux/ksu_hook_contract.h\")\ntext\
+        \ = hdr.read_text(encoding=\"utf-8\")\nanchor = \"\"\"int ksu_handle_execveat(int *fd, struct filename **filename_ptr,\n                       \
+        \ void *argv, void *envp, int *flags);\n\"\"\"\naddition = anchor + \"\"\"\n#ifdef CONFIG_KSU_SUSFS\nint ksu_handle_post_execve(int *fd, const char\
+        \ *filename,\n                           void *argv, void *envp,\n                           int *flags, int *retval);\n#endif\n\"\"\"\nif text.count(anchor)\
+        \ != 1:\n    raise SystemExit(f\"header anchor count={text.count(anchor)}\")\nif \"int ksu_handle_post_execve(\" in text:\n    raise SystemExit(\"\
+        post-exec prototype unexpectedly present\")\nhdr.write_text(text.replace(anchor, addition, 1), encoding=\"utf-8\")\n\nexecp = Path(\"fs/exec.c\"\
+        )\ntext = execp.read_text(encoding=\"utf-8\")\nanchor = \"\"\"\\tsecurity_bprm_committed_creds(bprm);\n\\tmutex_unlock(&current->signal->cred_guard_mutex);\n\
+        \"\"\"\nreplacement = \"\"\"\\tsecurity_bprm_committed_creds(bprm);\n#ifdef CONFIG_KSU_SUSFS\n\\tksu_handle_post_execve(NULL, NULL, NULL, NULL,\
+        \ NULL, NULL);\n#endif\n\\tmutex_unlock(&current->signal->cred_guard_mutex);\n\"\"\"\nif text.count(anchor) != 1:\n    raise SystemExit(f\"fs/exec.c\
+        \ anchor count={text.count(anchor)}\")\nif \"ksu_handle_post_execve(\" in text:\n    raise SystemExit(\"post-exec call unexpectedly present\")\n\
+        execp.write_text(text.replace(anchor, replacement, 1), encoding=\"utf-8\")\nPY\n\ngit diff --check\nmapfile -t changed < <(git diff --name-only\
+        \ | LC_ALL=C sort)\ntest \"${#changed[@]}\" -eq 2\ntest \"${changed[0]}\" = \"fs/exec.c\"\ntest \"${changed[1]}\" = \"include/linux/ksu_hook_contract.h\"\
+        \n\np13_patch=\"$AUDIT_DIR/07-P13-post-exec.patch\"\ngit diff --binary -- fs/exec.c include/linux/ksu_hook_contract.h > \"$p13_patch\"\ntest \"\
+        $(sha256sum \"$p13_patch\" | awk '{print $1}')\" = \"$EXPECTED_P13_PATCH_SHA256\"\n\ntest \"$(sha256sum fs/susfs.c | awk '{print $1}')\" = \"$EXPECTED_P12_SUSFS_C_SHA256\"\
+        \ntest \"$(sha256sum include/linux/susfs.h | awk '{print $1}')\" = \"$EXPECTED_P12_SUSFS_H_SHA256\"\ntest \"$(sha256sum include/linux/susfs_def.h\
+        \ | awk '{print $1}')\" = \"$EXPECTED_P12_SUSFS_DEF_SHA256\"\n\n{\n  echo \"P13_DELTA=PASS\"\n  echo \"P13_PATCH_SHA256=$EXPECTED_P13_PATCH_SHA256\"\
+        \n  echo \"P13_CHANGED_FILES=fs/exec.c include/linux/ksu_hook_contract.h\"\n  echo \"P13_MODULE_LOAD_FILTER_EXCLUDED=PASS\"\n} | tee \"$AUDIT_DIR/07-p13-source-gate.txt\"\
+        \n"
+    - name: Freeze exact P13 VEUX starting-tree identity
+      shell: bash
+      working-directory: kernel
+      run: "set -euo pipefail\n\ntest \"$(make -s kernelversion)\" = \"5.4.274\"\ntest -f arch/arm64/configs/veux_defconfig\ntest -f fs/susfs.c\ntest -f\
+        \ include/linux/susfs.h\ntest -f include/linux/ksu_hook_contract.h\ntest -d KernelSU\n\n{\n  echo \"P13_SOURCE_KERNELVERSION=$(make -s kernelversion)\"\
+        \n  echo \"P13_SOURCE_GIT_HEAD=$(git rev-parse HEAD)\"\n  echo \"P13_SOURCE_INDEX_TREE=$(git write-tree)\"\n  echo \"P13_SOURCE_STATUS_BEGIN\"\n\
+        \  git status --short\n  echo \"P13_SOURCE_STATUS_END\"\n  if [ -f localversion ]; then\n    printf 'P13_LOCALVERSION_FILE='\n    tr -d '\\n' <\
+        \ localversion\n    printf '\\n'\n  else\n    echo \"P13_LOCALVERSION_FILE=ABSENT\"\n  fi\n  grep '^CONFIG_LOCALVERSION=' arch/arm64/configs/veux_defconfig\
+        \ || true\n  echo \"P13_BASELINE_ROLE=VEUX_DEVICE_STARTING_TREE_ONLY\"\n  echo \"P13_IS_NOT_5_4_300_OR_5_4_302_TARGET_SOURCE=YES\"\n} > \"$AUDIT_DIR/09-p13-source-identity.txt\"\
+        \n\ngit diff --name-only > \"$AUDIT_DIR/09-p13-working-delta-paths.txt\"\ngit diff --cached --name-only > \"$AUDIT_DIR/09-p13-index-delta-paths.txt\"\
+        \n"
+    - name: Fetch and verify official Linux-stable 5.4 tags
+      shell: bash
+      run: "set -euo pipefail\nrm -rf \"$STABLE_DIR\"\ngit init -q \"$STABLE_DIR\"\ngit -C \"$STABLE_DIR\" remote add origin \"$LINUX_STABLE_REPO\"\n\n\
+        for tag in v5.4.274 v5.4.300 v5.4.302; do\n  git -C \"$STABLE_DIR\" fetch -q --depth=1 origin \"refs/tags/${tag}:refs/tags/${tag}\"\ndone\n\nverify_tag()\
+        \ {\n  tag=\"$1\"\n  expected_tag_obj=\"$2\"\n  expected_commit=\"$3\"\n  expected_sublevel=\"$4\"\n\n  test \"$(git -C \"$STABLE_DIR\" rev-parse\
+        \ \"$tag\")\" = \"$expected_tag_obj\"\n  test \"$(git -C \"$STABLE_DIR\" cat-file -t \"$tag\")\" = \"tag\"\n  test \"$(git -C \"$STABLE_DIR\" rev-parse\
+        \ \"${tag}^{commit}\")\" = \"$expected_commit\"\n\n  git -C \"$STABLE_DIR\" show \"${tag}:Makefile\" > \"$RUNNER_TEMP/${tag}-Makefile\"\n  grep\
+        \ -Eq '^VERSION[[:space:]]*=[[:space:]]*5$' \"$RUNNER_TEMP/${tag}-Makefile\"\n  grep -Eq '^PATCHLEVEL[[:space:]]*=[[:space:]]*4$' \"$RUNNER_TEMP/${tag}-Makefile\"\
+        \n  grep -Eq \"^SUBLEVEL[[:space:]]*=[[:space:]]*${expected_sublevel}$\" \"$RUNNER_TEMP/${tag}-Makefile\"\n\n  if git -C \"$STABLE_DIR\" cat-file\
+        \ -e \"${tag}:localversion\" 2>/dev/null; then\n    echo \"Unexpected official localversion file in $tag\" >&2\n    exit 1\n  fi\n}\n\nverify_tag\
+        \ v5.4.274 \"$STABLE_TAGOBJ_274\" \"$STABLE_COMMIT_274\" 274\nverify_tag v5.4.300 \"$STABLE_TAGOBJ_300\" \"$STABLE_COMMIT_300\" 300\nverify_tag\
+        \ v5.4.302 \"$STABLE_TAGOBJ_302\" \"$STABLE_COMMIT_302\" 302\n\n# Verify GitHub's tag signature status for the exact pinned annotated tag objects.\n\
+        for pair in \\\n  \"v5.4.274:$STABLE_TAGOBJ_274\" \\\n  \"v5.4.300:$STABLE_TAGOBJ_300\" \\\n  \"v5.4.302:$STABLE_TAGOBJ_302\"; do\n  tag=\"${pair%%:*}\"\
+        \n  obj=\"${pair#*:}\"\n  json=\"$RUNNER_TEMP/${tag}-tag.json\"\n\n  curl --fail --silent --show-error --location \\\n    -H \"Authorization: Bearer\
+        \ $GH_TOKEN\" \\\n    -H \"Accept: application/vnd.github+json\" \\\n    -H \"X-GitHub-Api-Version: 2022-11-28\" \\\n    \"https://api.github.com/repos/gregkh/linux/git/tags/${obj}\"\
+        \ \\\n    -o \"$json\"\n\n  test \"$(jq -r '.tag' \"$json\")\" = \"$tag\"\n  test \"$(jq -r '.sha' \"$json\")\" = \"$obj\"\n  test \"$(jq -r '.verification.verified'\
+        \ \"$json\")\" = \"true\"\n  jq -e '.verification.reason == \"valid\"' \"$json\" >/dev/null\ndone\n\n{\n  echo \"LINUX_STABLE_REPO=$LINUX_STABLE_REPO\"\
+        \n  echo \"V5_4_274_TAG_OBJECT=$STABLE_TAGOBJ_274\"\n  echo \"V5_4_274_COMMIT=$STABLE_COMMIT_274\"\n  echo \"V5_4_300_TAG_OBJECT=$STABLE_TAGOBJ_300\"\
+        \n  echo \"V5_4_300_COMMIT=$STABLE_COMMIT_300\"\n  echo \"V5_4_302_TAG_OBJECT=$STABLE_TAGOBJ_302\"\n  echo \"V5_4_302_COMMIT=$STABLE_COMMIT_302\"\
+        \n  echo \"V5_4_274_SIGNATURE=VERIFIED\"\n  echo \"V5_4_300_SIGNATURE=VERIFIED\"\n  echo \"V5_4_302_SIGNATURE=VERIFIED\"\n  echo \"OFFICIAL_LOCALVERSION_FILES=ABSENT\"\
+        \n  echo \"OFFICIAL_STABLE_AUTHORITY=PASS\"\n} | tee \"$AUDIT_DIR/10-official-stable-authority.txt\"\n\ngit -C \"$STABLE_DIR\" cat-file tag v5.4.274\
+        \ > \"$AUDIT_DIR/10-tag-v5.4.274.txt\"\ngit -C \"$STABLE_DIR\" cat-file tag v5.4.300 > \"$AUDIT_DIR/10-tag-v5.4.300.txt\"\ngit -C \"$STABLE_DIR\"\
+        \ cat-file tag v5.4.302 > \"$AUDIT_DIR/10-tag-v5.4.302.txt\"\n"
+    - name: Generate exact official stable deltas
+      shell: bash
+      run: "set -euo pipefail\n\ngit -C \"$STABLE_DIR\" diff --binary --full-index v5.4.274 v5.4.300 \\\n  > \"$AUDIT_DIR/11-linux-stable-v5.4.274-to-v5.4.300.patch\"\
+        \ngit -C \"$STABLE_DIR\" diff --binary --full-index v5.4.274 v5.4.302 \\\n  > \"$AUDIT_DIR/11-linux-stable-v5.4.274-to-v5.4.302.patch\"\ngit -C\
+        \ \"$STABLE_DIR\" diff --binary --full-index v5.4.300 v5.4.302 \\\n  > \"$AUDIT_DIR/11-linux-stable-v5.4.300-to-v5.4.302.patch\"\n\ngit -C \"$STABLE_DIR\"\
+        \ diff --name-status v5.4.274 v5.4.300 \\\n  > \"$AUDIT_DIR/11-paths-v5.4.274-to-v5.4.300.tsv\"\ngit -C \"$STABLE_DIR\" diff --name-status v5.4.274\
+        \ v5.4.302 \\\n  > \"$AUDIT_DIR/11-paths-v5.4.274-to-v5.4.302.tsv\"\ngit -C \"$STABLE_DIR\" diff --name-status v5.4.300 v5.4.302 \\\n  > \"$AUDIT_DIR/11-paths-v5.4.300-to-v5.4.302.tsv\"\
+        \n\ngit -C \"$STABLE_DIR\" diff --stat v5.4.274 v5.4.300 \\\n  > \"$AUDIT_DIR/11-stat-v5.4.274-to-v5.4.300.txt\"\ngit -C \"$STABLE_DIR\" diff --stat\
+        \ v5.4.274 v5.4.302 \\\n  > \"$AUDIT_DIR/11-stat-v5.4.274-to-v5.4.302.txt\"\ngit -C \"$STABLE_DIR\" diff --stat v5.4.300 v5.4.302 \\\n  > \"$AUDIT_DIR/11-stat-v5.4.300-to-v5.4.302.txt\"\
+        \n\n{\n  sha256sum \"$AUDIT_DIR/11-linux-stable-v5.4.274-to-v5.4.300.patch\"\n  sha256sum \"$AUDIT_DIR/11-linux-stable-v5.4.274-to-v5.4.302.patch\"\
+        \n  sha256sum \"$AUDIT_DIR/11-linux-stable-v5.4.300-to-v5.4.302.patch\"\n} > \"$AUDIT_DIR/11-stable-delta-sha256.txt\"\n\n{\n  echo \"DELTA_274_TO_300_BYTES=$(stat\
+        \ -c%s \"$AUDIT_DIR/11-linux-stable-v5.4.274-to-v5.4.300.patch\")\"\n  echo \"DELTA_274_TO_302_BYTES=$(stat -c%s \"$AUDIT_DIR/11-linux-stable-v5.4.274-to-v5.4.302.patch\"\
+        )\"\n  echo \"DELTA_300_TO_302_BYTES=$(stat -c%s \"$AUDIT_DIR/11-linux-stable-v5.4.300-to-v5.4.302.patch\")\"\n  echo \"DELTA_274_TO_300_PATHS=$(wc\
+        \ -l < \"$AUDIT_DIR/11-paths-v5.4.274-to-v5.4.300.tsv\")\"\n  echo \"DELTA_274_TO_302_PATHS=$(wc -l < \"$AUDIT_DIR/11-paths-v5.4.274-to-v5.4.302.tsv\"\
+        )\"\n  echo \"DELTA_300_TO_302_PATHS=$(wc -l < \"$AUDIT_DIR/11-paths-v5.4.300-to-v5.4.302.tsv\")\"\n} > \"$AUDIT_DIR/11-stable-delta-summary.txt\"\
+        \n"
+    - name: Measure P13 divergence from official v5.4.274 baseline
+      shell: bash
+      run: "set -euo pipefail\npython3 - <<'PY'\nfrom pathlib import Path\nimport csv, os, subprocess\n\nroot = Path(os.environ[\"GITHUB_WORKSPACE\"]) /\
+        \ \"kernel\"\nstable = Path(os.environ[\"STABLE_DIR\"])\naudit = Path(os.environ[\"AUDIT_DIR\"])\n\ndef run(args, cwd=None, check=True):\n    p\
+        \ = subprocess.run(args, cwd=cwd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)\n    if check and p.returncode:\n        raise SystemExit(f\"\
+        command failed: {args}\\n{p.stderr}\")\n    return p\n\ndef exists_in_tag(tag, path):\n    return run([\"git\",\"-C\",str(stable),\"cat-file\",\"\
+        -e\",f\"{tag}:{path}\"], check=False).returncode == 0\n\ndef blob_sha(tag, path):\n    p = run([\"git\",\"-C\",str(stable),\"rev-parse\",f\"{tag}:{path}\"\
+        ])\n    return p.stdout.strip()\n\ndef local_blob(path):\n    p = root / path\n    if not p.is_file():\n        return None\n    q = run([\"git\"\
+        ,\"hash-object\",str(p)])\n    return q.stdout.strip()\n\ndef audit_target(target):\n    base = \"v5.4.274\"\n    ns = run([\"git\",\"-C\",str(stable),\"\
+        diff\",\"--name-status\",base,target]).stdout.splitlines()\n    out = audit / f\"12-p13-vs-official-{target}.tsv\"\n    counts = {\n        \"BASE_EXACT\"\
+        :0,\n        \"P13_DIVERGED\":0,\n        \"P13_MISSING\":0,\n        \"UPSTREAM_NEW\":0,\n        \"UPSTREAM_DELETED\":0,\n        \"OTHER\":0,\n\
+        \    }\n\n    with out.open(\"w\", newline=\"\") as f:\n        w = csv.writer(f, delimiter=\"\\t\")\n        w.writerow([\"status\",\"path\",\"\
+        classification\",\"base_blob\",\"p13_blob\",\"target_blob\"])\n        for line in ns:\n            parts=line.split(\"\\t\")\n            status=parts[0]\n\
+        \            path=parts[-1]\n\n            base_exists=exists_in_tag(base,path)\n            target_exists=exists_in_tag(target,path)\n        \
+        \    base_sha=blob_sha(base,path) if base_exists else \"\"\n            target_sha=blob_sha(target,path) if target_exists else \"\"\n          \
+        \  p13_sha=local_blob(path)\n\n            if not base_exists and target_exists:\n                cls=\"UPSTREAM_NEW\"\n            elif base_exists\
+        \ and not target_exists:\n                cls=\"UPSTREAM_DELETED\"\n            elif p13_sha is None:\n                cls=\"P13_MISSING\"\n   \
+        \         elif p13_sha == base_sha:\n                cls=\"BASE_EXACT\"\n            else:\n                cls=\"P13_DIVERGED\"\n\n           \
+        \ counts[cls]=counts.get(cls,0)+1\n            w.writerow([status,path,cls,base_sha,p13_sha or \"\",target_sha])\n\n    return counts\n\nall_counts={}\n\
+        for target in (\"v5.4.300\",\"v5.4.302\"):\n    all_counts[target]=audit_target(target)\n\nwith (audit/\"12-divergence-summary.tsv\").open(\"w\"\
+        , newline=\"\") as f:\n    w=csv.writer(f, delimiter=\"\\t\")\n    w.writerow([\"target\",\"base_exact\",\"p13_diverged\",\"p13_missing\",\"upstream_new\"\
+        ,\"upstream_deleted\",\"total\"])\n    for target,c in all_counts.items():\n        total=sum(c.values())\n        w.writerow([\n            target,c[\"\
+        BASE_EXACT\"],c[\"P13_DIVERGED\"],c[\"P13_MISSING\"],\n            c[\"UPSTREAM_NEW\"],c[\"UPSTREAM_DELETED\"],total\n        ])\nPY\n"
+    - name: Dry-check official deltas against P13 VEUX source
+      shell: bash
+      run: "set -euo pipefail\ncd \"$GITHUB_WORKSPACE/kernel\"\n\ncheck_delta() {\n  target=\"$1\"\n  patch=\"$2\"\n  log=\"$AUDIT_DIR/13-direct-apply-${target}.log\"\
+        \n  result=\"$AUDIT_DIR/13-direct-apply-${target}.result\"\n\n  set +e\n  git apply --check --whitespace=nowarn --verbose \"$patch\" >\"$log\" 2>&1\n\
+        \  rc=$?\n  set -e\n\n  if [ \"$rc\" -eq 0 ]; then\n    verdict=\"PASS\"\n  else\n    verdict=\"PORT_REQUIRED\"\n  fi\n\n  {\n    echo \"TARGET=$target\"\
+        \n    echo \"DIRECT_APPLY_RC=$rc\"\n    echo \"DIRECT_APPLY_VERDICT=$verdict\"\n  } > \"$result\"\n\n  grep -E \\\n    '^(error:|Checking patch\
+        \ |warning:)' \"$log\" \\\n    > \"$AUDIT_DIR/13-direct-apply-${target}-key-lines.txt\" || true\n}\n\ncheck_delta \"5.4.300\" \"$AUDIT_DIR/11-linux-stable-v5.4.274-to-v5.4.300.patch\"\
+        \ncheck_delta \"5.4.302\" \"$AUDIT_DIR/11-linux-stable-v5.4.274-to-v5.4.302.patch\"\n\ncat \"$AUDIT_DIR/13-direct-apply-5.4.300.result\"\ncat \"\
+        $AUDIT_DIR/13-direct-apply-5.4.302.result\"\n"
+    - name: Produce U5-O1 final interpretation
+      shell: bash
+      run: "set -euo pipefail\n\ngetv() {\n  key=\"$1\"\n  file=\"$2\"\n  grep -E \"^${key}=\" \"$file\" | head -n1 | cut -d= -f2-\n}\n\nv300=\"$(getv DIRECT_APPLY_VERDICT\
+        \ \"$AUDIT_DIR/13-direct-apply-5.4.300.result\")\"\nv302=\"$(getv DIRECT_APPLY_VERDICT \"$AUDIT_DIR/13-direct-apply-5.4.302.result\")\"\n\ncat >\
+        \ \"$AUDIT_DIR/14-RESULT.txt\" <<EOF\nU5_O1_AUDIT_INFRASTRUCTURE=PASS\nTARGET_AUTHORITY=OFFICIAL_LINUX_STABLE_ONLY\nOFFICIAL_V5_4_300=PASS\nOFFICIAL_V5_4_302=PASS\n\
+        OFFICIAL_V5_4_302_IS_FINAL_5_4_RELEASE=YES\nCUSTOM_5_4_300_302_TARGETS=EXCLUDED\nPOSITRON_TARGET=EXCLUDED\nNEBULA_TARGET=EXCLUDED\nROM_CUSTOM_TARGETS=EXCLUDED\n\
+        P13_5_4_274_ROLE=VEUX_DEVICE_STARTING_TREE_ONLY\nDIRECT_APPLY_5_4_300=$v300\nDIRECT_APPLY_5_4_302=$v302\nKERNEL_BUILD_PERFORMED=NO\nFLASH_PACKAGE_CREATED=NO\n\
+        DEVICE_PASS=NO\nNEXT_STEP=SEMANTIC_VEUX_PORT_OF_OFFICIAL_STABLE_DELTA_IF_REQUIRED\nARTIFACT_POLICY=ONE_SINGLE_FINAL_ARTIFACT\nEOF\n\ncat > \"$AUDIT_DIR/14-INTERPRETATION.md\"\
+        \ <<EOF\n# U5-O1 interpretation\n\nThe official Linux-stable releases v5.4.300 and v5.4.302 are the only target\nversion authorities in this audit.\
+        \ No Positron, Nebula or ROM-custom 5.4.300 /\n5.4.302 source tree is used as a target.\n\nThe frozen P13 5.4.274 source is used only because it\
+        \ is the confirmed VEUX\ndevice-specific starting tree. A direct apply failure is expected to mean that\nthe official stable change set needs a\
+        \ semantic VEUX port; it does not authorize\nforcing rejects or substituting a custom kernel tree.\n\nNo kernel is built or flashed by U5-O1.\n\
+        EOF\n\ncat \"$AUDIT_DIR/14-RESULT.txt\"\n"
+    - name: Finalize single evidence bundle
+      if: always()
+      shell: bash
+      run: "set +e\nmkdir -p \"$AUDIT_DIR\"\n\nif [ ! -f \"$AUDIT_DIR/14-RESULT.txt\" ]; then\n  {\n    echo \"U5_O1_AUDIT_INFRASTRUCTURE=FAIL_OR_INCOMPLETE\"\
+        \n    echo \"KERNEL_BUILD_PERFORMED=NO\"\n    echo \"FLASH_PACKAGE_CREATED=NO\"\n    echo \"DEVICE_PASS=NO\"\n    echo \"ARTIFACT_POLICY=ONE_SINGLE_FINAL_ARTIFACT\"\
+        \n  } > \"$AUDIT_DIR/99-INCOMPLETE.txt\"\nfi\n\n{\n  echo \"WORKFLOW=U5-O1\"\n  echo \"RUN_ID=$GITHUB_RUN_ID\"\n  echo \"RUN_ATTEMPT=$GITHUB_RUN_ATTEMPT\"\
+        \n  echo \"FILE_COUNT=$(find \"$AUDIT_DIR\" -type f | wc -l)\"\n  echo \"OFFICIAL_STABLE_REPORT_PRESENT=$([ -f \"$AUDIT_DIR/10-official-stable-authority.txt\"\
+        \ ] && echo YES || echo NO)\"\n  echo \"DELTA_REPORT_PRESENT=$([ -f \"$AUDIT_DIR/11-stable-delta-summary.txt\" ] && echo YES || echo NO)\"\n  echo\
+        \ \"DIVERGENCE_REPORT_PRESENT=$([ -f \"$AUDIT_DIR/12-divergence-summary.tsv\" ] && echo YES || echo NO)\"\n  echo \"FINAL_RESULT_PRESENT=$([ -f\
+        \ \"$AUDIT_DIR/14-RESULT.txt\" ] && echo YES || echo NO)\"\n} > \"$AUDIT_DIR/99-DIAGNOSTIC.txt\"\n\nfind \"$AUDIT_DIR\" -type f -printf '%P\\n'\
+        \ | LC_ALL=C sort \\\n  > \"$AUDIT_DIR/99-FILE-LIST.txt\"\n\n(\n  cd \"$AUDIT_DIR\"\n  find . -type f ! -name SHA256SUMS.txt -print0 \\\n    | LC_ALL=C\
+        \ sort -z | xargs -0 sha256sum > SHA256SUMS.txt\n  sha256sum -c SHA256SUMS.txt\n)\n"
+    - name: Upload one complete U5-O1 artifact
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: VEUX-GEN1-U5-O1-original-linux-stable-5.4.300-5.4.302-audit
+        path: u5o1-evidence/
+        if-no-files-found: error
+        retention-days: 30
+        compression-level: 6
+    - name: Assert U5-O1 infrastructure and authority gates
+      shell: bash
+      run: 'set -euo pipefail
+
+        test -f "$AUDIT_DIR/14-RESULT.txt"
+
+        grep -Fxq ''U5_O1_AUDIT_INFRASTRUCTURE=PASS'' "$AUDIT_DIR/14-RESULT.txt"
+
+        grep -Fxq ''TARGET_AUTHORITY=OFFICIAL_LINUX_STABLE_ONLY'' "$AUDIT_DIR/14-RESULT.txt"
+
+        grep -Fxq ''OFFICIAL_V5_4_300=PASS'' "$AUDIT_DIR/14-RESULT.txt"
+
+        grep -Fxq ''OFFICIAL_V5_4_302=PASS'' "$AUDIT_DIR/14-RESULT.txt"
+
+        grep -Fxq ''CUSTOM_5_4_300_302_TARGETS=EXCLUDED'' "$AUDIT_DIR/14-RESULT.txt"
+
+        grep -Fxq ''ARTIFACT_POLICY=ONE_SINGLE_FINAL_ARTIFACT'' "$AUDIT_DIR/14-RESULT.txt"
+
+        '
