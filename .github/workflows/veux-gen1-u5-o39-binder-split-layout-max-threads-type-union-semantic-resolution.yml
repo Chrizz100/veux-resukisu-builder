@@ -1,0 +1,638 @@
+name: VEUX GEN1 U5-O39 Binder Split Layout Max Threads Type Union Semantic Resolution
+
+'on':
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: veux-gen1-u5-o39-binder-split-maxthreads-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      TZ: UTC
+      LANG: C.UTF-8
+      LC_ALL: C.UTF-8
+
+      O38_ARTIFACT_ID: '10492760321'
+      O38_ARTIFACT_NAME: VEUX-GEN1-U5-O38-erofs-lz4-inplace-output-buffer-preserve-semantic-resolution-official-stable-5.4.300-5.4.302-port-audit
+      O38_ARTIFACT_SHA256: 35937193501df56f5e390c2766733d7f0ce54e32e49365276966ebd1379f91fc
+      O38_INTERNAL_SHA_COUNT: '372'
+
+      VENDOR_SOURCE_COMMIT: b2b7a3bbc36d120ee523ebc8d68e0f13a97df632
+      BINDER_INTERNAL_P13_BLOB_SHA: 9e2b3aa9275779bb4806871c09426c52689172db
+      BINDER_MAX_THREADS_FIX_COMMIT: 42316941335644a98335f209daafa4c122f28983
+
+      BINDER_P13_C_SHA256: b393a7e0a6cfe973647ff5c6164ed5ec956739881466c4cfb1cb505590ea5665
+      BINDER_PREVIEW_300_SHA256: bf55a6572b5d9582dcc58e60a8aed80148060be7e11ba11697ccf602f85780c2
+      BINDER_PREVIEW_302_SHA256: 568163fc0602efaff57b735c03ac3f53e22b627151b13e3fe5fc7ff686f80ba9
+      BINDER_CANDIDATE_300_SHA256: 71954c9462be3e9c0f978b21d570955ba124e446bc8ddb1f156d8b0965516252
+      BINDER_CANDIDATE_302_SHA256: 61c3266a93f3bf48fdba110f81895726ec6df3e67be50fc9969d9ff96a6c6733
+
+    steps:
+      - name: Initialize U5-O39 comprehensive evidence workspace
+        shell: bash
+        run: |
+          set -euo pipefail
+          O38_DIR="$RUNNER_TEMP/u5-o39-o38-parent"
+          AUDIT_DIR="$GITHUB_WORKSPACE/u5-o39-evidence"
+          VERIFY_DIR="$RUNNER_TEMP/u5-o39-verify"
+          rm -rf "$O38_DIR" "$AUDIT_DIR" "$VERIFY_DIR"
+          mkdir -p "$O38_DIR" "$AUDIT_DIR" "$VERIFY_DIR"
+          {
+            echo "O38_DIR=$O38_DIR"
+            echo "AUDIT_DIR=$AUDIT_DIR"
+            echo "VERIFY_DIR=$VERIFY_DIR"
+          } >> "$GITHUB_ENV"
+
+          cat > "$AUDIT_DIR/39-O39-PLAN.txt" <<EOF
+          U5-O39 BINDER SPLIT-LAYOUT MAX-THREADS TYPE UNION SEMANTIC RESOLUTION
+
+          Runtime source parent: U5-O38 artifact $O38_ARTIFACT_ID
+
+          One logical Binder source block:
+            drivers/android/binder.c
+            drivers/android/binder_internal.h
+
+          Semantic rule:
+          - P13 intentionally moved struct binder_proc and other Binder bookkeeping from binder.c
+            into binder_internal.h and added Android freezer/KMI/vendor fields;
+          - preserve that P13 split layout instead of re-introducing the old inline binder_proc;
+          - take Stable commit $BINDER_MAX_THREADS_FIX_COMMIT semantically across the split layout:
+              binder_ioctl local max_threads: int -> u32
+              binder_internal.h binder_proc.max_threads: int -> u32
+          - resolve the single textual binder.c conflict by choosing the P13 empty side for the
+            removed inline struct while preserving every clean Stable merge already present in
+            MERGE-PREVIEW outside that conflict;
+          - keep the two-file change as one logical Binder ABI/type-consistency resolution.
+
+          Expected result:
+            5.4.300: conflicts 1 -> 0, hunks 1 -> 0
+            5.4.302: conflicts 7 -> 6, hunks 12 -> 11
+            semantic resolutions 37 -> 38
+
+          Full O38 evidence is carried forward. No kernel build. No AK3. No flash. No Device PASS claim.
+          EOF
+
+      - name: Download verify and restore complete O38 Runtime-PASS parent
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          meta="$RUNNER_TEMP/o38-artifact-meta.json"
+          zip="$RUNNER_TEMP/o38-artifact.zip"
+
+          curl --fail --silent --show-error --location --retry 3 --retry-delay 2 \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${O38_ARTIFACT_ID}" \
+            -o "$meta"
+
+          python3 - "$meta" "$O38_ARTIFACT_ID" "$O38_ARTIFACT_NAME" "$O38_ARTIFACT_SHA256" <<'PY'
+          import json,sys
+          path,eid,ename,esha=sys.argv[1:]
+          with open(path,encoding='utf-8') as f:
+              m=json.load(f)
+          assert str(m.get('id'))==eid,(m.get('id'),eid)
+          assert m.get('name')==ename,(m.get('name'),ename)
+          assert m.get('expired') is False,'O38 artifact expired'
+          d=m.get('digest')
+          assert d in (None,'','sha256:'+esha),(d,esha)
+          print('O38_METADATA=PASS')
+          PY
+
+          curl --fail --silent --show-error --location --retry 3 --retry-delay 2 \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${O38_ARTIFACT_ID}/zip" \
+            -o "$zip"
+
+          echo "$O38_ARTIFACT_SHA256  $zip" | sha256sum -c -
+
+          python3 - "$zip" "$O38_DIR" <<'PY'
+          from pathlib import Path
+          import sys,zipfile
+          archive,destination=sys.argv[1:]
+          root=Path(destination).resolve()
+          with zipfile.ZipFile(archive) as zf:
+              for info in zf.infolist():
+                  out=(root/info.filename).resolve()
+                  if out != root and root not in out.parents:
+                      raise SystemExit(f'unsafe archive member: {info.filename}')
+              zf.extractall(root)
+          PY
+
+          test -f "$O38_DIR/SHA256SUMS.txt"
+          (
+            cd "$O38_DIR"
+            sha256sum -c SHA256SUMS.txt
+          ) | tee "$RUNNER_TEMP/o38-internal-sha.txt"
+          test "$(grep -c 'OK$' "$RUNNER_TEMP/o38-internal-sha.txt")" -eq "$O38_INTERNAL_SHA_COUNT"
+          test "$(wc -l < "$O38_DIR/SHA256SUMS.txt")" -eq "$O38_INTERNAL_SHA_COUNT"
+
+          grep -Fxq 'O38_FINAL=RUNTIME_GREEN_PASS' "$O38_DIR/99-O38-FINAL-GATE.txt"
+          grep -Fxq 'CURRENT_RUNTIME_PARENT=U5-O38' "$O38_DIR/99-O38-FINAL-GATE.txt"
+          grep -Fxq 'RUNTIME_CONFLICTS_5.4.300=1' "$O38_DIR/99-O38-FINAL-GATE.txt"
+          grep -Fxq 'TEXT_CONFLICT_HUNKS_5.4.300=1' "$O38_DIR/99-O38-FINAL-GATE.txt"
+          grep -Fxq 'RUNTIME_CONFLICTS_5.4.302=7' "$O38_DIR/99-O38-FINAL-GATE.txt"
+          grep -Fxq 'TEXT_CONFLICT_HUNKS_5.4.302=12' "$O38_DIR/99-O38-FINAL-GATE.txt"
+          grep -Fxq 'SEMANTIC_RESOLUTIONS=37' "$O38_DIR/99-O38-FINAL-GATE.txt"
+          grep -Fxq 'COMPREHENSIVE_ARTIFACT_COMPLETENESS=PASS' "$O38_DIR/99-O38-FINAL-GATE.txt"
+          grep -Fq "$VENDOR_SOURCE_COMMIT" "$O38_DIR/01-vendor.txt"
+
+          cp -a "$O38_DIR/." "$AUDIT_DIR/"
+          mkdir -p "$AUDIT_DIR/lineage"
+          cp "$O38_DIR/SHA256SUMS.txt" "$AUDIT_DIR/lineage/O38-SHA256SUMS.original.txt"
+          cp "$meta" "$AUDIT_DIR/lineage/O38-ARTIFACT-METADATA.json"
+          cp "$RUNNER_TEMP/o38-internal-sha.txt" "$AUDIT_DIR/lineage/O38-INTERNAL-SHA256-CHECK.txt"
+          sha256sum "$zip" > "$AUDIT_DIR/lineage/O38-ZIP-SHA256.txt"
+          rm -f "$AUDIT_DIR/SHA256SUMS.txt"
+
+          cat > "$AUDIT_DIR/lineage/O38-PARENT-GATE.txt" <<EOF
+          O38_ARTIFACT_ID=$O38_ARTIFACT_ID
+          O38_ARTIFACT_SHA256=$O38_ARTIFACT_SHA256
+          O38_INTERNAL_SHA256SUMS=$O38_INTERNAL_SHA_COUNT/$O38_INTERNAL_SHA_COUNT PASS
+          O38_RUNTIME_GATE=PASS
+          RUNTIME_SOURCE_PARENT=U5-O38
+          EOF
+
+      - name: Verify Binder Stable provenance and exact P13 split-layout header
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          commit_json="$RUNNER_TEMP/binder-maxthreads-fix.json"
+          header_json="$RUNNER_TEMP/p13-binder-internal.json"
+          header="$RUNNER_TEMP/p13-binder_internal.h"
+
+          curl --fail --silent --show-error --location --retry 3 \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/gregkh/linux/commits/$BINDER_MAX_THREADS_FIX_COMMIT" \
+            -o "$commit_json"
+
+          curl --fail --silent --show-error --location --retry 3 \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/dereference23/kernel_xiaomi_sm6375/contents/drivers/android/binder_internal.h?ref=$VENDOR_SOURCE_COMMIT" \
+            -o "$header_json"
+
+          python3 - "$commit_json" "$header_json" "$header" "$AUDIT_DIR/39-O39-BINDER-PROVENANCE.txt" <<'PY'
+          import base64,json,os,sys,hashlib
+          commit_path,header_path,out_header,out_report=sys.argv[1:]
+
+          with open(commit_path,encoding='utf-8') as f:
+              c=json.load(f)
+          assert c['sha']==os.environ['BINDER_MAX_THREADS_FIX_COMMIT']
+          files={x['filename']:x for x in c.get('files',[])}
+          assert 'drivers/android/binder.c' in files
+          assert 'drivers/android/binder_internal.h' in files
+          cpatch=files['drivers/android/binder.c'].get('patch') or ''
+          hpatch=files['drivers/android/binder_internal.h'].get('patch') or ''
+          assert '-\t\tint max_threads;' in cpatch
+          assert '+\t\tu32 max_threads;' in cpatch
+          assert '-\tint max_threads;' in hpatch
+          assert '+\tu32 max_threads;' in hpatch
+          norm=' '.join(c['commit']['message'].split()).lower()
+          assert '32 and 64-bit kernels' in norm
+          assert 'use u32 to fix the inconsistency' in norm
+
+          with open(header_path,encoding='utf-8') as f:
+              h=json.load(f)
+          assert h['sha']==os.environ['BINDER_INTERNAL_P13_BLOB_SHA'],(h.get('sha'),os.environ['BINDER_INTERNAL_P13_BLOB_SHA'])
+          assert h.get('encoding')=='base64',h.get('encoding')
+          raw=base64.b64decode(h['content'])
+          text=raw.decode('utf-8')
+          assert text.count('\tint max_threads;')==1
+          assert '\tu32 max_threads;' not in text
+          assert 'struct binder_proc {' in text
+          assert 'struct binder_proc_ext {' in text
+          assert 'int outstanding_txns;' in text
+          assert 'bool is_frozen;' in text
+          assert 'bool oneway_spam_detection_enabled;' in text
+          with open(out_header,'wb') as f:
+              f.write(raw)
+
+          with open(out_report,'w',encoding='utf-8',newline='\n') as f:
+              f.write(f'BINDER_MAX_THREADS_FIX_COMMIT={c["sha"]}\n')
+              f.write(f'P13_BINDER_INTERNAL_BLOB_SHA={h["sha"]}\n')
+              f.write(f'P13_BINDER_INTERNAL_SHA256={hashlib.sha256(raw).hexdigest()}\n')
+              f.write('STABLE_IOCTL_LOCAL_INT_TO_U32=PASS\n')
+              f.write('STABLE_BINDER_PROC_FIELD_INT_TO_U32=PASS\n')
+              f.write('P13_SPLIT_BINDER_PROC_LAYOUT=PASS\n')
+              f.write('P13_FREEZER_KMI_VENDOR_FIELDS=PASS\n')
+              f.write('PROVENANCE_GATE=PASS\n')
+          print('O39_BINDER_PROVENANCE=PASS')
+          PY
+
+          {
+            echo "P13_BINDER_INTERNAL_FILE=$header"
+            echo "P13_BINDER_INTERNAL_SHA256=$(sha256sum "$header" | awk '{print $1}')"
+          } >> "$GITHUB_ENV"
+
+      - name: Resolve complete Binder split-layout conflict block
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import difflib,hashlib,os,shutil
+
+          audit=Path(os.environ['AUDIT_DIR'])
+          header_src=Path(os.environ['P13_BINDER_INTERNAL_FILE'])
+          p13_header=header_src.read_text(encoding='utf-8')
+          old_conf={'5.4.300':1,'5.4.302':7}
+          old_hunks={'5.4.300':1,'5.4.302':12}
+          new_conf={'5.4.300':0,'5.4.302':6}
+          new_hunks={'5.4.300':0,'5.4.302':11}
+          expected_preview={
+              '5.4.300':os.environ['BINDER_PREVIEW_300_SHA256'],
+              '5.4.302':os.environ['BINDER_PREVIEW_302_SHA256'],
+          }
+          expected_candidate={
+              '5.4.300':os.environ['BINDER_CANDIDATE_300_SHA256'],
+              '5.4.302':os.environ['BINDER_CANDIDATE_302_SHA256'],
+          }
+          checks=[]
+
+          def gate(c,label):
+              if not c: raise AssertionError(label)
+              checks.append(label)
+          def read(p): return Path(p).read_text(encoding='utf-8')
+          def write(p,s): Path(p).write_text(s,encoding='utf-8',newline='\n')
+          def sha(s): return hashlib.sha256(s.encode()).hexdigest()
+
+          def resolve_one_diff3_to_ours(preview):
+              lines=preview.splitlines(keepends=True)
+              out=[]; i=0; count=0; captured=None
+              while i < len(lines):
+                  if lines[i].startswith('<<<<<<<'):
+                      count += 1
+                      i += 1
+                      ours=[]
+                      while i < len(lines) and not lines[i].startswith('|||||||'):
+                          ours.append(lines[i]); i += 1
+                      gate(i < len(lines), 'diff3 base marker present')
+                      i += 1
+                      base=[]
+                      while i < len(lines) and not lines[i].startswith('======='):
+                          base.append(lines[i]); i += 1
+                      gate(i < len(lines), 'diff3 middle marker present')
+                      i += 1
+                      theirs=[]
+                      while i < len(lines) and not lines[i].startswith('>>>>>>>'):
+                          theirs.append(lines[i]); i += 1
+                      gate(i < len(lines), 'diff3 end marker present')
+                      i += 1
+                      captured=(ours,base,theirs)
+                      out.extend(ours)
+                  else:
+                      out.append(lines[i]); i += 1
+              gate(count==1,'exactly one Binder diff3 conflict')
+              return ''.join(out),captured
+
+          def make_file_diff(rel,old,new):
+              body=''.join(difflib.unified_diff(
+                  old.splitlines(True),new.splitlines(True),
+                  fromfile=f'a/{rel}',tofile=f'b/{rel}',n=3))
+              if not body: return ''
+              return f'diff --git a/{rel} b/{rel}\n'+body
+
+          gate(p13_header.count('\tint max_threads;')==1,'P13 binder_internal has exactly one int max_threads field')
+          gate('\tu32 max_threads;' not in p13_header,'P13 binder_internal lacks u32 field before resolution')
+          header_candidate=p13_header.replace('\tint max_threads;','\tu32 max_threads;',1)
+          gate(header_candidate.count('\tu32 max_threads;')==1,'Binder header candidate has exactly one u32 max_threads')
+          gate('struct binder_proc_ext {' in header_candidate,'Binder header candidate preserves P13 KMI extension')
+          gate('int outstanding_txns;' in header_candidate and 'bool is_frozen;' in header_candidate,'Binder header candidate preserves freezer fields')
+          header_sha=sha(header_candidate)
+
+          rel='drivers/android/binder.c'
+          aux='drivers/android/binder_internal.h'
+          binder_hashes={}
+          for target in ('5.4.300','5.4.302'):
+              td=audit/f'target-{target}'
+              cdir=td/f'conflicts/{rel}'
+              gate(cdir.is_dir(),f'{target}: Binder conflict directory exists')
+              gate('MERGE_CONFLICT_HUNKS=1' in read(cdir/'META.txt'),f'{target}: Binder one conflict hunk exact')
+
+              ours=read(cdir/'OURS')
+              preview=read(cdir/'MERGE-PREVIEW')
+              theirs=read(cdir/'THEIRS-target')
+              gate(sha(ours)==os.environ['BINDER_P13_C_SHA256'],f'{target}: exact P13 binder.c anchor')
+              gate(sha(preview)==expected_preview[target],f'{target}: exact merge preview anchor')
+              gate('\tu32 max_threads;' in theirs,f'{target}: Stable inline binder_proc u32 field present')
+              gate('case BINDER_SET_MAX_THREADS: {\n\t\tu32 max_threads;' in theirs,f'{target}: Stable ioctl u32 local present')
+
+              cand,parts=resolve_one_diff3_to_ours(preview)
+              ours_block,base_block,theirs_block=parts
+              gate(''.join(ours_block).strip()=='',f'{target}: P13 conflict side is intentional inline-struct deletion')
+              gate('struct binder_proc {' in ''.join(base_block),f'{target}: Base conflict side is inline binder_proc')
+              gate('\tint max_threads;' in ''.join(base_block),f'{target}: Base inline field is int')
+              gate('struct binder_proc {' in ''.join(theirs_block),f'{target}: Stable conflict side is inline binder_proc')
+              gate('\tu32 max_threads;' in ''.join(theirs_block),f'{target}: Stable inline field is u32')
+
+              gate(sha(cand)==expected_candidate[target],f'{target}: exact resolved binder.c candidate SHA')
+              gate('#include "binder_internal.h"' in cand,f'{target}: P13 split-layout include preserved')
+              gate('struct binder_proc {' not in cand,f'{target}: old inline binder_proc not reintroduced')
+              gate('case BINDER_SET_MAX_THREADS: {\n\t\tu32 max_threads;' in cand,f'{target}: ioctl local u32 integrated')
+              gate('return !thread->transaction_stack &&\n\t\tbinder_worklist_empty_ilocked(&thread->todo);' in cand,f'{target}: Stable proc-work clean merge retained')
+              gate('!IS_ALIGNED(offset, sizeof(u32))' in cand,f'{target}: Binder object alignment fix retained')
+              gate('object_offset > tr->data_size' in cand,f'{target}: Binder transaction size bound retained')
+              if target=='5.4.302':
+                  gate('if (!node->has_weak_ref && target_list && list_empty(&node->work.entry))' in cand,f'{target}: .302 weak-ref target-list fix retained')
+              gate(all(x not in cand for x in ('<<<<<<<','|||||||','>>>>>>>')),f'{target}: binder.c conflict-marker free')
+              binder_hashes[target]=sha(cand)
+
+              rdir=td/f'resolved-evidence/{rel}'
+              rdir.parent.mkdir(parents=True,exist_ok=True)
+              shutil.move(str(cdir),str(rdir))
+              write(rdir/'RESOLVED-O39',cand)
+
+              hdir=td/f'resolved-evidence/{aux}'
+              hdir.mkdir(parents=True,exist_ok=True)
+              write(hdir/'OURS-P13',p13_header)
+              write(hdir/'RESOLVED-O39',header_candidate)
+              write(hdir/'META-O39.txt','\n'.join([
+                  f'VENDOR_SOURCE_COMMIT={os.environ["VENDOR_SOURCE_COMMIT"]}',
+                  f'P13_BINDER_INTERNAL_BLOB_SHA={os.environ["BINDER_INTERNAL_P13_BLOB_SHA"]}',
+                  f'P13_BINDER_INTERNAL_SHA256={sha(p13_header)}',
+                  f'RESOLVED_BINDER_INTERNAL_SHA256={header_sha}',
+                  'LOGICAL_BINDER_TYPE_CONSISTENCY_AUXILIARY_PATH=YES','']))
+
+              patch=make_file_diff(rel,ours,cand)+make_file_diff(aux,p13_header,header_candidate)
+              gate(patch.count(f'diff --git a/{rel} b/{rel}')==1,f'{target}: incremental patch contains binder.c once')
+              gate(patch.count(f'diff --git a/{aux} b/{aux}')==1,f'{target}: incremental patch contains binder_internal.h once')
+              gate('-\t\tint max_threads;' in patch and '+\t\tu32 max_threads;' in patch,f'{target}: ioctl local type delta in patch')
+              gate('-\tint max_threads;' in patch and '+\tu32 max_threads;' in patch,f'{target}: proc field type delta in patch')
+              patch_path=td/'binder-split-layout-max-threads-type-union-semantic-resolution.patch'
+              write(patch_path,patch)
+
+              partial=td/f'P13-to-{target}-AUTO-MERGED-PARTIAL.patch'
+              ptext=read(partial)
+              gate(f'diff --git a/{rel} b/{rel}' not in ptext,f'{target}: binder.c absent from O38 cumulative patch')
+              gate(f'diff --git a/{aux} b/{aux}' not in ptext,f'{target}: binder_internal.h absent from O38 cumulative patch')
+              if ptext and not ptext.endswith('\n'): ptext+='\n'
+              ptext+=patch
+              write(partial,ptext)
+
+              rpath=td/'runtime-conflicts.txt'
+              lines=read(rpath).splitlines()
+              gate(len(lines)==old_conf[target],f'{target}: O38 runtime conflict count exact')
+              gate(lines.count(rel)==1,f'{target}: Binder listed once')
+              lines=[x for x in lines if x!=rel]
+              gate(len(lines)==new_conf[target],f'{target}: exactly Binder conflict path removed')
+              write(rpath,('\n'.join(lines)+'\n') if lines else '')
+
+              cpath=td/'path-classification.tsv'
+              rows=read(cpath).splitlines(); hits=0
+              for i,row in enumerate(rows):
+                  cols=row.split('\t')
+                  if len(cols)>=3 and cols[1]==rel:
+                      gate(cols[2]=='TEXT_CONFLICT',f'{target}: Binder prior class exact')
+                      cols[2]='BINDER_SPLIT_LAYOUT_MAX_THREADS_TYPE_UNION_SEMANTIC_RESOLUTION'
+                      rows[i]='\t'.join(cols); hits+=1
+              gate(hits==1,f'{target}: exactly one Binder classification row updated')
+              gate(sum(1 for r in rows[1:] if len(r.split('\t'))>=3 and r.split('\t')[2]=='TEXT_CONFLICT')==new_conf[target],f'{target}: remaining TEXT_CONFLICT count exact')
+              write(cpath,'\n'.join(rows)+'\n')
+
+              result_path=td/'RESULT.txt'; result=read(result_path)
+              repl={
+                  f'TEXT_CONFLICT={old_conf[target]}\n':f'TEXT_CONFLICT={new_conf[target]}\n',
+                  f'RUNTIME_CONFLICTS={old_conf[target]}\n':f'RUNTIME_CONFLICTS={new_conf[target]}\n',
+                  f'TEXT_CONFLICT_HUNKS={old_hunks[target]}\n':f'TEXT_CONFLICT_HUNKS={new_hunks[target]}\n',
+                  'SEMANTIC_RESOLUTIONS=37\n':'SEMANTIC_RESOLUTIONS=38\n',
+              }
+              for a,b in repl.items():
+                  gate(result.count(a)==1,f'{target}: RESULT marker {a.strip()} unique')
+                  result=result.replace(a,b,1)
+              anchor='EROFS_LZ4_INPLACE_OUTPUT_BUFFER_P13_PRESERVE_SEMANTIC_RESOLUTION=1\n'
+              gate(result.count(anchor)==1,f'{target}: RESULT semantic insertion anchor unique')
+              result=result.replace(anchor,anchor+'BINDER_SPLIT_LAYOUT_MAX_THREADS_TYPE_UNION_SEMANTIC_RESOLUTION=1\n',1)
+              yes_anchor='EROFS_LZ4_INPLACE_OUTPUT_BUFFER_P13_PRESERVE=YES\n'
+              gate(result.count(yes_anchor)==1,f'{target}: RESULT YES insertion anchor unique')
+              result=result.replace(yes_anchor,yes_anchor+'BINDER_SPLIT_LAYOUT_MAX_THREADS_TYPE_UNION=YES\n',1)
+              write(result_path,result)
+
+              report='\n'.join([
+                  f'TARGET={target}',
+                  f'BINDER_MAX_THREADS_FIX_COMMIT={os.environ["BINDER_MAX_THREADS_FIX_COMMIT"]}',
+                  'P13_BINDER_PROC_SPLIT_TO_BINDER_INTERNAL=PRESERVED',
+                  'P13_FREEZER_KMI_VENDOR_FIELDS=PRESERVED',
+                  'STABLE_IOCTL_LOCAL_MAX_THREADS_U32=INTEGRATED',
+                  'STABLE_BINDER_PROC_MAX_THREADS_U32=INTEGRATED_IN_SPLIT_HEADER',
+                  'MERGE_PREVIEW_NONCONFLICT_STABLE_DELTAS=PRESERVED',
+                  f'BINDER_C_CANDIDATE_SHA256={sha(cand)}',
+                  f'BINDER_INTERNAL_CANDIDATE_SHA256={header_sha}',
+                  f'RUNTIME_CONFLICTS_BEFORE={old_conf[target]}',
+                  f'RUNTIME_CONFLICTS_AFTER={new_conf[target]}',
+                  f'TEXT_CONFLICT_HUNKS_BEFORE={old_hunks[target]}',
+                  f'TEXT_CONFLICT_HUNKS_AFTER={new_hunks[target]}',
+                  'SEMANTIC_RESOLUTIONS_BEFORE=37',
+                  'SEMANTIC_RESOLUTIONS_AFTER=38',
+                  'SOURCE_RESOLUTION=PASS',''])
+              write(td/'binder-split-layout-max-threads-type-union-semantic-resolution.txt',report)
+
+          gate(binder_hashes['5.4.300']!=binder_hashes['5.4.302'],'Binder candidates correctly retain target-specific clean Stable deltas')
+          write(audit/'39-O39-RESOLUTION-DERIVATION-GATE.txt','\n'.join([
+              f'ASSERTIONS={len(checks)}',
+              'BINDER_BLOCK_5.4.300=PASS',
+              'BINDER_BLOCK_5.4.302=PASS',
+              'P13_SPLIT_LAYOUT=PRESERVED',
+              'MAX_THREADS_U32_TWO_FILE_CONSISTENCY=PASS',
+              'ONLY_LOGICAL_BLOCK=drivers/android/binder.c+drivers/android/binder_internal.h',
+              'RESOLUTION_DERIVATION=PASS','']))
+          print(f'O39_RESOLUTION_ASSERTIONS={len(checks)}')
+          PY
+
+      - name: Validate incremental Binder two-file source delta and closure
+        shell: bash
+        run: |
+          set -euo pipefail
+          validate_target() {
+            local target="$1" expected_conflicts="$2" expected_hunks="$3" expected_c_sha="$4"
+            local td="$AUDIT_DIR/target-${target}"
+            local repo="$VERIFY_DIR/$target"
+            local rel='drivers/android/binder.c'
+            local aux='drivers/android/binder_internal.h'
+            local patch="$td/binder-split-layout-max-threads-type-union-semantic-resolution.patch"
+            local resolved="$td/resolved-evidence/$rel/RESOLVED-O39"
+            local hresolved="$td/resolved-evidence/$aux/RESOLVED-O39"
+
+            rm -rf "$repo"
+            mkdir -p "$repo/drivers/android"
+            cp "$td/resolved-evidence/$rel/OURS" "$repo/$rel"
+            cp "$td/resolved-evidence/$aux/OURS-P13" "$repo/$aux"
+            git -C "$repo" init -q
+            git -C "$repo" config user.name 'VEUX U5-O39 Audit'
+            git -C "$repo" config user.email 'veux-u5-o39-audit@invalid.local'
+            git -C "$repo" add "$rel" "$aux"
+            git -C "$repo" commit -qm base
+
+            git -C "$repo" apply --check --whitespace=error "$patch"
+            git -C "$repo" apply --index --whitespace=error "$patch"
+            git -C "$repo" diff --cached --check
+            mapfile -t changed < <(git -C "$repo" diff --cached --name-only)
+            test "${#changed[@]}" -eq 2
+            printf '%s\n' "${changed[@]}" | grep -Fxq "$rel"
+            printf '%s\n' "${changed[@]}" | grep -Fxq "$aux"
+            test "$(sha256sum "$repo/$rel" | awk '{print $1}')" = "$expected_c_sha"
+            cmp -s "$repo/$rel" "$resolved"
+            cmp -s "$repo/$aux" "$hresolved"
+
+            grep -Fq '#include "binder_internal.h"' "$resolved"
+            ! grep -Fq 'struct binder_proc {' "$resolved"
+            grep -Fq $'case BINDER_SET_MAX_THREADS: {\n\t\tu32 max_threads;' "$resolved"
+            grep -Fq $'\tu32 max_threads;' "$hresolved"
+            ! grep -Fq $'\tint max_threads;' "$hresolved"
+            grep -Fq 'struct binder_proc_ext {' "$hresolved"
+            grep -Fq 'int outstanding_txns;' "$hresolved"
+            grep -Fq 'bool is_frozen;' "$hresolved"
+            grep -Fq 'bool oneway_spam_detection_enabled;' "$hresolved"
+            ! grep -Eq '^(<<<<<<<|\|\|\|\|\|\|\||=======|>>>>>>>)' "$resolved"
+
+            local partial="$td/P13-to-${target}-AUTO-MERGED-PARTIAL.patch"
+            test "$(grep -c '^diff --git a/drivers/android/binder.c b/drivers/android/binder.c$' "$partial")" -eq 1
+            test "$(grep -c '^diff --git a/drivers/android/binder_internal.h b/drivers/android/binder_internal.h$' "$partial")" -eq 1
+            test "$(wc -l < "$td/runtime-conflicts.txt")" -eq "$expected_conflicts"
+            local text_conflicts
+            text_conflicts="$(grep -c $'\tTEXT_CONFLICT\t' "$td/path-classification.tsv" || true)"
+            test "$text_conflicts" -eq "$expected_conflicts"
+            test "$(find "$td/conflicts" -type f -name META.txt | wc -l)" -eq "$expected_conflicts"
+            grep -Fxq "RUNTIME_CONFLICTS=$expected_conflicts" "$td/RESULT.txt"
+            grep -Fxq "TEXT_CONFLICT_HUNKS=$expected_hunks" "$td/RESULT.txt"
+            grep -Fxq 'SEMANTIC_RESOLUTIONS=38' "$td/RESULT.txt"
+            grep -Fxq 'BINDER_SPLIT_LAYOUT_MAX_THREADS_TYPE_UNION=YES' "$td/RESULT.txt"
+
+            if [ "$target" = '5.4.300' ]; then
+              test ! -s "$td/runtime-conflicts.txt"
+              test "$expected_conflicts" -eq 0
+            fi
+            if [ "$target" = '5.4.302' ]; then
+              grep -Fq 'if (!node->has_weak_ref && target_list && list_empty(&node->work.entry))' "$resolved"
+            fi
+
+            {
+              echo "TARGET=$target"
+              echo "BINDER_C_SHA256=$(sha256sum "$resolved" | awk '{print $1}')"
+              echo "BINDER_INTERNAL_SHA256=$(sha256sum "$hresolved" | awk '{print $1}')"
+              echo "INCREMENTAL_PATCH_SHA256=$(sha256sum "$patch" | awk '{print $1}')"
+              echo "UPDATED_PARTIAL_PATCH_SHA256=$(sha256sum "$partial" | awk '{print $1}')"
+              echo "RUNTIME_CONFLICTS=$expected_conflicts"
+              echo "TEXT_CONFLICT_HUNKS=$expected_hunks"
+              echo "SEMANTIC_RESOLUTIONS=38"
+              echo "GIT_APPLY_CHECK=PASS"
+              echo "GIT_DIFF_CHECK=PASS"
+              echo "BINDER_TWO_FILE_TYPE_CONSISTENCY=PASS"
+              echo "BINDER_SPLIT_LAYOUT_CLOSURE=PASS"
+            } > "$td/o39-source-application-gate.txt"
+          }
+
+          validate_target 5.4.300 0 0 "$BINDER_CANDIDATE_300_SHA256"
+          validate_target 5.4.302 6 11 "$BINDER_CANDIDATE_302_SHA256"
+
+      - name: Finalize comprehensive O39 artifact and completeness gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -Fxq 'PROVENANCE_GATE=PASS' "$AUDIT_DIR/39-O39-BINDER-PROVENANCE.txt"
+          grep -Fxq 'BINDER_SPLIT_LAYOUT_CLOSURE=PASS' "$AUDIT_DIR/target-5.4.300/o39-source-application-gate.txt"
+          grep -Fxq 'BINDER_SPLIT_LAYOUT_CLOSURE=PASS' "$AUDIT_DIR/target-5.4.302/o39-source-application-gate.txt"
+          grep -Fxq 'RESOLUTION_DERIVATION=PASS' "$AUDIT_DIR/39-O39-RESOLUTION-DERIVATION-GATE.txt"
+          grep -Fxq 'MAX_THREADS_U32_TWO_FILE_CONSISTENCY=PASS' "$AUDIT_DIR/39-O39-RESOLUTION-DERIVATION-GATE.txt"
+
+          cat > "$AUDIT_DIR/39-O39-SUMMARY.txt" <<EOF
+          O39_MODE=BINDER_SPLIT_LAYOUT_MAX_THREADS_RUNTIME_SOURCE_RESOLUTION
+          SOURCE_PARENT=U5-O38
+          O39_BECOMES_RUNTIME_PARENT=YES
+          LOGICAL_BLOCK=BINDER_SPLIT_LAYOUT_MAX_THREADS_TYPE_UNION
+          SOURCE_PATHS=drivers/android/binder.c,drivers/android/binder_internal.h
+          RUNTIME_CONFLICTS_5.4.300=0
+          TEXT_CONFLICT_HUNKS_5.4.300=0
+          RUNTIME_CONFLICTS_5.4.302=6
+          TEXT_CONFLICT_HUNKS_5.4.302=11
+          SEMANTIC_RESOLUTIONS=38
+          FULL_O38_EVIDENCE_CARRIED_FORWARD=YES
+          KERNEL_BUILD_PERFORMED=NO
+          AK3_CREATED=NO
+          FLASH_PERFORMED=NO
+          DEVICE_PASS=NO
+          O39_RUNTIME_GATE=PASS
+          EOF
+
+          rm -f "$AUDIT_DIR/99-FILE-LIST.txt" "$AUDIT_DIR/SHA256SUMS.txt"
+          file_count="$(find "$AUDIT_DIR" -type f | wc -l)"
+          byte_count="$(du -sb "$AUDIT_DIR" | awk '{print $1}')"
+          patch300_bytes="$(stat -c '%s' "$AUDIT_DIR/target-5.4.300/P13-to-5.4.300-AUTO-MERGED-PARTIAL.patch")"
+          patch302_bytes="$(stat -c '%s' "$AUDIT_DIR/target-5.4.302/P13-to-5.4.302-AUTO-MERGED-PARTIAL.patch")"
+
+          test "$file_count" -ge 370
+          test "$byte_count" -ge 19800000
+          test "$patch300_bytes" -ge 4000000
+          test "$patch302_bytes" -ge 4400000
+          test "$(wc -l < "$AUDIT_DIR/lineage/O38-SHA256SUMS.original.txt")" -eq "$O38_INTERNAL_SHA_COUNT"
+          grep -Fxq 'O38_RUNTIME_GATE=PASS' "$AUDIT_DIR/lineage/O38-PARENT-GATE.txt"
+
+          cat > "$AUDIT_DIR/99-O39-FINAL-GATE.txt" <<EOF
+          O38_EXACT_ARTIFACT=PASS
+          O38_INTERNAL_SHA256SUMS=$O38_INTERNAL_SHA_COUNT/$O38_INTERNAL_SHA_COUNT PASS
+          O38_RUNTIME_GATE=PASS
+          BINDER_PROVENANCE_GATE=PASS
+          BINDER_SPLIT_LAYOUT_5.4.300=PASS
+          BINDER_SPLIT_LAYOUT_5.4.302=PASS
+          BINDER_MAX_THREADS_U32_TWO_FILE_CONSISTENCY=PASS
+          INCREMENTAL_PATCH_APPLY_5.4.300=PASS
+          INCREMENTAL_PATCH_APPLY_5.4.302=PASS
+          RUNTIME_CONFLICTS_5.4.300=0
+          TEXT_CONFLICT_HUNKS_5.4.300=0
+          RUNTIME_CONFLICTS_5.4.302=6
+          TEXT_CONFLICT_HUNKS_5.4.302=11
+          SEMANTIC_RESOLUTIONS=38
+          LOGICAL_SOURCE_BLOCK=drivers/android/binder.c+drivers/android/binder_internal.h
+          ARTIFACT_FILE_COUNT=$file_count
+          ARTIFACT_UNCOMPRESSED_BYTES=$byte_count
+          PARTIAL_PATCH_5.4.300_BYTES=$patch300_bytes
+          PARTIAL_PATCH_5.4.302_BYTES=$patch302_bytes
+          COMPREHENSIVE_ARTIFACT_COMPLETENESS=PASS
+          CURRENT_RUNTIME_PARENT=U5-O39
+          KERNEL_BUILD_PERFORMED=NO
+          AK3_CREATED=NO
+          FLASH_PERFORMED=NO
+          DEVICE_PASS=NO
+          O39_FINAL=RUNTIME_GREEN_PASS
+          EOF
+
+          (
+            cd "$AUDIT_DIR"
+            find . -type f ! -name SHA256SUMS.txt -print | LC_ALL=C sort
+          ) > "$AUDIT_DIR/99-FILE-LIST.txt"
+          (
+            cd "$AUDIT_DIR"
+            find . -type f ! -name SHA256SUMS.txt -print0 | LC_ALL=C sort -z | xargs -0 sha256sum > SHA256SUMS.txt
+            sha256sum -c SHA256SUMS.txt
+          ) | tee "$RUNNER_TEMP/o39-final-sha256-check.txt"
+          test "$(grep -c 'OK$' "$RUNNER_TEMP/o39-final-sha256-check.txt")" -eq "$(wc -l < "$AUDIT_DIR/SHA256SUMS.txt")"
+          echo "O39 comprehensive artifact files: $file_count"
+          echo "O39 comprehensive artifact bytes: $byte_count"
+          echo 'O39_FINAL=RUNTIME_GREEN_PASS'
+
+      - name: Upload one comprehensive U5-O39 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: VEUX-GEN1-U5-O39-binder-split-layout-max-threads-type-union-semantic-resolution-official-stable-5.4.300-5.4.302-port-audit
+          path: ${{ env.AUDIT_DIR }}
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 6
+          include-hidden-files: true
