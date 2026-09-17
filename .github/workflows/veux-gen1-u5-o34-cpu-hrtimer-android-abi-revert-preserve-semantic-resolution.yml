@@ -1,0 +1,563 @@
+name: VEUX GEN1 U5-O34 CPU hrtimer Android ABI Revert Preserve Semantic Resolution
+
+'on':
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: veux-gen1-u5-o34-cpu-hrtimer-android-abi-revert-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      TZ: UTC
+      LANG: C.UTF-8
+      LC_ALL: C.UTF-8
+
+      O33_ARTIFACT_ID: '10486401775'
+      O33_ARTIFACT_NAME: VEUX-GEN1-U5-O33-socinfo-vendor-sysfs-stable-safety-union-semantic-resolution-official-stable-5.4.300-5.4.302-port-audit
+      O33_ARTIFACT_SHA256: 8f709d09dd84ec9f63834c55fdb655063d0eebdbaeb0041cea5e0d060d9f1c8b
+      O33_INTERNAL_SHA_COUNT: '280'
+
+      CPU_CANDIDATE_SHA256: f5aaff8a673831387a6f9c6ff267f2c90c71dc833f0199c9660055db5768e750
+      HRTIMER_CANDIDATE_SHA256: 671e0ad2c2562aa6a6062d7bb3715dd7d16dcf0eeaab678921445138a4e7a6ab
+      HRTIMER_HEADER_P13_SHA256: fb6b3d9a289b20874226a2e170ee7c0d65f6e832576b949790ae1df81cdfc301
+
+      ANDROID_ABI_REVERT_COMMIT: 5c9845d8c6aeafe83167124b800a65babc8f408c
+      REVERTED_UPSTREAM_COMMIT: 5c0930ccaad5a74d74e8b18b648c5eb21ed2fe94
+      LATER_STABLE_FIX_COMMIT: 2f8dea1692eef2b7ba6a256246ed82c365fdc686
+
+    steps:
+      - name: Initialize U5-O34 comprehensive evidence workspace
+        shell: bash
+        run: |
+          set -euo pipefail
+          O33_DIR="$RUNNER_TEMP/u5-o34-o33-parent"
+          AUDIT_DIR="$GITHUB_WORKSPACE/u5-o34-evidence"
+          VERIFY_DIR="$RUNNER_TEMP/u5-o34-verify"
+          rm -rf "$O33_DIR" "$AUDIT_DIR" "$VERIFY_DIR"
+          mkdir -p "$O33_DIR" "$AUDIT_DIR" "$VERIFY_DIR"
+          {
+            echo "O33_DIR=$O33_DIR"
+            echo "AUDIT_DIR=$AUDIT_DIR"
+            echo "VERIFY_DIR=$VERIFY_DIR"
+          } >> "$GITHUB_ENV"
+
+          cat > "$AUDIT_DIR/34-O34-PLAN.txt" <<EOF
+          U5-O34 CPU/HRTIMER HOTPLUG ANDROID-ABI-REVERT PRESERVE SEMANTIC RESOLUTION
+
+          Source parent: U5-O33 artifact $O33_ARTIFACT_ID
+          Exactly one logical source block:
+            kernel/cpu.c
+            kernel/time/hrtimer.c
+          Dependency correction:
+            include/linux/hrtimer.h
+
+          Semantic rule:
+          - preserve Android's explicit ABI-motivated revert of upstream $REVERTED_UPSTREAM_COMMIT;
+          - do not reintroduce CPUHP_AP_HRTIMERS_DYING or hrtimers_cpu_starting;
+          - keep P13 hrtimers_dead_cpu lifecycle and CPUHP_HRTIMERS_PREPARE teardown;
+          - exclude the dependent portions of later Stable fix $LATER_STABLE_FIX_COMMIT because its Fixes prerequisite is deliberately reverted in P13;
+          - retain independent Stable hrtimer hardening/refactoring changes that do not depend on the reverted lifecycle.
+
+          Expected result:
+            5.4.300: 8 -> 6 conflicts, 28 -> 26 hunks
+            5.4.302: 14 -> 12 conflicts, 39 -> 37 hunks
+            semantic resolutions: 30 -> 32
+
+          Full O33 evidence is carried forward. No kernel build. No AK3. No flash. No Device PASS claim.
+          EOF
+      - name: Download verify and restore complete O33 Runtime-PASS parent
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          meta="$RUNNER_TEMP/o33-artifact-meta.json"
+          zip="$RUNNER_TEMP/o33-artifact.zip"
+
+          curl --fail --silent --show-error --location --retry 3 --retry-delay 2 \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${O33_ARTIFACT_ID}" \
+            -o "$meta"
+
+          python3 - "$meta" "$O33_ARTIFACT_ID" "$O33_ARTIFACT_NAME" "$O33_ARTIFACT_SHA256" <<'PY'
+          import json,sys
+          path,eid,ename,esha=sys.argv[1:]
+          with open(path,encoding='utf-8') as f: m=json.load(f)
+          assert str(m.get('id'))==eid,(m.get('id'),eid)
+          assert m.get('name')==ename,(m.get('name'),ename)
+          assert m.get('expired') is False,'O33 artifact expired'
+          d=m.get('digest')
+          assert d in (None,'','sha256:'+esha),(d,esha)
+          print('O33_METADATA=PASS')
+          PY
+
+          curl --fail --silent --show-error --location --retry 3 --retry-delay 2 \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${O33_ARTIFACT_ID}/zip" \
+            -o "$zip"
+
+          echo "$O33_ARTIFACT_SHA256  $zip" | sha256sum -c -
+          python3 - "$zip" "$O33_DIR" <<'PY'
+          from pathlib import Path
+          import sys,zipfile
+          archive,destination=sys.argv[1:]
+          root=Path(destination).resolve()
+          with zipfile.ZipFile(archive) as zf:
+              for info in zf.infolist():
+                  out=(root/info.filename).resolve()
+                  if out != root and root not in out.parents:
+                      raise SystemExit(f'unsafe archive member: {info.filename}')
+              zf.extractall(root)
+          PY
+
+          test -f "$O33_DIR/SHA256SUMS.txt"
+          (
+            cd "$O33_DIR"
+            sha256sum -c SHA256SUMS.txt
+          ) | tee "$RUNNER_TEMP/o33-internal-sha.txt"
+          test "$(grep -c 'OK$' "$RUNNER_TEMP/o33-internal-sha.txt")" -eq "$O33_INTERNAL_SHA_COUNT"
+          test "$(wc -l < "$O33_DIR/SHA256SUMS.txt")" -eq "$O33_INTERNAL_SHA_COUNT"
+
+          grep -Fxq 'O33_FINAL=RUNTIME_GREEN_PASS' "$O33_DIR/99-O33-FINAL-GATE.txt"
+          grep -Fxq 'CURRENT_RUNTIME_PARENT=U5-O33' "$O33_DIR/99-O33-FINAL-GATE.txt"
+          grep -Fxq 'RUNTIME_CONFLICTS_5.4.300=8' "$O33_DIR/99-O33-FINAL-GATE.txt"
+          grep -Fxq 'TEXT_CONFLICT_HUNKS_5.4.300=28' "$O33_DIR/99-O33-FINAL-GATE.txt"
+          grep -Fxq 'RUNTIME_CONFLICTS_5.4.302=14' "$O33_DIR/99-O33-FINAL-GATE.txt"
+          grep -Fxq 'TEXT_CONFLICT_HUNKS_5.4.302=39' "$O33_DIR/99-O33-FINAL-GATE.txt"
+          grep -Fxq 'SEMANTIC_RESOLUTIONS=30' "$O33_DIR/99-O33-FINAL-GATE.txt"
+          grep -Fxq 'COMPREHENSIVE_ARTIFACT_COMPLETENESS=PASS' "$O33_DIR/99-O33-FINAL-GATE.txt"
+
+          cp -a "$O33_DIR/." "$AUDIT_DIR/"
+          mkdir -p "$AUDIT_DIR/lineage"
+          cp "$O33_DIR/SHA256SUMS.txt" "$AUDIT_DIR/lineage/O33-SHA256SUMS.original.txt"
+          cp "$meta" "$AUDIT_DIR/lineage/O33-ARTIFACT-METADATA.json"
+          cp "$RUNNER_TEMP/o33-internal-sha.txt" "$AUDIT_DIR/lineage/O33-INTERNAL-SHA256-CHECK.txt"
+          sha256sum "$zip" > "$AUDIT_DIR/lineage/O33-ZIP-SHA256.txt"
+          rm -f "$AUDIT_DIR/SHA256SUMS.txt"
+          cat > "$AUDIT_DIR/lineage/O33-PARENT-GATE.txt" <<EOF
+          O33_ARTIFACT_ID=$O33_ARTIFACT_ID
+          O33_ARTIFACT_SHA256=$O33_ARTIFACT_SHA256
+          O33_INTERNAL_SHA256SUMS=$O33_INTERNAL_SHA_COUNT/$O33_INTERNAL_SHA_COUNT PASS
+          O33_RUNTIME_GATE=PASS
+          RUNTIME_SOURCE_PARENT=U5-O33
+          EOF
+      - name: Verify Android ABI revert and Stable dependency provenance
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          revert_json="$RUNNER_TEMP/android-revert.json"
+          upstream_json="$RUNNER_TEMP/upstream-prereq.json"
+          later_json="$RUNNER_TEMP/later-fix.json"
+
+          curl --fail --silent --show-error --location --retry 3 \
+            -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/dereference23/kernel_xiaomi_sm6375/commits/$ANDROID_ABI_REVERT_COMMIT" -o "$revert_json"
+          curl --fail --silent --show-error --location --retry 3 \
+            -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/gregkh/linux/commits/$REVERTED_UPSTREAM_COMMIT" -o "$upstream_json"
+          curl --fail --silent --show-error --location --retry 3 \
+            -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/gregkh/linux/commits/$LATER_STABLE_FIX_COMMIT" -o "$later_json"
+
+          python3 - "$revert_json" "$upstream_json" "$later_json" "$AUDIT_DIR/34-O34-HRTIMER-PROVENANCE.txt" <<'PY'
+          import json,os,sys
+          rp,up,lp,out=sys.argv[1:]
+          def load(p):
+              with open(p,encoding='utf-8') as f:return json.load(f)
+          r,u,l=map(load,(rp,up,lp))
+          assert r['sha']==os.environ['ANDROID_ABI_REVERT_COMMIT']
+          assert u['sha']==os.environ['REVERTED_UPSTREAM_COMMIT']
+          assert l['sha']==os.environ['LATER_STABLE_FIX_COMMIT']
+          rm=r['commit']['message']; um=u['commit']['message']; lm=l['commit']['message']
+          assert rm.startswith('Revert "hrtimers: Push pending hrtimers away from outgoing CPU earlier"')
+          assert 'breaks the Android kernel abi' in rm
+          assert '54d0d83a5350' in rm and '5c0930ccaad5' in rm
+          assert um.startswith('hrtimers: Push pending hrtimers away from outgoing CPU earlier')
+          assert lm.startswith('hrtimers: Handle CPU state correctly on hotplug')
+          assert 'Fixes: 5c0930ccaad5' in lm
+          rfiles={x['filename'] for x in r.get('files',[])}
+          lfiles={x['filename'] for x in l.get('files',[])}
+          assert {'include/linux/cpuhotplug.h','include/linux/hrtimer.h','kernel/cpu.c','kernel/time/hrtimer.c'} <= rfiles
+          assert {'include/linux/hrtimer.h','kernel/cpu.c','kernel/time/hrtimer.c'} <= lfiles
+          with open(out,'w',encoding='utf-8',newline='\n') as f:
+              f.write(f'ANDROID_ABI_REVERT_COMMIT={r["sha"]}\n')
+              f.write('ANDROID_ABI_REVERT_MESSAGE=PASS\n')
+              f.write('ANDROID_ABI_REVERT_REASON=BREAKS_ANDROID_KERNEL_ABI\n')
+              f.write(f'REVERTED_UPSTREAM_COMMIT={u["sha"]}\n')
+              f.write('REVERTED_UPSTREAM_TITLE=HRTIMERS_PUSH_PENDING_AWAY_EARLIER\n')
+              f.write(f'LATER_STABLE_FIX_COMMIT={l["sha"]}\n')
+              f.write('LATER_FIX_FIXES_REVERTED_PREREQUISITE=YES\n')
+              f.write('PROVENANCE_GATE=PASS\n')
+          print('O34_PROVENANCE=PASS')
+          PY
+      - name: Resolve coupled CPU and hrtimer hotplug block
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from __future__ import annotations
+          from pathlib import Path
+          import difflib, hashlib, os, re, shutil, sys
+
+          audit = Path(sys.argv[1] if len(sys.argv) > 1 else os.environ['AUDIT_DIR'])
+          CPU_SHA = os.environ.get('CPU_CANDIDATE_SHA256','f5aaff8a673831387a6f9c6ff267f2c90c71dc833f0199c9660055db5768e750')
+          HRTIMER_SHA = os.environ.get('HRTIMER_CANDIDATE_SHA256','671e0ad2c2562aa6a6062d7bb3715dd7d16dcf0eeaab678921445138a4e7a6ab')
+          HEADER_SHA = os.environ.get('HRTIMER_HEADER_P13_SHA256','fb6b3d9a289b20874226a2e170ee7c0d65f6e832576b949790ae1df81cdfc301')
+          REVERT = os.environ.get('ANDROID_ABI_REVERT_COMMIT','5c9845d8c6aeafe83167124b800a65babc8f408c')
+          UPSTREAM = os.environ.get('REVERTED_UPSTREAM_COMMIT','5c0930ccaad5a74d74e8b18b648c5eb21ed2fe94')
+          LATER = os.environ.get('LATER_STABLE_FIX_COMMIT','2f8dea1692eef2b7ba6a256246ed82c365fdc686')
+          old_conf = {'5.4.300':8,'5.4.302':14}
+          old_hunks = {'5.4.300':28,'5.4.302':39}
+          new_conf = {'5.4.300':6,'5.4.302':12}
+          new_hunks = {'5.4.300':26,'5.4.302':37}
+          checks=[]
+          def gate(cond,label):
+              if not cond: raise AssertionError(label)
+              checks.append(label)
+          def sha(s:str): return hashlib.sha256(s.encode()).hexdigest()
+          def read(p): return Path(p).read_text(encoding='utf-8')
+          def write(p,s): Path(p).write_text(s,encoding='utf-8',newline='\n')
+
+          def derive_hrtimer(ours:str,target:str)->str:
+              # P13/Android ABI-revert anchor checks.
+              gate('int hrtimers_dead_cpu(unsigned int scpu)' in ours, f'{target}: P13 dead-CPU callback present')
+              gate('int hrtimers_cpu_starting(unsigned int cpu)' not in ours, f'{target}: P13 has no starting callback')
+              gate('cpu_base->online = 1;' not in ours, f'{target}: P13 does not maintain reverted online state')
+              gate('hrtimer_cpu_base_init_expiry_lock(cpu_base);' in ours, f'{target}: P13 expiry-lock init retained')
+              gate('WARN_ON_ONCE(!base->cpu_base->online);' not in ours, f'{target}: P13 reverted online enqueue warning')
+              gate('if (WARN_ON_ONCE(!timer->function))' not in ours, f'{target}: function guard is target-only before union')
+
+              s=ours
+              early_smp='''static inline bool is_migration_base(struct hrtimer_clock_base *base)\n{\n\treturn base == &migration_base;\n}\n\n'''
+              early_up='''static inline bool is_migration_base(struct hrtimer_clock_base *base)\n{\n\treturn false;\n}\n\n'''
+              gate(s.count(early_smp)==1, f'{target}: one old SMP migration helper')
+              s=s.replace(early_smp,'',1)
+              gate(s.count(early_up)==1, f'{target}: one old !SMP migration helper')
+              s=s.replace(early_up,'',1)
+
+              needle='''\tstruct hrtimer_clock_base *base;\n\tunsigned long flags;\n\n\t/*\n\t * Check whether the HRTIMER_MODE_SOFT bit and hrtimer.is_soft\n'''
+              repl='''\tstruct hrtimer_clock_base *base;\n\tunsigned long flags;\n\n\tif (WARN_ON_ONCE(!timer->function))\n\t\treturn;\n\t/*\n\t * Check whether the HRTIMER_MODE_SOFT bit and hrtimer.is_soft\n'''
+              gate(s.count(needle)==1, f'{target}: hrtimer start insertion anchor unique')
+              s=s.replace(needle,repl,1)
+
+              marker='''\n/*\n * This function is called on PREEMPT_RT kernels when the fast path\n * deletion of a timer failed because the timer callback function was\n'''
+              helper='''\n#ifdef CONFIG_SMP\nstatic __always_inline bool is_migration_base(struct hrtimer_clock_base *base)\n{\n\treturn base == &migration_base;\n}\n#else\nstatic __always_inline bool is_migration_base(struct hrtimer_clock_base *base)\n{\n\treturn false;\n}\n#endif\n'''
+              gate(s.count(marker)==1, f'{target}: migration-helper relocation anchor unique')
+              s=s.replace(marker,helper+marker,1)
+              return s
+
+          def split_patch_sections(text:str):
+              starts=[m.start() for m in re.finditer(r'(?m)^diff --git a/', text)]
+              gate(bool(starts), 'cumulative patch has diff sections')
+              pre=text[:starts[0]]
+              sections=[]
+              for i,st in enumerate(starts):
+                  en=starts[i+1] if i+1<len(starts) else len(text)
+                  sections.append(text[st:en])
+              return pre,sections
+
+          def section_path(sec:str)->str:
+              m=re.match(r'diff --git a/(\S+) b/(\S+)\n',sec)
+              gate(m is not None and m.group(1)==m.group(2), 'patch section path header valid')
+              return m.group(1)
+
+          for target in ('5.4.300','5.4.302'):
+              td=audit/f'target-{target}'
+              cpu_dir=td/'conflicts/kernel/cpu.c'
+              hr_dir=td/'conflicts/kernel/time/hrtimer.c'
+              gate(cpu_dir.is_dir(),f'{target}: CPU conflict exists')
+              gate(hr_dir.is_dir(),f'{target}: hrtimer conflict exists')
+              gate('MERGE_CONFLICT_HUNKS=1' in read(cpu_dir/'META.txt'),f'{target}: CPU one conflict hunk')
+              gate('MERGE_CONFLICT_HUNKS=1' in read(hr_dir/'META.txt'),f'{target}: hrtimer one conflict hunk')
+
+              cpu_ours=read(cpu_dir/'OURS'); cpu_base=read(cpu_dir/'BASE-v5.4.274'); cpu_theirs=read(cpu_dir/'THEIRS-target')
+              gate(sha(cpu_ours)==CPU_SHA,f'{target}: exact P13 CPU SHA')
+              gate('CPUHP_AP_HRTIMERS_DYING' not in cpu_ours,f'{target}: Android revert removed dying state in P13')
+              gate('.teardown.single\t= hrtimers_dead_cpu' in cpu_ours,f'{target}: P13 PREPARE teardown uses dead_cpu')
+              gate('CPUHP_AP_HRTIMERS_DYING' in cpu_base,f'{target}: BASE has early-migration CPUHP state')
+              gate('CPUHP_AP_HRTIMERS_DYING' in cpu_theirs,f'{target}: Stable target has early-migration CPUHP state')
+              gate('.startup.single\t\t= hrtimers_cpu_starting' in cpu_theirs,f'{target}: later Stable startup callback depends on reverted state')
+
+              hr_ours=read(hr_dir/'OURS'); hr_theirs=read(hr_dir/'THEIRS-target')
+              gate(sha(hr_ours)=='a4d3f7734cb346bd21fab634911bc525ee5ffbf452362399127aacc17419ff54',f'{target}: exact P13 hrtimer source anchor')
+              gate('WARN_ON_ONCE(!base->cpu_base->online);' in hr_theirs,f'{target}: Stable target has online warning from early-migration series')
+              gate('int hrtimers_cpu_starting(unsigned int cpu)' in hr_theirs,f'{target}: Stable target has dependent starting callback')
+              gate('if (WARN_ON_ONCE(!timer->function))' in hr_theirs,f'{target}: unrelated Stable function guard exists')
+              gate('static __always_inline bool is_migration_base' in hr_theirs,f'{target}: unrelated Stable helper relocation exists')
+              candidate=derive_hrtimer(hr_ours,target)
+              gate(sha(candidate)==HRTIMER_SHA,f'{target}: derived hrtimer candidate SHA exact')
+              gate('int hrtimers_cpu_starting(unsigned int cpu)' not in candidate,f'{target}: starting callback not reintroduced')
+              gate('hrtimers_cpu_starting(smp_processor_id())' not in candidate,f'{target}: boot starting call not reintroduced')
+              gate('WARN_ON_ONCE(!base->cpu_base->online);' not in candidate,f'{target}: reverted online warning not reintroduced')
+              gate(candidate.count('if (WARN_ON_ONCE(!timer->function))')==1,f'{target}: unrelated function guard retained once')
+              gate(candidate.count('static __always_inline bool is_migration_base')==2,f'{target}: relocated helper has SMP and !SMP arms')
+
+              # Move conflict evidence into resolved evidence and store exact resolved candidates.
+              cpu_res=td/'resolved-evidence/kernel/cpu.c'; hr_res=td/'resolved-evidence/kernel/time/hrtimer.c'
+              cpu_res.parent.mkdir(parents=True,exist_ok=True); hr_res.parent.mkdir(parents=True,exist_ok=True)
+              shutil.move(str(cpu_dir),str(cpu_res)); shutil.move(str(hr_dir),str(hr_res))
+              write(cpu_res/'RESOLVED-O34',cpu_ours)
+              write(hr_res/'RESOLVED-O34',candidate)
+
+              diff_body=''.join(difflib.unified_diff(hr_ours.splitlines(keepends=True),candidate.splitlines(keepends=True),fromfile='a/kernel/time/hrtimer.c',tofile='b/kernel/time/hrtimer.c',n=3))
+              gate(diff_body.startswith('--- a/kernel/time/hrtimer.c\n+++ b/kernel/time/hrtimer.c\n'),f'{target}: hrtimer delta headers valid')
+              block_patch='diff --git a/kernel/time/hrtimer.c b/kernel/time/hrtimer.c\n'+diff_body
+              patch_path=td/'cpu-hrtimer-android-abi-revert-preserve-semantic-resolution.patch'
+              write(patch_path,block_patch)
+
+              # Remove the cleanly auto-merged dependent header declaration and append only the ABI-compatible hrtimer delta.
+              partial=td/f'P13-to-{target}-AUTO-MERGED-PARTIAL.patch'
+              ptext=read(partial); pre,secs=split_patch_sections(ptext)
+              paths=[section_path(x) for x in secs]
+              gate(paths.count('include/linux/hrtimer.h')==1,f'{target}: exactly one hrtimer header section in O33 patch')
+              gate(paths.count('kernel/cpu.c')==0,f'{target}: no CPU section existed in O33 partial patch')
+              gate(paths.count('kernel/time/hrtimer.c')==0,f'{target}: no hrtimer source section existed in O33 partial patch')
+              hsec=secs[paths.index('include/linux/hrtimer.h')]
+              gate(hsec.count('+int hrtimers_cpu_starting(unsigned int cpu);')==1,f'{target}: header section adds only starting declaration anchor')
+              gate(sum(1 for ln in hsec.splitlines() if ln.startswith('@@ '))==1,f'{target}: hrtimer header section has one hunk')
+              added=[ln for ln in hsec.splitlines() if ln.startswith('+') and not ln.startswith('+++')]
+              removed=[ln for ln in hsec.splitlines() if ln.startswith('-') and not ln.startswith('---')]
+              gate(added==['+int hrtimers_cpu_starting(unsigned int cpu);'],f'{target}: only functional header addition is dependent callback declaration')
+              gate(removed==[],f'{target}: header section removes nothing')
+              kept=[sec for sec,path in zip(secs,paths) if path!='include/linux/hrtimer.h']
+              newp=pre+''.join(kept)
+              if newp and not newp.endswith('\n'): newp+='\n'
+              newp+=block_patch
+              gate(newp.count('diff --git a/include/linux/hrtimer.h b/include/linux/hrtimer.h')==0,f'{target}: dependent header diff removed')
+              gate(newp.count('diff --git a/kernel/cpu.c b/kernel/cpu.c')==0,f'{target}: P13 CPU exact means no CPU diff')
+              gate(newp.count('diff --git a/kernel/time/hrtimer.c b/kernel/time/hrtimer.c')==1,f'{target}: one ABI-compatible hrtimer diff appended')
+              write(partial,newp)
+
+              # Conflict list: resolve two coupled paths together.
+              rpath=td/'runtime-conflicts.txt'; lines=read(rpath).splitlines()
+              gate(len(lines)==old_conf[target],f'{target}: O33 runtime conflict count exact')
+              gate(lines.count('kernel/cpu.c')==1 and lines.count('kernel/time/hrtimer.c')==1,f'{target}: both coupled conflicts listed once')
+              lines=[x for x in lines if x not in ('kernel/cpu.c','kernel/time/hrtimer.c')]
+              gate(len(lines)==new_conf[target],f'{target}: two conflict paths removed only')
+              write(rpath,'\n'.join(lines)+'\n')
+
+              # Classification: two conflicts plus the clean header dependency become one logical ABI-preserve class.
+              cpath=td/'path-classification.tsv'; rows=read(cpath).splitlines(); hits={}
+              expected={'include/linux/hrtimer.h':'THREE_WAY_MERGE_CLEAN','kernel/cpu.c':'TEXT_CONFLICT','kernel/time/hrtimer.c':'TEXT_CONFLICT'}
+              for i,row in enumerate(rows):
+                  cols=row.split('\t')
+                  if len(cols)>=3 and cols[1] in expected:
+                      p=cols[1]; gate(cols[2]==expected[p],f'{target}: {p} prior class exact')
+                      if p=='include/linux/hrtimer.h': gate(cols[3]==HEADER_SHA,f'{target}: header P13 SHA exact')
+                      cols[2]='HRTIMER_ANDROID_ABI_REVERT_DEPENDENCY_PRESERVE'; rows[i]='\t'.join(cols); hits[p]=hits.get(p,0)+1
+              gate(hits=={p:1 for p in expected},f'{target}: exactly three dependency rows reclassified')
+              gate(sum(1 for r in rows[1:] if r.split('\t')[2]=='TEXT_CONFLICT')==new_conf[target],f'{target}: remaining TEXT_CONFLICT classes exact')
+              write(cpath,'\n'.join(rows)+'\n')
+
+              # RESULT accounting.
+              rp=td/'RESULT.txt'; result=read(rp)
+              repl={f'TEXT_CONFLICT={old_conf[target]}\n':f'TEXT_CONFLICT={new_conf[target]}\n',f'RUNTIME_CONFLICTS={old_conf[target]}\n':f'RUNTIME_CONFLICTS={new_conf[target]}\n',f'TEXT_CONFLICT_HUNKS={old_hunks[target]}\n':f'TEXT_CONFLICT_HUNKS={new_hunks[target]}\n','SEMANTIC_RESOLUTIONS=30\n':'SEMANTIC_RESOLUTIONS=32\n'}
+              for a,b in repl.items(): gate(result.count(a)==1,f'{target}: RESULT marker {a.strip()} unique'); result=result.replace(a,b,1)
+              anchor='SOCINFO_VENDOR_SYSFS_STABLE_SAFETY_UNION_SEMANTIC_RESOLUTION=1\n'
+              gate(result.count(anchor)==1,f'{target}: result count insertion anchor unique')
+              result=result.replace(anchor,anchor+'CPU_HRTIMER_ANDROID_ABI_REVERT_PRESERVE_SEMANTIC_RESOLUTIONS=2\n',1)
+              anchor2='SOCINFO_VENDOR_SYSFS_STABLE_SAFETY_UNION_SEMANTIC_RESOLUTION=YES\n'
+              gate(result.count(anchor2)==1,f'{target}: result YES insertion anchor unique')
+              result=result.replace(anchor2,anchor2+'CPU_HRTIMER_ANDROID_ABI_REVERT_PRESERVE=YES\n',1)
+              write(rp,result)
+
+              report='\n'.join([
+                  f'TARGET={target}',
+                  'LOGICAL_BLOCK=CPU_HRTIMER_HOTPLUG_ANDROID_ABI_REVERT_PRESERVE',
+                  'CONFLICT_PATH_1=kernel/cpu.c','CONFLICT_PATH_2=kernel/time/hrtimer.c','DEPENDENCY_PATH=include/linux/hrtimer.h',
+                  f'ANDROID_ABI_REVERT_COMMIT={REVERT}',f'REVERTED_UPSTREAM_COMMIT={UPSTREAM}',f'LATER_STABLE_FIX_COMMIT={LATER}',
+                  'ANDROID_REVERT_REASON=UPSTREAM_EARLY_HRTIMER_MIGRATION_BREAKS_ANDROID_KERNEL_ABI',
+                  f'CPU_CANDIDATE_SHA256={CPU_SHA}',f'HRTIMER_CANDIDATE_SHA256={HRTIMER_SHA}',f'HRTIMER_HEADER_P13_SHA256={HEADER_SHA}',
+                  'CPUHP_AP_HRTIMERS_DYING=NOT_REINTRODUCED','HRTIMERS_CPU_STARTING=NOT_REINTRODUCED','HRTIMERS_DEAD_CPU=PRESERVED',
+                  'CPUHP_HRTIMERS_PREPARE_TEARDOWN_HRTIMERS_DEAD_CPU=PRESERVED','HRTIMER_ONLINE_TRACKING_FROM_REVERTED_SERIES=NOT_REINTRODUCED',
+                  'UNRELATED_STABLE_HRTIMER_CHANGES=PRESERVED',f'RUNTIME_CONFLICTS_BEFORE={old_conf[target]}',f'RUNTIME_CONFLICTS_AFTER={new_conf[target]}',
+                  f'TEXT_CONFLICT_HUNKS_BEFORE={old_hunks[target]}',f'TEXT_CONFLICT_HUNKS_AFTER={new_hunks[target]}','SEMANTIC_RESOLUTIONS_BEFORE=30','SEMANTIC_RESOLUTIONS_AFTER=32','SOURCE_RESOLUTION=PASS',''])
+              write(td/'cpu-hrtimer-hotplug-android-abi-revert-preserve-semantic-resolution.txt',report)
+
+          write(audit/'34-O34-RESOLUTION-DERIVATION-GATE.txt','\n'.join([f'ASSERTIONS={len(checks)}','CPU_HRTIMER_BLOCK_5.4.300=PASS','CPU_HRTIMER_BLOCK_5.4.302=PASS','ONLY_LOGICAL_BLOCK=kernel/cpu.c+kernel/time/hrtimer.c+include/linux/hrtimer.h dependency','RESOLUTION_DERIVATION=PASS','']))
+          print(f'O34_RESOLUTION_ASSERTIONS={len(checks)}')
+          PY
+      - name: Validate incremental CPU hrtimer source delta and dependency closure
+        shell: bash
+        run: |
+          set -euo pipefail
+          validate_target() {
+            local target="$1" expected_conflicts="$2" expected_hunks="$3"
+            local td="$AUDIT_DIR/target-${target}"
+            local repo="$VERIFY_DIR/$target"
+            local patch="$td/cpu-hrtimer-android-abi-revert-preserve-semantic-resolution.patch"
+            local cpu="$td/resolved-evidence/kernel/cpu.c/RESOLVED-O34"
+            local hr="$td/resolved-evidence/kernel/time/hrtimer.c/RESOLVED-O34"
+            local ours_hr="$td/resolved-evidence/kernel/time/hrtimer.c/OURS"
+
+            rm -rf "$repo"
+            mkdir -p "$repo/kernel/time"
+            cp "$td/resolved-evidence/kernel/cpu.c/OURS" "$repo/kernel/cpu.c"
+            cp "$ours_hr" "$repo/kernel/time/hrtimer.c"
+            git -C "$repo" init -q
+            git -C "$repo" config user.name 'VEUX U5-O34 Audit'
+            git -C "$repo" config user.email 'veux-u5-o34-audit@invalid.local'
+            git -C "$repo" add kernel/cpu.c kernel/time/hrtimer.c
+            git -C "$repo" commit -qm base
+
+            git -C "$repo" apply --check --whitespace=error "$patch"
+            git -C "$repo" apply --index --whitespace=error "$patch"
+            git -C "$repo" diff --cached --check
+            test "$(git -C "$repo" diff --cached --name-only)" = 'kernel/time/hrtimer.c'
+            test "$(sha256sum "$repo/kernel/cpu.c" | awk '{print $1}')" = "$CPU_CANDIDATE_SHA256"
+            test "$(sha256sum "$repo/kernel/time/hrtimer.c" | awk '{print $1}')" = "$HRTIMER_CANDIDATE_SHA256"
+            cmp -s "$repo/kernel/cpu.c" "$cpu"
+            cmp -s "$repo/kernel/time/hrtimer.c" "$hr"
+
+            grep -Fq 'int hrtimers_dead_cpu(unsigned int scpu)' "$hr"
+            ! grep -Fq 'hrtimers_cpu_starting' "$hr"
+            ! grep -Fq 'cpu_base->online = 1;' "$hr"
+            ! grep -Fq 'WARN_ON_ONCE(!base->cpu_base->online);' "$hr"
+            grep -Fq 'if (WARN_ON_ONCE(!timer->function))' "$hr"
+            test "$(grep -Fc 'static __always_inline bool is_migration_base' "$hr")" -eq 2
+
+            grep -Fq $'.teardown.single\t= hrtimers_dead_cpu' "$cpu"
+            ! grep -Fq 'CPUHP_AP_HRTIMERS_DYING' "$cpu"
+            ! grep -Fq 'hrtimers_cpu_starting' "$cpu"
+
+            local partial="$td/P13-to-${target}-AUTO-MERGED-PARTIAL.patch"
+            test "$(grep -c '^diff --git a/kernel/time/hrtimer.c b/kernel/time/hrtimer.c$' "$partial")" -eq 1
+            test "$(grep -c '^diff --git a/include/linux/hrtimer.h b/include/linux/hrtimer.h$' "$partial" || true)" -eq 0
+            test "$(grep -c '^diff --git a/kernel/cpu.c b/kernel/cpu.c$' "$partial" || true)" -eq 0
+            ! grep -Fq 'hrtimers_cpu_starting' "$partial"
+
+            test "$(wc -l < "$td/runtime-conflicts.txt")" -eq "$expected_conflicts"
+            test "$(grep -c $'\tTEXT_CONFLICT\t' "$td/path-classification.tsv")" -eq "$expected_conflicts"
+            test "$(find "$td/conflicts" -type f -name META.txt | wc -l)" -eq "$expected_conflicts"
+            grep -Fxq "RUNTIME_CONFLICTS=$expected_conflicts" "$td/RESULT.txt"
+            grep -Fxq "TEXT_CONFLICT_HUNKS=$expected_hunks" "$td/RESULT.txt"
+            grep -Fxq 'SEMANTIC_RESOLUTIONS=32' "$td/RESULT.txt"
+            grep -Fxq 'CPU_HRTIMER_ANDROID_ABI_REVERT_PRESERVE=YES' "$td/RESULT.txt"
+
+            {
+              echo "TARGET=$target"
+              echo "CPU_SHA256=$(sha256sum "$cpu" | awk '{print $1}')"
+              echo "HRTIMER_SHA256=$(sha256sum "$hr" | awk '{print $1}')"
+              echo "INCREMENTAL_PATCH_SHA256=$(sha256sum "$patch" | awk '{print $1}')"
+              echo "UPDATED_PARTIAL_PATCH_SHA256=$(sha256sum "$partial" | awk '{print $1}')"
+              echo "RUNTIME_CONFLICTS=$expected_conflicts"
+              echo "TEXT_CONFLICT_HUNKS=$expected_hunks"
+              echo "SEMANTIC_RESOLUTIONS=32"
+              echo "GIT_APPLY_CHECK=PASS"
+              echo "GIT_DIFF_CHECK=PASS"
+              echo "COUPLED_DEPENDENCY_GATE=PASS"
+            } > "$td/o34-source-application-gate.txt"
+          }
+
+          validate_target 5.4.300 6 26
+          validate_target 5.4.302 12 37
+      - name: Finalize comprehensive O34 artifact and completeness gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -Fxq 'PROVENANCE_GATE=PASS' "$AUDIT_DIR/34-O34-HRTIMER-PROVENANCE.txt"
+          grep -Fxq 'COUPLED_DEPENDENCY_GATE=PASS' "$AUDIT_DIR/target-5.4.300/o34-source-application-gate.txt"
+          grep -Fxq 'COUPLED_DEPENDENCY_GATE=PASS' "$AUDIT_DIR/target-5.4.302/o34-source-application-gate.txt"
+          grep -Fxq 'RESOLUTION_DERIVATION=PASS' "$AUDIT_DIR/34-O34-RESOLUTION-DERIVATION-GATE.txt"
+
+          cat > "$AUDIT_DIR/34-O34-SUMMARY.txt" <<EOF
+          O34_MODE=COUPLED_RUNTIME_SOURCE_RESOLUTION
+          SOURCE_PARENT=U5-O33
+          O34_BECOMES_RUNTIME_PARENT=YES
+          LOGICAL_BLOCK=CPU_HRTIMER_HOTPLUG_ANDROID_ABI_REVERT_PRESERVE
+          SOURCE_PATHS=kernel/cpu.c+kernel/time/hrtimer.c
+          DEPENDENCY_PATH=include/linux/hrtimer.h
+          RUNTIME_CONFLICTS_5.4.300=6
+          TEXT_CONFLICT_HUNKS_5.4.300=26
+          RUNTIME_CONFLICTS_5.4.302=12
+          TEXT_CONFLICT_HUNKS_5.4.302=37
+          SEMANTIC_RESOLUTIONS=32
+          FULL_O33_EVIDENCE_CARRIED_FORWARD=YES
+          KERNEL_BUILD_PERFORMED=NO
+          AK3_CREATED=NO
+          FLASH_PERFORMED=NO
+          DEVICE_PASS=NO
+          O34_RUNTIME_GATE=PASS
+          EOF
+
+          rm -f "$AUDIT_DIR/99-FILE-LIST.txt" "$AUDIT_DIR/SHA256SUMS.txt"
+          file_count="$(find "$AUDIT_DIR" -type f | wc -l)"
+          byte_count="$(du -sb "$AUDIT_DIR" | awk '{print $1}')"
+          patch300_bytes="$(stat -c '%s' "$AUDIT_DIR/target-5.4.300/P13-to-5.4.300-AUTO-MERGED-PARTIAL.patch")"
+          patch302_bytes="$(stat -c '%s' "$AUDIT_DIR/target-5.4.302/P13-to-5.4.302-AUTO-MERGED-PARTIAL.patch")"
+
+          test "$file_count" -ge 285
+          test "$byte_count" -ge 18000000
+          test "$patch300_bytes" -ge 4000000
+          test "$patch302_bytes" -ge 4400000
+          test "$(wc -l < "$AUDIT_DIR/lineage/O33-SHA256SUMS.original.txt")" -eq "$O33_INTERNAL_SHA_COUNT"
+          grep -Fxq 'O33_RUNTIME_GATE=PASS' "$AUDIT_DIR/lineage/O33-PARENT-GATE.txt"
+
+          cat > "$AUDIT_DIR/99-O34-FINAL-GATE.txt" <<EOF
+          O33_EXACT_ARTIFACT=PASS
+          O33_INTERNAL_SHA256SUMS=$O33_INTERNAL_SHA_COUNT/$O33_INTERNAL_SHA_COUNT PASS
+          O33_RUNTIME_GATE=PASS
+          HRTIMER_PROVENANCE_GATE=PASS
+          CPU_HRTIMER_ANDROID_ABI_REVERT_PRESERVE_5.4.300=PASS
+          CPU_HRTIMER_ANDROID_ABI_REVERT_PRESERVE_5.4.302=PASS
+          INCREMENTAL_PATCH_APPLY_5.4.300=PASS
+          INCREMENTAL_PATCH_APPLY_5.4.302=PASS
+          RUNTIME_CONFLICTS_5.4.300=6
+          TEXT_CONFLICT_HUNKS_5.4.300=26
+          RUNTIME_CONFLICTS_5.4.302=12
+          TEXT_CONFLICT_HUNKS_5.4.302=37
+          SEMANTIC_RESOLUTIONS=32
+          LOGICAL_SOURCE_BLOCK=kernel/cpu.c+kernel/time/hrtimer.c
+          DEPENDENCY_PATH=include/linux/hrtimer.h
+          ARTIFACT_FILE_COUNT=$file_count
+          ARTIFACT_UNCOMPRESSED_BYTES=$byte_count
+          PARTIAL_PATCH_5.4.300_BYTES=$patch300_bytes
+          PARTIAL_PATCH_5.4.302_BYTES=$patch302_bytes
+          COMPREHENSIVE_ARTIFACT_COMPLETENESS=PASS
+          CURRENT_RUNTIME_PARENT=U5-O34
+          KERNEL_BUILD_PERFORMED=NO
+          AK3_CREATED=NO
+          FLASH_PERFORMED=NO
+          DEVICE_PASS=NO
+          O34_FINAL=RUNTIME_GREEN_PASS
+          EOF
+
+          (
+            cd "$AUDIT_DIR"
+            find . -type f ! -name SHA256SUMS.txt -print | LC_ALL=C sort
+          ) > "$AUDIT_DIR/99-FILE-LIST.txt"
+          (
+            cd "$AUDIT_DIR"
+            find . -type f ! -name SHA256SUMS.txt -print0 | LC_ALL=C sort -z | xargs -0 sha256sum > SHA256SUMS.txt
+            sha256sum -c SHA256SUMS.txt
+          ) | tee "$RUNNER_TEMP/o34-final-sha256-check.txt"
+          test "$(grep -c 'OK$' "$RUNNER_TEMP/o34-final-sha256-check.txt")" -eq "$(wc -l < "$AUDIT_DIR/SHA256SUMS.txt")"
+          echo "O34 comprehensive artifact files: $file_count"
+          echo "O34 comprehensive artifact bytes: $byte_count"
+          echo 'O34_FINAL=RUNTIME_GREEN_PASS'
+      - name: Upload one comprehensive U5-O34 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: VEUX-GEN1-U5-O34-cpu-hrtimer-android-abi-revert-preserve-semantic-resolution-official-stable-5.4.300-5.4.302-port-audit
+          path: ${{ env.AUDIT_DIR }}
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 6
+          include-hidden-files: true
