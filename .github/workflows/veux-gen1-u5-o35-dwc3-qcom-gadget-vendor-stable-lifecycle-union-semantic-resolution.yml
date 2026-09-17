@@ -1,0 +1,629 @@
+name: VEUX GEN1 U5-O35 DWC3 QCOM Gadget Vendor Stable Lifecycle Union Semantic Resolution
+
+'on':
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: veux-gen1-u5-o35-dwc3-qcom-gadget-union-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      TZ: UTC
+      LANG: C.UTF-8
+      LC_ALL: C.UTF-8
+
+      O34_ARTIFACT_ID: '10489097759'
+      O34_ARTIFACT_NAME: VEUX-GEN1-U5-O34-cpu-hrtimer-android-abi-revert-preserve-semantic-resolution-official-stable-5.4.300-5.4.302-port-audit
+      O34_ARTIFACT_SHA256: f3d439c63243e8473cb0d3220afc1af4dd93aaba89b0adb7ac15bd2cf2bf5a1d
+      O34_INTERNAL_SHA_COUNT: '300'
+
+      QCOM_P13_SHA256: dfba79a2e8ae722f7e0407dec4cd7e5cc6aa9cc21480da5f9345b3e9ea566929
+      GADGET_P13_SHA256: 34938ef04d069a8f7eaa4b7b5f5948691259aa69a122bfb103936b4263e01805
+      QCOM_CANDIDATE_SHA256: 8f0a1f21a7741ed306a011c98372d1317ea81179c9c66023878c7651aa113ca7
+      GADGET_CANDIDATE_SHA256: 52d4065a92fcd27ce36ff6439b2d45ed5a1cbfbe9e70b69b606c61d32759e5c7
+
+      QCOM_RESOURCE_CLEANUP_COMMIT: 51392a1879ff06dc21b68aef4825f6ef68a7be42
+      RUN_STOP_TIMEOUT_WORKAROUND_COMMIT: d3a8c28426fc1fb3252753a9f1db0d691ffc21b0
+      EVENT_COUNT_BOUNDS_COMMIT: 63ccd26cd1f6600421795f6ca3e625076be06c9f
+
+    steps:
+      - name: Initialize U5-O35 comprehensive evidence workspace
+        shell: bash
+        run: |
+          set -euo pipefail
+          O34_DIR="$RUNNER_TEMP/u5-o35-o34-parent"
+          AUDIT_DIR="$GITHUB_WORKSPACE/u5-o35-evidence"
+          VERIFY_DIR="$RUNNER_TEMP/u5-o35-verify"
+          rm -rf "$O34_DIR" "$AUDIT_DIR" "$VERIFY_DIR"
+          mkdir -p "$O34_DIR" "$AUDIT_DIR" "$VERIFY_DIR"
+          {
+            echo "O34_DIR=$O34_DIR"
+            echo "AUDIT_DIR=$AUDIT_DIR"
+            echo "VERIFY_DIR=$VERIFY_DIR"
+          } >> "$GITHUB_ENV"
+
+          cat > "$AUDIT_DIR/35-O35-PLAN.txt" <<EOF
+          U5-O35 DWC3 QCOM + GADGET VENDOR/STABLE LIFECYCLE UNION SEMANTIC RESOLUTION
+
+          Runtime source parent: U5-O34 artifact $O34_ARTIFACT_ID
+
+          One logical DWC3 block:
+            drivers/usb/dwc3/dwc3-qcom.c
+            drivers/usb/dwc3/gadget.c
+
+          Semantic rule:
+          - preserve P13 QCOM USB3_GDSC enable/unwind handling;
+          - preserve Stable DWC3 child platform-device cleanup while removing the now-obsolete reset_assert label;
+          - preserve P13 device-core soft-reset and GSI-specific run/stop lifecycle;
+          - port Stable USB2 PHY SUSPHY/ENBLSLPM clear/restore specifically into the P13 vendor run/stop implementation, not into the P13 soft-reset helper;
+          - preserve P13 halted-controller event acknowledgement guard;
+          - add the Stable event-count <= event-buffer-length safety check before memcpy.
+
+          Expected result:
+            5.4.300: conflicts 6 -> 4, hunks 26 -> 22
+            5.4.302: conflicts 12 -> 10, hunks 37 -> 33
+            semantic resolutions 32 -> 34
+
+          Full O34 evidence is carried forward. No kernel build. No AK3. No flash. No Device PASS claim.
+          EOF
+
+      - name: Download verify and restore complete O34 Runtime-PASS parent
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          meta="$RUNNER_TEMP/o34-artifact-meta.json"
+          zip="$RUNNER_TEMP/o34-artifact.zip"
+
+          curl --fail --silent --show-error --location --retry 3 --retry-delay 2 \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${O34_ARTIFACT_ID}" \
+            -o "$meta"
+
+          python3 - "$meta" "$O34_ARTIFACT_ID" "$O34_ARTIFACT_NAME" "$O34_ARTIFACT_SHA256" <<'PY'
+          import json,sys
+          path,eid,ename,esha=sys.argv[1:]
+          with open(path,encoding='utf-8') as f:
+              m=json.load(f)
+          assert str(m.get('id'))==eid,(m.get('id'),eid)
+          assert m.get('name')==ename,(m.get('name'),ename)
+          assert m.get('expired') is False,'O34 artifact expired'
+          d=m.get('digest')
+          assert d in (None,'','sha256:'+esha),(d,esha)
+          print('O34_METADATA=PASS')
+          PY
+
+          curl --fail --silent --show-error --location --retry 3 --retry-delay 2 \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${O34_ARTIFACT_ID}/zip" \
+            -o "$zip"
+
+          echo "$O34_ARTIFACT_SHA256  $zip" | sha256sum -c -
+
+          python3 - "$zip" "$O34_DIR" <<'PY'
+          from pathlib import Path
+          import sys,zipfile
+          archive,destination=sys.argv[1:]
+          root=Path(destination).resolve()
+          with zipfile.ZipFile(archive) as zf:
+              for info in zf.infolist():
+                  out=(root/info.filename).resolve()
+                  if out != root and root not in out.parents:
+                      raise SystemExit(f'unsafe archive member: {info.filename}')
+              zf.extractall(root)
+          PY
+
+          test -f "$O34_DIR/SHA256SUMS.txt"
+          (
+            cd "$O34_DIR"
+            sha256sum -c SHA256SUMS.txt
+          ) | tee "$RUNNER_TEMP/o34-internal-sha.txt"
+          test "$(grep -c 'OK$' "$RUNNER_TEMP/o34-internal-sha.txt")" -eq "$O34_INTERNAL_SHA_COUNT"
+          test "$(wc -l < "$O34_DIR/SHA256SUMS.txt")" -eq "$O34_INTERNAL_SHA_COUNT"
+
+          grep -Fxq 'O34_FINAL=RUNTIME_GREEN_PASS' "$O34_DIR/99-O34-FINAL-GATE.txt"
+          grep -Fxq 'CURRENT_RUNTIME_PARENT=U5-O34' "$O34_DIR/99-O34-FINAL-GATE.txt"
+          grep -Fxq 'RUNTIME_CONFLICTS_5.4.300=6' "$O34_DIR/99-O34-FINAL-GATE.txt"
+          grep -Fxq 'TEXT_CONFLICT_HUNKS_5.4.300=26' "$O34_DIR/99-O34-FINAL-GATE.txt"
+          grep -Fxq 'RUNTIME_CONFLICTS_5.4.302=12' "$O34_DIR/99-O34-FINAL-GATE.txt"
+          grep -Fxq 'TEXT_CONFLICT_HUNKS_5.4.302=37' "$O34_DIR/99-O34-FINAL-GATE.txt"
+          grep -Fxq 'SEMANTIC_RESOLUTIONS=32' "$O34_DIR/99-O34-FINAL-GATE.txt"
+          grep -Fxq 'COMPREHENSIVE_ARTIFACT_COMPLETENESS=PASS' "$O34_DIR/99-O34-FINAL-GATE.txt"
+
+          cp -a "$O34_DIR/." "$AUDIT_DIR/"
+          mkdir -p "$AUDIT_DIR/lineage"
+          cp "$O34_DIR/SHA256SUMS.txt" "$AUDIT_DIR/lineage/O34-SHA256SUMS.original.txt"
+          cp "$meta" "$AUDIT_DIR/lineage/O34-ARTIFACT-METADATA.json"
+          cp "$RUNNER_TEMP/o34-internal-sha.txt" "$AUDIT_DIR/lineage/O34-INTERNAL-SHA256-CHECK.txt"
+          sha256sum "$zip" > "$AUDIT_DIR/lineage/O34-ZIP-SHA256.txt"
+          rm -f "$AUDIT_DIR/SHA256SUMS.txt"
+
+          cat > "$AUDIT_DIR/lineage/O34-PARENT-GATE.txt" <<EOF
+          O34_ARTIFACT_ID=$O34_ARTIFACT_ID
+          O34_ARTIFACT_SHA256=$O34_ARTIFACT_SHA256
+          O34_INTERNAL_SHA256SUMS=$O34_INTERNAL_SHA_COUNT/$O34_INTERNAL_SHA_COUNT PASS
+          O34_RUNTIME_GATE=PASS
+          RUNTIME_SOURCE_PARENT=U5-O34
+          EOF
+
+      - name: Verify DWC3 Stable provenance
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          qcom_json="$RUNNER_TEMP/qcom-cleanup.json"
+          runstop_json="$RUNNER_TEMP/run-stop-workaround.json"
+          bounds_json="$RUNNER_TEMP/event-count-bounds.json"
+
+          curl --fail --silent --show-error --location --retry 3 \
+            -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/gregkh/linux/commits/$QCOM_RESOURCE_CLEANUP_COMMIT" -o "$qcom_json"
+          curl --fail --silent --show-error --location --retry 3 \
+            -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/gregkh/linux/commits/$RUN_STOP_TIMEOUT_WORKAROUND_COMMIT" -o "$runstop_json"
+          curl --fail --silent --show-error --location --retry 3 \
+            -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/gregkh/linux/commits/$EVENT_COUNT_BOUNDS_COMMIT" -o "$bounds_json"
+
+          python3 - "$qcom_json" "$runstop_json" "$bounds_json" "$AUDIT_DIR/35-O35-DWC3-PROVENANCE.txt" <<'PY'
+          import json,os,sys
+          qp,rp,bp,out=sys.argv[1:]
+          def load(p):
+              with open(p,encoding='utf-8') as f:return json.load(f)
+          q,r,b=map(load,(qp,rp,bp))
+          assert q['sha']==os.environ['QCOM_RESOURCE_CLEANUP_COMMIT']
+          assert r['sha']==os.environ['RUN_STOP_TIMEOUT_WORKAROUND_COMMIT']
+          assert b['sha']==os.environ['EVENT_COUNT_BOUNDS_COMMIT']
+          qm=q['commit']['message']; rm=r['commit']['message']; bm=b['commit']['message']
+          assert qm.startswith('USB: dwc3: qcom: fix resource leaks on probe deferral')
+          assert rm.startswith('usb: dwc3: Fix timeout issue during controller enter/exit from halt state')
+          assert bm.startswith('usb: dwc3: gadget: check that event count does not exceed event buffer length')
+          assert 'drivers/usb/dwc3/dwc3-qcom.c' in {x['filename'] for x in q.get('files',[])}
+          assert 'drivers/usb/dwc3/gadget.c' in {x['filename'] for x in r.get('files',[])}
+          assert 'drivers/usb/dwc3/gadget.c' in {x['filename'] for x in b.get('files',[])}
+          assert 'GUSB2PHYCFG.ENBLSLPM' in rm and 'GUSB2PHYCFG.SUSPHY' in rm
+          assert 'out-of-bounds access' in bm
+          with open(out,'w',encoding='utf-8',newline='\n') as f:
+              f.write(f'QCOM_RESOURCE_CLEANUP_COMMIT={q["sha"]}\n')
+              f.write(f'RUN_STOP_TIMEOUT_WORKAROUND_COMMIT={r["sha"]}\n')
+              f.write(f'EVENT_COUNT_BOUNDS_COMMIT={b["sha"]}\n')
+              f.write('QCOM_CHILD_RESOURCE_CLEANUP_PROVENANCE=PASS\n')
+              f.write('USB2_PHY_RUN_STOP_WORKAROUND_PROVENANCE=PASS\n')
+              f.write('EVENT_BUFFER_BOUNDS_PROVENANCE=PASS\n')
+              f.write('PROVENANCE_GATE=PASS\n')
+          print('O35_DWC3_PROVENANCE=PASS')
+          PY
+
+      - name: Resolve coupled DWC3 QCOM and gadget block
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from __future__ import annotations
+          from pathlib import Path
+          import difflib,hashlib,os,re,shutil
+
+          audit=Path(os.environ['AUDIT_DIR'])
+          old_conf={'5.4.300':6,'5.4.302':12}
+          old_hunks={'5.4.300':26,'5.4.302':37}
+          new_conf={'5.4.300':4,'5.4.302':10}
+          new_hunks={'5.4.300':22,'5.4.302':33}
+          checks=[]
+
+          def gate(c,label):
+              if not c: raise AssertionError(label)
+              checks.append(label)
+          def read(p): return Path(p).read_text(encoding='utf-8')
+          def write(p,s): Path(p).write_text(s,encoding='utf-8',newline='\n')
+          def sha(s): return hashlib.sha256(s.encode()).hexdigest()
+          def conflicts(s):
+              return list(re.finditer(r'<<<<<<<[^\n]*\n(.*?)\|\|\|\|\|\|\|[^\n]*\n(.*?)=======\n(.*?)>>>>>>>[^\n]*\n',s,re.S))
+
+          def derive_qcom(preview,target):
+              ms=conflicts(preview)
+              gate(len(ms)==1,f'{target}: qcom one diff3 conflict')
+              ours,base,theirs=ms[0].group(1),ms[0].group(2),ms[0].group(3)
+              gate('regulator_disable(qcom->gdsc)' in ours,f'{target}: vendor GDSC unwind present')
+              gate('reset_assert:' in base,f'{target}: base reset_assert label present')
+              gate(theirs.strip()=='',f'{target}: Stable side removes obsolete reset cleanup tail')
+              union='''\tif (qcom->gdsc)\n\t\tif (regulator_disable(qcom->gdsc))\n\t\t\tdev_err(qcom->dev, "unable to disable usb3 gdsc\\n");\n'''
+              s=preview[:ms[0].start()]+union+preview[ms[0].end():]
+              gate('reset_assert:' not in s and 'goto reset_assert' not in s,f'{target}: obsolete reset label/gotos absent')
+              gate(s.count('regulator_enable(qcom->gdsc)')==1,f'{target}: GDSC enable retained once')
+              gate(s.count('regulator_disable(qcom->gdsc)')==2,f'{target}: GDSC disable paths retained twice')
+              gate(s.count('platform_device_del(qcom->dwc3);')>=2,f'{target}: Stable child delete cleanup retained')
+              gate(s.count('platform_device_put(qcom->dwc3);')>=2,f'{target}: Stable child put cleanup retained')
+              return s
+
+          def derive_gadget(preview,target):
+              ms=conflicts(preview)
+              gate(len(ms)==3,f'{target}: gadget three diff3 conflicts')
+              gate('retries = 10' in ms[0].group(1),f'{target}: P13 soft-reset retry declaration')
+              gate('saved_config = 0' in ms[0].group(3),f'{target}: Stable saved-config aligned against P13 soft-reset')
+              gate('failed to %s controller' in ms[1].group(1),f'{target}: P13 timeout diagnostics')
+              gate('if (saved_config)' in ms[1].group(3),f'{target}: Stable restore block')
+              gate('pullups_connected' in ms[2].group(1),f'{target}: P13 halted-event guard')
+              gate('count > evt->length' in ms[2].group(3),f'{target}: Stable event-count bounds guard')
+
+              s=preview
+              reps=[]
+              reps.append((ms[0].start(),ms[0].end(),ms[0].group(1)))
+              theirs2=ms[1].group(3)
+              restore=theirs2[:theirs2.index('\n\tif (!timeout)')]
+              reps.append((ms[1].start(),ms[1].end(),restore+'\n'+ms[1].group(1)))
+              reps.append((ms[2].start(),ms[2].end(),ms[2].group(1)+ms[2].group(3)))
+              for a,b,r in reversed(reps):
+                  s=s[:a]+r+s[b:]
+
+              # diff3 places the generic Stable run-stop workaround inside the
+              # P13 vendor-only soft-reset helper. Remove it there and port it
+              # into the actual P13 run-stop implementation below.
+              fs=s.index('static int dwc3_device_core_soft_reset')
+              fr=s.index('static int dwc3_gadget_run_stop',fs)
+              soft=s[fs:fr]
+              cs=soft.index('\n\t/*\n\t * When operating in USB 2.0 speeds')
+              ca=soft.index('\n\treg = dwc3_readl(dwc->regs, DWC3_DCTL);',cs)
+              soft=soft[:cs]+soft[ca:]
+              s=s[:fs]+soft+s[fr:]
+
+              rs=s.index('static int dwc3_gadget_run_stop')
+              re_=s.index('static int dwc3_gadget_run_stop_util',rs)
+              run=s[rs:re_]
+              decl='''\tu32\t\t\treg, reg1;\n\tu32\t\t\ttimeout = 1500;\n'''
+              gate(run.count(decl)==1,f'{target}: vendor run-stop declaration unique')
+              run=run.replace(decl,decl+'\tu32\t\t\tsaved_config = 0;\n',1)
+              anchor='\tdbg_event(0xFF, "run_stop", is_on);\n'
+              gate(run.count(anchor)==1,f'{target}: vendor run-stop entry anchor unique')
+              clear=(
+                  '\n\t/*\n'
+                  '\t * Clear USB2 suspend-PHY bits around RUN/STOP and restore them after\n'
+                  '\t * the controller reaches the requested halt state.\n'
+                  '\t */\n'
+                  '\treg = dwc3_readl(dwc->regs, DWC3_GUSB2PHYCFG(0));\n'
+                  '\tif (reg & DWC3_GUSB2PHYCFG_SUSPHY) {\n'
+                  '\t\tsaved_config |= DWC3_GUSB2PHYCFG_SUSPHY;\n'
+                  '\t\treg &= ~DWC3_GUSB2PHYCFG_SUSPHY;\n'
+                  '\t}\n\n'
+                  '\tif (reg & DWC3_GUSB2PHYCFG_ENBLSLPM) {\n'
+                  '\t\tsaved_config |= DWC3_GUSB2PHYCFG_ENBLSLPM;\n'
+                  '\t\treg &= ~DWC3_GUSB2PHYCFG_ENBLSLPM;\n'
+                  '\t}\n\n'
+                  '\tif (saved_config)\n'
+                  '\t\tdwc3_writel(dwc->regs, DWC3_GUSB2PHYCFG(0), reg);\n'
+              )
+              run=run.replace(anchor,anchor+clear,1)
+              s=s[:rs]+run+s[re_:]
+
+              gate('<<<<<<<' not in s and '|||||||' not in s and '>>>>>>>' not in s,f'{target}: no conflict markers remain')
+              soft=s[s.index('static int dwc3_device_core_soft_reset'):s.index('#define MIN_RUN_STOP_DELAY_MS')]
+              gate('saved_config' not in soft,f'{target}: Stable run-stop workaround not left in soft-reset')
+              gate('retries = 10' in soft,f'{target}: P13 device-core soft-reset retry policy preserved')
+              run=s[s.index('static int dwc3_gadget_run_stop'):s.index('static int dwc3_gadget_run_stop_util')]
+              gate('timeout = 1500' in run,f'{target}: P13 vendor run-stop timeout preserved')
+              gate(run.count('saved_config = 0')==1,f'{target}: saved_config declared once')
+              gate(run.count('DWC3_GUSB2PHYCFG_SUSPHY')==3,f'{target}: SUSPHY save-clear-restore refs exact')
+              gate(run.count('DWC3_GUSB2PHYCFG_ENBLSLPM')==3,f'{target}: ENBLSLPM save-clear-restore refs exact')
+              gate('DWC3_GSI_EVT_BUF_CLEAR' in run and 'DWC3_CONTROLLER_NOTIFY_CLEAR_DB' in run,f'{target}: P13 GSI halt notifications retained')
+              gate('failed to %s controller' in run and 'STARTTOUT' in run and 'STOPTOUT' in run,f'{target}: P13 timeout diagnostics retained')
+              ev=s.index('/* Controller is halted; ignore new/pending events */')
+              bound=s.index('if (count > evt->length)',ev)
+              copy=s.index('amount = min(count, evt->length - evt->lpos);',bound)
+              gate(ev < bound < copy,f'{target}: halt guard then Stable bounds check before memcpy')
+              return s
+
+          def make_patch(rel,ours,cand):
+              body=''.join(difflib.unified_diff(ours.splitlines(keepends=True),cand.splitlines(keepends=True),fromfile=f'a/{rel}',tofile=f'b/{rel}',n=3))
+              gate(body.startswith(f'--- a/{rel}\n+++ b/{rel}\n'),f'{rel}: incremental diff headers valid')
+              return f'diff --git a/{rel} b/{rel}\n'+body
+
+          hashes={}
+          for target in ('5.4.300','5.4.302'):
+              td=audit/f'target-{target}'
+              qdir=td/'conflicts/drivers/usb/dwc3/dwc3-qcom.c'
+              gdir=td/'conflicts/drivers/usb/dwc3/gadget.c'
+              gate(qdir.is_dir(),f'{target}: qcom conflict directory exists')
+              gate(gdir.is_dir(),f'{target}: gadget conflict directory exists')
+              gate('MERGE_CONFLICT_HUNKS=1' in read(qdir/'META.txt'),f'{target}: qcom one hunk')
+              gate('MERGE_CONFLICT_HUNKS=3' in read(gdir/'META.txt'),f'{target}: gadget three hunks')
+
+              qours=read(qdir/'OURS'); gours=read(gdir/'OURS')
+              gate(sha(qours)==os.environ['QCOM_P13_SHA256'],f'{target}: exact P13 qcom source anchor')
+              gate(sha(gours)==os.environ['GADGET_P13_SHA256'],f'{target}: exact P13 gadget source anchor')
+              qc=derive_qcom(read(qdir/'MERGE-PREVIEW'),target)
+              gc=derive_gadget(read(gdir/'MERGE-PREVIEW'),target)
+              gate(sha(qc)==os.environ['QCOM_CANDIDATE_SHA256'],f'{target}: qcom candidate SHA exact')
+              gate(sha(gc)==os.environ['GADGET_CANDIDATE_SHA256'],f'{target}: gadget candidate SHA exact')
+              hashes[(target,'qcom')]=sha(qc); hashes[(target,'gadget')]=sha(gc)
+
+              qres=td/'resolved-evidence/drivers/usb/dwc3/dwc3-qcom.c'
+              gres=td/'resolved-evidence/drivers/usb/dwc3/gadget.c'
+              qres.parent.mkdir(parents=True,exist_ok=True)
+              gres.parent.mkdir(parents=True,exist_ok=True)
+              shutil.move(str(qdir),str(qres))
+              shutil.move(str(gdir),str(gres))
+              write(qres/'RESOLVED-O35',qc)
+              write(gres/'RESOLVED-O35',gc)
+
+              block_patch=(make_patch('drivers/usb/dwc3/dwc3-qcom.c',qours,qc)+
+                           make_patch('drivers/usb/dwc3/gadget.c',gours,gc))
+              patch_path=td/'dwc3-qcom-gadget-vendor-stable-lifecycle-union-semantic-resolution.patch'
+              write(patch_path,block_patch)
+
+              partial=td/f'P13-to-{target}-AUTO-MERGED-PARTIAL.patch'
+              ptext=read(partial)
+              gate('diff --git a/drivers/usb/dwc3/dwc3-qcom.c b/drivers/usb/dwc3/dwc3-qcom.c' not in ptext,f'{target}: qcom absent from O34 cumulative patch')
+              gate('diff --git a/drivers/usb/dwc3/gadget.c b/drivers/usb/dwc3/gadget.c' not in ptext,f'{target}: gadget absent from O34 cumulative patch')
+              if ptext and not ptext.endswith('\n'): ptext+='\n'
+              ptext+=block_patch
+              write(partial,ptext)
+
+              rpath=td/'runtime-conflicts.txt'
+              lines=read(rpath).splitlines()
+              gate(len(lines)==old_conf[target],f'{target}: O34 runtime conflict count exact')
+              for rel in ('drivers/usb/dwc3/dwc3-qcom.c','drivers/usb/dwc3/gadget.c'):
+                  gate(lines.count(rel)==1,f'{target}: {rel} listed once')
+              lines=[x for x in lines if x not in ('drivers/usb/dwc3/dwc3-qcom.c','drivers/usb/dwc3/gadget.c')]
+              gate(len(lines)==new_conf[target],f'{target}: exactly two DWC3 conflict paths removed')
+              write(rpath,'\n'.join(lines)+'\n')
+
+              cpath=td/'path-classification.tsv'
+              rows=read(cpath).splitlines(); hits=0
+              for i,row in enumerate(rows):
+                  cols=row.split('\t')
+                  if len(cols)>=3 and cols[1] in ('drivers/usb/dwc3/dwc3-qcom.c','drivers/usb/dwc3/gadget.c'):
+                      gate(cols[2]=='TEXT_CONFLICT',f'{target}: {cols[1]} prior class exact')
+                      cols[2]='DWC3_VENDOR_STABLE_LIFECYCLE_UNION_SEMANTIC_RESOLUTION'
+                      rows[i]='\t'.join(cols); hits+=1
+              gate(hits==2,f'{target}: exactly two DWC3 classification rows updated')
+              gate(sum(1 for r in rows[1:] if r.split('\t')[2]=='TEXT_CONFLICT')==new_conf[target],f'{target}: remaining TEXT_CONFLICT count exact')
+              write(cpath,'\n'.join(rows)+'\n')
+
+              result_path=td/'RESULT.txt'; result=read(result_path)
+              repl={
+                  f'TEXT_CONFLICT={old_conf[target]}\n':f'TEXT_CONFLICT={new_conf[target]}\n',
+                  f'RUNTIME_CONFLICTS={old_conf[target]}\n':f'RUNTIME_CONFLICTS={new_conf[target]}\n',
+                  f'TEXT_CONFLICT_HUNKS={old_hunks[target]}\n':f'TEXT_CONFLICT_HUNKS={new_hunks[target]}\n',
+                  'SEMANTIC_RESOLUTIONS=32\n':'SEMANTIC_RESOLUTIONS=34\n',
+              }
+              for a,b in repl.items():
+                  gate(result.count(a)==1,f'{target}: RESULT marker {a.strip()} unique')
+                  result=result.replace(a,b,1)
+              anchor='CPU_HRTIMER_ANDROID_ABI_REVERT_PRESERVE_SEMANTIC_RESOLUTIONS=2\n'
+              gate(result.count(anchor)==1,f'{target}: RESULT semantic insertion anchor unique')
+              result=result.replace(anchor,anchor+'DWC3_QCOM_GADGET_VENDOR_STABLE_LIFECYCLE_UNION_SEMANTIC_RESOLUTIONS=2\n',1)
+              anchor='CPU_HRTIMER_ANDROID_ABI_REVERT_PRESERVE=YES\n'
+              gate(result.count(anchor)==1,f'{target}: RESULT YES insertion anchor unique')
+              result=result.replace(anchor,anchor+'DWC3_QCOM_GADGET_VENDOR_STABLE_LIFECYCLE_UNION=YES\n',1)
+              write(result_path,result)
+
+              report='\n'.join([
+                  f'TARGET={target}',
+                  'LOGICAL_BLOCK=DWC3_QCOM_GADGET_VENDOR_STABLE_LIFECYCLE_UNION',
+                  'SOURCE_PATH_1=drivers/usb/dwc3/dwc3-qcom.c',
+                  'SOURCE_PATH_2=drivers/usb/dwc3/gadget.c',
+                  f'QCOM_CANDIDATE_SHA256={sha(qc)}',
+                  f'GADGET_CANDIDATE_SHA256={sha(gc)}',
+                  f'QCOM_RESOURCE_CLEANUP_COMMIT={os.environ["QCOM_RESOURCE_CLEANUP_COMMIT"]}',
+                  f'RUN_STOP_TIMEOUT_WORKAROUND_COMMIT={os.environ["RUN_STOP_TIMEOUT_WORKAROUND_COMMIT"]}',
+                  f'EVENT_COUNT_BOUNDS_COMMIT={os.environ["EVENT_COUNT_BOUNDS_COMMIT"]}',
+                  'P13_GDSC_ENABLE_AND_UNWIND=PRESERVED',
+                  'STABLE_DWC3_CHILD_DEVICE_CLEANUP=PRESERVED',
+                  'OBSOLETE_RESET_ASSERT_LABEL=REMOVED',
+                  'P13_DEVICE_CORE_SOFT_RESET=PRESERVED',
+                  'P13_GSI_RUN_STOP_LIFECYCLE=PRESERVED',
+                  'STABLE_USB2_PHY_RUN_STOP_CLEAR_RESTORE=PORTED_TO_VENDOR_RUN_STOP',
+                  'P13_HALTED_EVENT_ACK_GUARD=PRESERVED',
+                  'STABLE_EVENT_COUNT_BOUNDS_CHECK=PRESERVED',
+                  f'RUNTIME_CONFLICTS_BEFORE={old_conf[target]}',
+                  f'RUNTIME_CONFLICTS_AFTER={new_conf[target]}',
+                  f'TEXT_CONFLICT_HUNKS_BEFORE={old_hunks[target]}',
+                  f'TEXT_CONFLICT_HUNKS_AFTER={new_hunks[target]}',
+                  'SEMANTIC_RESOLUTIONS_BEFORE=32',
+                  'SEMANTIC_RESOLUTIONS_AFTER=34',
+                  'SOURCE_RESOLUTION=PASS',''])
+              write(td/'dwc3-qcom-gadget-vendor-stable-lifecycle-union-semantic-resolution.txt',report)
+
+          gate(hashes[('5.4.300','qcom')]==hashes[('5.4.302','qcom')],'qcom candidate identical across both targets')
+          gate(hashes[('5.4.300','gadget')]==hashes[('5.4.302','gadget')],'gadget candidate identical across both targets')
+
+          write(audit/'35-O35-RESOLUTION-DERIVATION-GATE.txt','\n'.join([
+              f'ASSERTIONS={len(checks)}',
+              'DWC3_BLOCK_5.4.300=PASS',
+              'DWC3_BLOCK_5.4.302=PASS',
+              'ONLY_LOGICAL_BLOCK=drivers/usb/dwc3/dwc3-qcom.c+drivers/usb/dwc3/gadget.c',
+              'RESOLUTION_DERIVATION=PASS','']))
+          print(f'O35_RESOLUTION_ASSERTIONS={len(checks)}')
+          PY
+
+      - name: Validate incremental DWC3 block and dependency closure
+        shell: bash
+        run: |
+          set -euo pipefail
+          validate_target() {
+            local target="$1" expected_conflicts="$2" expected_hunks="$3"
+            local td="$AUDIT_DIR/target-${target}"
+            local repo="$VERIFY_DIR/$target"
+            local patch="$td/dwc3-qcom-gadget-vendor-stable-lifecycle-union-semantic-resolution.patch"
+            local qcom="$td/resolved-evidence/drivers/usb/dwc3/dwc3-qcom.c/RESOLVED-O35"
+            local gadget="$td/resolved-evidence/drivers/usb/dwc3/gadget.c/RESOLVED-O35"
+
+            rm -rf "$repo"
+            mkdir -p "$repo/drivers/usb/dwc3"
+            cp "$td/resolved-evidence/drivers/usb/dwc3/dwc3-qcom.c/OURS" "$repo/drivers/usb/dwc3/dwc3-qcom.c"
+            cp "$td/resolved-evidence/drivers/usb/dwc3/gadget.c/OURS" "$repo/drivers/usb/dwc3/gadget.c"
+            git -C "$repo" init -q
+            git -C "$repo" config user.name 'VEUX U5-O35 Audit'
+            git -C "$repo" config user.email 'veux-u5-o35-audit@invalid.local'
+            git -C "$repo" add drivers/usb/dwc3/dwc3-qcom.c drivers/usb/dwc3/gadget.c
+            git -C "$repo" commit -qm base
+
+            git -C "$repo" apply --check --whitespace=error "$patch"
+            git -C "$repo" apply --index --whitespace=error "$patch"
+            git -C "$repo" diff --cached --check
+            mapfile -t changed < <(git -C "$repo" diff --cached --name-only)
+            test "${#changed[@]}" -eq 2
+            test "${changed[0]}" = 'drivers/usb/dwc3/dwc3-qcom.c'
+            test "${changed[1]}" = 'drivers/usb/dwc3/gadget.c'
+
+            test "$(sha256sum "$repo/drivers/usb/dwc3/dwc3-qcom.c" | awk '{print $1}')" = "$QCOM_CANDIDATE_SHA256"
+            test "$(sha256sum "$repo/drivers/usb/dwc3/gadget.c" | awk '{print $1}')" = "$GADGET_CANDIDATE_SHA256"
+            cmp -s "$repo/drivers/usb/dwc3/dwc3-qcom.c" "$qcom"
+            cmp -s "$repo/drivers/usb/dwc3/gadget.c" "$gadget"
+
+            grep -Fq 'regulator_enable(qcom->gdsc)' "$qcom"
+            test "$(grep -Fc 'regulator_disable(qcom->gdsc)' "$qcom")" -eq 2
+            ! grep -Fq 'reset_assert:' "$qcom"
+            ! grep -Fq 'goto reset_assert' "$qcom"
+            grep -Fq 'platform_device_del(qcom->dwc3);' "$qcom"
+            grep -Fq 'platform_device_put(qcom->dwc3);' "$qcom"
+
+            grep -Fq 'static int dwc3_device_core_soft_reset' "$gadget"
+            grep -Fq 'int             retries = 10;' "$gadget"
+            grep -Fq 'u32' "$gadget"
+            grep -Fq 'saved_config = 0;' "$gadget"
+            grep -Fq 'DWC3_GSI_EVT_BUF_CLEAR' "$gadget"
+            grep -Fq 'DWC3_CONTROLLER_NOTIFY_CLEAR_DB' "$gadget"
+            grep -Fq '/* Controller is halted; ignore new/pending events */' "$gadget"
+            grep -Fq 'if (count > evt->length)' "$gadget"
+            grep -Fq 'amount = min(count, evt->length - evt->lpos);' "$gadget"
+            ! grep -Eq '^(<<<<<<<|\|\|\|\|\|\|\||=======|>>>>>>>)' "$qcom"
+            ! grep -Eq '^(<<<<<<<|\|\|\|\|\|\|\||=======|>>>>>>>)' "$gadget"
+
+            local partial="$td/P13-to-${target}-AUTO-MERGED-PARTIAL.patch"
+            test "$(grep -c '^diff --git a/drivers/usb/dwc3/dwc3-qcom.c b/drivers/usb/dwc3/dwc3-qcom.c$' "$partial")" -eq 1
+            test "$(grep -c '^diff --git a/drivers/usb/dwc3/gadget.c b/drivers/usb/dwc3/gadget.c$' "$partial")" -eq 1
+            test "$(wc -l < "$td/runtime-conflicts.txt")" -eq "$expected_conflicts"
+            test "$(grep -c $'\tTEXT_CONFLICT\t' "$td/path-classification.tsv")" -eq "$expected_conflicts"
+            test "$(find "$td/conflicts" -type f -name META.txt | wc -l)" -eq "$expected_conflicts"
+            grep -Fxq "RUNTIME_CONFLICTS=$expected_conflicts" "$td/RESULT.txt"
+            grep -Fxq "TEXT_CONFLICT_HUNKS=$expected_hunks" "$td/RESULT.txt"
+            grep -Fxq 'SEMANTIC_RESOLUTIONS=34' "$td/RESULT.txt"
+            grep -Fxq 'DWC3_QCOM_GADGET_VENDOR_STABLE_LIFECYCLE_UNION=YES' "$td/RESULT.txt"
+
+            {
+              echo "TARGET=$target"
+              echo "QCOM_SHA256=$(sha256sum "$qcom" | awk '{print $1}')"
+              echo "GADGET_SHA256=$(sha256sum "$gadget" | awk '{print $1}')"
+              echo "INCREMENTAL_PATCH_SHA256=$(sha256sum "$patch" | awk '{print $1}')"
+              echo "UPDATED_PARTIAL_PATCH_SHA256=$(sha256sum "$partial" | awk '{print $1}')"
+              echo "RUNTIME_CONFLICTS=$expected_conflicts"
+              echo "TEXT_CONFLICT_HUNKS=$expected_hunks"
+              echo "SEMANTIC_RESOLUTIONS=34"
+              echo "GIT_APPLY_CHECK=PASS"
+              echo "GIT_DIFF_CHECK=PASS"
+              echo "DWC3_BLOCK_GATE=PASS"
+            } > "$td/o35-source-application-gate.txt"
+          }
+
+          validate_target 5.4.300 4 22
+          validate_target 5.4.302 10 33
+
+      - name: Finalize comprehensive O35 artifact and completeness gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -Fxq 'PROVENANCE_GATE=PASS' "$AUDIT_DIR/35-O35-DWC3-PROVENANCE.txt"
+          grep -Fxq 'DWC3_BLOCK_GATE=PASS' "$AUDIT_DIR/target-5.4.300/o35-source-application-gate.txt"
+          grep -Fxq 'DWC3_BLOCK_GATE=PASS' "$AUDIT_DIR/target-5.4.302/o35-source-application-gate.txt"
+          grep -Fxq 'RESOLUTION_DERIVATION=PASS' "$AUDIT_DIR/35-O35-RESOLUTION-DERIVATION-GATE.txt"
+
+          cat > "$AUDIT_DIR/35-O35-SUMMARY.txt" <<EOF
+          O35_MODE=COUPLED_RUNTIME_SOURCE_RESOLUTION
+          SOURCE_PARENT=U5-O34
+          O35_BECOMES_RUNTIME_PARENT=YES
+          LOGICAL_BLOCK=DWC3_QCOM_GADGET_VENDOR_STABLE_LIFECYCLE_UNION
+          SOURCE_PATHS=drivers/usb/dwc3/dwc3-qcom.c+drivers/usb/dwc3/gadget.c
+          RUNTIME_CONFLICTS_5.4.300=4
+          TEXT_CONFLICT_HUNKS_5.4.300=22
+          RUNTIME_CONFLICTS_5.4.302=10
+          TEXT_CONFLICT_HUNKS_5.4.302=33
+          SEMANTIC_RESOLUTIONS=34
+          FULL_O34_EVIDENCE_CARRIED_FORWARD=YES
+          KERNEL_BUILD_PERFORMED=NO
+          AK3_CREATED=NO
+          FLASH_PERFORMED=NO
+          DEVICE_PASS=NO
+          O35_RUNTIME_GATE=PASS
+          EOF
+
+          rm -f "$AUDIT_DIR/99-FILE-LIST.txt" "$AUDIT_DIR/SHA256SUMS.txt"
+          file_count="$(find "$AUDIT_DIR" -type f | wc -l)"
+          byte_count="$(du -sb "$AUDIT_DIR" | awk '{print $1}')"
+          patch300_bytes="$(stat -c '%s' "$AUDIT_DIR/target-5.4.300/P13-to-5.4.300-AUTO-MERGED-PARTIAL.patch")"
+          patch302_bytes="$(stat -c '%s' "$AUDIT_DIR/target-5.4.302/P13-to-5.4.302-AUTO-MERGED-PARTIAL.patch")"
+
+          test "$file_count" -ge 310
+          test "$byte_count" -ge 18000000
+          test "$patch300_bytes" -ge 4000000
+          test "$patch302_bytes" -ge 4400000
+          test "$(wc -l < "$AUDIT_DIR/lineage/O34-SHA256SUMS.original.txt")" -eq "$O34_INTERNAL_SHA_COUNT"
+          grep -Fxq 'O34_RUNTIME_GATE=PASS' "$AUDIT_DIR/lineage/O34-PARENT-GATE.txt"
+
+          cat > "$AUDIT_DIR/99-O35-FINAL-GATE.txt" <<EOF
+          O34_EXACT_ARTIFACT=PASS
+          O34_INTERNAL_SHA256SUMS=$O34_INTERNAL_SHA_COUNT/$O34_INTERNAL_SHA_COUNT PASS
+          O34_RUNTIME_GATE=PASS
+          DWC3_PROVENANCE_GATE=PASS
+          DWC3_QCOM_GADGET_BLOCK_5.4.300=PASS
+          DWC3_QCOM_GADGET_BLOCK_5.4.302=PASS
+          INCREMENTAL_PATCH_APPLY_5.4.300=PASS
+          INCREMENTAL_PATCH_APPLY_5.4.302=PASS
+          RUNTIME_CONFLICTS_5.4.300=4
+          TEXT_CONFLICT_HUNKS_5.4.300=22
+          RUNTIME_CONFLICTS_5.4.302=10
+          TEXT_CONFLICT_HUNKS_5.4.302=33
+          SEMANTIC_RESOLUTIONS=34
+          LOGICAL_SOURCE_BLOCK=drivers/usb/dwc3/dwc3-qcom.c+drivers/usb/dwc3/gadget.c
+          ARTIFACT_FILE_COUNT=$file_count
+          ARTIFACT_UNCOMPRESSED_BYTES=$byte_count
+          PARTIAL_PATCH_5.4.300_BYTES=$patch300_bytes
+          PARTIAL_PATCH_5.4.302_BYTES=$patch302_bytes
+          COMPREHENSIVE_ARTIFACT_COMPLETENESS=PASS
+          CURRENT_RUNTIME_PARENT=U5-O35
+          KERNEL_BUILD_PERFORMED=NO
+          AK3_CREATED=NO
+          FLASH_PERFORMED=NO
+          DEVICE_PASS=NO
+          O35_FINAL=RUNTIME_GREEN_PASS
+          EOF
+
+          (
+            cd "$AUDIT_DIR"
+            find . -type f ! -name SHA256SUMS.txt -print | LC_ALL=C sort
+          ) > "$AUDIT_DIR/99-FILE-LIST.txt"
+          (
+            cd "$AUDIT_DIR"
+            find . -type f ! -name SHA256SUMS.txt -print0 | LC_ALL=C sort -z | xargs -0 sha256sum > SHA256SUMS.txt
+            sha256sum -c SHA256SUMS.txt
+          ) | tee "$RUNNER_TEMP/o35-final-sha256-check.txt"
+          test "$(grep -c 'OK$' "$RUNNER_TEMP/o35-final-sha256-check.txt")" -eq "$(wc -l < "$AUDIT_DIR/SHA256SUMS.txt")"
+          echo "O35 comprehensive artifact files: $file_count"
+          echo "O35 comprehensive artifact bytes: $byte_count"
+          echo 'O35_FINAL=RUNTIME_GREEN_PASS'
+
+      - name: Upload one comprehensive U5-O35 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: VEUX-GEN1-U5-O35-dwc3-qcom-gadget-vendor-stable-lifecycle-union-semantic-resolution-official-stable-5.4.300-5.4.302-port-audit
+          path: ${{ env.AUDIT_DIR }}
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 6
+          include-hidden-files: true
