@@ -1,0 +1,544 @@
+name: VEUX GEN1 U5-O37 Alpha PLL Vendor Stable Config Union Semantic Resolution
+
+'on':
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: veux-gen1-u5-o37-alpha-pll-config-union-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      TZ: UTC
+      LANG: C.UTF-8
+      LC_ALL: C.UTF-8
+
+      O36_ARTIFACT_ID: '10491106555'
+      O36_ARTIFACT_NAME: VEUX-GEN1-U5-O36-glink-vendor-stable-protocol-union-semantic-resolution-official-stable-5.4.300-5.4.302-port-audit
+      O36_ARTIFACT_SHA256: 5e89e5ee13ca514d3211b614ef0f1b35df37419ef51c24a789853f170f77f4a4
+      O36_INTERNAL_SHA_COUNT: '338'
+
+      ALPHA_PLL_P13_SHA256: 9391ca2c0670249dd53b51ba349b248f8988a1c45d0cea1f39e1bc280828b231
+      ALPHA_PLL_STABLE_TARGET_SHA256: 6e8a60cc73b659aa61d6d6806661a722e4126f50ee400ab6fb4f1e2627717aba
+      ALPHA_PLL_CANDIDATE_SHA256: 2dc2fbcfb72a99b8dc9103ac3b1abf825c003710b530f47ef9c3b7b37dd548ed
+
+      ALPHA_MODE_FIX_COMMIT: 33f1722eb86e45320a3dd7b3d42f6593a1d595c2
+      TRION_POSTDIV_FIX_COMMIT: 4ad1ed6ef27cab94888bb3c740c14042d5c0dff2
+
+    steps:
+      - name: Initialize U5-O37 comprehensive evidence workspace
+        shell: bash
+        run: |
+          set -euo pipefail
+          O36_DIR="$RUNNER_TEMP/u5-o37-o36-parent"
+          AUDIT_DIR="$GITHUB_WORKSPACE/u5-o37-evidence"
+          VERIFY_DIR="$RUNNER_TEMP/u5-o37-verify"
+          rm -rf "$O36_DIR" "$AUDIT_DIR" "$VERIFY_DIR"
+          mkdir -p "$O36_DIR" "$AUDIT_DIR" "$VERIFY_DIR"
+          {
+            echo "O36_DIR=$O36_DIR"
+            echo "AUDIT_DIR=$AUDIT_DIR"
+            echo "VERIFY_DIR=$VERIFY_DIR"
+          } >> "$GITHUB_ENV"
+
+          cat > "$AUDIT_DIR/37-O37-PLAN.txt" <<EOF
+          U5-O37 ALPHA PLL VENDOR/STABLE CONFIG UNION SEMANTIC RESOLUTION
+
+          Runtime source parent: U5-O36 artifact $O36_ARTIFACT_ID
+
+          One logical source block:
+            drivers/clk/qcom/clk-alpha-pll.c
+
+          Semantic rule:
+          - preserve the complete P13/VEUX Qualcomm vendor clock implementation, including Agera/Regera
+            extensions and vendor-only configuration/debug paths;
+          - retain P13's split post-divider programming and its already-correct use of pll->post_div_shift;
+          - integrate Stable's alpha mode correction by applying alpha_mode_mask consistently to the
+            trigger condition, value and regmap_update_bits() mask;
+          - do not replace the P13 Agera implementation with unrelated upstream text that only overlaps
+            because of insertion-point alignment.
+
+          Expected result:
+            5.4.300: conflicts 3 -> 2, hunks 11 -> 9
+            5.4.302: conflicts 9 -> 8, hunks 22 -> 20
+            semantic resolutions 35 -> 36
+
+          Full O36 evidence is carried forward. No kernel build. No AK3. No flash. No Device PASS claim.
+          EOF
+
+      - name: Download verify and restore complete O36 Runtime-PASS parent
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          meta="$RUNNER_TEMP/o36-artifact-meta.json"
+          zip="$RUNNER_TEMP/o36-artifact.zip"
+
+          curl --fail --silent --show-error --location --retry 3 --retry-delay 2             -H "Authorization: Bearer $GH_TOKEN"             -H "Accept: application/vnd.github+json"             -H "X-GitHub-Api-Version: 2022-11-28"             "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${O36_ARTIFACT_ID}"             -o "$meta"
+
+          python3 - "$meta" "$O36_ARTIFACT_ID" "$O36_ARTIFACT_NAME" "$O36_ARTIFACT_SHA256" <<'PY'
+          import json,sys
+          path,eid,ename,esha=sys.argv[1:]
+          with open(path,encoding='utf-8') as f:
+              m=json.load(f)
+          assert str(m.get('id'))==eid,(m.get('id'),eid)
+          assert m.get('name')==ename,(m.get('name'),ename)
+          assert m.get('expired') is False,'O36 artifact expired'
+          d=m.get('digest')
+          assert d in (None,'','sha256:'+esha),(d,esha)
+          print('O36_METADATA=PASS')
+          PY
+
+          curl --fail --silent --show-error --location --retry 3 --retry-delay 2             -H "Authorization: Bearer $GH_TOKEN"             -H "Accept: application/vnd.github+json"             -H "X-GitHub-Api-Version: 2022-11-28"             "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${O36_ARTIFACT_ID}/zip"             -o "$zip"
+
+          echo "$O36_ARTIFACT_SHA256  $zip" | sha256sum -c -
+
+          python3 - "$zip" "$O36_DIR" <<'PY'
+          from pathlib import Path
+          import sys,zipfile
+          archive,destination=sys.argv[1:]
+          root=Path(destination).resolve()
+          with zipfile.ZipFile(archive) as zf:
+              for info in zf.infolist():
+                  out=(root/info.filename).resolve()
+                  if out != root and root not in out.parents:
+                      raise SystemExit(f'unsafe archive member: {info.filename}')
+              zf.extractall(root)
+          PY
+
+          test -f "$O36_DIR/SHA256SUMS.txt"
+          (
+            cd "$O36_DIR"
+            sha256sum -c SHA256SUMS.txt
+          ) | tee "$RUNNER_TEMP/o36-internal-sha.txt"
+          test "$(grep -c 'OK$' "$RUNNER_TEMP/o36-internal-sha.txt")" -eq "$O36_INTERNAL_SHA_COUNT"
+          test "$(wc -l < "$O36_DIR/SHA256SUMS.txt")" -eq "$O36_INTERNAL_SHA_COUNT"
+
+          grep -Fxq 'O36_FINAL=RUNTIME_GREEN_PASS' "$O36_DIR/99-O36-FINAL-GATE.txt"
+          grep -Fxq 'CURRENT_RUNTIME_PARENT=U5-O36' "$O36_DIR/99-O36-FINAL-GATE.txt"
+          grep -Fxq 'RUNTIME_CONFLICTS_5.4.300=3' "$O36_DIR/99-O36-FINAL-GATE.txt"
+          grep -Fxq 'TEXT_CONFLICT_HUNKS_5.4.300=11' "$O36_DIR/99-O36-FINAL-GATE.txt"
+          grep -Fxq 'RUNTIME_CONFLICTS_5.4.302=9' "$O36_DIR/99-O36-FINAL-GATE.txt"
+          grep -Fxq 'TEXT_CONFLICT_HUNKS_5.4.302=22' "$O36_DIR/99-O36-FINAL-GATE.txt"
+          grep -Fxq 'SEMANTIC_RESOLUTIONS=35' "$O36_DIR/99-O36-FINAL-GATE.txt"
+          grep -Fxq 'COMPREHENSIVE_ARTIFACT_COMPLETENESS=PASS' "$O36_DIR/99-O36-FINAL-GATE.txt"
+
+          cp -a "$O36_DIR/." "$AUDIT_DIR/"
+          mkdir -p "$AUDIT_DIR/lineage"
+          cp "$O36_DIR/SHA256SUMS.txt" "$AUDIT_DIR/lineage/O36-SHA256SUMS.original.txt"
+          cp "$meta" "$AUDIT_DIR/lineage/O36-ARTIFACT-METADATA.json"
+          cp "$RUNNER_TEMP/o36-internal-sha.txt" "$AUDIT_DIR/lineage/O36-INTERNAL-SHA256-CHECK.txt"
+          sha256sum "$zip" > "$AUDIT_DIR/lineage/O36-ZIP-SHA256.txt"
+          rm -f "$AUDIT_DIR/SHA256SUMS.txt"
+
+          cat > "$AUDIT_DIR/lineage/O36-PARENT-GATE.txt" <<EOF
+          O36_ARTIFACT_ID=$O36_ARTIFACT_ID
+          O36_ARTIFACT_SHA256=$O36_ARTIFACT_SHA256
+          O36_INTERNAL_SHA256SUMS=$O36_INTERNAL_SHA_COUNT/$O36_INTERNAL_SHA_COUNT PASS
+          O36_RUNTIME_GATE=PASS
+          RUNTIME_SOURCE_PARENT=U5-O36
+          EOF
+
+      - name: Verify Alpha PLL Stable provenance
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          for spec in             "alpha_mode:$ALPHA_MODE_FIX_COMMIT"             "trion_postdiv:$TRION_POSTDIV_FIX_COMMIT"
+          do
+            key="${spec%%:*}"
+            sha="${spec#*:}"
+            curl --fail --silent --show-error --location --retry 3               -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json"               -H "X-GitHub-Api-Version: 2022-11-28"               "https://api.github.com/repos/gregkh/linux/commits/$sha"               -o "$RUNNER_TEMP/alpha-pll-$key.json"
+          done
+
+          python3 - "$AUDIT_DIR/37-O37-ALPHA-PLL-PROVENANCE.txt" <<'PY'
+          import json,os,sys
+          out=sys.argv[1]
+          specs={
+              'alpha_mode':(os.environ['ALPHA_MODE_FIX_COMMIT'],'clk: qcom: clk-alpha-pll: fix alpha mode configuration'),
+              'trion_postdiv':(os.environ['TRION_POSTDIV_FIX_COMMIT'],'clk: qcom: clk-alpha-pll: Fix the trion pll postdiv set rate API'),
+          }
+          rows=[]
+          objs={}
+          for key,(sha,prefix) in specs.items():
+              path=os.path.join(os.environ['RUNNER_TEMP'],f'alpha-pll-{key}.json')
+              with open(path,encoding='utf-8') as f:
+                  m=json.load(f)
+              assert m['sha']==sha,(key,m.get('sha'),sha)
+              assert m['commit']['message'].startswith(prefix),(key,m['commit']['message'].splitlines()[0],prefix)
+              assert 'drivers/clk/qcom/clk-alpha-pll.c' in {x['filename'] for x in m.get('files',[])},key
+              rows.append(f'{key.upper()}_COMMIT={sha}')
+              objs[key]=m
+          norm=lambda m:' '.join(m['commit']['message'].split())
+          am=norm(objs['alpha_mode'])
+          assert "alpha_en_mask" in am and "alpha_mode_mask" in am,am
+          assert "bitmask" in am and "improper configuration" in am,am
+          pd=norm(objs['trion_postdiv'])
+          assert "postdiv shift" in pd and ".post_div_shift member" in pd,pd
+          with open(out,'w',encoding='utf-8',newline='\n') as f:
+              f.write('\n'.join(rows)+'\n')
+              f.write('ALPHA_MODE_MASK_PROVENANCE=PASS\n')
+              f.write('TRION_POSTDIV_SHIFT_PROVENANCE=PASS\n')
+              f.write('PROVENANCE_API_WHITESPACE_NORMALIZED=PASS\n')
+              f.write('PROVENANCE_GATE=PASS\n')
+          print('O37_ALPHA_PLL_PROVENANCE=PASS')
+          PY
+
+      - name: Resolve complete Alpha PLL configuration conflict block
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from __future__ import annotations
+          from pathlib import Path
+          import difflib,hashlib,os,re,shutil
+
+          audit=Path(os.environ['AUDIT_DIR'])
+          old_conf={'5.4.300':3,'5.4.302':9}
+          old_hunks={'5.4.300':11,'5.4.302':22}
+          new_conf={'5.4.300':2,'5.4.302':8}
+          new_hunks={'5.4.300':9,'5.4.302':20}
+          checks=[]
+
+          def gate(c,label):
+              if not c: raise AssertionError(label)
+              checks.append(label)
+          def read(p): return Path(p).read_text(encoding='utf-8')
+          def write(p,s): Path(p).write_text(s,encoding='utf-8',newline='\n')
+          def sha(s): return hashlib.sha256(s.encode()).hexdigest()
+
+          def derive_alpha_pll(ours,theirs,target):
+              gate(sha(ours)==os.environ['ALPHA_PLL_P13_SHA256'],f'{target}: exact P13 alpha PLL anchor')
+              gate(sha(theirs)==os.environ['ALPHA_PLL_STABLE_TARGET_SHA256'],f'{target}: exact Stable alpha PLL anchor')
+
+              # Stable alpha-mode fix evidence.
+              gate('val |= config->alpha_en_mask;' in theirs,f'{target}: Stable alpha_en value present')
+              gate('val |= config->alpha_mode_mask;' in theirs,f'{target}: Stable alpha_mode value present')
+              gate('mask |= config->alpha_en_mask;' in theirs,f'{target}: Stable alpha_en mask present')
+              gate('mask |= config->alpha_mode_mask;' in theirs,f'{target}: Stable alpha_mode mask present')
+
+              # P13 already contains the independent Trion post-divider fix.
+              t0=ours.index('clk_trion_pll_postdiv_set_rate')
+              t1=ours.index('const struct clk_ops clk_trion_pll_postdiv_ops',t0)
+              trion=ours[t0:t1]
+              gate('PLL_POST_DIV_MASK(pll) << pll->post_div_shift' in trion,f'{target}: P13 variable Trion post-div shift present')
+              gate('val << pll->post_div_shift' in trion,f'{target}: P13 variable Trion post-div value shift present')
+              gate('PLL_POST_DIV_MASK(pll) << PLL_POST_DIV_SHIFT' not in trion,f'{target}: stale fixed Trion shift absent from Trion setter')
+
+              # Vendor Agera/Regera contract must survive untouched.
+              gate('int clk_agera_pll_configure' in ours,f'{target}: P13 Agera configure present')
+              gate('EXPORT_SYMBOL(clk_agera_pll_configure);' in ours,f'{target}: P13 Agera configure exported')
+              gate('const struct clk_ops clk_agera_pll_ops' in ours,f'{target}: P13 Agera ops present')
+              gate('const struct clk_ops clk_regera_pll_ops' in ours,f'{target}: P13 Regera ops present')
+
+              s=ours
+              old_if=('\tif (config->main_output_mask || config->aux_output_mask ||\n'
+                      '\t\tconfig->aux2_output_mask || config->early_output_mask ||\n'
+                      '\t\tconfig->pre_div_val || config->vco_val ||\n'
+                      '\t\tconfig->alpha_en_mask) {')
+              new_if=('\tif (config->main_output_mask || config->aux_output_mask ||\n'
+                      '\t\tconfig->aux2_output_mask || config->early_output_mask ||\n'
+                      '\t\tconfig->pre_div_val || config->vco_val ||\n'
+                      '\t\tconfig->alpha_en_mask || config->alpha_mode_mask) {')
+              gate(s.count(old_if)==1,f'{target}: alpha-mode trigger anchor unique')
+              s=s.replace(old_if,new_if,1)
+
+              old_val=('\t\tval |= config->vco_val;\n'
+                       '\t\tval |= config->alpha_en_mask;\n\n'
+                       '\t\tmask = config->main_output_mask;')
+              new_val=('\t\tval |= config->vco_val;\n'
+                       '\t\tval |= config->alpha_en_mask;\n'
+                       '\t\tval |= config->alpha_mode_mask;\n\n'
+                       '\t\tmask = config->main_output_mask;')
+              gate(s.count(old_val)==1,f'{target}: alpha-mode value anchor unique')
+              s=s.replace(old_val,new_val,1)
+
+              old_mask=('\t\tmask |= config->vco_mask;\n'
+                        '\t\tmask |= config->alpha_en_mask;\n\n'
+                        '\t\tregmap_update_bits')
+              new_mask=('\t\tmask |= config->vco_mask;\n'
+                        '\t\tmask |= config->alpha_en_mask;\n'
+                        '\t\tmask |= config->alpha_mode_mask;\n\n'
+                        '\t\tregmap_update_bits')
+              gate(s.count(old_mask)==1,f'{target}: alpha-mode bitmask anchor unique')
+              s=s.replace(old_mask,new_mask,1)
+
+              gate(s.count('config->alpha_mode_mask')==3,f'{target}: alpha_mode_mask exactly trigger+value+mask')
+              t0=s.index('clk_trion_pll_postdiv_set_rate')
+              t1=s.index('const struct clk_ops clk_trion_pll_postdiv_ops',t0)
+              trion_final=s[t0:t1]
+              gate('PLL_POST_DIV_MASK(pll) << pll->post_div_shift' in trion_final,f'{target}: Trion variable post-div shift retained')
+              gate('PLL_POST_DIV_MASK(pll) << PLL_POST_DIV_SHIFT' not in trion_final,f'{target}: stale fixed Trion shift absent from final Trion setter')
+              gate('int clk_agera_pll_configure' in s and 'EXPORT_SYMBOL(clk_agera_pll_configure);' in s,f'{target}: Agera configure retained')
+              gate('const struct clk_ops clk_agera_pll_ops' in s and 'const struct clk_ops clk_regera_pll_ops' in s,f'{target}: vendor PLL ops retained')
+              gate('<<<<<<<' not in s and '|||||||' not in s and '>>>>>>>' not in s,f'{target}: no conflict markers')
+              gate(sha(s)==os.environ['ALPHA_PLL_CANDIDATE_SHA256'],f'{target}: candidate SHA exact')
+              return s
+
+          def make_patch(rel,ours,cand):
+              body=''.join(difflib.unified_diff(ours.splitlines(keepends=True),cand.splitlines(keepends=True),fromfile=f'a/{rel}',tofile=f'b/{rel}',n=3))
+              gate(body.startswith(f'--- a/{rel}\n+++ b/{rel}\n'),f'{rel}: incremental diff headers valid')
+              return f'diff --git a/{rel} b/{rel}\n'+body
+
+          hashes={}
+          rel='drivers/clk/qcom/clk-alpha-pll.c'
+          for target in ('5.4.300','5.4.302'):
+              td=audit/f'target-{target}'
+              cdir=td/f'conflicts/{rel}'
+              gate(cdir.is_dir(),f'{target}: alpha PLL conflict directory exists')
+              gate('MERGE_CONFLICT_HUNKS=2' in read(cdir/'META.txt'),f'{target}: alpha PLL two conflict hunks exact')
+              ours=read(cdir/'OURS'); theirs=read(cdir/'THEIRS-target')
+              cand=derive_alpha_pll(ours,theirs,target)
+              hashes[target]=sha(cand)
+
+              rdir=td/f'resolved-evidence/{rel}'
+              rdir.parent.mkdir(parents=True,exist_ok=True)
+              shutil.move(str(cdir),str(rdir))
+              write(rdir/'RESOLVED-O37',cand)
+
+              patch=make_patch(rel,ours,cand)
+              patch_path=td/'alpha-pll-vendor-stable-config-union-semantic-resolution.patch'
+              write(patch_path,patch)
+
+              partial=td/f'P13-to-{target}-AUTO-MERGED-PARTIAL.patch'
+              ptext=read(partial)
+              gate(f'diff --git a/{rel} b/{rel}' not in ptext,f'{target}: alpha PLL absent from O36 cumulative patch')
+              if ptext and not ptext.endswith('\n'): ptext+='\n'
+              ptext+=patch
+              write(partial,ptext)
+
+              rpath=td/'runtime-conflicts.txt'
+              lines=read(rpath).splitlines()
+              gate(len(lines)==old_conf[target],f'{target}: O36 runtime conflict count exact')
+              gate(lines.count(rel)==1,f'{target}: alpha PLL listed once')
+              lines=[x for x in lines if x!=rel]
+              gate(len(lines)==new_conf[target],f'{target}: exactly alpha PLL conflict path removed')
+              write(rpath,'\n'.join(lines)+'\n')
+
+              cpath=td/'path-classification.tsv'
+              rows=read(cpath).splitlines(); hits=0
+              for i,row in enumerate(rows):
+                  cols=row.split('\t')
+                  if len(cols)>=3 and cols[1]==rel:
+                      gate(cols[2]=='TEXT_CONFLICT',f'{target}: alpha PLL prior class exact')
+                      cols[2]='ALPHA_PLL_VENDOR_STABLE_CONFIG_UNION_SEMANTIC_RESOLUTION'
+                      rows[i]='\t'.join(cols); hits+=1
+              gate(hits==1,f'{target}: exactly one alpha PLL classification row updated')
+              gate(sum(1 for r in rows[1:] if r.split('\t')[2]=='TEXT_CONFLICT')==new_conf[target],f'{target}: remaining TEXT_CONFLICT count exact')
+              write(cpath,'\n'.join(rows)+'\n')
+
+              result_path=td/'RESULT.txt'; result=read(result_path)
+              repl={
+                  f'TEXT_CONFLICT={old_conf[target]}\n':f'TEXT_CONFLICT={new_conf[target]}\n',
+                  f'RUNTIME_CONFLICTS={old_conf[target]}\n':f'RUNTIME_CONFLICTS={new_conf[target]}\n',
+                  f'TEXT_CONFLICT_HUNKS={old_hunks[target]}\n':f'TEXT_CONFLICT_HUNKS={new_hunks[target]}\n',
+                  'SEMANTIC_RESOLUTIONS=35\n':'SEMANTIC_RESOLUTIONS=36\n',
+              }
+              for a,b in repl.items():
+                  gate(result.count(a)==1,f'{target}: RESULT marker {a.strip()} unique')
+                  result=result.replace(a,b,1)
+              anchor='GLINK_VENDOR_STABLE_PROTOCOL_UNION_SEMANTIC_RESOLUTION=1\n'
+              gate(result.count(anchor)==1,f'{target}: RESULT semantic insertion anchor unique')
+              result=result.replace(anchor,anchor+'ALPHA_PLL_VENDOR_STABLE_CONFIG_UNION_SEMANTIC_RESOLUTION=1\n',1)
+              yes_anchor='GLINK_VENDOR_STABLE_PROTOCOL_UNION=YES\n'
+              gate(result.count(yes_anchor)==1,f'{target}: RESULT YES insertion anchor unique')
+              result=result.replace(yes_anchor,yes_anchor+'ALPHA_PLL_VENDOR_STABLE_CONFIG_UNION=YES\n',1)
+              write(result_path,result)
+
+              report='\n'.join([
+                  f'TARGET={target}',
+                  f'ALPHA_MODE_FIX_COMMIT={os.environ["ALPHA_MODE_FIX_COMMIT"]}',
+                  f'TRION_POSTDIV_FIX_COMMIT={os.environ["TRION_POSTDIV_FIX_COMMIT"]}',
+                  'P13_AGERA_REGERA_VENDOR_MODEL=PRESERVED',
+                  'P13_SPLIT_POSTDIV_PROGRAMMING=PRESERVED',
+                  'P13_TRION_POSTDIV_SHIFT=ALREADY_CORRECT',
+                  'STABLE_ALPHA_EN_MASK=ALREADY_PRESENT_IN_P13',
+                  'STABLE_ALPHA_MODE_MASK=INTEGRATED_TRIGGER_VALUE_MASK',
+                  f'RUNTIME_CONFLICTS_BEFORE={old_conf[target]}',
+                  f'RUNTIME_CONFLICTS_AFTER={new_conf[target]}',
+                  f'TEXT_CONFLICT_HUNKS_BEFORE={old_hunks[target]}',
+                  f'TEXT_CONFLICT_HUNKS_AFTER={new_hunks[target]}',
+                  'SEMANTIC_RESOLUTIONS_BEFORE=35',
+                  'SEMANTIC_RESOLUTIONS_AFTER=36',
+                  'SOURCE_RESOLUTION=PASS',''])
+              write(td/'alpha-pll-vendor-stable-config-union-semantic-resolution.txt',report)
+
+          gate(hashes['5.4.300']==hashes['5.4.302'],'alpha PLL candidate identical across both targets')
+          write(audit/'37-O37-RESOLUTION-DERIVATION-GATE.txt','\n'.join([
+              f'ASSERTIONS={len(checks)}',
+              'ALPHA_PLL_BLOCK_5.4.300=PASS',
+              'ALPHA_PLL_BLOCK_5.4.302=PASS',
+              'ONLY_LOGICAL_BLOCK=drivers/clk/qcom/clk-alpha-pll.c',
+              'RESOLUTION_DERIVATION=PASS','']))
+          print(f'O37_RESOLUTION_ASSERTIONS={len(checks)}')
+          PY
+
+      - name: Validate incremental Alpha PLL source delta and configuration closure
+        shell: bash
+        run: |
+          set -euo pipefail
+          validate_target() {
+            local target="$1" expected_conflicts="$2" expected_hunks="$3"
+            local td="$AUDIT_DIR/target-${target}"
+            local repo="$VERIFY_DIR/$target"
+            local rel='drivers/clk/qcom/clk-alpha-pll.c'
+            local patch="$td/alpha-pll-vendor-stable-config-union-semantic-resolution.patch"
+            local resolved="$td/resolved-evidence/$rel/RESOLVED-O37"
+
+            rm -rf "$repo"
+            mkdir -p "$repo/drivers/clk/qcom"
+            cp "$td/resolved-evidence/$rel/OURS" "$repo/$rel"
+            git -C "$repo" init -q
+            git -C "$repo" config user.name 'VEUX U5-O37 Audit'
+            git -C "$repo" config user.email 'veux-u5-o37-audit@invalid.local'
+            git -C "$repo" add "$rel"
+            git -C "$repo" commit -qm base
+
+            git -C "$repo" apply --check --whitespace=error "$patch"
+            git -C "$repo" apply --index --whitespace=error "$patch"
+            git -C "$repo" diff --cached --check
+            mapfile -t changed < <(git -C "$repo" diff --cached --name-only)
+            test "${#changed[@]}" -eq 1
+            test "${changed[0]}" = "$rel"
+            test "$(sha256sum "$repo/$rel" | awk '{print $1}')" = "$ALPHA_PLL_CANDIDATE_SHA256"
+            cmp -s "$repo/$rel" "$resolved"
+
+            test "$(grep -Fo 'config->alpha_mode_mask' "$resolved" | wc -l)" -eq 3
+            grep -Fq 'config->alpha_en_mask || config->alpha_mode_mask' "$resolved"
+            grep -Fq 'val |= config->alpha_mode_mask;' "$resolved"
+            grep -Fq 'mask |= config->alpha_mode_mask;' "$resolved"
+            python3 -c 'import sys; s=open(sys.argv[1],encoding="utf-8").read(); a=s.index("clk_trion_pll_postdiv_set_rate"); b=s.index("const struct clk_ops clk_trion_pll_postdiv_ops",a); t=s[a:b]; assert "PLL_POST_DIV_MASK(pll) << pll->post_div_shift" in t; assert "PLL_POST_DIV_MASK(pll) << PLL_POST_DIV_SHIFT" not in t' "$resolved"
+            grep -Fq 'int clk_agera_pll_configure' "$resolved"
+            grep -Fq 'EXPORT_SYMBOL(clk_agera_pll_configure);' "$resolved"
+            grep -Fq 'const struct clk_ops clk_agera_pll_ops' "$resolved"
+            grep -Fq 'const struct clk_ops clk_regera_pll_ops' "$resolved"
+            ! grep -Eq '^(<<<<<<<|\|\|\|\|\|\|\||=======|>>>>>>>)' "$resolved"
+
+            local partial="$td/P13-to-${target}-AUTO-MERGED-PARTIAL.patch"
+            test "$(grep -c '^diff --git a/drivers/clk/qcom/clk-alpha-pll.c b/drivers/clk/qcom/clk-alpha-pll.c$' "$partial")" -eq 1
+            test "$(wc -l < "$td/runtime-conflicts.txt")" -eq "$expected_conflicts"
+            test "$(grep -c $'\tTEXT_CONFLICT\t' "$td/path-classification.tsv")" -eq "$expected_conflicts"
+            test "$(find "$td/conflicts" -type f -name META.txt | wc -l)" -eq "$expected_conflicts"
+            grep -Fxq "RUNTIME_CONFLICTS=$expected_conflicts" "$td/RESULT.txt"
+            grep -Fxq "TEXT_CONFLICT_HUNKS=$expected_hunks" "$td/RESULT.txt"
+            grep -Fxq 'SEMANTIC_RESOLUTIONS=36' "$td/RESULT.txt"
+            grep -Fxq 'ALPHA_PLL_VENDOR_STABLE_CONFIG_UNION=YES' "$td/RESULT.txt"
+
+            {
+              echo "TARGET=$target"
+              echo "ALPHA_PLL_SHA256=$(sha256sum "$resolved" | awk '{print $1}')"
+              echo "INCREMENTAL_PATCH_SHA256=$(sha256sum "$patch" | awk '{print $1}')"
+              echo "UPDATED_PARTIAL_PATCH_SHA256=$(sha256sum "$partial" | awk '{print $1}')"
+              echo "RUNTIME_CONFLICTS=$expected_conflicts"
+              echo "TEXT_CONFLICT_HUNKS=$expected_hunks"
+              echo "SEMANTIC_RESOLUTIONS=36"
+              echo "GIT_APPLY_CHECK=PASS"
+              echo "GIT_DIFF_CHECK=PASS"
+              echo "ALPHA_PLL_CONFIGURATION_CLOSURE=PASS"
+            } > "$td/o37-source-application-gate.txt"
+          }
+
+          validate_target 5.4.300 2 9
+          validate_target 5.4.302 8 20
+
+      - name: Finalize comprehensive O37 artifact and completeness gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -Fxq 'PROVENANCE_GATE=PASS' "$AUDIT_DIR/37-O37-ALPHA-PLL-PROVENANCE.txt"
+          grep -Fxq 'ALPHA_PLL_CONFIGURATION_CLOSURE=PASS' "$AUDIT_DIR/target-5.4.300/o37-source-application-gate.txt"
+          grep -Fxq 'ALPHA_PLL_CONFIGURATION_CLOSURE=PASS' "$AUDIT_DIR/target-5.4.302/o37-source-application-gate.txt"
+          grep -Fxq 'RESOLUTION_DERIVATION=PASS' "$AUDIT_DIR/37-O37-RESOLUTION-DERIVATION-GATE.txt"
+
+          cat > "$AUDIT_DIR/37-O37-SUMMARY.txt" <<EOF
+          O37_MODE=ALPHA_PLL_RUNTIME_SOURCE_RESOLUTION
+          SOURCE_PARENT=U5-O36
+          O37_BECOMES_RUNTIME_PARENT=YES
+          LOGICAL_BLOCK=ALPHA_PLL_VENDOR_STABLE_CONFIG_UNION
+          SOURCE_PATH=drivers/clk/qcom/clk-alpha-pll.c
+          RUNTIME_CONFLICTS_5.4.300=2
+          TEXT_CONFLICT_HUNKS_5.4.300=9
+          RUNTIME_CONFLICTS_5.4.302=8
+          TEXT_CONFLICT_HUNKS_5.4.302=20
+          SEMANTIC_RESOLUTIONS=36
+          FULL_O36_EVIDENCE_CARRIED_FORWARD=YES
+          KERNEL_BUILD_PERFORMED=NO
+          AK3_CREATED=NO
+          FLASH_PERFORMED=NO
+          DEVICE_PASS=NO
+          O37_RUNTIME_GATE=PASS
+          EOF
+
+          rm -f "$AUDIT_DIR/99-FILE-LIST.txt" "$AUDIT_DIR/SHA256SUMS.txt"
+          file_count="$(find "$AUDIT_DIR" -type f | wc -l)"
+          byte_count="$(du -sb "$AUDIT_DIR" | awk '{print $1}')"
+          patch300_bytes="$(stat -c '%s' "$AUDIT_DIR/target-5.4.300/P13-to-5.4.300-AUTO-MERGED-PARTIAL.patch")"
+          patch302_bytes="$(stat -c '%s' "$AUDIT_DIR/target-5.4.302/P13-to-5.4.302-AUTO-MERGED-PARTIAL.patch")"
+
+          test "$file_count" -ge 337
+          test "$byte_count" -ge 19000000
+          test "$patch300_bytes" -ge 4000000
+          test "$patch302_bytes" -ge 4400000
+          test "$(wc -l < "$AUDIT_DIR/lineage/O36-SHA256SUMS.original.txt")" -eq "$O36_INTERNAL_SHA_COUNT"
+          grep -Fxq 'O36_RUNTIME_GATE=PASS' "$AUDIT_DIR/lineage/O36-PARENT-GATE.txt"
+
+          cat > "$AUDIT_DIR/99-O37-FINAL-GATE.txt" <<EOF
+          O36_EXACT_ARTIFACT=PASS
+          O36_INTERNAL_SHA256SUMS=$O36_INTERNAL_SHA_COUNT/$O36_INTERNAL_SHA_COUNT PASS
+          O36_RUNTIME_GATE=PASS
+          ALPHA_PLL_PROVENANCE_GATE=PASS
+          ALPHA_PLL_CONFIG_BLOCK_5.4.300=PASS
+          ALPHA_PLL_CONFIG_BLOCK_5.4.302=PASS
+          INCREMENTAL_PATCH_APPLY_5.4.300=PASS
+          INCREMENTAL_PATCH_APPLY_5.4.302=PASS
+          RUNTIME_CONFLICTS_5.4.300=2
+          TEXT_CONFLICT_HUNKS_5.4.300=9
+          RUNTIME_CONFLICTS_5.4.302=8
+          TEXT_CONFLICT_HUNKS_5.4.302=20
+          SEMANTIC_RESOLUTIONS=36
+          LOGICAL_SOURCE_BLOCK=drivers/clk/qcom/clk-alpha-pll.c
+          ARTIFACT_FILE_COUNT=$file_count
+          ARTIFACT_UNCOMPRESSED_BYTES=$byte_count
+          PARTIAL_PATCH_5.4.300_BYTES=$patch300_bytes
+          PARTIAL_PATCH_5.4.302_BYTES=$patch302_bytes
+          COMPREHENSIVE_ARTIFACT_COMPLETENESS=PASS
+          CURRENT_RUNTIME_PARENT=U5-O37
+          KERNEL_BUILD_PERFORMED=NO
+          AK3_CREATED=NO
+          FLASH_PERFORMED=NO
+          DEVICE_PASS=NO
+          O37_FINAL=RUNTIME_GREEN_PASS
+          EOF
+
+          (
+            cd "$AUDIT_DIR"
+            find . -type f ! -name SHA256SUMS.txt -print | LC_ALL=C sort
+          ) > "$AUDIT_DIR/99-FILE-LIST.txt"
+          (
+            cd "$AUDIT_DIR"
+            find . -type f ! -name SHA256SUMS.txt -print0 | LC_ALL=C sort -z | xargs -0 sha256sum > SHA256SUMS.txt
+            sha256sum -c SHA256SUMS.txt
+          ) | tee "$RUNNER_TEMP/o37-final-sha256-check.txt"
+          test "$(grep -c 'OK$' "$RUNNER_TEMP/o37-final-sha256-check.txt")" -eq "$(wc -l < "$AUDIT_DIR/SHA256SUMS.txt")"
+          echo "O37 comprehensive artifact files: $file_count"
+          echo "O37 comprehensive artifact bytes: $byte_count"
+          echo 'O37_FINAL=RUNTIME_GREEN_PASS'
+
+      - name: Upload one comprehensive U5-O37 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: VEUX-GEN1-U5-O37-alpha-pll-vendor-stable-config-union-semantic-resolution-official-stable-5.4.300-5.4.302-port-audit
+          path: ${{ env.AUDIT_DIR }}
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 6
+          include-hidden-files: true
