@@ -1,0 +1,387 @@
+name: VEUX GEN1 U5-O31 SPI Devres Controller Lifetime Deep Audit
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: veux-gen1-u5-o31-spi-devres-controller-lifetime-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      O29_ARTIFACT_ID: '10468051467'
+      O29_ARTIFACT_NAME: VEUX-GEN1-U5-O29-pinctrl-dirconn-irq-valid-mask-union-official-stable-5.4.300-5.4.302-port-audit
+      O29_ARTIFACT_SHA256: 5b3d75489ecc51d57b6ea31a02b4e060a9b93ecde2e053eb8ad5ccf0eff04a91
+      SPI_DEVM_UPSTREAM_COMMIT: 5e844cc37a5cbaa460e68f9a989d321d63088a89
+      SPI_ADD_LOCK_UPSTREAM_COMMIT: 6098475d4cb48d821bdf453c61118c56e26294f0
+      SPI_ADD_LOCK_UAF_FIX_COMMIT: 6c53b45c71b4920b5e62f0ea8079a1da382b9434
+
+    steps:
+      - name: Initialize O31 audit workspace
+        shell: bash
+        run: |
+          set -euo pipefail
+          O29_DIR="$RUNNER_TEMP/u5-o31-o29-parent"
+          AUDIT_DIR="$GITHUB_WORKSPACE/u5-o31-evidence"
+          rm -rf "$O29_DIR" "$AUDIT_DIR"
+          mkdir -p "$O29_DIR" "$AUDIT_DIR"
+          {
+            echo "O29_DIR=$O29_DIR"
+            echo "AUDIT_DIR=$AUDIT_DIR"
+          } >> "$GITHUB_ENV"
+
+          cat > "$AUDIT_DIR/00-PLAN.txt" <<EOF
+          U5-O31 SPI DEVRES / CONTROLLER-LIFETIME DEEP AUDIT
+
+          Immutable runtime parent:
+            U5-O29 artifact ID: $O29_ARTIFACT_ID
+            U5-O29 SHA-256: $O29_ARTIFACT_SHA256
+
+          Previous gate:
+            U5-O30 classified drivers/spi/spi.c as SPI_DEVRES_DEVICE_REFERENCE_LIFETIME.
+            O30 is audit-only and does not replace O29 as Runtime-PASS parent.
+
+          Scope:
+          - Deep-audit only drivers/spi/spi.c for both official targets.
+          - Prove the exact BASE / P13-OURS / official-THEIRS lifetime semantics.
+          - Derive a candidate union resolution as evidence only.
+          - Preserve P13 devres_find() managed-allocation detection.
+          - Preserve official per-controller add_lock semantics.
+          - Preserve official delayed final put_device() ordering after IDR cleanup and add_lock unlock.
+          - Do not modify a kernel source tree.
+          - Do not build a kernel, create AK3, flash, or claim Device PASS.
+
+          Verified upstream provenance used for semantic classification:
+            devm SPI controller allocation: $SPI_DEVM_UPSTREAM_COMMIT
+            per-controller add_lock: $SPI_ADD_LOCK_UPSTREAM_COMMIT
+            add_lock UAF ordering fix: $SPI_ADD_LOCK_UAF_FIX_COMMIT
+          EOF
+
+      - name: Download and verify exact O29 Runtime-PASS artifact
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          meta="$RUNNER_TEMP/o29-artifact-meta.json"
+          zip="$RUNNER_TEMP/o29.zip"
+
+          curl --fail --silent --show-error --location --retry 3 --retry-delay 2 \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${O29_ARTIFACT_ID}" \
+            -o "$meta"
+
+          curl --fail --silent --show-error --location --retry 3 --retry-delay 2 \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${O29_ARTIFACT_ID}/zip" \
+            -o "$zip"
+
+          python3 - "$meta" "$O29_ARTIFACT_ID" "$O29_ARTIFACT_NAME" "$O29_ARTIFACT_SHA256" <<'PY'
+          import json, sys
+          path, expected_id, expected_name, expected_sha = sys.argv[1:]
+          with open(path, encoding='utf-8') as f:
+              meta = json.load(f)
+          assert str(meta['id']) == expected_id, (meta.get('id'), expected_id)
+          assert meta['name'] == expected_name, (meta.get('name'), expected_name)
+          assert meta.get('expired') is False, 'O29 artifact expired'
+          digest = meta.get('digest')
+          if digest not in (None, '', 'sha256:' + expected_sha):
+              raise AssertionError((digest, expected_sha))
+          print('O29_METADATA=PASS')
+          PY
+
+          echo "$O29_ARTIFACT_SHA256  $zip" | sha256sum -c -
+
+          python3 - "$zip" "$O29_DIR" <<'PY'
+          from pathlib import Path
+          import sys, zipfile
+          archive, destination = sys.argv[1:]
+          root = Path(destination).resolve()
+          with zipfile.ZipFile(archive) as zf:
+              for info in zf.infolist():
+                  output = (root / info.filename).resolve()
+                  if output != root and root not in output.parents:
+                      raise SystemExit(f'unsafe archive member: {info.filename}')
+              zf.extractall(root)
+          PY
+
+          test -f "$O29_DIR/SHA256SUMS.txt"
+          (
+            cd "$O29_DIR"
+            sha256sum -c SHA256SUMS.txt
+          ) | tee "$AUDIT_DIR/01-O29-INTERNAL-SHA256-CHECK.txt"
+          test "$(grep -c 'OK$' "$AUDIT_DIR/01-O29-INTERNAL-SHA256-CHECK.txt")" -eq 219
+          cp "$meta" "$AUDIT_DIR/02-O29-ARTIFACT-METADATA.json"
+          sha256sum "$zip" > "$AUDIT_DIR/03-O29-ZIP-SHA256.txt"
+
+      - name: Deep-audit SPI devres and controller-reference lifetime
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from __future__ import annotations
+          from pathlib import Path
+          import hashlib
+          import os
+          import re
+          import shutil
+
+          o29 = Path(os.environ['O29_DIR'])
+          audit = Path(os.environ['AUDIT_DIR'])
+          targets = ('5.4.300', '5.4.302')
+          rel = Path('drivers/spi/spi.c')
+          checks: list[str] = []
+
+          def gate(condition: bool, label: str) -> None:
+              if not condition:
+                  raise AssertionError(label)
+              checks.append(label)
+
+          def region(text: str, begin: str, end: str) -> str:
+              start = text.index(begin)
+              stop = text.index(end, start)
+              return text[start:stop]
+
+          def resolve_preview(preview: str) -> str:
+              pattern = re.compile(
+                  r'<<<<<<<[^\n]*\n(.*?)'
+                  r'\|\|\|\|\|\|\|[^\n]*\n(.*?)'
+                  r'=======\n(.*?)'
+                  r'>>>>>>>[^\n]*\n',
+                  re.S,
+              )
+              matches = list(pattern.finditer(preview))
+              gate(len(matches) == 1, 'preview has exactly one diff3 conflict')
+              match = matches[0]
+
+              # The official target side is intentionally empty at the old
+              # early-release position: Stable moved the release later.
+              gate(match.group(3) == '', 'THEIRS side removes early final-release block')
+              merged = preview[:match.start()] + match.group(3) + preview[match.end():]
+
+              stable_tail = (
+                  '\t/* Release the last reference on the controller if its driver\n'
+                  '\t * has not yet been converted to devm_spi_alloc_master/slave().\n'
+                  '\t */\n'
+                  '\tif (!ctlr->devm_allocated)\n'
+                  '\t\tput_device(&ctlr->dev);\n'
+              )
+              p13_tail = (
+                  '\t/* Release the last reference on the controller if its driver\n'
+                  '\t * has not yet been converted to devm_spi_alloc_master/slave().\n'
+                  '\t */\n'
+                  '\tif (!devres_find(ctlr->dev.parent, devm_spi_release_controller,\n'
+                  '\t\t\t devm_spi_match_controller, ctlr))\n'
+                  '\t\tput_device(&ctlr->dev);\n'
+              )
+              gate(merged.count(stable_tail) == 1, 'merged preview has one delayed Stable release block')
+              return merged.replace(stable_tail, p13_tail, 1)
+
+          reports = []
+          candidate_hashes = {}
+
+          for target in targets:
+              root = o29 / f'target-{target}' / 'conflicts' / rel
+              gate(root.is_dir(), f'{target}: SPI conflict evidence directory exists')
+              files = {
+                  'base': root / 'BASE-v5.4.274',
+                  'ours': root / 'OURS',
+                  'theirs': root / 'THEIRS-target',
+                  'preview': root / 'MERGE-PREVIEW',
+                  'meta': root / 'META.txt',
+              }
+              for key, path in files.items():
+                  gate(path.is_file(), f'{target}: {key} evidence exists')
+
+              base = files['base'].read_text(encoding='utf-8')
+              ours = files['ours'].read_text(encoding='utf-8')
+              theirs = files['theirs'].read_text(encoding='utf-8')
+              preview = files['preview'].read_text(encoding='utf-8')
+              meta = files['meta'].read_text(encoding='utf-8')
+
+              gate('MERGE_CONFLICT_HUNKS=1' in meta, f'{target}: exactly one SPI merge hunk')
+              gate(preview.count('<<<<<<< ') == 1, f'{target}: one conflict marker in preview')
+              gate(preview.count('||||||| ') == 1, f'{target}: one BASE marker in preview')
+              gate(preview.count('=======') == 1, f'{target}: one separator in preview')
+              gate(preview.count('>>>>>>> ') == 1, f'{target}: one THEIRS marker in preview')
+
+              base_alloc = region(base, 'struct spi_controller *__devm_spi_alloc_controller', 'EXPORT_SYMBOL_GPL(__devm_spi_alloc_controller);')
+              ours_alloc = region(ours, 'struct spi_controller *__devm_spi_alloc_controller', 'EXPORT_SYMBOL_GPL(__devm_spi_alloc_controller);')
+              theirs_alloc = region(theirs, 'struct spi_controller *__devm_spi_alloc_controller', 'EXPORT_SYMBOL_GPL(__devm_spi_alloc_controller);')
+              gate('ctlr->devm_allocated = true;' in base_alloc, f'{target}: BASE tracks managed allocation with devm_allocated')
+              gate('ctlr->devm_allocated = true;' not in ours_alloc, f'{target}: P13 removes devm_allocated assignment')
+              gate('ctlr->devm_allocated = true;' in theirs_alloc, f'{target}: Stable target retains devm_allocated assignment')
+
+              base_unreg = region(base, 'void spi_unregister_controller(struct spi_controller *ctlr)', 'EXPORT_SYMBOL_GPL(spi_unregister_controller);')
+              ours_unreg = region(ours, 'void spi_unregister_controller(struct spi_controller *ctlr)', 'EXPORT_SYMBOL_GPL(spi_unregister_controller);')
+              theirs_unreg = region(theirs, 'void spi_unregister_controller(struct spi_controller *ctlr)', 'EXPORT_SYMBOL_GPL(spi_unregister_controller);')
+
+              gate('static int devm_spi_match_controller' in ours, f'{target}: P13 match helper exists')
+              gate('devres_find(ctlr->dev.parent, devm_spi_release_controller,' in ours_unreg, f'{target}: P13 detects managed allocation with devres_find')
+              gate('if (!ctlr->devm_allocated)' not in ours_unreg, f'{target}: P13 unregister does not use devm_allocated predicate')
+              gate('mutex_lock(&spi_add_lock);' in ours_unreg, f'{target}: P13 baseline still uses global spi_add_lock')
+
+              gate('if (!ctlr->devm_allocated)' in base_unreg, f'{target}: BASE uses devm_allocated release predicate')
+              gate(base_unreg.index('if (!ctlr->devm_allocated)') < base_unreg.index('/* free bus id */'), f'{target}: BASE releases before bus-id cleanup')
+
+              gate('mutex_lock(&ctlr->add_lock);' in theirs_unreg, f'{target}: Stable target uses per-controller add_lock')
+              gate('mutex_unlock(&ctlr->add_lock);' in theirs_unreg, f'{target}: Stable target unlocks per-controller add_lock')
+              gate('if (!ctlr->devm_allocated)' in theirs_unreg, f'{target}: Stable target uses devm_allocated predicate')
+              gate(theirs_unreg.index('idr_remove(&spi_master_idr, id);') < theirs_unreg.index('if (!ctlr->devm_allocated)'), f'{target}: Stable delays final release after IDR removal')
+              gate(theirs_unreg.index('mutex_unlock(&ctlr->add_lock);') < theirs_unreg.index('if (!ctlr->devm_allocated)'), f'{target}: Stable delays final release after add_lock unlock')
+
+              # The automatic 3-way preview already merged the per-controller
+              # lock conversion while preserving P13 devres allocation model.
+              gate('mutex_lock(&ctlr->add_lock);' in preview, f'{target}: preview has Stable per-controller add_lock')
+              gate('spi_add_lock' not in preview, f'{target}: preview has no stale global spi_add_lock')
+              gate('ctlr->devm_allocated = true;' not in preview, f'{target}: preview preserves P13 managed-allocation model')
+              gate('static int devm_spi_match_controller' in preview, f'{target}: preview preserves P13 devres match helper')
+
+              candidate = resolve_preview(preview)
+              gate('<<<<<<< ' not in candidate and '||||||| ' not in candidate and '>>>>>>> ' not in candidate, f'{target}: candidate has no conflict markers')
+              gate('ctlr->devm_allocated = true;' not in candidate, f'{target}: candidate does not reintroduce devm_allocated assignment')
+              gate('if (!ctlr->devm_allocated)' not in candidate, f'{target}: candidate does not mix incompatible Stable predicate')
+              gate(candidate.count('static int devm_spi_match_controller') == 1, f'{target}: candidate has exactly one P13 match helper')
+              gate(candidate.count('devres_find(ctlr->dev.parent, devm_spi_release_controller,') == 1, f'{target}: candidate has exactly one managed-allocation devres check')
+              gate('spi_add_lock' not in candidate, f'{target}: candidate keeps Stable per-controller lock conversion')
+
+              cand_unreg = region(candidate, 'void spi_unregister_controller(struct spi_controller *ctlr)', 'EXPORT_SYMBOL_GPL(spi_unregister_controller);')
+              devres_pos = cand_unreg.index('devres_find(ctlr->dev.parent, devm_spi_release_controller,')
+              gate(cand_unreg.index('idr_remove(&spi_master_idr, id);') < devres_pos, f'{target}: candidate final release after IDR removal')
+              gate(cand_unreg.index('mutex_unlock(&ctlr->add_lock);') < devres_pos, f'{target}: candidate final release after add_lock unlock')
+              gate(cand_unreg.count('put_device(&ctlr->dev);') == 1, f'{target}: candidate has one final controller put')
+
+              cdir = audit / 'candidate-union' / f'target-{target}' / rel.parent
+              cdir.mkdir(parents=True, exist_ok=True)
+              cpath = cdir / rel.name
+              cpath.write_text(candidate, encoding='utf-8', newline='\n')
+              candidate_hashes[target] = hashlib.sha256(candidate.encode()).hexdigest()
+
+              evdir = audit / 'o29-spi-evidence' / f'target-{target}'
+              evdir.mkdir(parents=True, exist_ok=True)
+              for path in files.values():
+                  shutil.copy2(path, evdir / path.name)
+
+              reports.append((target, candidate_hashes[target]))
+
+          # Pinned upstream lineage facts already verified before authoring this audit.
+          provenance = audit / '10-UPSTREAM-PROVENANCE.txt'
+          provenance.write_text(
+              'P13_DEVM_MODEL_UPSTREAM=5e844cc37a5cbaa460e68f9a989d321d63088a89\n'
+              'P13_DEVM_MODEL_SEMANTIC=devres_find identifies devm-allocated controller lifetime\n'
+              'STABLE_PER_CONTROLLER_ADD_LOCK_UPSTREAM=6098475d4cb48d821bdf453c61118c56e26294f0\n'
+              'STABLE_ADD_LOCK_UAF_FIX_UPSTREAM=6c53b45c71b4920b5e62f0ea8079a1da382b9434\n'
+              'STABLE_ADD_LOCK_UAF_FIX_SEMANTIC=final put_device must occur after add_lock unlock\n',
+              encoding='utf-8',
+          )
+
+          report = audit / '31-O31-SPI-LIFETIME-DEEP-AUDIT.md'
+          report.write_text(
+              '# U5-O31 SPI devres/controller lifetime deep audit\n\n'
+              'Runtime parent remains **U5-O29**. O31 is audit-only.\n\n'
+              'The conflict combines two valid lineages: P13 uses the upstream devres-based managed-allocation detection, while official Stable moves the final controller reference release behind bus-ID cleanup and the per-controller `add_lock` unlock.\n\n'
+              'A defensible next source resolution is therefore a **semantic union**: keep P13 `devres_find()` detection, but execute its conditional `put_device()` only at the delayed Stable release point. Do not reintroduce the incompatible `devm_allocated` assignment/predicate into the P13 devres model.\n\n'
+              + ''.join(f'- `{target}` candidate SHA-256: `{sha}`\n' for target, sha in reports),
+              encoding='utf-8',
+          )
+
+          summary = audit / '31-O31-SUMMARY.txt'
+          summary.write_text(
+              'O31_MODE=SPI_LIFETIME_DEEP_AUDIT_ONLY\n'
+              'CURRENT_RUNTIME_PARENT=U5-O29\n'
+              'O31_BECOMES_RUNTIME_PARENT=NO\n'
+              'SPI_CONFLICT_HUNKS_5.4.300=1\n'
+              'SPI_CONFLICT_HUNKS_5.4.302=1\n'
+              'P13_DEVM_MODEL=DEVRES_FIND\n'
+              'STABLE_LOCK_MODEL=PER_CONTROLLER_ADD_LOCK\n'
+              'STABLE_FINAL_RELEASE_ORDER=AFTER_IDR_AND_ADD_LOCK_UNLOCK\n'
+              'DERIVED_NEXT_RESOLUTION=DELAYED_DEVRES_FIND_UNION\n'
+              'SOURCE_TREE_MODIFIED=NO\n'
+              'KERNEL_BUILD_PERFORMED=NO\n'
+              'AK3_CREATED=NO\n'
+              'FLASH_PERFORMED=NO\n'
+              'DEVICE_PASS=NO\n'
+              f'AUDIT_ASSERTIONS={len(checks)}\n'
+              'O31_DEEP_AUDIT_GATE=PASS\n',
+              encoding='utf-8',
+          )
+
+          print(f'AUDIT_ASSERTIONS={len(checks)}')
+          for target, sha in reports:
+              print(f'CANDIDATE_{target}_SHA256={sha}')
+          print('DERIVED_NEXT_RESOLUTION=DELAYED_DEVRES_FIND_UNION')
+          print('O31_DEEP_AUDIT_GATE=PASS')
+          PY
+
+      - name: Final O31 gate and evidence integrity
+        shell: bash
+        run: |
+          set -euo pipefail
+          summary="$AUDIT_DIR/31-O31-SUMMARY.txt"
+          test -s "$summary"
+          grep -qx 'O31_MODE=SPI_LIFETIME_DEEP_AUDIT_ONLY' "$summary"
+          grep -qx 'CURRENT_RUNTIME_PARENT=U5-O29' "$summary"
+          grep -qx 'O31_BECOMES_RUNTIME_PARENT=NO' "$summary"
+          grep -qx 'SPI_CONFLICT_HUNKS_5.4.300=1' "$summary"
+          grep -qx 'SPI_CONFLICT_HUNKS_5.4.302=1' "$summary"
+          grep -qx 'P13_DEVM_MODEL=DEVRES_FIND' "$summary"
+          grep -qx 'STABLE_LOCK_MODEL=PER_CONTROLLER_ADD_LOCK' "$summary"
+          grep -qx 'STABLE_FINAL_RELEASE_ORDER=AFTER_IDR_AND_ADD_LOCK_UNLOCK' "$summary"
+          grep -qx 'DERIVED_NEXT_RESOLUTION=DELAYED_DEVRES_FIND_UNION' "$summary"
+          grep -qx 'SOURCE_TREE_MODIFIED=NO' "$summary"
+          grep -qx 'KERNEL_BUILD_PERFORMED=NO' "$summary"
+          grep -qx 'AK3_CREATED=NO' "$summary"
+          grep -qx 'FLASH_PERFORMED=NO' "$summary"
+          grep -qx 'DEVICE_PASS=NO' "$summary"
+          grep -qx 'O31_DEEP_AUDIT_GATE=PASS' "$summary"
+          test -s "$AUDIT_DIR/candidate-union/target-5.4.300/drivers/spi/spi.c"
+          test -s "$AUDIT_DIR/candidate-union/target-5.4.302/drivers/spi/spi.c"
+
+          cat > "$AUDIT_DIR/99-O31-FINAL-GATE.txt" <<'EOF'
+          O29_EXACT_ARTIFACT=PASS
+          O29_INTERNAL_SHA256SUMS_219_OF_219=PASS
+          SPI_BASE_OURS_THEIRS_5.4.300=PASS
+          SPI_BASE_OURS_THEIRS_5.4.302=PASS
+          P13_DEVRES_LIFETIME_MODEL=PASS
+          STABLE_PER_CONTROLLER_ADD_LOCK_MODEL=PASS
+          STABLE_DELAYED_FINAL_RELEASE_ORDER=PASS
+          DELAYED_DEVRES_FIND_UNION_CANDIDATE_5.4.300=PASS
+          DELAYED_DEVRES_FIND_UNION_CANDIDATE_5.4.302=PASS
+          SOURCE_TREE_MODIFIED=NO
+          KERNEL_BUILD_PERFORMED=NO
+          AK3_CREATED=NO
+          FLASH_PERFORMED=NO
+          DEVICE_PASS=NO
+          CURRENT_RUNTIME_PARENT=U5-O29
+          O31_FINAL=AUDIT_GREEN_PASS
+          EOF
+
+          (
+            cd "$AUDIT_DIR"
+            find . -type f ! -name SHA256SUMS.txt -print0 \
+              | LC_ALL=C sort -z \
+              | xargs -0 sha256sum > SHA256SUMS.txt
+            sha256sum -c SHA256SUMS.txt
+          )
+
+          echo 'O31_FINAL=AUDIT_GREEN_PASS'
+
+      - name: Upload single O31 SPI deep-audit artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: VEUX-GEN1-U5-O31-spi-devres-controller-lifetime-deep-audit
+          path: u5-o31-evidence/
+          if-no-files-found: error
+          compression-level: 9
+          retention-days: 30
