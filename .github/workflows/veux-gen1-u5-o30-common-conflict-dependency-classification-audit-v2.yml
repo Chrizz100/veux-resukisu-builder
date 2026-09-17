@@ -1,0 +1,387 @@
+name: VEUX GEN1 U5-O30 Common Conflict Dependency Classification Audit
+'on':
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: veux-gen1-u5-o30-common-conflict-dependency-classification-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      O29_ARTIFACT_ID: '10468051467'
+      O29_ARTIFACT_SHA256: 5b3d75489ecc51d57b6ea31a02b4e060a9b93ecde2e053eb8ad5ccf0eff04a91
+      O29_DIR: ${{ github.workspace }}/u5-o29-parent
+      AUDIT_DIR: ${{ github.workspace }}/u5-o30-evidence
+      GH_TOKEN: ${{ github.token }}
+
+    steps:
+      - name: Initialize O30 classification-only audit
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$AUDIT_DIR" "$O29_DIR"
+          mkdir -p "$AUDIT_DIR" "$O29_DIR"
+          cat > "$AUDIT_DIR/00-PLAN.txt" <<'EOF'
+          U5-O30 COMMON-CONFLICT DEPENDENCY CLASSIFICATION AUDIT
+
+          Immutable input:
+            U5-O29 Runtime-PASS artifact ID 10468051467
+            SHA-256 5b3d75489ecc51d57b6ea31a02b4e060a9b93ecde2e053eb8ad5ccf0eff04a91
+
+          Scope:
+          - Re-validate the exact O29 artifact and its internal SHA256SUMS.
+          - Re-derive the exact 5.4.300 and 5.4.302 conflict matrices.
+          - Classify all ten common conflicts by dependency/lifecycle scope.
+          - Decide whether any one common conflict is safely isolated enough for an O30 source resolution.
+
+          Hard rules:
+          - O29 remains the current Runtime-PASS parent.
+          - O30 adds zero source resolvers.
+          - No source tree is cloned, patched, committed, pushed, built or flashed.
+          - No kernel build and no AnyKernel3 package.
+          - 5.4.302-only conflicts are inventoried but not changed.
+          - Exactly one final GitHub artifact is uploaded.
+          EOF
+
+      - name: Download and verify exact O29 Runtime-PASS artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          zip="$RUNNER_TEMP/o29.zip"
+
+          curl --fail --silent --show-error --location \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${O29_ARTIFACT_ID}/zip" \
+            -o "$zip"
+
+          echo "$O29_ARTIFACT_SHA256  $zip" | sha256sum -c -
+          sha256sum "$zip" > "$AUDIT_DIR/01-O29-ARTIFACT-SHA256.txt"
+
+          python3 - "$zip" "$O29_DIR" <<'PY'
+          import pathlib, sys, zipfile
+          src, dst = sys.argv[1:]
+          root = pathlib.Path(dst).resolve()
+          with zipfile.ZipFile(src) as z:
+              for info in z.infolist():
+                  out = (root / info.filename).resolve()
+                  if root != out and root not in out.parents:
+                      raise SystemExit(f'unsafe archive member: {info.filename}')
+              z.extractall(root)
+          PY
+
+          test -f "$O29_DIR/SHA256SUMS.txt"
+          (cd "$O29_DIR" && sha256sum -c SHA256SUMS.txt) \
+            | tee "$AUDIT_DIR/02-O29-PARENT-MANIFEST-CHECK.txt"
+          test "$(wc -l < "$AUDIT_DIR/02-O29-PARENT-MANIFEST-CHECK.txt")" -eq 219
+
+      - name: Classify all ten common O29 conflicts without source resolution
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from __future__ import annotations
+          import hashlib
+          import os
+          from pathlib import Path
+          import re
+          import shutil
+          import sys
+          
+          O29 = Path(os.environ.get('O29_DIR', ''))
+          AUDIT = Path(os.environ.get('AUDIT_DIR', ''))
+          if not O29.is_dir():
+              raise SystemExit(f'O29_DIR missing: {O29}')
+          if not AUDIT:
+              raise SystemExit('AUDIT_DIR missing')
+          AUDIT.mkdir(parents=True, exist_ok=True)
+          
+          COMMON = [
+              'drivers/android/binder.c',
+              'drivers/clk/qcom/clk-alpha-pll.c',
+              'drivers/rpmsg/qcom_glink_native.c',
+              'drivers/soc/qcom/socinfo.c',
+              'drivers/spi/spi.c',
+              'drivers/usb/dwc3/dwc3-qcom.c',
+              'drivers/usb/dwc3/gadget.c',
+              'fs/erofs/decompressor.c',
+              'kernel/cpu.c',
+              'kernel/time/hrtimer.c',
+          ]
+          EXTRA_302 = [
+              'drivers/base/regmap/regmap.c',
+              'drivers/media/pci/ivtv/ivtv-streams.c',
+              'drivers/mmc/host/sdhci-msm.c',
+              'drivers/soc/qcom/rpmh-rsc.c',
+              'drivers/usb/gadget/function/f_ncm.c',
+              'drivers/usb/host/xhci-plat.c',
+          ]
+          
+          CLASS = {
+              'drivers/android/binder.c': {
+                  'group': 'BINDER_CROSS_FILE_DATA_LAYOUT',
+                  'reason': 'Binder process layout/type evolution overlaps vendor Binder state; cross-file binder layout/header audit is required before choosing fields or types.',
+                  'dependency': 'Binder data-layout/header users (including binder_internal-style layout split where applicable)',
+                  'markers': ['struct binder_proc', 'max_threads'],
+              },
+              'drivers/clk/qcom/clk-alpha-pll.c': {
+                  'group': 'ALPHA_PLL_STABLE_FIX_PLUS_VENDOR_AGERA',
+                  'reason': 'One overlap carries Stable alpha-mode mask semantics while another overlaps the vendor-only Agera configure path; these are not one blind transplant.',
+                  'dependency': 'PLL config masks plus vendor Agera configure/post-divider semantics',
+                  'markers': ['alpha_mode_mask', 'clk_agera_pll_configure'],
+              },
+              'drivers/rpmsg/qcom_glink_native.c': {
+                  'group': 'GLINK_PROTOCOL_STATE_MACHINE_RESET_TX_RX',
+                  'reason': 'Eleven overlaps span command namespace, TX wait/reset behavior, intent completion, continuation frames, IRQ wakeups and vendor IPC state.',
+                  'dependency': 'GLINK command protocol + TX/RX intent state machine + reset/wakeup lifecycle',
+                  'markers': ['tx_avail_notify', 'sent_read_notify', 'RPM_CMD_', 'GLINK_CMD_'],
+              },
+              'drivers/soc/qcom/socinfo.c': {
+                  'group': 'SOCINFO_ALLOCATION_PARSING_SYSFS_LIFECYCLE',
+                  'reason': 'Stable allocation/bounds/serial handling overlaps the vendor SKU/sysfs population sequence, so ordering and failure paths must be audited as one lifecycle.',
+                  'dependency': 'socinfo allocation + item-size bounds + serial/SKU + sysfs publication ordering',
+                  'markers': ['offsetofend', 'serial_number', 'socinfo_populate_sysfs'],
+              },
+              'drivers/spi/spi.c': {
+                  'group': 'SPI_DEVRES_DEVICE_REFERENCE_LIFETIME',
+                  'reason': 'The overlap changes where the controller device reference is released while later devm_allocated handling remains; isolated deletion/insertion risks double-put or leak semantics.',
+                  'dependency': 'spi controller unregister + devres ownership + final put_device lifetime',
+                  'markers': ['devm_spi_release_controller', 'devm_allocated', 'put_device'],
+              },
+              'drivers/usb/dwc3/dwc3-qcom.c': {
+                  'group': 'DWC3_QCOM_PROBE_ERROR_GDSC_RESET_LIFECYCLE',
+                  'reason': 'Stable removes an unwind segment where P13 carries GDSC disable and reset assert; probe/remove/error symmetry must be audited before resolution.',
+                  'dependency': 'DWC3-QCOM probe unwind + GDSC + reset + remove symmetry',
+                  'markers': ['gdsc', 'reset_assert', 'dwc3_qcom_remove'],
+              },
+              'drivers/usb/dwc3/gadget.c': {
+                  'group': 'DWC3_GADGET_RESET_EVENT_PIPELINE',
+                  'reason': 'Three overlaps span device-core soft reset, controller run/stop timeout handling and event-count IRQ handling while P13 carries GSI/vendor notifications.',
+                  'dependency': 'DWC3 gadget soft-reset/run-stop/event pipeline + GSI/vendor notifications',
+                  'markers': ['dwc3_device_core_soft_reset', 'DWC3_GSI_EVT_BUF_CLEAR', 'DWC3_GEVNTCOUNT'],
+              },
+              'fs/erofs/decompressor.c': {
+                  'group': 'EROFS_DECOMPRESS_ABI_INPLACE_MAPPING_LIFECYCLE',
+                  'reason': 'Eight overlaps change decompressor callback shape, inplace-I/O source selection, mapping/unmapping ownership, pcpubuf handling and destination base semantics.',
+                  'dependency': 'EROFS decompressor callback ABI + inplace I/O + mapping lifetime + pcpubuf/output-base handling',
+                  'markers': ['z_erofs_lz4_decompress', 'generic_copy_inplace_data', 'alg->decompress'],
+              },
+              'kernel/cpu.c': {
+                  'group': 'CPU_HRTIMER_HOTPLUG_COUPLED',
+                  'reason': 'The CPU hotplug state controls hrtimer startup/teardown and must be resolved together with hrtimer per-CPU initialization.',
+                  'dependency': 'kernel/time/hrtimer.c',
+                  'markers': ['CPUHP_AP_HRTIMERS_DYING', 'hrtimers_cpu_starting', 'hrtimers_cpu_dying'],
+              },
+              'kernel/time/hrtimer.c': {
+                  'group': 'CPU_HRTIMER_HOTPLUG_COUPLED',
+                  'reason': 'P13 expiry-lock initialization overlaps Stable online-state initialization; semantics depend on the CPU hotplug callbacks in kernel/cpu.c.',
+                  'dependency': 'kernel/cpu.c',
+                  'markers': ['cpu_base->online', 'hrtimer_cpu_base_init_expiry_lock'],
+              },
+          }
+          
+          EXPECTED = {
+              '5.4.300': {'files': set(COMMON), 'hunks': 30, 'semantic': 28},
+              '5.4.302': {'files': set(COMMON + EXTRA_302), 'hunks': 41, 'semantic': 28},
+          }
+          
+          checks = []
+          def ok(cond: bool, label: str):
+              if not cond:
+                  raise AssertionError(label)
+              checks.append(label)
+          
+          def parse_result(path: Path):
+              data = {}
+              for raw in path.read_text(errors='strict').splitlines():
+                  if '=' in raw:
+                      k, v = raw.split('=', 1)
+                      data[k.strip()] = v.strip()
+              return data
+          
+          def conflict_map(target: str):
+              root = O29 / f'target-{target}' / 'conflicts'
+              out = {}
+              for meta in sorted(root.rglob('META.txt')):
+                  rel = meta.parent.relative_to(root).as_posix()
+                  m = re.search(r'MERGE_CONFLICT_HUNKS=(\d+)', meta.read_text(errors='strict'))
+                  ok(m is not None, f'{target}:{rel}:META hunk count present')
+                  out[rel] = int(m.group(1))
+              return out
+          
+          # Exact O29 status gates.
+          for target in ('5.4.300', '5.4.302'):
+              result_path = O29 / f'target-{target}' / 'RESULT.txt'
+              ok(result_path.is_file(), f'{target}:RESULT exists')
+              r = parse_result(result_path)
+              cmap = conflict_map(target)
+              exp = EXPECTED[target]
+              ok(set(cmap) == exp['files'], f'{target}:exact conflict-file set')
+              ok(sum(cmap.values()) == exp['hunks'], f'{target}:exact conflict-hunk total')
+              ok(int(r.get('RUNTIME_CONFLICTS', '-1')) == len(exp['files']), f'{target}:RESULT runtime conflict count')
+              ok(int(r.get('TEXT_CONFLICT_HUNKS', '-1')) == exp['hunks'], f'{target}:RESULT hunk count')
+              ok(int(r.get('SEMANTIC_RESOLUTIONS', '-1')) == exp['semantic'], f'{target}:semantic resolutions unchanged')
+              ok(r.get('KERNEL_BUILD_PERFORMED') == 'NO', f'{target}:no kernel build in parent')
+              ok(r.get('DEVICE_PASS') == 'NO', f'{target}:no false device-pass claim in parent')
+          
+          ok(set(CLASS) == set(COMMON), 'classification covers exactly ten common conflicts')
+          ok(set(EXTRA_302).isdisjoint(COMMON), '5.4.302-only conflicts are disjoint from common conflicts')
+          
+          # Artifact-grounded marker checks on BOTH official targets.
+          for path in COMMON:
+              for target in ('5.4.300', '5.4.302'):
+                  preview = O29 / f'target-{target}' / 'conflicts' / path / 'MERGE-PREVIEW'
+                  ok(preview.is_file(), f'{target}:{path}:merge preview exists')
+                  text = preview.read_text(errors='strict')
+                  ok(text.count('<<<<<<< ') == conflict_map(target)[path], f'{target}:{path}:preview marker count matches META')
+                  for marker in CLASS[path]['markers']:
+                      ok(marker in text, f'{target}:{path}:marker:{marker}')
+          
+          # Explicitly prove the CPU/HRTIMER pair is classified as one logical dependency group.
+          ok(CLASS['kernel/cpu.c']['group'] == CLASS['kernel/time/hrtimer.c']['group'], 'cpu/hrtimer share dependency group')
+          
+          # Copy only relevant immutable O29 evidence into the O30 artifact; never modify it.
+          evroot = AUDIT / 'o29-relevant-evidence'
+          for target in ('5.4.300', '5.4.302'):
+              tdst = evroot / f'target-{target}'
+              tdst.mkdir(parents=True, exist_ok=True)
+              shutil.copy2(O29 / f'target-{target}' / 'RESULT.txt', tdst / 'RESULT.txt')
+              for path in COMMON:
+                  srcdir = O29 / f'target-{target}' / 'conflicts' / path
+                  dstdir = tdst / 'conflicts' / path
+                  dstdir.mkdir(parents=True, exist_ok=True)
+                  for name in ('META.txt', 'MERGE-PREVIEW'):
+                      shutil.copy2(srcdir / name, dstdir / name)
+          
+          # 5.4.302-only inventory is recorded, not resolved.
+          extra_dst = evroot / 'target-5.4.302' / '302-only-inventory.tsv'
+          with extra_dst.open('w', encoding='utf-8', newline='\n') as f:
+              f.write('path\thunks\tO30_action\n')
+              cmap302 = conflict_map('5.4.302')
+              for path in EXTRA_302:
+                  f.write(f'{path}\t{cmap302[path]}\tDEFERRED_UNCHANGED\n')
+          
+          matrix = AUDIT / '30-O30-DEPENDENCY-CLASSIFICATION.tsv'
+          with matrix.open('w', encoding='utf-8', newline='\n') as f:
+              f.write('path\thunks_300\thunks_302\tdependency_group\tsafe_isolated\tO30_source_resolution\tdependency_scope\treason\n')
+              c300 = conflict_map('5.4.300')
+              c302 = conflict_map('5.4.302')
+              for path in COMMON:
+                  row = CLASS[path]
+                  f.write('\t'.join([
+                      path, str(c300[path]), str(c302[path]), row['group'], 'NO', 'NONE',
+                      row['dependency'].replace('\t', ' '), row['reason'].replace('\t', ' '),
+                  ]) + '\n')
+          
+          md = AUDIT / '30-O30-DEPENDENCY-CLASSIFICATION.md'
+          with md.open('w', encoding='utf-8', newline='\n') as f:
+              f.write('# U5-O30 common-conflict dependency classification\n\n')
+              f.write('Parent: **U5-O29 Runtime PASS**. O30 is an audit-only step and does not replace the runtime parent.\n\n')
+              f.write('| Conflict | .300 hunks | .302 hunks | Dependency group | Isolated source fix? |\n')
+              f.write('|---|---:|---:|---|---|\n')
+              c300 = conflict_map('5.4.300'); c302 = conflict_map('5.4.302')
+              for path in COMMON:
+                  f.write(f"| `{path}` | {c300[path]} | {c302[path]} | `{CLASS[path]['group']}` | **NO** |\n")
+              f.write('\n## Decision\n\n')
+              f.write('No common O29 conflict is sufficiently isolated for a defensible one-file O30 source resolution. ') 
+              f.write('O30 therefore adds **zero source resolvers** and preserves the O29 conflict matrix unchanged.\n')
+          
+          summary = AUDIT / '30-O30-SUMMARY.txt'
+          summary.write_text(
+              'O30_MODE=DEPENDENCY_CLASSIFICATION_ONLY\n'
+              'CURRENT_RUNTIME_PARENT=U5-O29\n'
+              'O30_BECOMES_RUNTIME_PARENT=NO\n'
+              'COMMON_CONFLICT_FILES=10\n'
+              'SAFE_ISOLATED_COMMON_CONFLICTS=0\n'
+              'O30_SOURCE_RESOLUTIONS_ADDED=0\n'
+              'TARGET_5.4.300_RUNTIME_CONFLICTS=10\n'
+              'TARGET_5.4.300_TEXT_CONFLICT_HUNKS=30\n'
+              'TARGET_5.4.302_RUNTIME_CONFLICTS=16\n'
+              'TARGET_5.4.302_TEXT_CONFLICT_HUNKS=41\n'
+              'SEMANTIC_RESOLUTIONS=28\n'
+              'KERNEL_BUILD_PERFORMED=NO\n'
+              'AK3_CREATED=NO\n'
+              'FLASH_PERFORMED=NO\n'
+              'DEVICE_PASS=NO\n'
+              'NEXT_STEP=DEEP_AUDIT_ONE_DEPENDENCY_GROUP_THEN_DERIVE_NEXT_SOURCE_RESOLUTION\n'
+              f'CLASSIFICATION_ASSERTIONS={len(checks)}\n'
+              'O30_CLASSIFICATION_GATE=PASS\n',
+              encoding='utf-8'
+          )
+          
+          print(f'CLASSIFICATION_ASSERTIONS={len(checks)}')
+          print('SAFE_ISOLATED_COMMON_CONFLICTS=0')
+          print('O30_SOURCE_RESOLUTIONS_ADDED=0')
+          print('O30_CLASSIFICATION_GATE=PASS')
+          PY
+
+      - name: Final O30 audit gate and evidence integrity
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          summary="$AUDIT_DIR/30-O30-SUMMARY.txt"
+          matrix="$AUDIT_DIR/30-O30-DEPENDENCY-CLASSIFICATION.tsv"
+          test -s "$summary"
+          test -s "$matrix"
+          grep -qx 'O30_MODE=DEPENDENCY_CLASSIFICATION_ONLY' "$summary"
+          grep -qx 'CURRENT_RUNTIME_PARENT=U5-O29' "$summary"
+          grep -qx 'O30_BECOMES_RUNTIME_PARENT=NO' "$summary"
+          grep -qx 'COMMON_CONFLICT_FILES=10' "$summary"
+          grep -qx 'SAFE_ISOLATED_COMMON_CONFLICTS=0' "$summary"
+          grep -qx 'O30_SOURCE_RESOLUTIONS_ADDED=0' "$summary"
+          grep -qx 'TARGET_5.4.300_RUNTIME_CONFLICTS=10' "$summary"
+          grep -qx 'TARGET_5.4.300_TEXT_CONFLICT_HUNKS=30' "$summary"
+          grep -qx 'TARGET_5.4.302_RUNTIME_CONFLICTS=16' "$summary"
+          grep -qx 'TARGET_5.4.302_TEXT_CONFLICT_HUNKS=41' "$summary"
+          grep -qx 'SEMANTIC_RESOLUTIONS=28' "$summary"
+          grep -qx 'KERNEL_BUILD_PERFORMED=NO' "$summary"
+          grep -qx 'AK3_CREATED=NO' "$summary"
+          grep -qx 'FLASH_PERFORMED=NO' "$summary"
+          grep -qx 'DEVICE_PASS=NO' "$summary"
+          grep -qx 'O30_CLASSIFICATION_GATE=PASS' "$summary"
+          test "$(wc -l < "$matrix")" -eq 11
+          test "$(awk -F '\t' 'NR>1 && $5=="NO" && $6=="NONE" {n++} END{print n+0}' "$matrix")" -eq 10
+
+          cat > "$AUDIT_DIR/99-O30-FINAL-GATE.txt" <<'EOF'
+          O29_EXACT_ARTIFACT_SHA256=PASS
+          O29_INTERNAL_SHA256SUMS_219_OF_219=PASS
+          O29_5.4.300_MATRIX_10_FILES_30_HUNKS=PASS
+          O29_5.4.302_MATRIX_16_FILES_41_HUNKS=PASS
+          COMMON_10_CLASSIFIED=PASS
+          SAFE_ISOLATED_COMMON_CONFLICTS=0
+          O30_SOURCE_RESOLUTIONS_ADDED=0
+          CURRENT_RUNTIME_PARENT=U5-O29
+          KERNEL_BUILD_PERFORMED=NO
+          AK3_CREATED=NO
+          FLASH_PERFORMED=NO
+          DEVICE_PASS=NO
+          O30_FINAL=AUDIT_GREEN_PASS
+          EOF
+
+          (
+            cd "$AUDIT_DIR"
+            find . -type f ! -name SHA256SUMS.txt -print0 \
+              | LC_ALL=C sort -z \
+              | xargs -0 sha256sum > SHA256SUMS.txt
+            sha256sum -c SHA256SUMS.txt
+          )
+
+          echo 'O30_FINAL=AUDIT_GREEN_PASS'
+
+      - name: Upload single O30 dependency-classification evidence artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: VEUX-GEN1-U5-O30-common-conflict-dependency-classification-audit
+          path: u5-o30-evidence/
+          if-no-files-found: error
+          compression-level: 9
+          retention-days: 30
