@@ -1,0 +1,484 @@
+name: VEUX GEN1 U5-O38 EROFS LZ4 Inplace Output Buffer Preserve Semantic Resolution
+
+'on':
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: veux-gen1-u5-o38-erofs-inplace-output-buffer-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      TZ: UTC
+      LANG: C.UTF-8
+      LC_ALL: C.UTF-8
+
+      O37_ARTIFACT_ID: '10491623532'
+      O37_ARTIFACT_NAME: VEUX-GEN1-U5-O37-alpha-pll-vendor-stable-config-union-semantic-resolution-official-stable-5.4.300-5.4.302-port-audit
+      O37_ARTIFACT_SHA256: 6bed417f6281b4a0c402144bb37fa0958a709cb1c13bc4cbeb5fec9e193227e8
+      O37_INTERNAL_SHA_COUNT: '356'
+
+      EROFS_P13_SHA256: 2f3e0b5a8f0ff22bfba306232c186387a15e94ef49f215a71f9600b8783ac02b
+      EROFS_STABLE_TARGET_SHA256: a942813d9048e8eb9104fd00706a2d2556ae12f0f992b64f0e8a6173d8128996
+      EROFS_CANDIDATE_SHA256: 2f3e0b5a8f0ff22bfba306232c186387a15e94ef49f215a71f9600b8783ac02b
+
+      EROFS_INPLACE_FIX_COMMIT: 9ff2d260b25df6fe1341a79113d88fecf6bd553e
+
+    steps:
+      - name: Initialize U5-O38 comprehensive evidence workspace
+        shell: bash
+        run: |
+          set -euo pipefail
+          O37_DIR="$RUNNER_TEMP/u5-o38-o37-parent"
+          AUDIT_DIR="$GITHUB_WORKSPACE/u5-o38-evidence"
+          VERIFY_DIR="$RUNNER_TEMP/u5-o38-verify"
+          rm -rf "$O37_DIR" "$AUDIT_DIR" "$VERIFY_DIR"
+          mkdir -p "$O37_DIR" "$AUDIT_DIR" "$VERIFY_DIR"
+          {
+            echo "O37_DIR=$O37_DIR"
+            echo "AUDIT_DIR=$AUDIT_DIR"
+            echo "VERIFY_DIR=$VERIFY_DIR"
+          } >> "$GITHUB_ENV"
+
+          cat > "$AUDIT_DIR/38-O38-PLAN.txt" <<EOF
+          U5-O38 EROFS LZ4 INPLACE OUTPUT-BUFFER PRESERVE SEMANTIC RESOLUTION
+
+          Runtime source parent: U5-O37 artifact $O37_ARTIFACT_ID
+
+          One logical source block:
+            fs/erofs/decompressor.c
+
+          Semantic rule:
+          - preserve P13's newer multi-page/big-pcluster EROFS decompressor implementation;
+          - verify that P13 already implements the safety invariant of Stable commit
+            $EROFS_INPLACE_FIX_COMMIT: in-place LZ4 compressed input must be addressed through
+            the decompressed output mapping, not through an independently mapped compressed buffer;
+          - preserve P13's stronger generalized path that validates all trailing input/output page
+            identities and falls back to a copied per-CPU buffer whenever in-place prerequisites fail;
+          - therefore resolve the eight textual conflict hunks by selecting the existing P13
+            implementation with zero additional content delta.
+
+          Expected result:
+            5.4.300: conflicts 2 -> 1, hunks 9 -> 1
+            5.4.302: conflicts 8 -> 7, hunks 20 -> 12
+            semantic resolutions 36 -> 37
+
+          Full O37 evidence is carried forward. No kernel build. No AK3. No flash. No Device PASS claim.
+          EOF
+
+      - name: Download verify and restore complete O37 Runtime-PASS parent
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          meta="$RUNNER_TEMP/o37-artifact-meta.json"
+          zip="$RUNNER_TEMP/o37-artifact.zip"
+
+          curl --fail --silent --show-error --location --retry 3 --retry-delay 2 \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${O37_ARTIFACT_ID}" \
+            -o "$meta"
+
+          python3 - "$meta" "$O37_ARTIFACT_ID" "$O37_ARTIFACT_NAME" "$O37_ARTIFACT_SHA256" <<'PY'
+          import json,sys
+          path,eid,ename,esha=sys.argv[1:]
+          with open(path,encoding='utf-8') as f:
+              m=json.load(f)
+          assert str(m.get('id'))==eid,(m.get('id'),eid)
+          assert m.get('name')==ename,(m.get('name'),ename)
+          assert m.get('expired') is False,'O37 artifact expired'
+          d=m.get('digest')
+          assert d in (None,'','sha256:'+esha),(d,esha)
+          print('O37_METADATA=PASS')
+          PY
+
+          curl --fail --silent --show-error --location --retry 3 --retry-delay 2 \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${O37_ARTIFACT_ID}/zip" \
+            -o "$zip"
+
+          echo "$O37_ARTIFACT_SHA256  $zip" | sha256sum -c -
+
+          python3 - "$zip" "$O37_DIR" <<'PY'
+          from pathlib import Path
+          import sys,zipfile
+          archive,destination=sys.argv[1:]
+          root=Path(destination).resolve()
+          with zipfile.ZipFile(archive) as zf:
+              for info in zf.infolist():
+                  out=(root/info.filename).resolve()
+                  if out != root and root not in out.parents:
+                      raise SystemExit(f'unsafe archive member: {info.filename}')
+              zf.extractall(root)
+          PY
+
+          test -f "$O37_DIR/SHA256SUMS.txt"
+          (
+            cd "$O37_DIR"
+            sha256sum -c SHA256SUMS.txt
+          ) | tee "$RUNNER_TEMP/o37-internal-sha.txt"
+          test "$(grep -c 'OK$' "$RUNNER_TEMP/o37-internal-sha.txt")" -eq "$O37_INTERNAL_SHA_COUNT"
+          test "$(wc -l < "$O37_DIR/SHA256SUMS.txt")" -eq "$O37_INTERNAL_SHA_COUNT"
+
+          grep -Fxq 'O37_FINAL=RUNTIME_GREEN_PASS' "$O37_DIR/99-O37-FINAL-GATE.txt"
+          grep -Fxq 'CURRENT_RUNTIME_PARENT=U5-O37' "$O37_DIR/99-O37-FINAL-GATE.txt"
+          grep -Fxq 'RUNTIME_CONFLICTS_5.4.300=2' "$O37_DIR/99-O37-FINAL-GATE.txt"
+          grep -Fxq 'TEXT_CONFLICT_HUNKS_5.4.300=9' "$O37_DIR/99-O37-FINAL-GATE.txt"
+          grep -Fxq 'RUNTIME_CONFLICTS_5.4.302=8' "$O37_DIR/99-O37-FINAL-GATE.txt"
+          grep -Fxq 'TEXT_CONFLICT_HUNKS_5.4.302=20' "$O37_DIR/99-O37-FINAL-GATE.txt"
+          grep -Fxq 'SEMANTIC_RESOLUTIONS=36' "$O37_DIR/99-O37-FINAL-GATE.txt"
+          grep -Fxq 'COMPREHENSIVE_ARTIFACT_COMPLETENESS=PASS' "$O37_DIR/99-O37-FINAL-GATE.txt"
+
+          cp -a "$O37_DIR/." "$AUDIT_DIR/"
+          mkdir -p "$AUDIT_DIR/lineage"
+          cp "$O37_DIR/SHA256SUMS.txt" "$AUDIT_DIR/lineage/O37-SHA256SUMS.original.txt"
+          cp "$meta" "$AUDIT_DIR/lineage/O37-ARTIFACT-METADATA.json"
+          cp "$RUNNER_TEMP/o37-internal-sha.txt" "$AUDIT_DIR/lineage/O37-INTERNAL-SHA256-CHECK.txt"
+          sha256sum "$zip" > "$AUDIT_DIR/lineage/O37-ZIP-SHA256.txt"
+          rm -f "$AUDIT_DIR/SHA256SUMS.txt"
+
+          cat > "$AUDIT_DIR/lineage/O37-PARENT-GATE.txt" <<EOF
+          O37_ARTIFACT_ID=$O37_ARTIFACT_ID
+          O37_ARTIFACT_SHA256=$O37_ARTIFACT_SHA256
+          O37_INTERNAL_SHA256SUMS=$O37_INTERNAL_SHA_COUNT/$O37_INTERNAL_SHA_COUNT PASS
+          O37_RUNTIME_GATE=PASS
+          RUNTIME_SOURCE_PARENT=U5-O37
+          EOF
+
+      - name: Verify EROFS Stable provenance
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          json="$RUNNER_TEMP/erofs-inplace-fix.json"
+          curl --fail --silent --show-error --location --retry 3 \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/gregkh/linux/commits/$EROFS_INPLACE_FIX_COMMIT" \
+            -o "$json"
+
+          python3 - "$json" "$AUDIT_DIR/38-O38-EROFS-PROVENANCE.txt" <<'PY'
+          import json,os,sys
+          src,out=sys.argv[1:]
+          with open(src,encoding='utf-8') as f:
+              m=json.load(f)
+          assert m['sha']==os.environ['EROFS_INPLACE_FIX_COMMIT'],(m.get('sha'),os.environ['EROFS_INPLACE_FIX_COMMIT'])
+          msg=m['commit']['message']
+          assert msg.startswith('erofs: fix lz4 inplace decompression'),msg.splitlines()[0]
+          assert 'fs/erofs/decompressor.c' in {x['filename'] for x in m.get('files',[])}
+
+          norm=' '.join(msg.split())
+          assert 'strictly use the decompressed buffer for lz4 inplace decompression' in norm.lower()
+          assert 'two individual virtual buffers' in norm.lower()
+          assert 'data corruption' in norm.lower()
+          assert '5.4+' in norm
+
+          patch='\n'.join(x.get('patch','') or '' for x in m.get('files',[]) if x.get('filename')=='fs/erofs/decompressor.c')
+          assert 'src = obase + ((nrpages_out - 1) << PAGE_SHIFT);' in patch
+          assert 'alg->decompress(rq, dst + rq->pageofs_out, dst);' in patch
+
+          with open(out,'w',encoding='utf-8',newline='\n') as f:
+              f.write(f'EROFS_INPLACE_FIX_COMMIT={m["sha"]}\n')
+              f.write('STABLE_INPLACE_OUTPUT_BUFFER_INVARIANT=PASS\n')
+              f.write('STABLE_INDEPENDENT_BUFFER_HAZARD=PASS\n')
+              f.write('STABLE_5_4_APPLICABILITY=PASS\n')
+              f.write('PROVENANCE_API_WHITESPACE_NORMALIZED=PASS\n')
+              f.write('PROVENANCE_GATE=PASS\n')
+          print('O38_EROFS_PROVENANCE=PASS')
+          PY
+
+      - name: Resolve complete EROFS LZ4 inplace conflict block
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib,os,shutil
+
+          audit=Path(os.environ['AUDIT_DIR'])
+          old_conf={'5.4.300':2,'5.4.302':8}
+          old_hunks={'5.4.300':9,'5.4.302':20}
+          new_conf={'5.4.300':1,'5.4.302':7}
+          new_hunks={'5.4.300':1,'5.4.302':12}
+          checks=[]
+
+          def gate(c,label):
+              if not c: raise AssertionError(label)
+              checks.append(label)
+          def read(p): return Path(p).read_text(encoding='utf-8')
+          def write(p,s): Path(p).write_text(s,encoding='utf-8',newline='\n')
+          def sha(s): return hashlib.sha256(s.encode()).hexdigest()
+
+          rel='fs/erofs/decompressor.c'
+          hashes={}
+          for target in ('5.4.300','5.4.302'):
+              td=audit/f'target-{target}'
+              cdir=td/f'conflicts/{rel}'
+              gate(cdir.is_dir(),f'{target}: EROFS conflict directory exists')
+              gate('MERGE_CONFLICT_HUNKS=8' in read(cdir/'META.txt'),f'{target}: EROFS eight conflict hunks exact')
+
+              ours=read(cdir/'OURS')
+              theirs=read(cdir/'THEIRS-target')
+              gate(sha(ours)==os.environ['EROFS_P13_SHA256'],f'{target}: exact P13 EROFS anchor')
+              gate(sha(theirs)==os.environ['EROFS_STABLE_TARGET_SHA256'],f'{target}: exact Stable EROFS anchor')
+
+              # Stable backport safety semantics.
+              gate('u8 *obase' in theirs,f'{target}: Stable explicit output base parameter present')
+              gate('src = obase + ((nrpages_out - 1) << PAGE_SHIFT);' in theirs,f'{target}: Stable in-place source uses output mapping')
+              gate('alg->decompress(rq, dst + rq->pageofs_out, dst);' in theirs,f'{target}: Stable passes output base mapping')
+
+              # P13 has a newer generalized implementation of the same invariant.
+              gate('static void *z_erofs_handle_inplace_io' in ours,f'{target}: P13 generalized inplace helper present')
+              gate('nrpages_in = PAGE_ALIGN(inputsize) >> PAGE_SHIFT;' in ours,f'{target}: P13 multi-page input accounting present')
+              gate('nrpages_out = ofull >> PAGE_SHIFT;' in ours,f'{target}: P13 output-page accounting present')
+              gate('if (rq->partial_decoding || !support_0padding ||' in ours,f'{target}: P13 unsafe-case fallback gate present')
+              gate('ofull - oend < LZ4_DECOMPRESS_INPLACE_MARGIN(inputsize)' in ours,f'{target}: P13 in-place margin gate present')
+              gate('rq->out[nrpages_out - nrpages_in + i] !=' in ours,f'{target}: P13 trailing output/input identity check present')
+              gate('rq->in[i])' in ours,f'{target}: P13 input-page identity check complete')
+              gate('return out + ((nrpages_out - nrpages_in) << PAGE_SHIFT);' in ours,f'{target}: P13 in-place source uses output mapping')
+              gate('goto docopy;' in ours,f'{target}: P13 fallback-to-copy path present')
+              gate('src = erofs_get_pcpubuf(nrpages_in);' in ours,f'{target}: P13 fallback copies to pcpubuf')
+              gate('src = z_erofs_handle_inplace_io(rq, headpage, dst, &inputmargin,' in ours,f'{target}: P13 helper receives decompressed output base')
+              gate('out = dst + rq->pageofs_out;' in ours,f'{target}: P13 output pointer derived from same base')
+              gate('ret = alg->decompress(rq, dst);' in ours,f'{target}: P13 generic path passes full output mapping base')
+              gate('*maptype = 3;' in ours and 'maptype != 3' in ours,f'{target}: P13 direct-output-map lifetime state present')
+              gate('<<<<<<<' not in ours and '|||||||' not in ours and '>>>>>>>' not in ours,f'{target}: P13 file conflict-marker free')
+
+              cand=ours
+              gate(sha(cand)==os.environ['EROFS_CANDIDATE_SHA256'],f'{target}: zero-delta candidate SHA exact')
+              hashes[target]=sha(cand)
+
+              rdir=td/f'resolved-evidence/{rel}'
+              rdir.parent.mkdir(parents=True,exist_ok=True)
+              shutil.move(str(cdir),str(rdir))
+              write(rdir/'RESOLVED-O38',cand)
+
+              # Deliberately no incremental source patch: P13 already carries the safe generalized implementation.
+              partial=td/f'P13-to-{target}-AUTO-MERGED-PARTIAL.patch'
+              ptext=read(partial)
+              gate(f'diff --git a/{rel} b/{rel}' not in ptext,f'{target}: EROFS remains zero-delta in cumulative patch')
+
+              rpath=td/'runtime-conflicts.txt'
+              lines=read(rpath).splitlines()
+              gate(len(lines)==old_conf[target],f'{target}: O37 runtime conflict count exact')
+              gate(lines.count(rel)==1,f'{target}: EROFS listed once')
+              lines=[x for x in lines if x!=rel]
+              gate(len(lines)==new_conf[target],f'{target}: exactly EROFS conflict path removed')
+              write(rpath,'\n'.join(lines)+'\n')
+
+              cpath=td/'path-classification.tsv'
+              rows=read(cpath).splitlines(); hits=0
+              for i,row in enumerate(rows):
+                  cols=row.split('\t')
+                  if len(cols)>=3 and cols[1]==rel:
+                      gate(cols[2]=='TEXT_CONFLICT',f'{target}: EROFS prior class exact')
+                      cols[2]='EROFS_LZ4_INPLACE_OUTPUT_BUFFER_P13_PRESERVE_SEMANTIC_RESOLUTION'
+                      rows[i]='\t'.join(cols); hits+=1
+              gate(hits==1,f'{target}: exactly one EROFS classification row updated')
+              gate(sum(1 for r in rows[1:] if r.split('\t')[2]=='TEXT_CONFLICT')==new_conf[target],f'{target}: remaining TEXT_CONFLICT count exact')
+              write(cpath,'\n'.join(rows)+'\n')
+
+              result_path=td/'RESULT.txt'; result=read(result_path)
+              repl={
+                  f'TEXT_CONFLICT={old_conf[target]}\n':f'TEXT_CONFLICT={new_conf[target]}\n',
+                  f'RUNTIME_CONFLICTS={old_conf[target]}\n':f'RUNTIME_CONFLICTS={new_conf[target]}\n',
+                  f'TEXT_CONFLICT_HUNKS={old_hunks[target]}\n':f'TEXT_CONFLICT_HUNKS={new_hunks[target]}\n',
+                  'SEMANTIC_RESOLUTIONS=36\n':'SEMANTIC_RESOLUTIONS=37\n',
+              }
+              for a,b in repl.items():
+                  gate(result.count(a)==1,f'{target}: RESULT marker {a.strip()} unique')
+                  result=result.replace(a,b,1)
+              anchor='ALPHA_PLL_VENDOR_STABLE_CONFIG_UNION_SEMANTIC_RESOLUTION=1\n'
+              gate(result.count(anchor)==1,f'{target}: RESULT semantic insertion anchor unique')
+              result=result.replace(anchor,anchor+'EROFS_LZ4_INPLACE_OUTPUT_BUFFER_P13_PRESERVE_SEMANTIC_RESOLUTION=1\n',1)
+              yes_anchor='ALPHA_PLL_VENDOR_STABLE_CONFIG_UNION=YES\n'
+              gate(result.count(yes_anchor)==1,f'{target}: RESULT YES insertion anchor unique')
+              result=result.replace(yes_anchor,yes_anchor+'EROFS_LZ4_INPLACE_OUTPUT_BUFFER_P13_PRESERVE=YES\n',1)
+              write(result_path,result)
+
+              report='\n'.join([
+                  f'TARGET={target}',
+                  f'EROFS_INPLACE_FIX_COMMIT={os.environ["EROFS_INPLACE_FIX_COMMIT"]}',
+                  'STABLE_REQUIRED_INVARIANT=INPLACE_COMPRESSED_SOURCE_MUST_USE_OUTPUT_MAPPING',
+                  'P13_GENERALIZED_MULTI_PAGE_INPLACE_HELPER=PRESERVED',
+                  'P13_TRAILING_INPUT_OUTPUT_PAGE_IDENTITY_CHECK=PRESERVED',
+                  'P13_UNSAFE_CASE_PCPUBUF_FALLBACK=PRESERVED',
+                  'P13_DIRECT_OUTPUT_MAPPING_SOURCE=PRESERVED',
+                  'ADDITIONAL_CONTENT_DELTA=ZERO',
+                  f'EROFS_CANDIDATE_SHA256={sha(cand)}',
+                  f'RUNTIME_CONFLICTS_BEFORE={old_conf[target]}',
+                  f'RUNTIME_CONFLICTS_AFTER={new_conf[target]}',
+                  f'TEXT_CONFLICT_HUNKS_BEFORE={old_hunks[target]}',
+                  f'TEXT_CONFLICT_HUNKS_AFTER={new_hunks[target]}',
+                  'SEMANTIC_RESOLUTIONS_BEFORE=36',
+                  'SEMANTIC_RESOLUTIONS_AFTER=37',
+                  'SOURCE_RESOLUTION=PASS',''])
+              write(td/'erofs-lz4-inplace-output-buffer-preserve-semantic-resolution.txt',report)
+
+          gate(hashes['5.4.300']==hashes['5.4.302'],'EROFS candidate identical across both targets')
+          write(audit/'38-O38-RESOLUTION-DERIVATION-GATE.txt','\n'.join([
+              f'ASSERTIONS={len(checks)}',
+              'EROFS_BLOCK_5.4.300=PASS',
+              'EROFS_BLOCK_5.4.302=PASS',
+              'ZERO_CONTENT_DELTA=PASS',
+              'ONLY_LOGICAL_BLOCK=fs/erofs/decompressor.c',
+              'RESOLUTION_DERIVATION=PASS','']))
+          print(f'O38_RESOLUTION_ASSERTIONS={len(checks)}')
+          PY
+
+      - name: Validate EROFS source preservation and safety closure
+        shell: bash
+        run: |
+          set -euo pipefail
+          validate_target() {
+            local target="$1" expected_conflicts="$2" expected_hunks="$3"
+            local td="$AUDIT_DIR/target-${target}"
+            local rel='fs/erofs/decompressor.c'
+            local resolved="$td/resolved-evidence/$rel/RESOLVED-O38"
+            local ours="$td/resolved-evidence/$rel/OURS"
+
+            cmp -s "$resolved" "$ours"
+            test "$(sha256sum "$resolved" | awk '{print $1}')" = "$EROFS_CANDIDATE_SHA256"
+
+            grep -Fq 'static void *z_erofs_handle_inplace_io' "$resolved"
+            grep -Fq 'return out + ((nrpages_out - nrpages_in) << PAGE_SHIFT);' "$resolved"
+            grep -Fq 'rq->out[nrpages_out - nrpages_in + i] !=' "$resolved"
+            grep -Fq 'src = erofs_get_pcpubuf(nrpages_in);' "$resolved"
+            grep -Fq 'src = z_erofs_handle_inplace_io(rq, headpage, dst, &inputmargin,' "$resolved"
+            grep -Fq 'out = dst + rq->pageofs_out;' "$resolved"
+            grep -Fq 'ret = alg->decompress(rq, dst);' "$resolved"
+            ! grep -Eq '^(<<<<<<<|\|\|\|\|\|\|\||=======|>>>>>>>)' "$resolved"
+
+            local partial="$td/P13-to-${target}-AUTO-MERGED-PARTIAL.patch"
+            ! grep -Fq "diff --git a/$rel b/$rel" "$partial"
+            test "$(wc -l < "$td/runtime-conflicts.txt")" -eq "$expected_conflicts"
+            test "$(grep -c $'\tTEXT_CONFLICT\t' "$td/path-classification.tsv")" -eq "$expected_conflicts"
+            test "$(find "$td/conflicts" -type f -name META.txt | wc -l)" -eq "$expected_conflicts"
+            grep -Fxq "RUNTIME_CONFLICTS=$expected_conflicts" "$td/RESULT.txt"
+            grep -Fxq "TEXT_CONFLICT_HUNKS=$expected_hunks" "$td/RESULT.txt"
+            grep -Fxq 'SEMANTIC_RESOLUTIONS=37' "$td/RESULT.txt"
+            grep -Fxq 'EROFS_LZ4_INPLACE_OUTPUT_BUFFER_P13_PRESERVE=YES' "$td/RESULT.txt"
+
+            {
+              echo "TARGET=$target"
+              echo "EROFS_SHA256=$(sha256sum "$resolved" | awk '{print $1}')"
+              echo "UPDATED_PARTIAL_PATCH_SHA256=$(sha256sum "$partial" | awk '{print $1}')"
+              echo "RUNTIME_CONFLICTS=$expected_conflicts"
+              echo "TEXT_CONFLICT_HUNKS=$expected_hunks"
+              echo "SEMANTIC_RESOLUTIONS=37"
+              echo "ZERO_CONTENT_DELTA=PASS"
+              echo "EROFS_STABLE_SAFETY_EQUIVALENCE=PASS"
+              echo "SOURCE_PRESERVATION_CHECK=PASS"
+            } > "$td/o38-source-application-gate.txt"
+          }
+
+          validate_target 5.4.300 1 1
+          validate_target 5.4.302 7 12
+
+      - name: Finalize comprehensive O38 artifact and completeness gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -Fxq 'PROVENANCE_GATE=PASS' "$AUDIT_DIR/38-O38-EROFS-PROVENANCE.txt"
+          grep -Fxq 'EROFS_STABLE_SAFETY_EQUIVALENCE=PASS' "$AUDIT_DIR/target-5.4.300/o38-source-application-gate.txt"
+          grep -Fxq 'EROFS_STABLE_SAFETY_EQUIVALENCE=PASS' "$AUDIT_DIR/target-5.4.302/o38-source-application-gate.txt"
+          grep -Fxq 'RESOLUTION_DERIVATION=PASS' "$AUDIT_DIR/38-O38-RESOLUTION-DERIVATION-GATE.txt"
+          grep -Fxq 'ZERO_CONTENT_DELTA=PASS' "$AUDIT_DIR/38-O38-RESOLUTION-DERIVATION-GATE.txt"
+
+          cat > "$AUDIT_DIR/38-O38-SUMMARY.txt" <<EOF
+          O38_MODE=EROFS_LZ4_INPLACE_RUNTIME_SEMANTIC_RESOLUTION
+          SOURCE_PARENT=U5-O37
+          O38_BECOMES_RUNTIME_PARENT=YES
+          LOGICAL_BLOCK=EROFS_LZ4_INPLACE_OUTPUT_BUFFER_P13_PRESERVE
+          SOURCE_PATH=fs/erofs/decompressor.c
+          ADDITIONAL_CONTENT_DELTA=ZERO
+          RUNTIME_CONFLICTS_5.4.300=1
+          TEXT_CONFLICT_HUNKS_5.4.300=1
+          RUNTIME_CONFLICTS_5.4.302=7
+          TEXT_CONFLICT_HUNKS_5.4.302=12
+          SEMANTIC_RESOLUTIONS=37
+          FULL_O37_EVIDENCE_CARRIED_FORWARD=YES
+          KERNEL_BUILD_PERFORMED=NO
+          AK3_CREATED=NO
+          FLASH_PERFORMED=NO
+          DEVICE_PASS=NO
+          O38_RUNTIME_GATE=PASS
+          EOF
+
+          rm -f "$AUDIT_DIR/99-FILE-LIST.txt" "$AUDIT_DIR/SHA256SUMS.txt"
+          file_count="$(find "$AUDIT_DIR" -type f | wc -l)"
+          byte_count="$(du -sb "$AUDIT_DIR" | awk '{print $1}')"
+          patch300_bytes="$(stat -c '%s' "$AUDIT_DIR/target-5.4.300/P13-to-5.4.300-AUTO-MERGED-PARTIAL.patch")"
+          patch302_bytes="$(stat -c '%s' "$AUDIT_DIR/target-5.4.302/P13-to-5.4.302-AUTO-MERGED-PARTIAL.patch")"
+
+          test "$file_count" -ge 355
+          test "$byte_count" -ge 19500000
+          test "$patch300_bytes" -ge 4000000
+          test "$patch302_bytes" -ge 4400000
+          test "$(wc -l < "$AUDIT_DIR/lineage/O37-SHA256SUMS.original.txt")" -eq "$O37_INTERNAL_SHA_COUNT"
+          grep -Fxq 'O37_RUNTIME_GATE=PASS' "$AUDIT_DIR/lineage/O37-PARENT-GATE.txt"
+
+          cat > "$AUDIT_DIR/99-O38-FINAL-GATE.txt" <<EOF
+          O37_EXACT_ARTIFACT=PASS
+          O37_INTERNAL_SHA256SUMS=$O37_INTERNAL_SHA_COUNT/$O37_INTERNAL_SHA_COUNT PASS
+          O37_RUNTIME_GATE=PASS
+          EROFS_PROVENANCE_GATE=PASS
+          EROFS_STABLE_SAFETY_EQUIVALENCE_5.4.300=PASS
+          EROFS_STABLE_SAFETY_EQUIVALENCE_5.4.302=PASS
+          ZERO_CONTENT_DELTA=PASS
+          RUNTIME_CONFLICTS_5.4.300=1
+          TEXT_CONFLICT_HUNKS_5.4.300=1
+          RUNTIME_CONFLICTS_5.4.302=7
+          TEXT_CONFLICT_HUNKS_5.4.302=12
+          SEMANTIC_RESOLUTIONS=37
+          LOGICAL_SOURCE_BLOCK=fs/erofs/decompressor.c
+          ARTIFACT_FILE_COUNT=$file_count
+          ARTIFACT_UNCOMPRESSED_BYTES=$byte_count
+          PARTIAL_PATCH_5.4.300_BYTES=$patch300_bytes
+          PARTIAL_PATCH_5.4.302_BYTES=$patch302_bytes
+          COMPREHENSIVE_ARTIFACT_COMPLETENESS=PASS
+          CURRENT_RUNTIME_PARENT=U5-O38
+          KERNEL_BUILD_PERFORMED=NO
+          AK3_CREATED=NO
+          FLASH_PERFORMED=NO
+          DEVICE_PASS=NO
+          O38_FINAL=RUNTIME_GREEN_PASS
+          EOF
+
+          (
+            cd "$AUDIT_DIR"
+            find . -type f ! -name SHA256SUMS.txt -print | LC_ALL=C sort
+          ) > "$AUDIT_DIR/99-FILE-LIST.txt"
+          (
+            cd "$AUDIT_DIR"
+            find . -type f ! -name SHA256SUMS.txt -print0 | LC_ALL=C sort -z | xargs -0 sha256sum > SHA256SUMS.txt
+            sha256sum -c SHA256SUMS.txt
+          ) | tee "$RUNNER_TEMP/o38-final-sha256-check.txt"
+          test "$(grep -c 'OK$' "$RUNNER_TEMP/o38-final-sha256-check.txt")" -eq "$(wc -l < "$AUDIT_DIR/SHA256SUMS.txt")"
+          echo "O38 comprehensive artifact files: $file_count"
+          echo "O38 comprehensive artifact bytes: $byte_count"
+          echo 'O38_FINAL=RUNTIME_GREEN_PASS'
+
+      - name: Upload one comprehensive U5-O38 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: VEUX-GEN1-U5-O38-erofs-lz4-inplace-output-buffer-preserve-semantic-resolution-official-stable-5.4.300-5.4.302-port-audit
+          path: ${{ env.AUDIT_DIR }}
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 6
+          include-hidden-files: true
