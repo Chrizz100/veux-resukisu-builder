@@ -1,0 +1,570 @@
+name: VEUX GEN1 U5-O36 GLINK Vendor Stable Protocol Union Semantic Resolution
+
+'on':
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: veux-gen1-u5-o36-glink-protocol-union-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      TZ: UTC
+      LANG: C.UTF-8
+      LC_ALL: C.UTF-8
+
+      O35_ARTIFACT_ID: '10490171681'
+      O35_ARTIFACT_NAME: VEUX-GEN1-U5-O35-dwc3-qcom-gadget-vendor-stable-lifecycle-union-semantic-resolution-official-stable-5.4.300-5.4.302-port-audit
+      O35_ARTIFACT_SHA256: 5a4b47bbe36913cf487afacb41823eaac7bb592839bf42c0e1692e5f20f82658
+      O35_INTERNAL_SHA_COUNT: '320'
+
+      GLINK_P13_SHA256: 2550691c632eb6aa5d930d0daffe2c6936abb8b84c17a28580a814abeb7359fd
+      GLINK_STABLE_TARGET_SHA256: 4280fef24ec7fb4cb2b41b4ab4dd0589957f20417fec2156a8cf026305bc7616
+      GLINK_CANDIDATE_SHA256: 81f91080d888b3adec2665a8915a31e089b4d31dd83f73a954c5575d98626492
+
+      GLINK_READ_NOTIFY_COMMIT: 6094d8c3d27e56ef573c7409186779bf4bf588ab
+      GLINK_TX_DATA_CONT_COMMIT: 4e318b935d2f58c92d2d8261872b954243a022ad
+      GLINK_CMD_PREFIX_COMMIT: 83f8eb328047a51898a26812680ca5dfe1e821bd
+      GLINK_OPEN_LEN_COMMIT: 68c3b7cdefa6e7be5550195ce0449d6585b445bd
+      GLINK_TX_FAILURE_COMMIT: 5398de330ca461419e7b77e33962b925af9f9908
+
+    steps:
+      - name: Initialize U5-O36 comprehensive evidence workspace
+        shell: bash
+        run: |
+          set -euo pipefail
+          O35_DIR="$RUNNER_TEMP/u5-o36-o35-parent"
+          AUDIT_DIR="$GITHUB_WORKSPACE/u5-o36-evidence"
+          VERIFY_DIR="$RUNNER_TEMP/u5-o36-verify"
+          rm -rf "$O35_DIR" "$AUDIT_DIR" "$VERIFY_DIR"
+          mkdir -p "$O35_DIR" "$AUDIT_DIR" "$VERIFY_DIR"
+          {
+            echo "O35_DIR=$O35_DIR"
+            echo "AUDIT_DIR=$AUDIT_DIR"
+            echo "VERIFY_DIR=$VERIFY_DIR"
+          } >> "$GITHUB_ENV"
+
+          cat > "$AUDIT_DIR/36-O36-PLAN.txt" <<EOF
+          U5-O36 GLINK VENDOR/STABLE PROTOCOL UNION SEMANTIC RESOLUTION
+
+          Runtime source parent: U5-O35 artifact $O35_ARTIFACT_ID
+
+          One logical GLINK protocol block:
+            drivers/rpmsg/qcom_glink_native.c
+
+          Semantic rule:
+          - preserve the complete P13/VEUX Qualcomm vendor GLINK implementation, including SSR/reset handling,
+            IPC logging, kthread RX-done handling, signal support, IRQ wake tracking and affinity handling;
+          - preserve P13's READ_NOTIFY waitqueue implementation and in_reset-aware wake/abort behavior;
+          - take Stable's RPM_CMD_* -> GLINK_CMD_* namespace correction across all command users, extending the
+            same namespace coherently to the P13-only SIGNALS command;
+          - take Stable's CMD_OPEN lower-16-bit name-length mask so the upper priority bits are not treated as
+            name length;
+          - preserve P13's existing TX_DATA_CONT 8K chunking while taking Stable's later failure-propagation fix
+            so intentless sends stop and return the first TX failure as well;
+          - do not replace P13's stronger reset-aware READ_NOTIFY behavior with the weaker generic Stable form.
+
+          Expected result:
+            5.4.300: conflicts 4 -> 3, hunks 22 -> 11
+            5.4.302: conflicts 10 -> 9, hunks 33 -> 22
+            semantic resolutions 34 -> 35
+
+          Full O35 evidence is carried forward. No kernel build. No AK3. No flash. No Device PASS claim.
+          EOF
+
+      - name: Download verify and restore complete O35 Runtime-PASS parent
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          meta="$RUNNER_TEMP/o35-artifact-meta.json"
+          zip="$RUNNER_TEMP/o35-artifact.zip"
+
+          curl --fail --silent --show-error --location --retry 3 --retry-delay 2 \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${O35_ARTIFACT_ID}" \
+            -o "$meta"
+
+          python3 - "$meta" "$O35_ARTIFACT_ID" "$O35_ARTIFACT_NAME" "$O35_ARTIFACT_SHA256" <<'PY'
+          import json,sys
+          path,eid,ename,esha=sys.argv[1:]
+          with open(path,encoding='utf-8') as f:
+              m=json.load(f)
+          assert str(m.get('id'))==eid,(m.get('id'),eid)
+          assert m.get('name')==ename,(m.get('name'),ename)
+          assert m.get('expired') is False,'O35 artifact expired'
+          d=m.get('digest')
+          assert d in (None,'','sha256:'+esha),(d,esha)
+          print('O35_METADATA=PASS')
+          PY
+
+          curl --fail --silent --show-error --location --retry 3 --retry-delay 2 \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${O35_ARTIFACT_ID}/zip" \
+            -o "$zip"
+
+          echo "$O35_ARTIFACT_SHA256  $zip" | sha256sum -c -
+
+          python3 - "$zip" "$O35_DIR" <<'PY'
+          from pathlib import Path
+          import sys,zipfile
+          archive,destination=sys.argv[1:]
+          root=Path(destination).resolve()
+          with zipfile.ZipFile(archive) as zf:
+              for info in zf.infolist():
+                  out=(root/info.filename).resolve()
+                  if out != root and root not in out.parents:
+                      raise SystemExit(f'unsafe archive member: {info.filename}')
+              zf.extractall(root)
+          PY
+
+          test -f "$O35_DIR/SHA256SUMS.txt"
+          (
+            cd "$O35_DIR"
+            sha256sum -c SHA256SUMS.txt
+          ) | tee "$RUNNER_TEMP/o35-internal-sha.txt"
+          test "$(grep -c 'OK$' "$RUNNER_TEMP/o35-internal-sha.txt")" -eq "$O35_INTERNAL_SHA_COUNT"
+          test "$(wc -l < "$O35_DIR/SHA256SUMS.txt")" -eq "$O35_INTERNAL_SHA_COUNT"
+
+          grep -Fxq 'O35_FINAL=RUNTIME_GREEN_PASS' "$O35_DIR/99-O35-FINAL-GATE.txt"
+          grep -Fxq 'CURRENT_RUNTIME_PARENT=U5-O35' "$O35_DIR/99-O35-FINAL-GATE.txt"
+          grep -Fxq 'RUNTIME_CONFLICTS_5.4.300=4' "$O35_DIR/99-O35-FINAL-GATE.txt"
+          grep -Fxq 'TEXT_CONFLICT_HUNKS_5.4.300=22' "$O35_DIR/99-O35-FINAL-GATE.txt"
+          grep -Fxq 'RUNTIME_CONFLICTS_5.4.302=10' "$O35_DIR/99-O35-FINAL-GATE.txt"
+          grep -Fxq 'TEXT_CONFLICT_HUNKS_5.4.302=33' "$O35_DIR/99-O35-FINAL-GATE.txt"
+          grep -Fxq 'SEMANTIC_RESOLUTIONS=34' "$O35_DIR/99-O35-FINAL-GATE.txt"
+          grep -Fxq 'COMPREHENSIVE_ARTIFACT_COMPLETENESS=PASS' "$O35_DIR/99-O35-FINAL-GATE.txt"
+
+          cp -a "$O35_DIR/." "$AUDIT_DIR/"
+          mkdir -p "$AUDIT_DIR/lineage"
+          cp "$O35_DIR/SHA256SUMS.txt" "$AUDIT_DIR/lineage/O35-SHA256SUMS.original.txt"
+          cp "$meta" "$AUDIT_DIR/lineage/O35-ARTIFACT-METADATA.json"
+          cp "$RUNNER_TEMP/o35-internal-sha.txt" "$AUDIT_DIR/lineage/O35-INTERNAL-SHA256-CHECK.txt"
+          sha256sum "$zip" > "$AUDIT_DIR/lineage/O35-ZIP-SHA256.txt"
+          rm -f "$AUDIT_DIR/SHA256SUMS.txt"
+
+          cat > "$AUDIT_DIR/lineage/O35-PARENT-GATE.txt" <<EOF
+          O35_ARTIFACT_ID=$O35_ARTIFACT_ID
+          O35_ARTIFACT_SHA256=$O35_ARTIFACT_SHA256
+          O35_INTERNAL_SHA256SUMS=$O35_INTERNAL_SHA_COUNT/$O35_INTERNAL_SHA_COUNT PASS
+          O35_RUNTIME_GATE=PASS
+          RUNTIME_SOURCE_PARENT=U5-O35
+          EOF
+
+      - name: Verify GLINK Stable provenance
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          for spec in \
+            "read_notify:$GLINK_READ_NOTIFY_COMMIT" \
+            "tx_data_cont:$GLINK_TX_DATA_CONT_COMMIT" \
+            "cmd_prefix:$GLINK_CMD_PREFIX_COMMIT" \
+            "open_len:$GLINK_OPEN_LEN_COMMIT" \
+            "tx_failure:$GLINK_TX_FAILURE_COMMIT"
+          do
+            key="${spec%%:*}"
+            sha="${spec#*:}"
+            curl --fail --silent --show-error --location --retry 3 \
+              -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "https://api.github.com/repos/gregkh/linux/commits/$sha" \
+              -o "$RUNNER_TEMP/glink-$key.json"
+          done
+
+          python3 - "$AUDIT_DIR/36-O36-GLINK-PROVENANCE.txt" <<'PY'
+          import json,os,sys
+          out=sys.argv[1]
+          specs={
+              'read_notify':(os.environ['GLINK_READ_NOTIFY_COMMIT'],'rpmsg: glink: Send READ_NOTIFY command in FIFO full case'),
+              'tx_data_cont':(os.environ['GLINK_TX_DATA_CONT_COMMIT'],'rpmsg: glink: Add TX_DATA_CONT command while sending'),
+              'cmd_prefix':(os.environ['GLINK_CMD_PREFIX_COMMIT'],'rpmsg: glink: Fix GLINK command prefix'),
+              'open_len':(os.environ['GLINK_OPEN_LEN_COMMIT'],'rpmsg: glink: use only lower 16-bits of param2 for CMD_OPEN name length'),
+              'tx_failure':(os.environ['GLINK_TX_FAILURE_COMMIT'],'rpmsg: glink: Propagate TX failures in intentless mode as well'),
+          }
+          rows=[]
+          for key,(sha,prefix) in specs.items():
+              p=os.path.join(os.environ['RUNNER_TEMP'],f'glink-{key}.json')
+              with open(p,encoding='utf-8') as f: m=json.load(f)
+              assert m['sha']==sha,(key,m.get('sha'),sha)
+              msg=m['commit']['message']
+              assert msg.startswith(prefix),(key,msg.splitlines()[0],prefix)
+              assert 'drivers/rpmsg/qcom_glink_native.c' in {x['filename'] for x in m.get('files',[])},key
+              rows.append(f'{key.upper()}_COMMIT={sha}')
+          # semantic claims used by the resolver
+          with open(os.path.join(os.environ['RUNNER_TEMP'],'glink-cmd_prefix.json'),encoding='utf-8') as f: p=json.load(f)
+          assert 'No functional change' in p['commit']['message']
+          with open(os.path.join(os.environ['RUNNER_TEMP'],'glink-open_len.json'),encoding='utf-8') as f: p=json.load(f)
+          assert 'upper 16-bits' in p['commit']['message'] and 'prio' in p['commit']['message']
+          with open(os.path.join(os.environ['RUNNER_TEMP'],'glink-tx_failure.json'),encoding='utf-8') as f: p=json.load(f)
+          assert 'intentless case' in p['commit']['message'] and 'incorrectly indicate' in p['commit']['message']
+          with open(out,'w',encoding='utf-8',newline='\n') as f:
+              f.write('\n'.join(rows)+'\n')
+              f.write('COMMAND_NAMESPACE_PROVENANCE=PASS\n')
+              f.write('OPEN_LENGTH_MASK_PROVENANCE=PASS\n')
+              f.write('TX_DATA_CONT_PROVENANCE=PASS\n')
+              f.write('TX_FAILURE_PROPAGATION_PROVENANCE=PASS\n')
+              f.write('READ_NOTIFY_PROVENANCE=PASS\n')
+              f.write('PROVENANCE_GATE=PASS\n')
+          print('O36_GLINK_PROVENANCE=PASS')
+          PY
+
+      - name: Resolve complete GLINK protocol conflict block
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from __future__ import annotations
+          from pathlib import Path
+          import difflib,hashlib,os,re,shutil
+
+          audit=Path(os.environ['AUDIT_DIR'])
+          old_conf={'5.4.300':4,'5.4.302':10}
+          old_hunks={'5.4.300':22,'5.4.302':33}
+          new_conf={'5.4.300':3,'5.4.302':9}
+          new_hunks={'5.4.300':11,'5.4.302':22}
+          checks=[]
+
+          def gate(c,label):
+              if not c: raise AssertionError(label)
+              checks.append(label)
+          def read(p): return Path(p).read_text(encoding='utf-8')
+          def write(p,s): Path(p).write_text(s,encoding='utf-8',newline='\n')
+          def sha(s): return hashlib.sha256(s.encode()).hexdigest()
+
+          def derive_glink(ours,theirs,target):
+              gate(sha(ours)==os.environ['GLINK_P13_SHA256'],f'{target}: exact P13 GLINK source anchor')
+              gate(sha(theirs)==os.environ['GLINK_STABLE_TARGET_SHA256'],f'{target}: exact Stable GLINK target anchor')
+              gate(ours.count('RPM_CMD_')==53,f'{target}: P13 command token inventory exact')
+              gate('RPM_CMD_SIGNALS' in ours,f'{target}: P13 vendor SIGNALS extension present')
+              gate('qcom_glink_pipe_reset' in ours,f'{target}: P13 pipe reset preserved source')
+              gate('atomic_read(&glink->in_reset)' in ours,f'{target}: P13 SSR reset checks present')
+              gate('wait_event_timeout(glink->tx_avail_notify' in ours,f'{target}: P13 READ_NOTIFY waitqueue present')
+              gate('|| atomic_read(&glink->in_reset)' in ours,f'{target}: P13 reset-aware READ_NOTIFY wait present')
+              gate('kthread_worker' in ours and 'kthread_queue_work' in ours,f'{target}: P13 kthread RX-done model present')
+              gate('qcom_glink_send_signals' in ours and 'qcom_glink_handle_signals' in ours,f'{target}: P13 signal protocol present')
+              gate('glink_resume_pkt' in ours and 'pm_system_wakeup()' in ours,f'{target}: P13 IRQ wake tracking present')
+              gate('cpu_mask' in ours and 'irq_set_affinity_hint' in ours,f'{target}: P13 affinity handling present')
+              gate('GLINK_CMD_VERSION' in theirs and 'RPM_CMD_VERSION' not in theirs,f'{target}: Stable namespace correction present')
+              gate('qcom_glink_rx_defer(glink, param2 & 0xffff);' in theirs,f'{target}: Stable OPEN length mask present')
+              gate('if (ret) {\n\t\tif (intent)\n\t\t\tintent->in_use = false;\n\t\treturn ret;' in theirs,f'{target}: Stable initial TX failure propagation present')
+
+              s=ours.replace('RPM_CMD_','GLINK_CMD_')
+              gate(s.count('RPM_CMD_')==0,f'{target}: no stale RPM command prefix')
+              gate(s.count('GLINK_CMD_')==53,f'{target}: all command tokens renamed exactly')
+              gate(s.count('GLINK_CMD_SIGNALS')==3,f'{target}: vendor SIGNALS command coherently renamed')
+
+              old='''\t\tcase GLINK_CMD_OPEN:\n\t\t\tret = qcom_glink_rx_defer(glink, param2);\n\t\t\tbreak;'''
+              new='''\t\tcase GLINK_CMD_OPEN:\n\t\t\t/* upper 16 bits of param2 are the "prio" field */\n\t\t\tret = qcom_glink_rx_defer(glink, param2 & 0xffff);\n\t\t\tbreak;'''
+              gate(s.count(old)==1,f'{target}: OPEN mask replacement anchor unique')
+              s=s.replace(old,new,1)
+
+              first_old='''\t/* Mark intent available if we failed */\n\tif (ret && intent) {\n\t\tintent->in_use = false;\n\t\treturn ret;\n\t}\n'''
+              first_new='''\t/* Mark intent available if we failed */\n\tif (ret) {\n\t\tif (intent)\n\t\t\tintent->in_use = false;\n\t\treturn ret;\n\t}\n'''
+              gate(s.count(first_old)==1,f'{target}: initial TX failure anchor unique')
+              s=s.replace(first_old,first_new,1)
+
+              cont_old='''\t\t/* Mark intent available if we failed */\n\t\tif (ret && intent) {\n\t\t\tintent->in_use = false;\n\t\t\tbreak;\n\t\t}\n'''
+              cont_new='''\t\t/* Mark intent available if we failed */\n\t\tif (ret) {\n\t\t\tif (intent)\n\t\t\t\tintent->in_use = false;\n\t\t\tbreak;\n\t\t}\n'''
+              gate(s.count(cont_old)==1,f'{target}: continuation TX failure anchor unique')
+              s=s.replace(cont_old,cont_new,1)
+
+              # Final semantic closure: Stable fixes + complete P13 vendor contract.
+              gate('qcom_glink_rx_defer(glink, param2 & 0xffff);' in s,f'{target}: OPEN lower-16 mask retained')
+              gate(s.count('if (ret && intent) {')==0,f'{target}: stale intent-gated failure handling removed')
+              gate(s.count('GLINK_CMD_TX_DATA_CONT')>=2,f'{target}: chunk continuation command retained')
+              gate('if (wait && (chunk_size > SZ_8K))' in s,f'{target}: P13 8K chunk split retained')
+              gate('|| atomic_read(&glink->in_reset)' in s,f'{target}: P13 reset-aware wait retained')
+              gate(s.count('wake_up_all(&glink->tx_avail_notify)')>=2,f'{target}: IRQ/reset writer wakeups retained')
+              gate('qcom_glink_pipe_reset(glink);' in s,f'{target}: pipe reset on remove retained')
+              gate('subsys_register_early_notifier' in s and 'subsys_unregister_early_notifier' in s,f'{target}: SSR notifier lifecycle retained')
+              gate('GLINK_CMD_SIGNALS' in s and '.get_signals = qcom_glink_get_sigs' in s,f'{target}: vendor signal feature retained')
+              gate('<<<<<<<' not in s and '|||||||' not in s and '>>>>>>>' not in s,f'{target}: no conflict markers')
+              gate(sha(s)==os.environ['GLINK_CANDIDATE_SHA256'],f'{target}: candidate SHA exact')
+              return s
+
+          def make_patch(rel,ours,cand):
+              body=''.join(difflib.unified_diff(ours.splitlines(keepends=True),cand.splitlines(keepends=True),fromfile=f'a/{rel}',tofile=f'b/{rel}',n=3))
+              gate(body.startswith(f'--- a/{rel}\n+++ b/{rel}\n'),f'{rel}: incremental diff headers valid')
+              return f'diff --git a/{rel} b/{rel}\n'+body
+
+          hashes={}
+          rel='drivers/rpmsg/qcom_glink_native.c'
+          for target in ('5.4.300','5.4.302'):
+              td=audit/f'target-{target}'
+              cdir=td/f'conflicts/{rel}'
+              gate(cdir.is_dir(),f'{target}: GLINK conflict directory exists')
+              gate('MERGE_CONFLICT_HUNKS=11' in read(cdir/'META.txt'),f'{target}: GLINK eleven conflict hunks exact')
+              ours=read(cdir/'OURS'); theirs=read(cdir/'THEIRS-target')
+              cand=derive_glink(ours,theirs,target)
+              hashes[target]=sha(cand)
+
+              rdir=td/f'resolved-evidence/{rel}'
+              rdir.parent.mkdir(parents=True,exist_ok=True)
+              shutil.move(str(cdir),str(rdir))
+              write(rdir/'RESOLVED-O36',cand)
+
+              patch=make_patch(rel,ours,cand)
+              patch_path=td/'glink-vendor-stable-protocol-union-semantic-resolution.patch'
+              write(patch_path,patch)
+
+              partial=td/f'P13-to-{target}-AUTO-MERGED-PARTIAL.patch'
+              ptext=read(partial)
+              gate(f'diff --git a/{rel} b/{rel}' not in ptext,f'{target}: GLINK absent from O35 cumulative patch')
+              if ptext and not ptext.endswith('\n'): ptext+='\n'
+              ptext+=patch
+              write(partial,ptext)
+
+              rpath=td/'runtime-conflicts.txt'
+              lines=read(rpath).splitlines()
+              gate(len(lines)==old_conf[target],f'{target}: O35 runtime conflict count exact')
+              gate(lines.count(rel)==1,f'{target}: GLINK listed once')
+              lines=[x for x in lines if x!=rel]
+              gate(len(lines)==new_conf[target],f'{target}: exactly GLINK conflict path removed')
+              write(rpath,'\n'.join(lines)+'\n')
+
+              cpath=td/'path-classification.tsv'
+              rows=read(cpath).splitlines(); hits=0
+              for i,row in enumerate(rows):
+                  cols=row.split('\t')
+                  if len(cols)>=3 and cols[1]==rel:
+                      gate(cols[2]=='TEXT_CONFLICT',f'{target}: GLINK prior class exact')
+                      cols[2]='GLINK_VENDOR_STABLE_PROTOCOL_UNION_SEMANTIC_RESOLUTION'
+                      rows[i]='\t'.join(cols); hits+=1
+              gate(hits==1,f'{target}: exactly one GLINK classification row updated')
+              gate(sum(1 for r in rows[1:] if r.split('\t')[2]=='TEXT_CONFLICT')==new_conf[target],f'{target}: remaining TEXT_CONFLICT count exact')
+              write(cpath,'\n'.join(rows)+'\n')
+
+              result_path=td/'RESULT.txt'; result=read(result_path)
+              repl={
+                  f'TEXT_CONFLICT={old_conf[target]}\n':f'TEXT_CONFLICT={new_conf[target]}\n',
+                  f'RUNTIME_CONFLICTS={old_conf[target]}\n':f'RUNTIME_CONFLICTS={new_conf[target]}\n',
+                  f'TEXT_CONFLICT_HUNKS={old_hunks[target]}\n':f'TEXT_CONFLICT_HUNKS={new_hunks[target]}\n',
+                  'SEMANTIC_RESOLUTIONS=34\n':'SEMANTIC_RESOLUTIONS=35\n',
+              }
+              for a,b in repl.items():
+                  gate(result.count(a)==1,f'{target}: RESULT marker {a.strip()} unique')
+                  result=result.replace(a,b,1)
+              anchor='DWC3_QCOM_GADGET_VENDOR_STABLE_LIFECYCLE_UNION_SEMANTIC_RESOLUTIONS=2\n'
+              gate(result.count(anchor)==1,f'{target}: RESULT semantic insertion anchor unique')
+              result=result.replace(anchor,anchor+'GLINK_VENDOR_STABLE_PROTOCOL_UNION_SEMANTIC_RESOLUTION=1\n',1)
+              anchor='DWC3_QCOM_GADGET_VENDOR_STABLE_LIFECYCLE_UNION=YES\n'
+              gate(result.count(anchor)==1,f'{target}: RESULT YES insertion anchor unique')
+              result=result.replace(anchor,anchor+'GLINK_VENDOR_STABLE_PROTOCOL_UNION=YES\n',1)
+              write(result_path,result)
+
+              report='\n'.join([
+                  f'TARGET={target}',
+                  'LOGICAL_BLOCK=GLINK_VENDOR_STABLE_PROTOCOL_UNION',
+                  f'SOURCE_PATH={rel}',
+                  f'P13_SHA256={sha(ours)}',
+                  f'STABLE_TARGET_SHA256={sha(theirs)}',
+                  f'CANDIDATE_SHA256={sha(cand)}',
+                  f'READ_NOTIFY_COMMIT={os.environ["GLINK_READ_NOTIFY_COMMIT"]}',
+                  f'TX_DATA_CONT_COMMIT={os.environ["GLINK_TX_DATA_CONT_COMMIT"]}',
+                  f'CMD_PREFIX_COMMIT={os.environ["GLINK_CMD_PREFIX_COMMIT"]}',
+                  f'OPEN_LEN_COMMIT={os.environ["GLINK_OPEN_LEN_COMMIT"]}',
+                  f'TX_FAILURE_COMMIT={os.environ["GLINK_TX_FAILURE_COMMIT"]}',
+                  'P13_SSR_RESET_MODEL=PRESERVED',
+                  'P13_IPC_LOGGING=PRESERVED',
+                  'P13_KTHREAD_RX_DONE=PRESERVED',
+                  'P13_SIGNAL_COMMAND=PRESERVED_AS_GLINK_CMD_SIGNALS',
+                  'P13_IRQ_WAKE_AND_AFFINITY=PRESERVED',
+                  'P13_RESET_AWARE_READ_NOTIFY=PRESERVED',
+                  'STABLE_GLINK_COMMAND_NAMESPACE=INTEGRATED',
+                  'STABLE_OPEN_NAME_LENGTH_16BIT_MASK=INTEGRATED',
+                  'STABLE_INTENTLESS_TX_FAILURE_PROPAGATION=INTEGRATED',
+                  f'RUNTIME_CONFLICTS_BEFORE={old_conf[target]}',
+                  f'RUNTIME_CONFLICTS_AFTER={new_conf[target]}',
+                  f'TEXT_CONFLICT_HUNKS_BEFORE={old_hunks[target]}',
+                  f'TEXT_CONFLICT_HUNKS_AFTER={new_hunks[target]}',
+                  'SEMANTIC_RESOLUTIONS_BEFORE=34',
+                  'SEMANTIC_RESOLUTIONS_AFTER=35',
+                  'SOURCE_RESOLUTION=PASS',''])
+              write(td/'glink-vendor-stable-protocol-union-semantic-resolution.txt',report)
+
+          gate(hashes['5.4.300']==hashes['5.4.302'],'GLINK candidate identical across both targets')
+          write(audit/'36-O36-RESOLUTION-DERIVATION-GATE.txt','\n'.join([
+              f'ASSERTIONS={len(checks)}',
+              'GLINK_BLOCK_5.4.300=PASS',
+              'GLINK_BLOCK_5.4.302=PASS',
+              'ONLY_LOGICAL_BLOCK=drivers/rpmsg/qcom_glink_native.c',
+              'RESOLUTION_DERIVATION=PASS','']))
+          print(f'O36_RESOLUTION_ASSERTIONS={len(checks)}')
+          PY
+
+      - name: Validate incremental GLINK source delta and protocol closure
+        shell: bash
+        run: |
+          set -euo pipefail
+          validate_target() {
+            local target="$1" expected_conflicts="$2" expected_hunks="$3"
+            local td="$AUDIT_DIR/target-${target}"
+            local repo="$VERIFY_DIR/$target"
+            local rel='drivers/rpmsg/qcom_glink_native.c'
+            local patch="$td/glink-vendor-stable-protocol-union-semantic-resolution.patch"
+            local resolved="$td/resolved-evidence/$rel/RESOLVED-O36"
+
+            rm -rf "$repo"
+            mkdir -p "$repo/drivers/rpmsg"
+            cp "$td/resolved-evidence/$rel/OURS" "$repo/$rel"
+            git -C "$repo" init -q
+            git -C "$repo" config user.name 'VEUX U5-O36 Audit'
+            git -C "$repo" config user.email 'veux-u5-o36-audit@invalid.local'
+            git -C "$repo" add "$rel"
+            git -C "$repo" commit -qm base
+
+            git -C "$repo" apply --check --whitespace=error "$patch"
+            git -C "$repo" apply --index --whitespace=error "$patch"
+            git -C "$repo" diff --cached --check
+            mapfile -t changed < <(git -C "$repo" diff --cached --name-only)
+            test "${#changed[@]}" -eq 1
+            test "${changed[0]}" = "$rel"
+            test "$(sha256sum "$repo/$rel" | awk '{print $1}')" = "$GLINK_CANDIDATE_SHA256"
+            cmp -s "$repo/$rel" "$resolved"
+
+            ! grep -Fq 'RPM_CMD_' "$resolved"
+            test "$(grep -Fo 'GLINK_CMD_' "$resolved" | wc -l)" -eq 53
+            grep -Fq '#define GLINK_CMD_SIGNALS' "$resolved"
+            grep -Fq 'qcom_glink_rx_defer(glink, param2 & 0xffff);' "$resolved"
+            grep -Fq 'wait_event_timeout(glink->tx_avail_notify' "$resolved"
+            grep -Fq '|| atomic_read(&glink->in_reset)' "$resolved"
+            grep -Fq 'qcom_glink_pipe_reset(glink);' "$resolved"
+            grep -Fq 'kthread_queue_work(&glink->kworker' "$resolved"
+            grep -Fq '.get_signals = qcom_glink_get_sigs' "$resolved"
+            grep -Fq 'subsys_register_early_notifier' "$resolved"
+            ! grep -Fq 'if (ret && intent) {' "$resolved"
+            ! grep -Eq '^(<<<<<<<|\|\|\|\|\|\|\||=======|>>>>>>>)' "$resolved"
+
+            local partial="$td/P13-to-${target}-AUTO-MERGED-PARTIAL.patch"
+            test "$(grep -c '^diff --git a/drivers/rpmsg/qcom_glink_native.c b/drivers/rpmsg/qcom_glink_native.c$' "$partial")" -eq 1
+            test "$(wc -l < "$td/runtime-conflicts.txt")" -eq "$expected_conflicts"
+            test "$(grep -c $'\tTEXT_CONFLICT\t' "$td/path-classification.tsv")" -eq "$expected_conflicts"
+            test "$(find "$td/conflicts" -type f -name META.txt | wc -l)" -eq "$expected_conflicts"
+            grep -Fxq "RUNTIME_CONFLICTS=$expected_conflicts" "$td/RESULT.txt"
+            grep -Fxq "TEXT_CONFLICT_HUNKS=$expected_hunks" "$td/RESULT.txt"
+            grep -Fxq 'SEMANTIC_RESOLUTIONS=35' "$td/RESULT.txt"
+            grep -Fxq 'GLINK_VENDOR_STABLE_PROTOCOL_UNION=YES' "$td/RESULT.txt"
+
+            {
+              echo "TARGET=$target"
+              echo "GLINK_SHA256=$(sha256sum "$resolved" | awk '{print $1}')"
+              echo "INCREMENTAL_PATCH_SHA256=$(sha256sum "$patch" | awk '{print $1}')"
+              echo "UPDATED_PARTIAL_PATCH_SHA256=$(sha256sum "$partial" | awk '{print $1}')"
+              echo "RUNTIME_CONFLICTS=$expected_conflicts"
+              echo "TEXT_CONFLICT_HUNKS=$expected_hunks"
+              echo "SEMANTIC_RESOLUTIONS=35"
+              echo "GIT_APPLY_CHECK=PASS"
+              echo "GIT_DIFF_CHECK=PASS"
+              echo "GLINK_PROTOCOL_CLOSURE=PASS"
+            } > "$td/o36-source-application-gate.txt"
+          }
+
+          validate_target 5.4.300 3 11
+          validate_target 5.4.302 9 22
+
+      - name: Finalize comprehensive O36 artifact and completeness gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -Fxq 'PROVENANCE_GATE=PASS' "$AUDIT_DIR/36-O36-GLINK-PROVENANCE.txt"
+          grep -Fxq 'GLINK_PROTOCOL_CLOSURE=PASS' "$AUDIT_DIR/target-5.4.300/o36-source-application-gate.txt"
+          grep -Fxq 'GLINK_PROTOCOL_CLOSURE=PASS' "$AUDIT_DIR/target-5.4.302/o36-source-application-gate.txt"
+          grep -Fxq 'RESOLUTION_DERIVATION=PASS' "$AUDIT_DIR/36-O36-RESOLUTION-DERIVATION-GATE.txt"
+
+          cat > "$AUDIT_DIR/36-O36-SUMMARY.txt" <<EOF
+          O36_MODE=GLINK_RUNTIME_SOURCE_RESOLUTION
+          SOURCE_PARENT=U5-O35
+          O36_BECOMES_RUNTIME_PARENT=YES
+          LOGICAL_BLOCK=GLINK_VENDOR_STABLE_PROTOCOL_UNION
+          SOURCE_PATH=drivers/rpmsg/qcom_glink_native.c
+          RUNTIME_CONFLICTS_5.4.300=3
+          TEXT_CONFLICT_HUNKS_5.4.300=11
+          RUNTIME_CONFLICTS_5.4.302=9
+          TEXT_CONFLICT_HUNKS_5.4.302=22
+          SEMANTIC_RESOLUTIONS=35
+          FULL_O35_EVIDENCE_CARRIED_FORWARD=YES
+          KERNEL_BUILD_PERFORMED=NO
+          AK3_CREATED=NO
+          FLASH_PERFORMED=NO
+          DEVICE_PASS=NO
+          O36_RUNTIME_GATE=PASS
+          EOF
+
+          rm -f "$AUDIT_DIR/99-FILE-LIST.txt" "$AUDIT_DIR/SHA256SUMS.txt"
+          file_count="$(find "$AUDIT_DIR" -type f | wc -l)"
+          byte_count="$(du -sb "$AUDIT_DIR" | awk '{print $1}')"
+          patch300_bytes="$(stat -c '%s' "$AUDIT_DIR/target-5.4.300/P13-to-5.4.300-AUTO-MERGED-PARTIAL.patch")"
+          patch302_bytes="$(stat -c '%s' "$AUDIT_DIR/target-5.4.302/P13-to-5.4.302-AUTO-MERGED-PARTIAL.patch")"
+
+          test "$file_count" -ge 320
+          test "$byte_count" -ge 19000000
+          test "$patch300_bytes" -ge 4000000
+          test "$patch302_bytes" -ge 4400000
+          test "$(wc -l < "$AUDIT_DIR/lineage/O35-SHA256SUMS.original.txt")" -eq "$O35_INTERNAL_SHA_COUNT"
+          grep -Fxq 'O35_RUNTIME_GATE=PASS' "$AUDIT_DIR/lineage/O35-PARENT-GATE.txt"
+
+          cat > "$AUDIT_DIR/99-O36-FINAL-GATE.txt" <<EOF
+          O35_EXACT_ARTIFACT=PASS
+          O35_INTERNAL_SHA256SUMS=$O35_INTERNAL_SHA_COUNT/$O35_INTERNAL_SHA_COUNT PASS
+          O35_RUNTIME_GATE=PASS
+          GLINK_PROVENANCE_GATE=PASS
+          GLINK_PROTOCOL_BLOCK_5.4.300=PASS
+          GLINK_PROTOCOL_BLOCK_5.4.302=PASS
+          INCREMENTAL_PATCH_APPLY_5.4.300=PASS
+          INCREMENTAL_PATCH_APPLY_5.4.302=PASS
+          RUNTIME_CONFLICTS_5.4.300=3
+          TEXT_CONFLICT_HUNKS_5.4.300=11
+          RUNTIME_CONFLICTS_5.4.302=9
+          TEXT_CONFLICT_HUNKS_5.4.302=22
+          SEMANTIC_RESOLUTIONS=35
+          LOGICAL_SOURCE_BLOCK=drivers/rpmsg/qcom_glink_native.c
+          ARTIFACT_FILE_COUNT=$file_count
+          ARTIFACT_UNCOMPRESSED_BYTES=$byte_count
+          PARTIAL_PATCH_5.4.300_BYTES=$patch300_bytes
+          PARTIAL_PATCH_5.4.302_BYTES=$patch302_bytes
+          COMPREHENSIVE_ARTIFACT_COMPLETENESS=PASS
+          CURRENT_RUNTIME_PARENT=U5-O36
+          KERNEL_BUILD_PERFORMED=NO
+          AK3_CREATED=NO
+          FLASH_PERFORMED=NO
+          DEVICE_PASS=NO
+          O36_FINAL=RUNTIME_GREEN_PASS
+          EOF
+
+          (
+            cd "$AUDIT_DIR"
+            find . -type f ! -name SHA256SUMS.txt -print | LC_ALL=C sort
+          ) > "$AUDIT_DIR/99-FILE-LIST.txt"
+          (
+            cd "$AUDIT_DIR"
+            find . -type f ! -name SHA256SUMS.txt -print0 | LC_ALL=C sort -z | xargs -0 sha256sum > SHA256SUMS.txt
+            sha256sum -c SHA256SUMS.txt
+          ) | tee "$RUNNER_TEMP/o36-final-sha256-check.txt"
+          test "$(grep -c 'OK$' "$RUNNER_TEMP/o36-final-sha256-check.txt")" -eq "$(wc -l < "$AUDIT_DIR/SHA256SUMS.txt")"
+          echo "O36 comprehensive artifact files: $file_count"
+          echo "O36 comprehensive artifact bytes: $byte_count"
+          echo 'O36_FINAL=RUNTIME_GREEN_PASS'
+
+      - name: Upload one comprehensive U5-O36 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: VEUX-GEN1-U5-O36-glink-vendor-stable-protocol-union-semantic-resolution-official-stable-5.4.300-5.4.302-port-audit
+          path: ${{ env.AUDIT_DIR }}
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 6
+          include-hidden-files: true
