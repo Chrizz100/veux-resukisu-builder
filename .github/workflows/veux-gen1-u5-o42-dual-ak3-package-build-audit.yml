@@ -1,0 +1,439 @@
+name: VEUX GEN1 U5-O42 Dual AK3 Package Build Audit
+
+'on':
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: veux-gen1-u5-o42-dual-ak3-package-build-audit-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  package-audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      TZ: UTC
+      LANG: C.UTF-8
+      LC_ALL: C.UTF-8
+
+      # Exact O41 v5 BUILD-PASS parent.
+      O41_RUN_ID: '35241355584'
+      O41_HEAD_SHA: ee6655157dad0c21af7d2087fb45da21996405fa
+      O41_ARTIFACT_ID: '10506656715'
+      O41_ARTIFACT_NAME: VEUX-GEN1-U5-O41-v5-robust-timer-sizeadd-dependency-closure-dual-build-audit-35241355584
+      O41_ARTIFACT_SHA256: 0e4e51d7d40b33e7acef99d996dba5d85ffe494dfdd3a744a8f3884a45086899
+
+      EXPECTED_IMAGE_300_SHA256: 45a7a3c29581ffdb01362fd4de8c839fce8bd0a3a8e4b489cd7b2f7a1c8c1e57
+      EXPECTED_IMAGE_302_SHA256: 604b9e5f8189f0756de26079868db307b3b31980351eb1b6cd896743a58e3da7
+      EXPECTED_DTB_SHA256: 42728a6f3d48ae35ac6be4b14ea51bc8a323e77baec2ee544827487378f99d37
+      EXPECTED_IMAGE_BYTES: '29911552'
+      EXPECTED_RELEASE_300: 5.4.300-qgki-g82179e362f33
+      EXPECTED_RELEASE_302: 5.4.302-qgki-g82179e362f33
+      RESUKISU_TARGET: 7741f87849f7ad7cebf82bbb4c5b89880e61e37e
+      RESUKISU_SHORT: 7741f878
+      RESUKISU_IMAGE_IDENTITY: v4.2.0-rc1-7741f878-p13@ReSukiSU
+      EXPECTED_KSU_VERSION: '35141'
+      EXPECTED_KSU_UAPI: '4'
+      SUSFS_VERSION: '2.3'
+
+      # Exact P13-proven AnyKernel3 checkpoint.
+      AK3_REPO: https://github.com/osm0sis/AnyKernel3.git
+      AK3_COMMIT: af770f7b16cf8f8eb7c68614b2a693b3b361c90c
+
+    steps:
+      - name: Initialize O42 package build audit workspace
+        shell: bash
+        run: |
+          set -euo pipefail
+          PARENT_DIR="$RUNNER_TEMP/o41-parent"
+          AK3_BASE="$GITHUB_WORKSPACE/AnyKernel3-base"
+          AUDIT_DIR="$GITHUB_WORKSPACE/u5-o42-ak3-audit"
+          DIST_DIR="$GITHUB_WORKSPACE/u5-o42-ak3-dist"
+          rm -rf "$PARENT_DIR" "$AK3_BASE" "$AUDIT_DIR" "$DIST_DIR" \
+                 "$GITHUB_WORKSPACE/ak3-5.4.300" "$GITHUB_WORKSPACE/ak3-5.4.302"
+          mkdir -p "$PARENT_DIR" "$AUDIT_DIR" "$DIST_DIR"
+          {
+            echo "PARENT_DIR=$PARENT_DIR"
+            echo "AK3_BASE=$AK3_BASE"
+            echo "AUDIT_DIR=$AUDIT_DIR"
+            echo "DIST_DIR=$DIST_DIR"
+          } >> "$GITHUB_ENV"
+          cat > "$AUDIT_DIR/00-plan.txt" <<'EOF'
+          U5-O42 DUAL AK3 PACKAGE BUILD AUDIT
+
+          Parent:
+          - exact O41 v5 BUILD_GREEN_PASS artifact
+          - Linux 5.4.300 and Linux 5.4.302 VEUX full-build outputs
+
+          Scope:
+          - compare the two successful build outputs
+          - verify semantic config parity after generated-version normalization
+          - verify common VEUX DTB identity
+          - build one independent AnyKernel3 package per kernel line
+          - reuse the exact AnyKernel3 checkpoint and active-slot contract proven by P13
+          - Image-only AK3 payload: preserve device boot ramdisk/DTB/DTBO/vendor_boot content
+
+          Deliberately NOT in O42:
+          - no universal selector
+          - no flash
+          - no Device PASS claim
+          EOF
+
+      - name: Install package audit dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ca-certificates curl git jq python3 unzip zip file
+
+      - name: Download and authenticate exact O41 v5 BUILD-PASS parent
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          meta="$RUNNER_TEMP/o41-meta.json"
+          zip="$RUNNER_TEMP/o41-parent.zip"
+
+          curl --fail --silent --show-error --location --retry 3 --retry-delay 2 \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${O41_ARTIFACT_ID}" \
+            -o "$meta"
+
+          python3 - "$meta" <<'PY'
+          import json, os, sys
+          with open(sys.argv[1], encoding='utf-8') as f:
+              m = json.load(f)
+          assert str(m.get('id')) == os.environ['O41_ARTIFACT_ID']
+          assert m.get('name') == os.environ['O41_ARTIFACT_NAME']
+          assert m.get('expired') is False
+          assert m.get('digest') in (None, '', 'sha256:' + os.environ['O41_ARTIFACT_SHA256'])
+          wr = m.get('workflow_run') or {}
+          assert str(wr.get('id')) == os.environ['O41_RUN_ID']
+          assert wr.get('head_sha') == os.environ['O41_HEAD_SHA']
+          print('O41_METADATA=PASS')
+          PY
+
+          curl --fail --silent --show-error --location --retry 3 --retry-delay 2 \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${O41_ARTIFACT_ID}/zip" \
+            -o "$zip"
+
+          echo "$O41_ARTIFACT_SHA256  $zip" | sha256sum -c -
+
+          python3 - "$zip" "$PARENT_DIR" <<'PY'
+          from pathlib import Path
+          import sys, zipfile
+          archive, dest = sys.argv[1:]
+          root = Path(dest).resolve()
+          with zipfile.ZipFile(archive) as zf:
+              for info in zf.infolist():
+                  target = (root / info.filename).resolve()
+                  if target != root and root not in target.parents:
+                      raise SystemExit('unsafe artifact member: ' + info.filename)
+              zf.extractall(root)
+          PY
+
+          gate="$PARENT_DIR/u5-o41-build-audit/99-O41-FINAL-GATE.txt"
+          test -f "$gate"
+          grep -Fxq 'O41_FINAL=BUILD_GREEN_PASS' "$gate"
+          grep -Fxq 'BOTH_TARGET_FULL_BUILD=PASS' "$gate"
+          grep -Fxq 'FULL_BUILD_5.4.300=PASS' "$gate"
+          grep -Fxq 'FULL_BUILD_5.4.302=PASS' "$gate"
+          grep -Fxq 'READY_FOR_BUILD_COMPARISON_AND_AK3_AUDIT=YES' "$gate"
+          grep -Fxq 'AK3_CREATED=NO' "$gate"
+          grep -Fxq 'DEVICE_PASS=NO' "$gate"
+
+          {
+            echo 'O41_EXACT_PARENT=PASS'
+            echo "O41_RUN_ID=$O41_RUN_ID"
+            echo "O41_HEAD_SHA=$O41_HEAD_SHA"
+            echo "O41_ARTIFACT_ID=$O41_ARTIFACT_ID"
+            echo "O41_ARTIFACT_SHA256=$O41_ARTIFACT_SHA256"
+          } | tee "$AUDIT_DIR/01-o41-parent-gate.txt"
+
+      - name: Verify and compare O41 5.4.300 and 5.4.302 outputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          d300="$PARENT_DIR/u5-o41-build-dist/5.4.300"
+          d302="$PARENT_DIR/u5-o41-build-dist/5.4.302"
+          i300="$d300/Image"
+          i302="$d302/Image"
+          dtb300="$d300/veux.dtb"
+          dtb302="$d302/veux.dtb"
+          c300="$d300/config"
+          c302="$d302/config"
+
+          for f in "$i300" "$i302" "$dtb300" "$dtb302" "$c300" "$c302" \
+                   "$d300/dtbs.tar.gz" "$d302/dtbs.tar.gz"; do
+            test -s "$f"
+          done
+
+          echo "$EXPECTED_IMAGE_300_SHA256  $i300" | sha256sum -c -
+          echo "$EXPECTED_IMAGE_302_SHA256  $i302" | sha256sum -c -
+          echo "$EXPECTED_DTB_SHA256  $dtb300" | sha256sum -c -
+          echo "$EXPECTED_DTB_SHA256  $dtb302" | sha256sum -c -
+          test "$(stat -c '%s' "$i300")" = "$EXPECTED_IMAGE_BYTES"
+          test "$(stat -c '%s' "$i302")" = "$EXPECTED_IMAGE_BYTES"
+          cmp -s "$dtb300" "$dtb302"
+          ! cmp -s "$i300" "$i302"
+
+          strings -a "$i300" > "$AUDIT_DIR/02-image-strings-5.4.300.txt"
+          strings -a "$i302" > "$AUDIT_DIR/02-image-strings-5.4.302.txt"
+          grep -Fq "Linux version $EXPECTED_RELEASE_300" "$AUDIT_DIR/02-image-strings-5.4.300.txt"
+          grep -Fq "Linux version $EXPECTED_RELEASE_302" "$AUDIT_DIR/02-image-strings-5.4.302.txt"
+          grep -Fq "$RESUKISU_IMAGE_IDENTITY" "$AUDIT_DIR/02-image-strings-5.4.300.txt"
+          grep -Fq "$RESUKISU_IMAGE_IDENTITY" "$AUDIT_DIR/02-image-strings-5.4.302.txt"
+
+          sed -E 's/^# Linux\/arm64 5\.4\.(300|302) Kernel Configuration$/# Linux\/arm64 5.4.X Kernel Configuration/' \
+            "$c300" > "$AUDIT_DIR/02-config-5.4.300.normalized"
+          sed -E 's/^# Linux\/arm64 5\.4\.(300|302) Kernel Configuration$/# Linux\/arm64 5.4.X Kernel Configuration/' \
+            "$c302" > "$AUDIT_DIR/02-config-5.4.302.normalized"
+          cmp -s "$AUDIT_DIR/02-config-5.4.300.normalized" "$AUDIT_DIR/02-config-5.4.302.normalized"
+
+          mkdir -p "$RUNNER_TEMP/dtbs300" "$RUNNER_TEMP/dtbs302"
+          tar -xzf "$d300/dtbs.tar.gz" -C "$RUNNER_TEMP/dtbs300"
+          tar -xzf "$d302/dtbs.tar.gz" -C "$RUNNER_TEMP/dtbs302"
+          diff -qr "$RUNNER_TEMP/dtbs300" "$RUNNER_TEMP/dtbs302" > "$AUDIT_DIR/02-dtbs-diff.txt" || {
+            cat "$AUDIT_DIR/02-dtbs-diff.txt"
+            exit 1
+          }
+
+          {
+            echo 'O41_OUTPUT_HASHES=PASS'
+            echo 'IMAGE_SIZE_PARITY=PASS'
+            echo 'IMAGE_BINARY_IDENTITY=DIFFERENT_EXPECTED'
+            echo 'NORMALIZED_CONFIG_PARITY=PASS'
+            echo 'VEUX_DTB_BYTE_PARITY=PASS'
+            echo 'ALL_DTB_OUTPUT_PARITY=PASS'
+            echo 'RESUKISU_IMAGE_IDENTITY_5.4.300=PASS'
+            echo 'RESUKISU_IMAGE_IDENTITY_5.4.302=PASS'
+          } | tee "$AUDIT_DIR/02-build-comparison-gate.txt"
+
+      - name: Checkout exact P13-proven AnyKernel3 checkpoint
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone -q "$AK3_REPO" "$AK3_BASE"
+          git -C "$AK3_BASE" checkout -q --detach "$AK3_COMMIT"
+          test "$(git -C "$AK3_BASE" rev-parse HEAD)" = "$AK3_COMMIT"
+          test -s "$AK3_BASE/tools/ak3-core.sh"
+          {
+            echo "AK3_COMMIT=$AK3_COMMIT"
+            echo 'AK3_EXACT_CHECKPOINT=PASS'
+          } | tee "$AUDIT_DIR/03-ak3-checkpoint.txt"
+
+      - name: Build independent 5.4.300 and 5.4.302 AK3 packages
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          build_ak3() {
+            local ver="$1" expected_release="$2" image_sha="$3"
+            local src="$PARENT_DIR/u5-o41-build-dist/$ver"
+            local work="$GITHUB_WORKSPACE/ak3-$ver"
+            local zip_name="VEUX-GEN1-U5-O42-${ver}-ReSukiSU-${RESUKISU_SHORT}-UAPI${EXPECTED_KSU_UAPI}-SUSFS-${SUSFS_VERSION}-AK3.zip"
+            local zip_path="$DIST_DIR/$zip_name"
+
+            rm -rf "$work"
+            cp -a "$AK3_BASE" "$work"
+            rm -rf "$work/.git" "$work/.github"
+            rm -f "$work/README.md"
+            find "$work" -type f -name '*placeholder' -delete
+            rm -rf "$work/modules"
+            rm -f "$work/Image" "$work/Image.gz" "$work/Image.gz-dtb" \
+                  "$work/dtb" "$work/dtbo.img"
+
+            cp "$src/Image" "$work/Image"
+            echo "$image_sha  $work/Image" | sha256sum -c - >/dev/null
+
+            cat > "$work/anykernel.sh" <<EOF
+          # AnyKernel3 Ramdisk Mod Script
+          # osm0sis @ xda-developers
+
+          properties() { '
+          kernel.string=VEUX GEN1 U5-O42 Linux ${ver} ReSukiSU ${RESUKISU_SHORT} UAPI${EXPECTED_KSU_UAPI} + SUSFS ${SUSFS_VERSION}
+          do.devicecheck=1
+          do.modules=0
+          do.systemless=1
+          do.cleanup=1
+          do.cleanuponabort=0
+          device.name1=veux
+          supported.versions=13
+          supported.patchlevels=
+          '; }
+
+          BLOCK=boot;
+          IS_SLOT_DEVICE=1;
+          SLOT_SELECT=active;
+          RAMDISK_COMPRESSION=auto;
+          PATCH_VBMETA_FLAG=0;
+
+          . tools/ak3-core.sh;
+          dump_boot;
+          write_boot;
+          EOF
+            chmod 0755 "$work/anykernel.sh"
+
+            cat > "$work/O42-BUILD-INFO.txt" <<EOF
+          VEUX GEN1 U5-O42 independent AK3 package
+          Device: veux / SM6375
+          Linux: ${ver}
+          Expected kernel release: ${expected_release}
+          Parent: O41 v5 BUILD_GREEN_PASS run ${O41_RUN_ID}
+          Parent artifact: ${O41_ARTIFACT_ID}
+          Image SHA-256: ${image_sha}
+          ReSukiSU target: ${RESUKISU_TARGET}
+          ReSukiSU identity: ${RESUKISU_IMAGE_IDENTITY}
+          KSU version: ${EXPECTED_KSU_VERSION}
+          KernelSU UAPI: ${EXPECTED_KSU_UAPI}
+          SUSFS: ${SUSFS_VERSION}
+          AnyKernel3 pin: ${AK3_COMMIT}
+          AK3 payload: Image only
+          Slot policy: active A/B slot
+          Ramdisk/DTB/DTBO/vendor_boot: preserved by package design
+          Universal selector: NOT INCLUDED IN O42
+          Real-device boot test: NOT PERFORMED
+          EOF
+
+            (
+              cd "$work"
+              zip -r9 "$zip_path" . \
+                -x '.github/*' 'README.md' '*placeholder'
+            ) >/dev/null
+            test -s "$zip_path"
+            echo "$zip_path"
+          }
+
+          z300="$(build_ak3 5.4.300 "$EXPECTED_RELEASE_300" "$EXPECTED_IMAGE_300_SHA256")"
+          z302="$(build_ak3 5.4.302 "$EXPECTED_RELEASE_302" "$EXPECTED_IMAGE_302_SHA256")"
+          test -s "$z300"
+          test -s "$z302"
+          echo "AK3_300=$z300" >> "$GITHUB_ENV"
+          echo "AK3_302=$z302" >> "$GITHUB_ENV"
+          {
+            echo "AK3_300=$(basename "$z300")"
+            echo "AK3_302=$(basename "$z302")"
+            echo 'DUAL_AK3_BUILD=PASS'
+          } | tee "$AUDIT_DIR/04-ak3-build.txt"
+
+      - name: Validate both AK3 packages and payload isolation
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          validate_ak3() {
+            local ver="$1" zip="$2" expected_sha="$3" expected_release="$4" idx="$5"
+            local tmp="$RUNNER_TEMP/validate-$ver"
+            rm -rf "$tmp"
+            mkdir -p "$tmp"
+
+            unzip -t "$zip" > "$AUDIT_DIR/${idx}-unzip-${ver}.txt"
+            mapfile -t members < <(unzip -Z1 "$zip")
+            for required in anykernel.sh tools/ak3-core.sh Image O42-BUILD-INFO.txt; do
+              printf '%s\n' "${members[@]}" | grep -Fxq "$required"
+            done
+
+            # O42 must remain Image-only at boot-payload level.
+            ! printf '%s\n' "${members[@]}" | grep -Eq '^(dtb|dtbo\.img|Image\.gz|Image\.gz-dtb)$'
+            ! printf '%s\n' "${members[@]}" | grep -Eq '^modules/'
+
+            unzip -p "$zip" Image > "$tmp/Image"
+            echo "$expected_sha  $tmp/Image" | sha256sum -c -
+            cmp -s "$PARENT_DIR/u5-o41-build-dist/$ver/Image" "$tmp/Image"
+
+            unzip -p "$zip" anykernel.sh > "$tmp/anykernel.sh"
+            grep -Fqx 'device.name1=veux' "$tmp/anykernel.sh"
+            grep -Fqx 'supported.versions=13' "$tmp/anykernel.sh"
+            grep -Fqx 'BLOCK=boot;' "$tmp/anykernel.sh"
+            grep -Fqx 'IS_SLOT_DEVICE=1;' "$tmp/anykernel.sh"
+            grep -Fqx 'SLOT_SELECT=active;' "$tmp/anykernel.sh"
+            grep -Fqx 'RAMDISK_COMPRESSION=auto;' "$tmp/anykernel.sh"
+            grep -Fqx 'PATCH_VBMETA_FLAG=0;' "$tmp/anykernel.sh"
+            grep -Fqx 'dump_boot;' "$tmp/anykernel.sh"
+            grep -Fqx 'write_boot;' "$tmp/anykernel.sh"
+            ! grep -Eq '^(block|is_slot_device|slot_select|ramdisk_compression|patch_vbmeta_flag)=' "$tmp/anykernel.sh"
+
+            unzip -p "$zip" O42-BUILD-INFO.txt > "$tmp/info.txt"
+            grep -Fxq "Linux: $ver" "$tmp/info.txt"
+            grep -Fxq "Expected kernel release: $expected_release" "$tmp/info.txt"
+            grep -Fxq "Image SHA-256: $expected_sha" "$tmp/info.txt"
+            grep -Fxq "AnyKernel3 pin: $AK3_COMMIT" "$tmp/info.txt"
+            grep -Fxq 'AK3 payload: Image only' "$tmp/info.txt"
+            grep -Fxq 'Universal selector: NOT INCLUDED IN O42' "$tmp/info.txt"
+            grep -Fxq 'Real-device boot test: NOT PERFORMED' "$tmp/info.txt"
+
+            sha256sum "$zip" > "$zip.sha256"
+            {
+              echo "AK3_${ver}_UNZIP=PASS"
+              echo "AK3_${ver}_IMAGE_HASH=PASS"
+              echo "AK3_${ver}_IMAGE_ONLY=PASS"
+              echo "AK3_${ver}_ACTIVE_SLOT_CONTRACT=PASS"
+              echo "AK3_${ver}_METADATA=PASS"
+              echo "AK3_${ver}_SHA256=$(sha256sum "$zip" | awk '{print $1}')"
+            } | tee "$AUDIT_DIR/${idx}-ak3-validation-${ver}.txt"
+          }
+
+          validate_ak3 5.4.300 "$AK3_300" "$EXPECTED_IMAGE_300_SHA256" "$EXPECTED_RELEASE_300" 05
+          validate_ak3 5.4.302 "$AK3_302" "$EXPECTED_IMAGE_302_SHA256" "$EXPECTED_RELEASE_302" 06
+
+          test "$(sha256sum "$AK3_300" | awk '{print $1}')" != "$(sha256sum "$AK3_302" | awk '{print $1}')"
+          echo 'DUAL_AK3_VALIDATION=PASS' | tee "$AUDIT_DIR/07-dual-ak3-gate.txt"
+
+      - name: Final O42 dual package build gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -Fxq 'O41_EXACT_PARENT=PASS' "$AUDIT_DIR/01-o41-parent-gate.txt"
+          grep -Fxq 'NORMALIZED_CONFIG_PARITY=PASS' "$AUDIT_DIR/02-build-comparison-gate.txt"
+          grep -Fxq 'VEUX_DTB_BYTE_PARITY=PASS' "$AUDIT_DIR/02-build-comparison-gate.txt"
+          grep -Fxq 'ALL_DTB_OUTPUT_PARITY=PASS' "$AUDIT_DIR/02-build-comparison-gate.txt"
+          grep -Fxq 'AK3_EXACT_CHECKPOINT=PASS' "$AUDIT_DIR/03-ak3-checkpoint.txt"
+          grep -Fxq 'DUAL_AK3_BUILD=PASS' "$AUDIT_DIR/04-ak3-build.txt"
+          grep -Fxq 'DUAL_AK3_VALIDATION=PASS' "$AUDIT_DIR/07-dual-ak3-gate.txt"
+
+          {
+            echo 'O41_BUILD_PASS_PARENT=PASS'
+            echo 'BUILD_COMPARISON=PASS'
+            echo 'NORMALIZED_CONFIG_PARITY=PASS'
+            echo 'COMMON_DTB_PARITY=PASS'
+            echo 'AK3_PIN_REUSED_FROM_P13=PASS'
+            echo 'AK3_5.4.300=PASS'
+            echo 'AK3_5.4.302=PASS'
+            echo 'AK3_IMAGE_ONLY_CONTRACT=PASS'
+            echo 'AK3_ACTIVE_SLOT_CONTRACT=PASS'
+            echo 'UNIVERSAL_SELECTOR_CREATED=NO'
+            echo 'FLASH_PERFORMED=NO'
+            echo 'DEVICE_PASS=NO'
+            echo 'READY_FOR_UNIVERSAL_SELECTOR_AUDIT=YES'
+            echo 'O42_FINAL=PACKAGE_GREEN_PASS'
+          } | tee "$AUDIT_DIR/99-O42-FINAL-GATE.txt"
+
+          (
+            cd "$DIST_DIR"
+            sha256sum *.zip *.zip.sha256 > O42-SUPPORT-SHA256SUMS
+          )
+          find "$AUDIT_DIR" "$DIST_DIR" -type f ! -path "$AUDIT_DIR/99-O42-FILE-SHA256.txt" -print0 | \
+            sort -z | xargs -0 sha256sum > "$AUDIT_DIR/99-O42-FILE-SHA256.txt"
+
+      - name: Upload O42 audit evidence and dual AK3 packages
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: VEUX-GEN1-U5-O42-dual-ak3-package-build-audit-${{ github.run_id }}
+          path: |
+            u5-o42-ak3-audit
+            u5-o42-ak3-dist
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
